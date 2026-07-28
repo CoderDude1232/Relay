@@ -2,23 +2,41 @@
 //  ContentView.swift
 //  Relay
 //
-//  Created by Ethan Daly on 18/7/2026.
-//
 
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(AppModel.self) private var model
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        switch model.phase {
+        case .loading:
+            ProgressView()
+        case .onboarding:
+            OnboardingView()
+        case .ready(let service):
+            MainTabView(service: service)
+        case .failed(let message):
+            ContentUnavailableView(
+                "Storage Unavailable",
+                systemImage: "lock.trianglebadge.exclamationmark",
+                description: Text(message)
+            )
         }
-        .padding()
     }
 }
 
-#Preview {
-    ContentView()
+struct MainTabView: View {
+    let service: MessagingService
+
+    var body: some View {
+        TabView {
+            Tab("Chats", systemImage: "bubble.left.and.bubble.right.fill") {
+                ConversationListView(service: service)
+            }
+            Tab("Settings", systemImage: "gearshape.fill") {
+                SettingsView(service: service)
+            }
+        }
+    }
 }

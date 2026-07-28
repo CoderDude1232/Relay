@@ -1,0 +1,128 @@
+// relay.proto — server-visible wire format for the Relay messenger.
+//
+// Everything in this file is metadata the relay is allowed to see for
+// routing and delivery. Message plaintext NEVER appears here: the
+// `content` bytes of an Envelope/DeviceMessage are always libsignal
+// ciphertext whose decrypted form is a relay.content.Content message
+// (see content.proto), which only clients can parse.
+//
+// Transport framing: each WebSocket binary message is exactly one
+// serialized ClientFrame (client -> server) or ServerFrame (server -> client).
+
+syntax = "proto3";
+
+package relay.v1;
+
+option go_package = "github.com/relayapp/relay-server/gen/relaypb";
+
+// The libsignal ciphertext type of a payload. The server needs this only
+// so the receiving client knows how to decrypt without trial-and-error.
+enum CiphertextType {
+  CIPHERTEXT_TYPE_UNSPECIFIED = 0;
+  // PreKeySignalMessage: first message of a session, carries X3DH material.
+  CIPHERTEXT_TYPE_PREKEY_MESSAGE = 1;
+  // SignalMessage: normal Double Ratchet message in an established session.
+  CIPHERTEXT_TYPE_MESSAGE = 2;
+  // SenderKeyMessage: group message encrypted with a sender key (Phase: groups).
+  CIPHERTEXT_TYPE_SENDER_KEY_MESSAGE = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server
+// ---------------------------------------------------------------------------
+
+message ClientFrame {
+  // Client-chosen identifier echoed back in SendResponse.reply_to so the
+  // client can correlate responses to in-flight requests.
+  uint64 id = 1;
+  oneof payload {
+    SendRequest send = 2;
+    AckRequest ack = 3;
+  }
+}
+
+// Fan-out send: one ciphertext per registered device of the destination
+// account. The sender must encrypt separately for every device; the server
+// rejects the request if the device list does not exactly match the
+// account's currently registered devices (see SendResponse).
+// When the destination is the sender's own account (sync messages), the
+// sending device itself must be omitted from `messages`.
+message SendRequest {
+  string destination_account = 1;
+  repeated DeviceMessage messages = 2;
+  // Sender's clock, milliseconds since epoch. Used by clients as the
+  // logical message id; the server does not interpret it.
+  int64 client_timestamp = 3;
+  // Ephemeral payloads (typing indicators) are delivered only to currently
+  // connected devices and are never queued for offline delivery.
+  bool ephemeral = 4;
+}
+
+message DeviceMessage {
+  uint32 device_id = 1;
+  // The registration id of the recipient device as known to the sender's
+  // session state. 0 = unknown/skip check. A mismatch means the sender's
+  // session is stale (device re-registered) and the send is rejected.
+  uint32 registration_id = 2;
+  CiphertextType type = 3;
+  // libsignal ciphertext. Opaque to the server.
+  bytes content = 4;
+}
+
+// Acknowledges durable receipt of an envelope; the server then deletes it
+// from the device's offline queue. Delivery is at-least-once: clients must
+// deduplicate by envelope id.
+message AckRequest {
+  string envelope_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Server -> Client
+// ---------------------------------------------------------------------------
+
+message ServerFrame {
+  oneof payload {
+    SendResponse send_response = 1;
+    Envelope envelope = 2;
+    // Sent once after connect, when the offline queue has been fully
+    // drained. Envelopes after this marker arrived in real time.
+    QueueEmpty queue_empty = 3;
+  }
+}
+
+enum SendStatus {
+  SEND_STATUS_UNSPECIFIED = 0;
+  SEND_STATUS_OK = 1;
+  // Device list didn't match; see missing/extra/stale fields. The client
+  // must fetch fresh prekey bundles / device lists and re-encrypt.
+  SEND_STATUS_MISMATCHED_DEVICES = 2;
+  SEND_STATUS_UNKNOWN_ACCOUNT = 3;
+  SEND_STATUS_RATE_LIMITED = 4;
+}
+
+message SendResponse {
+  uint64 reply_to = 1;
+  SendStatus status = 2;
+  // Devices registered to the account that were absent from the request.
+  repeated uint32 missing_devices = 3;
+  // Devices in the request that are not (or no longer) registered.
+  repeated uint32 extra_devices = 4;
+  // Devices whose registration_id didn't match (re-registered device).
+  repeated uint32 stale_devices = 5;
+  int64 server_timestamp = 6;
+}
+
+// A single ciphertext addressed to this device.
+message Envelope {
+  // Server-assigned UUID, unique per (recipient device, envelope).
+  string id = 1;
+  string sender_account = 2;
+  uint32 sender_device = 3;
+  CiphertextType type = 4;
+  bytes content = 5;
+  int64 client_timestamp = 6;
+  int64 server_timestamp = 7;
+  bool ephemeral = 8;
+}
+
+message QueueEmpty {}

@@ -1,0 +1,7 @@
+# Vendored libsignal (recreate with scripts/setup-libsignal.sh)
+third_party/
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+DerivedData/

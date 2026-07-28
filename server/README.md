@@ -1,0 +1,95 @@
+# relayd — the Relay server
+
+A lean store-and-forward relay for the Relay E2EE messenger. It routes
+ciphertext between devices and stores public prekey material; it never sees
+message plaintext or private keys.
+
+## Run
+
+```sh
+go run ./cmd/relayd -addr :8080 -db relay.db
+```
+
+### TLS (recommended for LAN / device testing)
+
+Pass `-tls-cert` and `-tls-key` to serve HTTPS/WSS. Without them the server
+runs plain HTTP (fine for loopback, but a same-network attacker can read
+metadata and sniff the HTTP Basic device password — message *content* stays
+end-to-end encrypted regardless).
+
+Generate a self-signed dev cert (EC P-256, 10 years, SAN = this Mac's LAN IP)
+and print the SPKI pin the iOS client must trust:
+
+```sh
+sh scripts/gen-dev-cert.sh            # writes ~/.relay-dev/relayd.{crt,key}
+```
+
+Then run with TLS:
+
+```sh
+~/.relay-dev/relayd -addr 0.0.0.0:8089 -db ~/.relay-dev/relay.db \
+    -tls-cert ~/.relay-dev/relayd.crt -tls-key ~/.relay-dev/relayd.key
+```
+
+The client pins the cert's public key (`RelayTLS.devPins` in RelayKit). If you
+regenerate with a **new** key, update that pin to the value the script prints.
+Connect the app to `https://<mac-LAN-ip>:8089`.
+
+## Test
+
+```sh
+go test ./...
+```
+
+## Wire format
+
+The schema source of truth lives at the repo root in [`../proto/`](../proto/):
+
+- `relay.proto` — server-visible envelopes and WebSocket frames.
+- `content.proto` — the plaintext structure clients encrypt. The server
+  never parses this; it is included here only so all clients codegen from
+  one place.
+
+Regenerate Go code after editing the protos:
+
+```sh
+./scripts/genproto.sh
+```
+
+## Authentication
+
+All endpoints except account creation use HTTP Basic auth with username
+`<accountId>.<deviceId>` and the device password.
+
+## REST API (JSON; binary fields are standard base64)
+
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `POST /v1/accounts` | none | Create account + primary device. Body `{username, password}` → `201 {accountId, deviceId}` |
+| `POST /v1/devices` | basic | Register an additional device. Body `{password}` → `201 {accountId, deviceId}` |
+| `PUT /v1/devices/apns` | basic | Store this device's APNs token. Body `{token}` → `204` |
+| `PUT /v1/keys` | basic | Upload `{registrationId, identityKey, signedPreKey{keyId, publicKey, signature}, kyberPreKey{keyId, publicKey, signature}, oneTimePreKeys[{keyId, publicKey}]}` → `204`. Identity, signed prekey and (last-resort) Kyber prekey replace; one-time prekeys append. PQXDH requires the Kyber prekey. |
+| `GET /v1/keys/count` | basic | Remaining one-time prekeys for this device → `{count}`. Clients replenish below ~20. |
+| `GET /v1/keys/{account}?device=N` | basic | Fetch prekey bundles (all devices when `?device` omitted), each with identity key, signed prekey and Kyber prekey. Consumes one one-time prekey per device; `oneTimePreKey` is `null` when the pool is exhausted (degraded PQXDH via signed prekeys only). |
+| `GET /v1/accounts/by-username/{username}` | basic | Resolve username → `{accountId}` |
+| `GET /v1/ws` | basic | WebSocket upgrade for real-time delivery |
+
+## WebSocket protocol
+
+Every binary WS message is one serialized `relay.v1.ClientFrame`
+(client→server) or `relay.v1.ServerFrame` (server→client).
+
+On connect the server drains the device's offline queue as `Envelope`
+frames, then sends `QueueEmpty`; everything after that is real-time.
+
+Sending (`SendRequest`) fans out per device: the sender must include one
+ciphertext for **every** registered device of the destination account
+(omitting its own device when messaging itself). If the device list is
+wrong or a `registration_id` is stale, the server rejects the entire send
+with `SEND_STATUS_MISMATCHED_DEVICES` and lists
+`missing/extra/stale_devices` so the client can re-fetch bundles and retry
+— partial fan-out never happens.
+
+Delivery is at-least-once: envelopes stay in the queue until the client
+acks them (`AckRequest{envelope_id}`); clients must deduplicate by envelope
+id. `ephemeral` envelopes (typing indicators) skip the queue entirely.

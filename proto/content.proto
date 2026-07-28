@@ -1,0 +1,103 @@
+// content.proto — the CLIENT-ONLY plaintext structure of a message.
+//
+// A serialized Content message is what gets encrypted with the Double
+// Ratchet (or a sender key, for groups). The relay server never parses
+// this; it only ever sees the resulting ciphertext bytes inside
+// relay.v1.Envelope.content / DeviceMessage.content.
+//
+// Both the iOS client and future clients (Windows, Android) must codegen
+// from this exact file — wire compatibility depends on it.
+
+syntax = "proto3";
+
+package relay.content;
+
+option go_package = "github.com/relayapp/relay-server/gen/contentpb";
+
+message Content {
+  oneof body {
+    TextMessage text = 1;
+    ReceiptMessage receipt = 2;
+    TypingMessage typing = 3;
+    ReactionMessage reaction = 4;
+    DeleteMessage delete = 7;
+    // Reserved for later phases (groups, media):
+    // SenderKeyDistribution sender_key_distribution = 5;
+    // AttachmentMessage attachment = 6;
+  }
+}
+
+message TextMessage {
+  string body = 1;
+  // Sender's clock, milliseconds since epoch. Doubles as the message id
+  // that receipts refer back to (Signal's convention).
+  int64 timestamp = 2;
+  // Optional: set when this message is a reply to an earlier one.
+  Quote quote = 3;
+}
+
+// A snapshot of the message being replied to. Self-contained (carries the
+// quoted text) so the reply renders without a lookup and survives the
+// original being deleted, following Signal's model.
+message Quote {
+  // Sender clock (== message id) of the quoted message.
+  int64 target_timestamp = 1;
+  // Account id of the quoted message's author.
+  string author = 2;
+  // Snapshot of the quoted text; the sender truncates long bodies.
+  string text = 3;
+}
+
+// "Unsend" / delete-for-everyone: instructs the recipient to remove a
+// message the sender previously sent. Delivered like any message (queued
+// when offline) so it applies even if the peer wasn't online. Only the
+// original author may delete their own message; the recipient locates it by
+// (conversation with the sender, target_timestamp). The client leaves a
+// "message was deleted" tombstone rather than erasing the row.
+message DeleteMessage {
+  // Sender clock (== message id) of the message to delete.
+  int64 target_timestamp = 1;
+  // Account id of the message's author (always the sender of this delete).
+  string target_author = 2;
+}
+
+// An emoji reaction attached to an earlier message. Delivered like any
+// message (queued when offline) rather than ephemerally, so reactions
+// aren't lost. One reaction per author per message; a new one replaces the
+// previous, and remove = true retracts it.
+message ReactionMessage {
+  // The emoji applied. Ignored when remove = true.
+  string emoji = 1;
+  // Identifies the reacted-to message: its author + sender clock.
+  string target_author = 2;
+  int64 target_timestamp = 3;
+  // Retract this author's reaction on the target message.
+  bool remove = 4;
+  // Sender's clock when the reaction was made.
+  int64 timestamp = 5;
+}
+
+// Delivery and read receipts are end-to-end encrypted like any message.
+// Read receipts sent to the user's own other devices (sync) keep
+// multi-device read state consistent.
+message ReceiptMessage {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_DELIVERY = 1;
+    TYPE_READ = 2;
+  }
+  Type type = 1;
+  // client_timestamps of the messages being receipted.
+  repeated int64 message_timestamps = 2;
+}
+
+// Sent with Envelope.ephemeral = true; never queued for offline devices.
+message TypingMessage {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    ACTION_STARTED = 1;
+    ACTION_STOPPED = 2;
+  }
+  Action action = 1;
+  int64 timestamp = 2;
+}
