@@ -12,6 +12,8 @@
 		EC3C5122300C4AAF00D20386 /* SecureStorage in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5121300C4AAF00D20386 /* SecureStorage */; };
 		EC3C5125300C4AC600D20386 /* CryptoCore in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5124300C4AC600D20386 /* CryptoCore */; };
 		EC3C5128300C4ADE00D20386 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5127300C4ADE00D20386 /* RelayKit */; };
+		ECA1AD4B3018F09C001EF64A /* RelayCore in Frameworks */ = {isa = PBXBuildFile; productRef = ECA1AD4A3018F09C001EF64A /* RelayCore */; };
+		ECA1AD4E3018F0C0001EF64A /* RelayCore in Frameworks */ = {isa = PBXBuildFile; productRef = ECA1AD4D3018F0C0001EF64A /* RelayCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -87,6 +89,7 @@
 				EC3C5110300B90EA00D20386 /* LibSignalClient in Frameworks */,
 				EC3C5128300C4ADE00D20386 /* RelayKit in Frameworks */,
 				EC3C5122300C4AAF00D20386 /* SecureStorage in Frameworks */,
+				ECA1AD4B3018F09C001EF64A /* RelayCore in Frameworks */,
 				EC3C5125300C4AC600D20386 /* CryptoCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -95,6 +98,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				ECA1AD4E3018F0C0001EF64A /* RelayCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -106,6 +110,7 @@
 			children = (
 				EC3C50EB300B766C00D20386 /* Relay */,
 				EC3C50FC300B81C300D20386 /* NotificationServiceExtension */,
+				ECA1AD4C3018F0C0001EF64A /* Frameworks */,
 				EC3C50EA300B766C00D20386 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -117,6 +122,13 @@
 				EC3C50FB300B81C300D20386 /* NotificationServiceExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		ECA1AD4C3018F0C0001EF64A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -145,6 +157,7 @@
 				EC3C5121300C4AAF00D20386 /* SecureStorage */,
 				EC3C5124300C4AC600D20386 /* CryptoCore */,
 				EC3C5127300C4ADE00D20386 /* RelayKit */,
+				ECA1AD4A3018F09C001EF64A /* RelayCore */,
 			);
 			productName = Relay;
 			productReference = EC3C50E9300B766C00D20386 /* Relay.app */;
@@ -167,6 +180,7 @@
 			);
 			name = NotificationServiceExtension;
 			packageProductDependencies = (
+				ECA1AD4D3018F0C0001EF64A /* RelayCore */,
 			);
 			productName = NotificationServiceExtension;
 			productReference = EC3C50FB300B81C300D20386 /* NotificationServiceExtension.appex */;
@@ -204,6 +218,7 @@
 				EC3C5120300C4AAF00D20386 /* XCLocalSwiftPackageReference "SecureStorage" */,
 				EC3C5123300C4AC600D20386 /* XCLocalSwiftPackageReference "CryptoCore" */,
 				EC3C5126300C4ADE00D20386 /* XCLocalSwiftPackageReference "RelayKit" */,
+				ECA1AD493018F09C001EF64A /* XCLocalSwiftPackageReference "RelayCore" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EC3C50EA300B766C00D20386 /* Products */;
@@ -472,6 +487,9 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = "";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-device";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-simulator";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayTexting.NotificationServiceExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -501,6 +519,9 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
+				LIBRARY_SEARCH_PATHS = "";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-device";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-simulator";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayTexting.NotificationServiceExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -563,6 +584,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = RelayKit;
 		};
+		ECA1AD493018F09C001EF64A /* XCLocalSwiftPackageReference "RelayCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = RelayCore;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -581,6 +606,15 @@
 		EC3C5127300C4ADE00D20386 /* RelayKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RelayKit;
+		};
+		ECA1AD4A3018F09C001EF64A /* RelayCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = RelayCore;
+		};
+		ECA1AD4D3018F0C0001EF64A /* RelayCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ECA1AD493018F09C001EF64A /* XCLocalSwiftPackageReference "RelayCore" */;
+			productName = RelayCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

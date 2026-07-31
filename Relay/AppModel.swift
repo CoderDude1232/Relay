@@ -8,6 +8,7 @@
 
 import Foundation
 import Observation
+import RelayCore
 import RelayKit
 import SecureStorage
 
@@ -20,7 +21,7 @@ final class AppModel {
         case failed(String)
     }
 
-    static let appGroupId = "group.com.relayapp.Relay"
+    static let appGroupId = RelayStore.appGroupId
     private static let accountSecretName = "relay-account"
 
     private(set) var phase: Phase = .loading
@@ -29,6 +30,8 @@ final class AppModel {
     )
     /// One certificate-pinned session shared by every relay connection.
     private let session = RelayTLS.makeSession()
+    /// Latest APNs device token (hex), uploaded once a session exists.
+    private var apnsTokenHex: String?
 
     private struct SavedAccount: Codable {
         let accountId: String
@@ -57,9 +60,33 @@ final class AppModel {
             )
             service.start()
             phase = .ready(service)
+            uploadPushTokenIfReady()
         } catch {
             phase = .failed("Could not unlock local storage: \(error)")
         }
+    }
+
+    /// Disconnects the live socket when the app backgrounds so the relay
+    /// marks this device offline and pushes future messages (which the NSE
+    /// then decrypts). Reconnects and drains the queue on return.
+    func enterBackground() {
+        if case .ready(let service) = phase { service.stop() }
+    }
+
+    func enterForeground() {
+        if case .ready(let service) = phase { service.start() }
+    }
+
+    /// Records the APNs device token and uploads it if a session is ready.
+    /// The token can arrive before or after onboarding, so we stash it.
+    func setAPNSDeviceToken(_ data: Data) {
+        apnsTokenHex = data.map { String(format: "%02x", $0) }.joined()
+        uploadPushTokenIfReady()
+    }
+
+    private func uploadPushTokenIfReady() {
+        guard case .ready(let service) = phase, let token = apnsTokenHex else { return }
+        Task { await service.uploadPushToken(token) }
     }
 
     /// Registers a fresh account, publishes its first keys, and persists
@@ -80,6 +107,7 @@ final class AppModel {
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
         service.start()
         phase = .ready(service)
+        uploadPushTokenIfReady()
     }
 
     /// Signs out of the account: forgets the credentials and deletes all

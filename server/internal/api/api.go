@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/store"
 )
@@ -19,10 +20,11 @@ import (
 type Server struct {
 	store *store.Store
 	hub   *hub.Hub
+	blobs *blob.Store
 }
 
-func New(st *store.Store, h *hub.Hub) *Server {
-	return &Server{store: st, hub: h}
+func New(st *store.Store, h *hub.Hub, blobs *blob.Store) *Server {
+	return &Server{store: st, hub: h, blobs: blobs}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -35,6 +37,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
 	mux.HandleFunc("GET /v1/accounts/by-username/{username}", s.auth(s.handleLookupUsername))
 	mux.HandleFunc("GET /v1/accounts/{account}", s.auth(s.handleLookupAccount))
+	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
+	mux.HandleFunc("PUT /v1/attachments/{id}", s.auth(s.handleUploadAttachment))
+	mux.HandleFunc("GET /v1/attachments/{id}", s.auth(s.handleDownloadAttachment))
+	mux.HandleFunc("POST /v1/groups", s.auth(s.handleCreateGroup))
+	mux.HandleFunc("GET /v1/groups/{id}", s.auth(s.handleGetGroup))
+	mux.HandleFunc("POST /v1/groups/{id}/members", s.auth(s.handleAddMember))
+	mux.HandleFunc("DELETE /v1/groups/{id}/members/{account}", s.auth(s.handleRemoveMember))
+	mux.HandleFunc("PUT /v1/groups/{id}", s.auth(s.handleRenameGroup))
 	mux.HandleFunc("GET /v1/ws", s.auth(s.handleWebSocket))
 	return mux
 }
@@ -152,6 +162,139 @@ func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, _ *
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"username": username})
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (opaque encrypted blobs)
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+	id, err := s.blobs.NewID()
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+	err := s.blobs.Put(r.PathValue("id"), r.Body)
+	switch {
+	case errors.Is(err, blob.ErrTooLarge):
+		httpError(w, http.StatusRequestEntityTooLarge, "attachment too large")
+	case errors.Is(err, blob.ErrNotFound):
+		httpError(w, http.StatusBadRequest, "bad attachment id")
+	case err != nil:
+		internalError(w, err)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+	data, err := s.blobs.Get(r.PathValue("id"))
+	switch {
+	case errors.Is(err, blob.ErrNotFound):
+		httpError(w, http.StatusNotFound, "no such attachment")
+	case err != nil:
+		internalError(w, err)
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write(data)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Groups (server-stored roster; the relay never sees group plaintext)
+// ---------------------------------------------------------------------------
+
+func writeGroup(w http.ResponseWriter, status int, g *store.Group) {
+	writeJSON(w, status, map[string]any{
+		"id":             g.ID,
+		"name":           g.Name,
+		"distributionId": g.DistributionID,
+		"revision":       g.Revision,
+		"members":        g.Members,
+	})
+}
+
+func (s *Server) groupError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		httpError(w, http.StatusNotFound, "no such group")
+	case errors.Is(err, store.ErrNotMember):
+		httpError(w, http.StatusForbidden, "not a group member")
+	default:
+		internalError(w, err)
+	}
+}
+
+func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Name    string   `json:"name"`
+		Members []string `json:"members"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "malformed body")
+		return
+	}
+	g, err := s.store.CreateGroup(dev.AccountID, req.Name, req.Members)
+	if err != nil {
+		s.groupError(w, err)
+		return
+	}
+	writeGroup(w, http.StatusCreated, g)
+}
+
+func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	g, err := s.store.GetGroup(r.PathValue("id"), dev.AccountID)
+	if err != nil {
+		s.groupError(w, err)
+		return
+	}
+	writeGroup(w, http.StatusOK, g)
+}
+
+func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Account string `json:"account"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Account == "" {
+		httpError(w, http.StatusBadRequest, "account required")
+		return
+	}
+	g, err := s.store.AddMember(r.PathValue("id"), dev.AccountID, req.Account)
+	if err != nil {
+		s.groupError(w, err)
+		return
+	}
+	writeGroup(w, http.StatusOK, g)
+}
+
+func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	g, err := s.store.RemoveMember(r.PathValue("id"), dev.AccountID, r.PathValue("account"))
+	if err != nil {
+		s.groupError(w, err)
+		return
+	}
+	writeGroup(w, http.StatusOK, g)
+}
+
+func (s *Server) handleRenameGroup(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		httpError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	g, err := s.store.RenameGroup(r.PathValue("id"), dev.AccountID, req.Name)
+	if err != nil {
+		s.groupError(w, err)
+		return
+	}
+	writeGroup(w, http.StatusOK, g)
 }
 
 // ---------------------------------------------------------------------------

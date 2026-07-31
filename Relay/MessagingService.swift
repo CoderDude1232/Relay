@@ -12,9 +12,11 @@ import CryptoCore
 import Foundation
 import LibSignalClient
 import Observation
+import RelayCore
 import RelayKit
 import SwiftProtobuf
 import SecureStorage
+import UIKit
 import os
 
 @Observable
@@ -39,8 +41,10 @@ final class MessagingService {
 
     private let storage: SecureStore
     private let engine: CryptoEngine
+    private let processor: EnvelopeProcessor
     private let api: RelayAPIClient
     private let maintainer = PreKeyMaintainer()
+    private let attachmentStore = AttachmentBlobStore(appGroupId: AppModel.appGroupId)
     private let allocator: KVPreKeyIdAllocator
     private var socket: RelayWebSocket?
     private var connectionTask: Task<Void, Never>?
@@ -57,12 +61,23 @@ final class MessagingService {
             accountId: credentials.accountId,
             deviceId: credentials.deviceId
         )
+        self.processor = EnvelopeProcessor(storage: storage, engine: engine)
         self.api = RelayAPIClient(baseURL: serverURL, credentials: credentials, session: session)
         self.allocator = KVPreKeyIdAllocator(database: storage.database)
         refreshConversations()
     }
 
     // MARK: - Lifecycle
+
+    /// Registers this device's APNs token with the relay so it can wake us
+    /// for offline messages. Best-effort — messaging works without it.
+    func uploadPushToken(_ token: String) async {
+        do {
+            try await api.setAPNSToken(token)
+        } catch {
+            log.warning("apns token upload failed: \(error)")
+        }
+    }
 
     /// Uploads the first key publication after registration.
     func publishInitialKeys() async throws {
@@ -78,7 +93,19 @@ final class MessagingService {
         connectionTask?.cancel()
         connectionTask = nil
         let socket = socket
-        Task { await socket?.disconnect() }
+        self.socket = nil
+        guard let socket else { return }
+        // Hold a short background-task assertion so iOS keeps us alive long
+        // enough to actually send the WebSocket close — otherwise the relay
+        // may keep this device "online" (up to its ~60s pong timeout) and
+        // never push offline messages.
+        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "relay-ws-close")
+        Task {
+            await socket.disconnect()
+            await MainActor.run {
+                if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) }
+            }
+        }
     }
 
     private func runConnectionLoop() async {
@@ -122,74 +149,26 @@ final class MessagingService {
             Task { try? await socket?.ack(envelopeId: envelope.id) }
         }
         do {
-            // Exactly-once: skip if the NSE (or an earlier delivery) already
-            // processed this envelope. Decryption is destructive, so we must
-            // not run it twice.
-            guard try storage.messages.claimEnvelope(id: envelope.id) else { return }
-            let sender = try ProtocolAddress(
-                name: envelope.senderAccount,
-                deviceId: envelope.senderDevice
-            )
-            let plaintext = try engine.decrypt(envelope.message, from: sender)
-            let content = try Relay_Content_Content(serializedBytes: plaintext)
+            // The shared processor decrypts + stores exactly once (same path
+            // the NSE uses). We handle the app-only follow-ups it reports.
+            let result = try processor.process(envelope)
 
-            switch content.body {
-            case .text(let text):
-                let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
-                backfillUsernameIfNeeded(conversationId: conversationId, account: envelope.senderAccount)
-                let quote: QuotedMessage? = text.hasQuote
-                    ? QuotedMessage(
-                        targetTimestamp: text.quote.targetTimestamp,
-                        author: text.quote.author,
-                        text: text.quote.text
-                    )
-                    : nil
-                let inserted = try storage.messages.insertMessage(
-                    id: envelope.id,
-                    conversationId: conversationId,
-                    isOutgoing: false,
-                    body: text.body,
-                    timestamp: text.timestamp,
-                    status: .received,
-                    replyTo: quote
-                )
-                if inserted {
-                    await sendReceipt(.delivery, timestamps: [text.timestamp], toPeer: envelope.senderAccount)
-                }
+            if let timestamp = result.sideEffects.deliveryReceiptTimestamp {
+                await sendReceipt(.delivery, timestamps: [timestamp], toPeer: envelope.senderAccount)
+            }
+            if let account = result.sideEffects.backfillUsernameForAccount,
+               let conversationId = result.conversationId {
+                backfillUsernameIfNeeded(conversationId: conversationId, account: account)
+            }
+            if let typingStarted = result.typingStarted {
+                applyPeerTyping(started: typingStarted, peerAccount: result.peerAccount)
+            }
+            if result.outcome == .stored, let conversationId = result.conversationId {
                 clearPeerTyping(for: conversationId) // a real message ends typing
+            }
+            if let conversationId = result.conversationId {
                 refreshConversations()
                 refreshActiveMessages(ifShowing: conversationId)
-            case .reaction(let reaction):
-                let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
-                try storage.messages.setReaction(
-                    conversationId: conversationId,
-                    targetTimestamp: reaction.targetTimestamp,
-                    author: envelope.senderAccount,
-                    isOutgoing: false,
-                    emoji: reaction.emoji,
-                    remove: reaction.remove
-                )
-                refreshActiveMessages(ifShowing: conversationId)
-            case .receipt(let receipt):
-                let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
-                try storage.messages.applyReceipt(
-                    conversationId: conversationId,
-                    timestamps: receipt.messageTimestamps,
-                    status: receipt.type == .read ? .read : .delivered
-                )
-                refreshActiveMessages(ifShowing: conversationId)
-            case .delete(let deletion):
-                let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
-                try storage.messages.markDeleted(
-                    conversationId: conversationId,
-                    targetTimestamp: deletion.targetTimestamp
-                )
-                refreshConversations()
-                refreshActiveMessages(ifShowing: conversationId)
-            case .typing(let typing):
-                handleIncomingTyping(typing, fromPeer: envelope.senderAccount)
-            case .none:
-                break
             }
         } catch {
             log.error("failed to process envelope \(envelope.id): \(error)")
@@ -207,11 +186,42 @@ final class MessagingService {
         return id
     }
 
-    func sendMessage(_ text: String, in conversationId: String, replyTo: QuotedMessage? = nil) async {
+    func sendMessage(
+        _ text: String,
+        in conversationId: String,
+        replyTo: QuotedMessage? = nil,
+        attachments pending: [PendingAttachment] = []
+    ) async {
         guard let peer = try? peerAccount(for: conversationId) else { return }
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let localId = UUID().uuidString
         do {
+            // Encrypt each attachment with a fresh key, upload the ciphertext,
+            // and cache it locally so the sender can view it without a fetch.
+            var storedAttachments: [StoredAttachment] = []
+            var pointers: [Relay_Content_AttachmentPointer] = []
+            for item in pending {
+                let sealed = try AttachmentCipher.seal(item.data)
+                let id = try await api.uploadAttachment(sealed.ciphertext)
+                try? attachmentStore.write(sealed.ciphertext, for: id)
+                storedAttachments.append(StoredAttachment(
+                    id: id, key: sealed.key, digest: sealed.digest,
+                    contentType: item.contentType, size: Int64(sealed.ciphertext.count),
+                    filename: item.filename, width: item.width, height: item.height,
+                    isDownloaded: true
+                ))
+                var pointer = Relay_Content_AttachmentPointer()
+                pointer.id = id
+                pointer.key = sealed.key
+                pointer.digest = sealed.digest
+                pointer.contentType = item.contentType
+                pointer.size = UInt64(sealed.ciphertext.count)
+                if let filename = item.filename { pointer.filename = filename }
+                pointer.width = UInt32(item.width)
+                pointer.height = UInt32(item.height)
+                pointers.append(pointer)
+            }
+
             try storage.messages.insertMessage(
                 id: localId,
                 conversationId: conversationId,
@@ -219,7 +229,8 @@ final class MessagingService {
                 body: text,
                 timestamp: timestamp,
                 status: .sending,
-                replyTo: replyTo
+                replyTo: replyTo,
+                attachments: storedAttachments
             )
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
@@ -232,6 +243,7 @@ final class MessagingService {
                 content.text.quote.author = replyTo.author
                 content.text.quote.text = replyTo.text
             }
+            content.text.attachments = pointers
             try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp)
             try storage.messages.updateStatus(messageId: localId, status: .sent)
         } catch {
@@ -239,6 +251,41 @@ final class MessagingService {
             try? storage.messages.updateStatus(messageId: localId, status: .failed)
         }
         refreshActiveMessages(ifShowing: conversationId)
+    }
+
+    // MARK: - Attachments
+
+    /// A picked-but-not-yet-sent attachment (plaintext, held only in memory).
+    struct PendingAttachment {
+        let data: Data
+        let contentType: String
+        let filename: String?
+        let width: Int
+        let height: Int
+    }
+
+    /// Downloads and caches an attachment's ciphertext locally (idempotent).
+    /// Decryption happens later, in memory, at display time.
+    func downloadAttachment(_ attachment: StoredAttachment, in conversationId: String) async {
+        if attachmentStore.exists(attachment.id) {
+            try? storage.messages.markAttachmentDownloaded(id: attachment.id)
+            return
+        }
+        do {
+            let ciphertext = try await api.downloadAttachment(id: attachment.id)
+            try attachmentStore.write(ciphertext, for: attachment.id)
+            try storage.messages.markAttachmentDownloaded(id: attachment.id)
+            refreshActiveMessages(ifShowing: conversationId)
+        } catch {
+            log.error("attachment download failed: \(error)")
+        }
+    }
+
+    /// Decrypts a cached attachment to plaintext in memory (never to disk).
+    /// Returns nil if it isn't downloaded yet or fails integrity/decryption.
+    func attachmentPlaintext(_ attachment: StoredAttachment) -> Data? {
+        guard let ciphertext = try? attachmentStore.read(attachment.id) else { return nil }
+        return try? AttachmentCipher.open(ciphertext, key: attachment.key, digest: attachment.digest)
     }
 
     private func sendReceipt(
@@ -532,11 +579,12 @@ final class MessagingService {
         }
     }
 
-    private func handleIncomingTyping(_ typing: Relay_Content_TypingMessage, fromPeer account: String) {
-        guard let conversationId = existingConversation(withPeer: account),
+    private func applyPeerTyping(started: Bool, peerAccount: String?) {
+        guard let peerAccount,
+              let conversationId = existingConversation(withPeer: peerAccount),
               conversationId == activeConversationId else { return }
         typingResetTask?.cancel()
-        guard typing.action == .started else {
+        guard started else {
             peerTyping = false
             return
         }

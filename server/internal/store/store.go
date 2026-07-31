@@ -101,6 +101,20 @@ CREATE TABLE IF NOT EXISTS message_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_queue_recipient
     ON message_queue (account_id, device_id, created_at);
+CREATE TABLE IF NOT EXISTS groups (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    distribution_id TEXT NOT NULL,   -- current sender-key epoch (uuid)
+    revision        INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id   TEXT NOT NULL REFERENCES groups(id),
+    account_id TEXT NOT NULL,
+    PRIMARY KEY (group_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_members_account
+    ON group_members (account_id);
 `)
 	return err
 }
@@ -231,6 +245,22 @@ func (s *Store) SetAPNSToken(accountID string, deviceID uint32, token string) er
 	_, err := s.db.Exec(`UPDATE devices SET apns_token = ? WHERE account_id = ? AND device_id = ?`,
 		token, accountID, deviceID)
 	return err
+}
+
+// APNSToken returns the device's APNs token, or "" if it hasn't registered one.
+func (s *Store) APNSToken(accountID string, deviceID uint32) (string, error) {
+	var token sql.NullString
+	err := s.db.QueryRow(
+		`SELECT apns_token FROM devices WHERE account_id = ? AND device_id = ?`,
+		accountID, deviceID,
+	).Scan(&token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return token.String, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +450,161 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 	_, err := s.db.Exec(`DELETE FROM message_queue WHERE envelope_id = ? AND account_id = ? AND device_id = ?`,
 		envelopeID, accountID, deviceID)
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// Groups (server-stored roster)
+// ---------------------------------------------------------------------------
+
+var ErrNotMember = errors.New("store: not a group member")
+
+type Group struct {
+	ID             string
+	Name           string
+	DistributionID string
+	Revision       int64
+	Members        []string
+}
+
+func (s *Store) group(tx *sql.Tx, groupID string) (*Group, error) {
+	g := &Group{ID: groupID}
+	err := tx.QueryRow(`SELECT name, distribution_id, revision FROM groups WHERE id = ?`, groupID).
+		Scan(&g.Name, &g.DistributionID, &g.Revision)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(`SELECT account_id FROM group_members WHERE group_id = ? ORDER BY account_id`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, err
+		}
+		g.Members = append(g.Members, m)
+	}
+	return g, rows.Err()
+}
+
+func (g *Group) hasMember(accountID string) bool {
+	for _, m := range g.Members {
+		if m == accountID {
+			return true
+		}
+	}
+	return false
+}
+
+// CreateGroup creates a group whose members are the creator plus `members`.
+func (s *Store) CreateGroup(creator, name string, members []string) (*Group, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	id, dist, now := newUUID(), newUUID(), time.Now().UnixMilli()
+	if _, err := tx.Exec(`INSERT INTO groups (id, name, distribution_id, revision, created_at) VALUES (?, ?, ?, 1, ?)`,
+		id, name, dist, now); err != nil {
+		return nil, err
+	}
+	roster := map[string]bool{creator: true}
+	for _, m := range members {
+		roster[m] = true
+	}
+	for m := range roster {
+		if _, err := tx.Exec(`INSERT INTO group_members (group_id, account_id) VALUES (?, ?)`, id, m); err != nil {
+			return nil, err
+		}
+	}
+	g, err := s.group(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	return g, tx.Commit()
+}
+
+// GetGroup returns the group if `requester` is a member.
+func (s *Store) GetGroup(groupID, requester string) (*Group, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	g, err := s.group(tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !g.hasMember(requester) {
+		return nil, ErrNotMember
+	}
+	return g, tx.Commit()
+}
+
+// AddMember adds `target`; the requester must be a member. Adding does not
+// rotate the sender key (new members can't rewind the ratchet).
+func (s *Store) AddMember(groupID, requester, target string) (*Group, error) {
+	return s.mutateGroup(groupID, requester, false, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT OR IGNORE INTO group_members (group_id, account_id) VALUES (?, ?)`, groupID, target)
+		return err
+	})
+}
+
+// RemoveMember removes `target` and rotates the sender-key epoch so the
+// removed member can't read future messages. `leave` allows removing self.
+func (s *Store) RemoveMember(groupID, requester, target string) (*Group, error) {
+	return s.mutateGroup(groupID, requester, true, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM group_members WHERE group_id = ? AND account_id = ?`, groupID, target)
+		return err
+	})
+}
+
+// RenameGroup sets a new name.
+func (s *Store) RenameGroup(groupID, requester, name string) (*Group, error) {
+	return s.mutateGroup(groupID, requester, false, func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE groups SET name = ? WHERE id = ?`, name, groupID)
+		return err
+	})
+}
+
+// mutateGroup applies `change` inside a transaction after verifying the
+// requester is a member, bumps the revision, optionally rotates the
+// distribution id, and returns the updated group.
+func (s *Store) mutateGroup(groupID, requester string, rotate bool, change func(*sql.Tx) error) (*Group, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	g, err := s.group(tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if !g.hasMember(requester) {
+		return nil, ErrNotMember
+	}
+	if err := change(tx); err != nil {
+		return nil, err
+	}
+	if rotate {
+		if _, err := tx.Exec(`UPDATE groups SET distribution_id = ? WHERE id = ?`, newUUID(), groupID); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE groups SET revision = revision + 1 WHERE id = ?`, groupID); err != nil {
+		return nil, err
+	}
+	updated, err := s.group(tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	return updated, tx.Commit()
 }
 
 // ---------------------------------------------------------------------------

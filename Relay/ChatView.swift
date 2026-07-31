@@ -13,6 +13,7 @@
 //  composer, and live typing indicators.
 //
 
+import PhotosUI
 import RelayKit
 import SecureStorage
 import SwiftUI
@@ -26,6 +27,8 @@ struct ChatView: View {
     @State private var replyingTo: StoredMessage?
     @State private var actionTarget: StoredMessage?
     @State private var showingComposerEmoji = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var pendingImage: MessagingService.PendingAttachment?
     @State private var showingVerification = false
     @State private var verification: MessagingService.PeerVerification?
     @State private var lastTypingSentAt: Date?
@@ -56,7 +59,8 @@ struct ChatView: View {
                                 message: message,
                                 position: position,
                                 peerName: peerName,
-                                isOwnAuthor: { isOwn($0) },
+                                service: service,
+                                conversationId: conversationId,
                                 onLongPress: { actionTarget = message },
                                 onReply: { beginReply(message) }
                             )
@@ -197,8 +201,19 @@ struct ChatView: View {
                 )
                 .padding(.horizontal)
             }
+            if let pendingImage {
+                PendingAttachmentBar(image: pendingImage, onCancel: { clearPendingImage() })
+                    .padding(.horizontal)
+            }
             GlassEffectContainer {
                 HStack(spacing: 10) {
+                    PhotosPicker(selection: $photoItem, matching: .images) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 22))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 30, height: 30)
+                    }
+
                     Button {
                         showingComposerEmoji = true
                     } label: {
@@ -224,17 +239,42 @@ struct ChatView: View {
                             .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.glassProminent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSend)
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 6)
             }
         }
+        .onChange(of: photoItem) { _, item in loadPickedPhoto(item) }
+    }
+
+    private var canSend: Bool {
+        pendingImage != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func loadPickedPhoto(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        Task {
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else { return }
+            pendingImage = MessagingService.PendingAttachment(
+                data: data,
+                contentType: "image/jpeg",
+                filename: nil,
+                width: Int(image.size.width * image.scale),
+                height: Int(image.size.height * image.scale)
+            )
+        }
+    }
+
+    private func clearPendingImage() {
+        pendingImage = nil
+        photoItem = nil
     }
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard canSend else { return }
         let reply = replyingTo.map {
             QuotedMessage(
                 targetTimestamp: $0.timestamp,
@@ -242,9 +282,11 @@ struct ChatView: View {
                 text: String($0.body.prefix(240))
             )
         }
+        let attachments = pendingImage.map { [$0] } ?? []
         draft = ""
         replyingTo = nil
-        Task { await service.sendMessage(text, in: conversationId, replyTo: reply) }
+        clearPendingImage()
+        Task { await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments) }
     }
 
     /// Throttled typing broadcast: `.started` at most every few seconds while
@@ -358,7 +400,8 @@ private struct MessageRow: View {
     let message: StoredMessage
     let position: BubblePosition
     let peerName: String
-    let isOwnAuthor: (StoredMessage) -> Bool
+    let service: MessagingService
+    let conversationId: String
     let onLongPress: () -> Void
     let onReply: () -> Void
 
@@ -369,7 +412,8 @@ private struct MessageRow: View {
             message: message,
             position: position,
             peerName: peerName,
-            isOwnAuthor: isOwnAuthor,
+            service: service,
+            conversationId: conversationId,
             onTapReactions: onLongPress
         )
         .offset(x: dragOffset)
@@ -406,11 +450,12 @@ private struct MessageBubble: View {
     let message: StoredMessage
     let position: BubblePosition
     let peerName: String
-    let isOwnAuthor: (StoredMessage) -> Bool
+    let service: MessagingService
+    let conversationId: String
     let onTapReactions: () -> Void
 
     private var isJumbo: Bool {
-        message.replyTo == nil && message.body.isJumbomojiCandidate
+        message.replyTo == nil && message.body.isJumbomojiCandidate && message.attachments.isEmpty
     }
 
     var body: some View {
@@ -473,12 +518,18 @@ private struct MessageBubble: View {
             Text(message.body)
                 .font(.system(size: 52))
                 .padding(.vertical, 2)
+        } else if !message.attachments.isEmpty && message.body.isEmpty && message.replyTo == nil {
+            // Media-only message: show the image(s) with no bubble fill.
+            attachmentStack
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 if let quote = message.replyTo {
                     QuotedContentView(quote: quote, isOutgoing: message.isOutgoing, peerName: peerName)
                 }
-                Text(message.body)
+                attachmentStack
+                if !message.body.isEmpty {
+                    Text(message.body)
+                }
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 8)
@@ -487,6 +538,13 @@ private struct MessageBubble: View {
                 in: .rect(cornerRadii: cornerRadii)
             )
             .foregroundStyle(message.isOutgoing ? .white : .primary)
+        }
+    }
+
+    @ViewBuilder
+    private var attachmentStack: some View {
+        ForEach(message.attachments) { attachment in
+            AttachmentImageView(attachment: attachment, service: service, conversationId: conversationId)
         }
     }
 
@@ -630,6 +688,87 @@ private struct ReplyPreviewBar: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            Spacer(minLength: 0)
+            Button {
+                onCancel()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(.fill.tertiary, in: .rect(cornerRadius: 12))
+    }
+}
+
+// MARK: - Attachments
+
+/// Renders an image attachment: downloads the ciphertext on first view,
+/// decrypts it to memory, and displays it. Plaintext never touches disk.
+private struct AttachmentImageView: View {
+    let attachment: StoredAttachment
+    let service: MessagingService
+    let conversationId: String
+
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    private var height: CGFloat {
+        guard attachment.width > 0, attachment.height > 0 else { return 240 }
+        let aspect = CGFloat(attachment.width) / CGFloat(attachment.height)
+        return max(120, min(320, 240 / aspect))
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Rectangle().fill(.fill.tertiary)
+                    Image(systemName: failed ? "exclamationmark.triangle" : "photo")
+                        .foregroundStyle(.secondary)
+                    if !failed { ProgressView() }
+                }
+            }
+        }
+        .frame(width: 240, height: height)
+        .clipShape(.rect(cornerRadius: 16))
+        .task(id: attachment.id) { await load() }
+    }
+
+    private func load() async {
+        if !attachment.isDownloaded {
+            await service.downloadAttachment(attachment, in: conversationId)
+        }
+        if let data = service.attachmentPlaintext(attachment), let ui = UIImage(data: data) {
+            image = ui
+        } else {
+            failed = true
+        }
+    }
+}
+
+/// A thumbnail of the picked-but-unsent image shown above the composer.
+private struct PendingAttachmentBar: View {
+    let image: MessagingService.PendingAttachment
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if let ui = UIImage(data: image.data) {
+                Image(uiImage: ui)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 44, height: 44)
+                    .clipShape(.rect(cornerRadius: 8))
+            }
+            Text("Photo")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Button {
                 onCancel()

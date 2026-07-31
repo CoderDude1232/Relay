@@ -194,6 +194,65 @@ struct CryptoEngineTests {
         #expect(impostorView.numeric != aliceView.numeric)
     }
 
+    @Test func groupSenderKeyRoundTripAndRotation() throws {
+        // Three members in a group. Alice distributes her sender key to Bob
+        // and Carol, then encrypts once; both decrypt the same ciphertext.
+        let alice = try CryptoEngine.makeEphemeral(accountId: "alice", deviceId: 1)
+        let bob = try CryptoEngine.makeEphemeral(accountId: "bob", deviceId: 1)
+        let carol = try CryptoEngine.makeEphemeral(accountId: "carol", deviceId: 1)
+        let distributionId = UUID()
+
+        let skdm = try alice.senderKeyDistributionMessage(distributionId: distributionId)
+        try bob.processSenderKeyDistribution(skdm, from: alice.localAddress)
+        try carol.processSenderKeyDistribution(skdm, from: alice.localAddress)
+
+        let message = Data("hello group".utf8)
+        let sealed = try alice.groupEncrypt(message, distributionId: distributionId)
+        #expect(sealed.kind == .senderKey)
+        #expect(try bob.decrypt(sealed, from: alice.localAddress) == message)
+        #expect(try carol.decrypt(sealed, from: alice.localAddress) == message)
+
+        // A second message keeps ratcheting.
+        let message2 = Data("second".utf8)
+        let sealed2 = try alice.groupEncrypt(message2, distributionId: distributionId)
+        #expect(try bob.decrypt(sealed2, from: alice.localAddress) == message2)
+
+        // Rotation: a new distribution id is a fresh sender key. Carol (who
+        // does NOT get the new SKDM — simulating a removed member) cannot
+        // decrypt; Bob (re-distributed) can.
+        let newDistributionId = UUID()
+        let rotated = try alice.senderKeyDistributionMessage(distributionId: newDistributionId)
+        try bob.processSenderKeyDistribution(rotated, from: alice.localAddress)
+        let post = try alice.groupEncrypt(Data("after rotation".utf8), distributionId: newDistributionId)
+        #expect(try bob.decrypt(post, from: alice.localAddress) == Data("after rotation".utf8))
+        #expect(throws: (any Error).self) {
+            _ = try carol.decrypt(post, from: alice.localAddress)
+        }
+    }
+
+    @Test func attachmentSealAndOpenRoundTrip() throws {
+        let plaintext = Data((0..<5000).map { _ in UInt8.random(in: 0...255) })
+        let sealed = try AttachmentCipher.seal(plaintext)
+        #expect(sealed.key.count == 32)
+        #expect(sealed.digest.count == 32)
+        #expect(sealed.ciphertext != plaintext)
+
+        // Correct key + digest round-trips.
+        #expect(try AttachmentCipher.open(sealed.ciphertext, key: sealed.key, digest: sealed.digest) == plaintext)
+
+        // Tampered ciphertext fails the digest check before decryption.
+        var tampered = sealed.ciphertext
+        tampered[tampered.count / 2] ^= 0xFF
+        #expect(throws: AttachmentCipherError.digestMismatch) {
+            _ = try AttachmentCipher.open(tampered, key: sealed.key, digest: sealed.digest)
+        }
+
+        // Wrong key fails authentication.
+        #expect(throws: (any Error).self) {
+            _ = try AttachmentCipher.open(sealed.ciphertext, key: Data(count: 32), digest: sealed.digest)
+        }
+    }
+
     @Test func perPeerSafetyNumberAndScanVerification() throws {
         let (alice, bob, aliceAddress, bobAddress) = try makePeers()
         let bobKeys = try bob.generatePreKeyPublication(

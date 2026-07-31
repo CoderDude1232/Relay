@@ -22,8 +22,16 @@ type Session interface {
 	Send(frame *relaypb.ServerFrame) bool
 }
 
+// Pusher wakes an offline device via APNs, carrying the encrypted envelope
+// for its Notification Service Extension to decrypt. Optional; nil disables
+// push (the envelope still queues for delivery on next connect).
+type Pusher interface {
+	Push(deviceToken string, envelope []byte) error
+}
+
 type Hub struct {
-	store *store.Store
+	store  *store.Store
+	pusher Pusher
 
 	mu       sync.RWMutex
 	sessions map[string]Session // key: accountID/deviceID
@@ -32,6 +40,9 @@ type Hub struct {
 func New(st *store.Store) *Hub {
 	return &Hub{store: st, sessions: make(map[string]Session)}
 }
+
+// SetPusher attaches an APNs sender used to wake offline devices.
+func (h *Hub) SetPusher(p Pusher) { h.pusher = p }
 
 func key(accountID string, deviceID uint32) string {
 	return fmt.Sprintf("%s/%d", accountID, deviceID)
@@ -44,6 +55,7 @@ func (h *Hub) Register(accountID string, deviceID uint32, s Session) ([][]byte, 
 	h.mu.Lock()
 	h.sessions[key(accountID, deviceID)] = s
 	h.mu.Unlock()
+	slog.Info("ws: session registered (online)", "account", accountID, "device", deviceID)
 	return h.store.QueuedEnvelopes(accountID, deviceID)
 }
 
@@ -55,6 +67,7 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 	k := key(accountID, deviceID)
 	if h.sessions[k] == s {
 		delete(h.sessions, k)
+		slog.Info("ws: session unregistered (offline)", "account", accountID, "device", deviceID)
 	}
 }
 
@@ -63,8 +76,10 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) error {
 	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}}
 
+	var blob []byte
 	if !env.Ephemeral {
-		blob, err := proto.Marshal(env)
+		var err error
+		blob, err = proto.Marshal(env)
 		if err != nil {
 			return err
 		}
@@ -81,8 +96,30 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 			slog.Debug("hub: session backlogged, envelope stays queued",
 				"account", accountID, "device", deviceID)
 		}
+		return nil
+	}
+
+	// Offline: wake the device via APNs so its NSE can decrypt the envelope.
+	if h.pusher != nil && !env.Ephemeral {
+		h.notifyOffline(accountID, deviceID, blob)
 	}
 	return nil
+}
+
+func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) {
+	token, err := h.store.APNSToken(accountID, deviceID)
+	if err != nil || token == "" {
+		slog.Info("apns: offline device has no token", "account", accountID, "device", deviceID)
+		return
+	}
+	slog.Info("apns: pushing to offline device", "account", accountID, "device", deviceID)
+	go func() {
+		if err := h.pusher.Push(token, envelope); err != nil {
+			slog.Warn("apns push failed", "account", accountID, "device", deviceID, "err", err)
+		} else {
+			slog.Info("apns push sent", "account", accountID, "device", deviceID)
+		}
+	}()
 }
 
 // Ack removes a delivered envelope from the device's queue.

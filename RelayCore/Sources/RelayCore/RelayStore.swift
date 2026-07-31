@@ -11,6 +11,11 @@ import Foundation
 import SecureStorage
 
 public enum RelayStore {
+    /// The App Group shared by the app and the NSE. MUST match the
+    /// `com.apple.security.application-groups` entitlement on both targets,
+    /// and doubles as the Keychain access group (see KeychainSecureStore).
+    public static let appGroupId = "group.com.morgandaly.RelayTexting"
+
     /// The encrypted DB lives in the App-Group container so the NSE shares it.
     public static func databaseURL(appGroupId: String, suffix: String = "") -> URL {
         let container = FileManager.default

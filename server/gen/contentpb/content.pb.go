@@ -31,6 +31,64 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type GroupUpdate_Action int32
+
+const (
+	GroupUpdate_ACTION_UNSPECIFIED GroupUpdate_Action = 0
+	GroupUpdate_CREATE             GroupUpdate_Action = 1
+	GroupUpdate_ADD                GroupUpdate_Action = 2
+	GroupUpdate_REMOVE             GroupUpdate_Action = 3
+	GroupUpdate_LEAVE              GroupUpdate_Action = 4
+	GroupUpdate_RENAME             GroupUpdate_Action = 5
+)
+
+// Enum value maps for GroupUpdate_Action.
+var (
+	GroupUpdate_Action_name = map[int32]string{
+		0: "ACTION_UNSPECIFIED",
+		1: "CREATE",
+		2: "ADD",
+		3: "REMOVE",
+		4: "LEAVE",
+		5: "RENAME",
+	}
+	GroupUpdate_Action_value = map[string]int32{
+		"ACTION_UNSPECIFIED": 0,
+		"CREATE":             1,
+		"ADD":                2,
+		"REMOVE":             3,
+		"LEAVE":              4,
+		"RENAME":             5,
+	}
+)
+
+func (x GroupUpdate_Action) Enum() *GroupUpdate_Action {
+	p := new(GroupUpdate_Action)
+	*p = x
+	return p
+}
+
+func (x GroupUpdate_Action) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GroupUpdate_Action) Descriptor() protoreflect.EnumDescriptor {
+	return file_content_proto_enumTypes[0].Descriptor()
+}
+
+func (GroupUpdate_Action) Type() protoreflect.EnumType {
+	return &file_content_proto_enumTypes[0]
+}
+
+func (x GroupUpdate_Action) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GroupUpdate_Action.Descriptor instead.
+func (GroupUpdate_Action) EnumDescriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{2, 0}
+}
+
 type ReceiptMessage_Type int32
 
 const (
@@ -64,11 +122,11 @@ func (x ReceiptMessage_Type) String() string {
 }
 
 func (ReceiptMessage_Type) Descriptor() protoreflect.EnumDescriptor {
-	return file_content_proto_enumTypes[0].Descriptor()
+	return file_content_proto_enumTypes[1].Descriptor()
 }
 
 func (ReceiptMessage_Type) Type() protoreflect.EnumType {
-	return &file_content_proto_enumTypes[0]
+	return &file_content_proto_enumTypes[1]
 }
 
 func (x ReceiptMessage_Type) Number() protoreflect.EnumNumber {
@@ -77,7 +135,7 @@ func (x ReceiptMessage_Type) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ReceiptMessage_Type.Descriptor instead.
 func (ReceiptMessage_Type) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{5, 0}
+	return file_content_proto_rawDescGZIP(), []int{8, 0}
 }
 
 type TypingMessage_Action int32
@@ -113,11 +171,11 @@ func (x TypingMessage_Action) String() string {
 }
 
 func (TypingMessage_Action) Descriptor() protoreflect.EnumDescriptor {
-	return file_content_proto_enumTypes[1].Descriptor()
+	return file_content_proto_enumTypes[2].Descriptor()
 }
 
 func (TypingMessage_Action) Type() protoreflect.EnumType {
-	return &file_content_proto_enumTypes[1]
+	return &file_content_proto_enumTypes[2]
 }
 
 func (x TypingMessage_Action) Number() protoreflect.EnumNumber {
@@ -126,7 +184,7 @@ func (x TypingMessage_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TypingMessage_Action.Descriptor instead.
 func (TypingMessage_Action) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{6, 0}
+	return file_content_proto_rawDescGZIP(), []int{9, 0}
 }
 
 type Content struct {
@@ -137,8 +195,14 @@ type Content struct {
 	//	*Content_Receipt
 	//	*Content_Typing
 	//	*Content_Reaction
+	//	*Content_SenderKeyDistribution
+	//	*Content_GroupUpdate
 	//	*Content_Delete
-	Body          isContent_Body `protobuf_oneof:"body"`
+	Body isContent_Body `protobuf_oneof:"body"`
+	// Set when this content belongs to a group; empty for 1:1. Group messages
+	// are encrypted with the sender's sender key (senderKey ciphertext);
+	// control content (SKDM, group updates) is sent over pairwise sessions.
+	GroupId       string `protobuf:"bytes,8,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -216,6 +280,24 @@ func (x *Content) GetReaction() *ReactionMessage {
 	return nil
 }
 
+func (x *Content) GetSenderKeyDistribution() *SenderKeyDistribution {
+	if x != nil {
+		if x, ok := x.Body.(*Content_SenderKeyDistribution); ok {
+			return x.SenderKeyDistribution
+		}
+	}
+	return nil
+}
+
+func (x *Content) GetGroupUpdate() *GroupUpdate {
+	if x != nil {
+		if x, ok := x.Body.(*Content_GroupUpdate); ok {
+			return x.GroupUpdate
+		}
+	}
+	return nil
+}
+
 func (x *Content) GetDelete() *DeleteMessage {
 	if x != nil {
 		if x, ok := x.Body.(*Content_Delete); ok {
@@ -223,6 +305,13 @@ func (x *Content) GetDelete() *DeleteMessage {
 		}
 	}
 	return nil
+}
+
+func (x *Content) GetGroupId() string {
+	if x != nil {
+		return x.GroupId
+	}
+	return ""
 }
 
 type isContent_Body interface {
@@ -245,6 +334,14 @@ type Content_Reaction struct {
 	Reaction *ReactionMessage `protobuf:"bytes,4,opt,name=reaction,proto3,oneof"`
 }
 
+type Content_SenderKeyDistribution struct {
+	SenderKeyDistribution *SenderKeyDistribution `protobuf:"bytes,5,opt,name=sender_key_distribution,json=senderKeyDistribution,proto3,oneof"`
+}
+
+type Content_GroupUpdate struct {
+	GroupUpdate *GroupUpdate `protobuf:"bytes,6,opt,name=group_update,json=groupUpdate,proto3,oneof"`
+}
+
 type Content_Delete struct {
 	Delete *DeleteMessage `protobuf:"bytes,7,opt,name=delete,proto3,oneof"`
 }
@@ -257,7 +354,145 @@ func (*Content_Typing) isContent_Body() {}
 
 func (*Content_Reaction) isContent_Body() {}
 
+func (*Content_SenderKeyDistribution) isContent_Body() {}
+
+func (*Content_GroupUpdate) isContent_Body() {}
+
 func (*Content_Delete) isContent_Body() {}
+
+// Carries a libsignal Sender Key Distribution Message so a member can
+// decrypt this sender's group messages. Sent 1:1 (pairwise-encrypted) to
+// each member when joining a group or rotating the sender key.
+type SenderKeyDistribution struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Data           []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`                                           // serialized SKDM
+	DistributionId string                 `protobuf:"bytes,2,opt,name=distribution_id,json=distributionId,proto3" json:"distribution_id,omitempty"` // UUID identifying the sender-key epoch
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *SenderKeyDistribution) Reset() {
+	*x = SenderKeyDistribution{}
+	mi := &file_content_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SenderKeyDistribution) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SenderKeyDistribution) ProtoMessage() {}
+
+func (x *SenderKeyDistribution) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SenderKeyDistribution.ProtoReflect.Descriptor instead.
+func (*SenderKeyDistribution) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SenderKeyDistribution) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *SenderKeyDistribution) GetDistributionId() string {
+	if x != nil {
+		return x.DistributionId
+	}
+	return ""
+}
+
+// Notifies members that a group's roster/metadata changed; recipients
+// re-sync the authoritative roster from the relay. `revision` lets clients
+// drop stale updates; the rest drives a human-readable system line.
+type GroupUpdate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Revision      int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	Action        GroupUpdate_Action     `protobuf:"varint,2,opt,name=action,proto3,enum=relay.content.GroupUpdate_Action" json:"action,omitempty"`
+	Actor         string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`   // account id that made the change
+	Target        string                 `protobuf:"bytes,4,opt,name=target,proto3" json:"target,omitempty"` // affected member (add/remove)
+	Name          string                 `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`     // group name (create/rename)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GroupUpdate) Reset() {
+	*x = GroupUpdate{}
+	mi := &file_content_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GroupUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GroupUpdate) ProtoMessage() {}
+
+func (x *GroupUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GroupUpdate.ProtoReflect.Descriptor instead.
+func (*GroupUpdate) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *GroupUpdate) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *GroupUpdate) GetAction() GroupUpdate_Action {
+	if x != nil {
+		return x.Action
+	}
+	return GroupUpdate_ACTION_UNSPECIFIED
+}
+
+func (x *GroupUpdate) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *GroupUpdate) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *GroupUpdate) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
 
 type TextMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -266,14 +501,16 @@ type TextMessage struct {
 	// that receipts refer back to (Signal's convention).
 	Timestamp int64 `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	// Optional: set when this message is a reply to an earlier one.
-	Quote         *Quote `protobuf:"bytes,3,opt,name=quote,proto3" json:"quote,omitempty"`
+	Quote *Quote `protobuf:"bytes,3,opt,name=quote,proto3" json:"quote,omitempty"`
+	// Optional media; a message may carry text and/or attachments.
+	Attachments   []*AttachmentPointer `protobuf:"bytes,4,rep,name=attachments,proto3" json:"attachments,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TextMessage) Reset() {
 	*x = TextMessage{}
-	mi := &file_content_proto_msgTypes[1]
+	mi := &file_content_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -285,7 +522,7 @@ func (x *TextMessage) String() string {
 func (*TextMessage) ProtoMessage() {}
 
 func (x *TextMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[1]
+	mi := &file_content_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -298,7 +535,7 @@ func (x *TextMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TextMessage.ProtoReflect.Descriptor instead.
 func (*TextMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{1}
+	return file_content_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *TextMessage) GetBody() string {
@@ -322,6 +559,116 @@ func (x *TextMessage) GetQuote() *Quote {
 	return nil
 }
 
+func (x *TextMessage) GetAttachments() []*AttachmentPointer {
+	if x != nil {
+		return x.Attachments
+	}
+	return nil
+}
+
+// Points at an encrypted blob on the relay. The relay stores only the
+// opaque ciphertext (AES-256-GCM: nonce‖ciphertext‖tag); the key and digest
+// travel end-to-end inside the encrypted Content, never to the server.
+type AttachmentPointer struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                      // relay blob id
+	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`                                    // AES-256-GCM key (32 bytes)
+	Digest        []byte                 `protobuf:"bytes,3,opt,name=digest,proto3" json:"digest,omitempty"`                              // SHA-256 of the uploaded ciphertext (integrity)
+	ContentType   string                 `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"` // MIME type
+	Size          uint64                 `protobuf:"varint,5,opt,name=size,proto3" json:"size,omitempty"`                                 // ciphertext size in bytes
+	Filename      string                 `protobuf:"bytes,6,opt,name=filename,proto3" json:"filename,omitempty"`
+	Width         uint32                 `protobuf:"varint,7,opt,name=width,proto3" json:"width,omitempty"`   // pixels (images)
+	Height        uint32                 `protobuf:"varint,8,opt,name=height,proto3" json:"height,omitempty"` // pixels (images)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AttachmentPointer) Reset() {
+	*x = AttachmentPointer{}
+	mi := &file_content_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AttachmentPointer) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AttachmentPointer) ProtoMessage() {}
+
+func (x *AttachmentPointer) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AttachmentPointer.ProtoReflect.Descriptor instead.
+func (*AttachmentPointer) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AttachmentPointer) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AttachmentPointer) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+func (x *AttachmentPointer) GetDigest() []byte {
+	if x != nil {
+		return x.Digest
+	}
+	return nil
+}
+
+func (x *AttachmentPointer) GetContentType() string {
+	if x != nil {
+		return x.ContentType
+	}
+	return ""
+}
+
+func (x *AttachmentPointer) GetSize() uint64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *AttachmentPointer) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *AttachmentPointer) GetWidth() uint32 {
+	if x != nil {
+		return x.Width
+	}
+	return 0
+}
+
+func (x *AttachmentPointer) GetHeight() uint32 {
+	if x != nil {
+		return x.Height
+	}
+	return 0
+}
+
 // A snapshot of the message being replied to. Self-contained (carries the
 // quoted text) so the reply renders without a lookup and survives the
 // original being deleted, following Signal's model.
@@ -339,7 +686,7 @@ type Quote struct {
 
 func (x *Quote) Reset() {
 	*x = Quote{}
-	mi := &file_content_proto_msgTypes[2]
+	mi := &file_content_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -351,7 +698,7 @@ func (x *Quote) String() string {
 func (*Quote) ProtoMessage() {}
 
 func (x *Quote) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[2]
+	mi := &file_content_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -364,7 +711,7 @@ func (x *Quote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Quote.ProtoReflect.Descriptor instead.
 func (*Quote) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{2}
+	return file_content_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Quote) GetTargetTimestamp() int64 {
@@ -406,7 +753,7 @@ type DeleteMessage struct {
 
 func (x *DeleteMessage) Reset() {
 	*x = DeleteMessage{}
-	mi := &file_content_proto_msgTypes[3]
+	mi := &file_content_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -418,7 +765,7 @@ func (x *DeleteMessage) String() string {
 func (*DeleteMessage) ProtoMessage() {}
 
 func (x *DeleteMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[3]
+	mi := &file_content_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -431,7 +778,7 @@ func (x *DeleteMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMessage.ProtoReflect.Descriptor instead.
 func (*DeleteMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{3}
+	return file_content_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DeleteMessage) GetTargetTimestamp() int64 {
@@ -469,7 +816,7 @@ type ReactionMessage struct {
 
 func (x *ReactionMessage) Reset() {
 	*x = ReactionMessage{}
-	mi := &file_content_proto_msgTypes[4]
+	mi := &file_content_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -481,7 +828,7 @@ func (x *ReactionMessage) String() string {
 func (*ReactionMessage) ProtoMessage() {}
 
 func (x *ReactionMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[4]
+	mi := &file_content_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -494,7 +841,7 @@ func (x *ReactionMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionMessage.ProtoReflect.Descriptor instead.
 func (*ReactionMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{4}
+	return file_content_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ReactionMessage) GetEmoji() string {
@@ -546,7 +893,7 @@ type ReceiptMessage struct {
 
 func (x *ReceiptMessage) Reset() {
 	*x = ReceiptMessage{}
-	mi := &file_content_proto_msgTypes[5]
+	mi := &file_content_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -558,7 +905,7 @@ func (x *ReceiptMessage) String() string {
 func (*ReceiptMessage) ProtoMessage() {}
 
 func (x *ReceiptMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[5]
+	mi := &file_content_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -571,7 +918,7 @@ func (x *ReceiptMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiptMessage.ProtoReflect.Descriptor instead.
 func (*ReceiptMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{5}
+	return file_content_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ReceiptMessage) GetType() ReceiptMessage_Type {
@@ -599,7 +946,7 @@ type TypingMessage struct {
 
 func (x *TypingMessage) Reset() {
 	*x = TypingMessage{}
-	mi := &file_content_proto_msgTypes[6]
+	mi := &file_content_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -611,7 +958,7 @@ func (x *TypingMessage) String() string {
 func (*TypingMessage) ProtoMessage() {}
 
 func (x *TypingMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[6]
+	mi := &file_content_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -624,7 +971,7 @@ func (x *TypingMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TypingMessage.ProtoReflect.Descriptor instead.
 func (*TypingMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{6}
+	return file_content_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TypingMessage) GetAction() TypingMessage_Action {
@@ -645,18 +992,50 @@ var File_content_proto protoreflect.FileDescriptor
 
 const file_content_proto_rawDesc = "" +
 	"\n" +
-	"\rcontent.proto\x12\rrelay.content\"\xac\x02\n" +
+	"\rcontent.proto\x12\rrelay.content\"\xe8\x03\n" +
 	"\aContent\x120\n" +
 	"\x04text\x18\x01 \x01(\v2\x1a.relay.content.TextMessageH\x00R\x04text\x129\n" +
 	"\areceipt\x18\x02 \x01(\v2\x1d.relay.content.ReceiptMessageH\x00R\areceipt\x126\n" +
 	"\x06typing\x18\x03 \x01(\v2\x1c.relay.content.TypingMessageH\x00R\x06typing\x12<\n" +
-	"\breaction\x18\x04 \x01(\v2\x1e.relay.content.ReactionMessageH\x00R\breaction\x126\n" +
-	"\x06delete\x18\a \x01(\v2\x1c.relay.content.DeleteMessageH\x00R\x06deleteB\x06\n" +
-	"\x04body\"k\n" +
+	"\breaction\x18\x04 \x01(\v2\x1e.relay.content.ReactionMessageH\x00R\breaction\x12^\n" +
+	"\x17sender_key_distribution\x18\x05 \x01(\v2$.relay.content.SenderKeyDistributionH\x00R\x15senderKeyDistribution\x12?\n" +
+	"\fgroup_update\x18\x06 \x01(\v2\x1a.relay.content.GroupUpdateH\x00R\vgroupUpdate\x126\n" +
+	"\x06delete\x18\a \x01(\v2\x1c.relay.content.DeleteMessageH\x00R\x06delete\x12\x19\n" +
+	"\bgroup_id\x18\b \x01(\tR\agroupIdB\x06\n" +
+	"\x04body\"T\n" +
+	"\x15SenderKeyDistribution\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12'\n" +
+	"\x0fdistribution_id\x18\x02 \x01(\tR\x0edistributionId\"\x80\x02\n" +
+	"\vGroupUpdate\x12\x1a\n" +
+	"\brevision\x18\x01 \x01(\x03R\brevision\x129\n" +
+	"\x06action\x18\x02 \x01(\x0e2!.relay.content.GroupUpdate.ActionR\x06action\x12\x14\n" +
+	"\x05actor\x18\x03 \x01(\tR\x05actor\x12\x16\n" +
+	"\x06target\x18\x04 \x01(\tR\x06target\x12\x12\n" +
+	"\x04name\x18\x05 \x01(\tR\x04name\"X\n" +
+	"\x06Action\x12\x16\n" +
+	"\x12ACTION_UNSPECIFIED\x10\x00\x12\n" +
+	"\n" +
+	"\x06CREATE\x10\x01\x12\a\n" +
+	"\x03ADD\x10\x02\x12\n" +
+	"\n" +
+	"\x06REMOVE\x10\x03\x12\t\n" +
+	"\x05LEAVE\x10\x04\x12\n" +
+	"\n" +
+	"\x06RENAME\x10\x05\"\xaf\x01\n" +
 	"\vTextMessage\x12\x12\n" +
 	"\x04body\x18\x01 \x01(\tR\x04body\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x12*\n" +
-	"\x05quote\x18\x03 \x01(\v2\x14.relay.content.QuoteR\x05quote\"^\n" +
+	"\x05quote\x18\x03 \x01(\v2\x14.relay.content.QuoteR\x05quote\x12B\n" +
+	"\vattachments\x18\x04 \x03(\v2 .relay.content.AttachmentPointerR\vattachments\"\xce\x01\n" +
+	"\x11AttachmentPointer\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\fR\x03key\x12\x16\n" +
+	"\x06digest\x18\x03 \x01(\fR\x06digest\x12!\n" +
+	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\x12\x12\n" +
+	"\x04size\x18\x05 \x01(\x04R\x04size\x12\x1a\n" +
+	"\bfilename\x18\x06 \x01(\tR\bfilename\x12\x14\n" +
+	"\x05width\x18\a \x01(\rR\x05width\x12\x16\n" +
+	"\x06height\x18\b \x01(\rR\x06height\"^\n" +
 	"\x05Quote\x12)\n" +
 	"\x10target_timestamp\x18\x01 \x01(\x03R\x0ftargetTimestamp\x12\x16\n" +
 	"\x06author\x18\x02 \x01(\tR\x06author\x12\x12\n" +
@@ -697,33 +1076,41 @@ func file_content_proto_rawDescGZIP() []byte {
 	return file_content_proto_rawDescData
 }
 
-var file_content_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_content_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_content_proto_goTypes = []any{
-	(ReceiptMessage_Type)(0),  // 0: relay.content.ReceiptMessage.Type
-	(TypingMessage_Action)(0), // 1: relay.content.TypingMessage.Action
-	(*Content)(nil),           // 2: relay.content.Content
-	(*TextMessage)(nil),       // 3: relay.content.TextMessage
-	(*Quote)(nil),             // 4: relay.content.Quote
-	(*DeleteMessage)(nil),     // 5: relay.content.DeleteMessage
-	(*ReactionMessage)(nil),   // 6: relay.content.ReactionMessage
-	(*ReceiptMessage)(nil),    // 7: relay.content.ReceiptMessage
-	(*TypingMessage)(nil),     // 8: relay.content.TypingMessage
+	(GroupUpdate_Action)(0),       // 0: relay.content.GroupUpdate.Action
+	(ReceiptMessage_Type)(0),      // 1: relay.content.ReceiptMessage.Type
+	(TypingMessage_Action)(0),     // 2: relay.content.TypingMessage.Action
+	(*Content)(nil),               // 3: relay.content.Content
+	(*SenderKeyDistribution)(nil), // 4: relay.content.SenderKeyDistribution
+	(*GroupUpdate)(nil),           // 5: relay.content.GroupUpdate
+	(*TextMessage)(nil),           // 6: relay.content.TextMessage
+	(*AttachmentPointer)(nil),     // 7: relay.content.AttachmentPointer
+	(*Quote)(nil),                 // 8: relay.content.Quote
+	(*DeleteMessage)(nil),         // 9: relay.content.DeleteMessage
+	(*ReactionMessage)(nil),       // 10: relay.content.ReactionMessage
+	(*ReceiptMessage)(nil),        // 11: relay.content.ReceiptMessage
+	(*TypingMessage)(nil),         // 12: relay.content.TypingMessage
 }
 var file_content_proto_depIdxs = []int32{
-	3, // 0: relay.content.Content.text:type_name -> relay.content.TextMessage
-	7, // 1: relay.content.Content.receipt:type_name -> relay.content.ReceiptMessage
-	8, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
-	6, // 3: relay.content.Content.reaction:type_name -> relay.content.ReactionMessage
-	5, // 4: relay.content.Content.delete:type_name -> relay.content.DeleteMessage
-	4, // 5: relay.content.TextMessage.quote:type_name -> relay.content.Quote
-	0, // 6: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
-	1, // 7: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	6,  // 0: relay.content.Content.text:type_name -> relay.content.TextMessage
+	11, // 1: relay.content.Content.receipt:type_name -> relay.content.ReceiptMessage
+	12, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
+	10, // 3: relay.content.Content.reaction:type_name -> relay.content.ReactionMessage
+	4,  // 4: relay.content.Content.sender_key_distribution:type_name -> relay.content.SenderKeyDistribution
+	5,  // 5: relay.content.Content.group_update:type_name -> relay.content.GroupUpdate
+	9,  // 6: relay.content.Content.delete:type_name -> relay.content.DeleteMessage
+	0,  // 7: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
+	8,  // 8: relay.content.TextMessage.quote:type_name -> relay.content.Quote
+	7,  // 9: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
+	1,  // 10: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
+	2,  // 11: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_content_proto_init() }
@@ -736,6 +1123,8 @@ func file_content_proto_init() {
 		(*Content_Receipt)(nil),
 		(*Content_Typing)(nil),
 		(*Content_Reaction)(nil),
+		(*Content_SenderKeyDistribution)(nil),
+		(*Content_GroupUpdate)(nil),
 		(*Content_Delete)(nil),
 	}
 	type x struct{}
@@ -743,8 +1132,8 @@ func file_content_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_content_proto_rawDesc), len(file_content_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   7,
+			NumEnums:      3,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

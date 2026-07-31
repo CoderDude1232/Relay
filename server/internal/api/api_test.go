@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/relayapp/relay-server/gen/relaypb"
+	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/store"
 	"google.golang.org/protobuf/proto"
@@ -30,7 +31,11 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	srv := httptest.NewServer(New(st, hub.New(st)).Handler())
+	blobs, err := blob.Open(filepath.Join(t.TempDir(), "blobs"), 25<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(New(st, hub.New(st), blobs).Handler())
 	t.Cleanup(srv.Close)
 	return &testEnv{t: t, srv: srv}
 }
@@ -308,3 +313,52 @@ func TestMismatchedDevicesRejected(t *testing.T) {
 }
 
 func (e *testEnv) connect(c *client) *wsConn { return c.connectWS() }
+
+func TestGroupLifecycle(t *testing.T) {
+	env := newTestEnv(t)
+	alice := env.register("alice", "password123")
+	bob := env.register("bob", "password123")
+	carol := env.register("carol", "password123")
+
+	// Alice creates a group with Bob.
+	var g struct {
+		ID             string   `json:"id"`
+		Name           string   `json:"name"`
+		DistributionID string   `json:"distributionId"`
+		Revision       int64    `json:"revision"`
+		Members        []string `json:"members"`
+	}
+	env.doJSON("POST", "/v1/groups", alice.authUser(), alice.password,
+		map[string]any{"name": "Trip", "members": []string{bob.accountID}}, http.StatusCreated, &g)
+	if len(g.Members) != 2 || g.Revision != 1 || g.DistributionID == "" {
+		t.Fatalf("unexpected group: %+v", g)
+	}
+
+	// Bob (a member) can fetch; Carol (not a member) is forbidden.
+	env.doJSON("GET", "/v1/groups/"+g.ID, bob.authUser(), bob.password, nil, http.StatusOK, nil)
+	env.doJSON("GET", "/v1/groups/"+g.ID, carol.authUser(), carol.password, nil, http.StatusForbidden, nil)
+
+	// Add Carol → revision bumps, distribution id unchanged (no rotation on add).
+	var afterAdd struct {
+		DistributionID string `json:"distributionId"`
+		Revision       int64  `json:"revision"`
+		Members        []string `json:"members"`
+	}
+	env.doJSON("POST", "/v1/groups/"+g.ID+"/members", alice.authUser(), alice.password,
+		map[string]string{"account": carol.accountID}, http.StatusOK, &afterAdd)
+	if len(afterAdd.Members) != 3 || afterAdd.Revision != 2 || afterAdd.DistributionID != g.DistributionID {
+		t.Fatalf("add changed distribution id or wrong revision: %+v", afterAdd)
+	}
+
+	// Remove Carol → rotation: distribution id changes, revision bumps.
+	var afterRemove struct {
+		DistributionID string   `json:"distributionId"`
+		Revision       int64    `json:"revision"`
+		Members        []string `json:"members"`
+	}
+	env.doJSON("DELETE", "/v1/groups/"+g.ID+"/members/"+carol.accountID, alice.authUser(), alice.password,
+		nil, http.StatusOK, &afterRemove)
+	if len(afterRemove.Members) != 2 || afterRemove.Revision != 3 || afterRemove.DistributionID == g.DistributionID {
+		t.Fatalf("remove did not rotate distribution id: %+v", afterRemove)
+	}
+}

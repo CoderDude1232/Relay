@@ -87,6 +87,19 @@ public struct EnvelopeProcessor {
                     text: text.quote.text
                 )
                 : nil
+            let attachments = text.attachments.map { pointer in
+                StoredAttachment(
+                    id: pointer.id,
+                    key: pointer.key,
+                    digest: pointer.digest,
+                    contentType: pointer.contentType,
+                    size: Int64(pointer.size),
+                    filename: pointer.filename.isEmpty ? nil : pointer.filename,
+                    width: Int(pointer.width),
+                    height: Int(pointer.height),
+                    isDownloaded: false
+                )
+            }
             let inserted = try storage.messages.insertMessage(
                 id: envelope.id,
                 conversationId: conversationId,
@@ -94,7 +107,8 @@ public struct EnvelopeProcessor {
                 body: text.body,
                 timestamp: text.timestamp,
                 status: .received,
-                replyTo: quote
+                replyTo: quote,
+                attachments: attachments
             )
             if inserted {
                 effects.deliveryReceiptTimestamp = text.timestamp
@@ -107,7 +121,11 @@ public struct EnvelopeProcessor {
                 peerAccount: envelope.senderAccount,
                 conversationId: conversationId,
                 notification: inserted
-                    ? NotificationContent(senderAccount: envelope.senderAccount, conversationId: conversationId, body: text.body)
+                    ? NotificationContent(
+                        senderAccount: envelope.senderAccount,
+                        conversationId: conversationId,
+                        body: text.body.isEmpty && !attachments.isEmpty ? "📷 Photo" : text.body
+                    )
                     : nil,
                 sideEffects: effects,
                 typingStarted: nil

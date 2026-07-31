@@ -18,6 +18,11 @@
 // Both the iOS client and future clients (Windows, Android) must codegen
 // from this exact file — wire compatibility depends on it.
 
+#if canImport(FoundationEssentials)
+import FoundationEssentials
+#else
+import Foundation
+#endif
 import SwiftProtobuf
 
 // If the compiler emits an error on this type, it is because this file
@@ -69,9 +74,22 @@ public nonisolated struct Relay_Content_Content: Sendable {
     set {body = .reaction(newValue)}
   }
 
-  /// Reserved for later phases (groups, media):
-  /// SenderKeyDistribution sender_key_distribution = 5;
-  /// AttachmentMessage attachment = 6;
+  public var senderKeyDistribution: Relay_Content_SenderKeyDistribution {
+    get {
+      if case .senderKeyDistribution(let v)? = body {return v}
+      return Relay_Content_SenderKeyDistribution()
+    }
+    set {body = .senderKeyDistribution(newValue)}
+  }
+
+  public var groupUpdate: Relay_Content_GroupUpdate {
+    get {
+      if case .groupUpdate(let v)? = body {return v}
+      return Relay_Content_GroupUpdate()
+    }
+    set {body = .groupUpdate(newValue)}
+  }
+
   public var delete: Relay_Content_DeleteMessage {
     get {
       if case .delete(let v)? = body {return v}
@@ -80,6 +98,11 @@ public nonisolated struct Relay_Content_Content: Sendable {
     set {body = .delete(newValue)}
   }
 
+  /// Set when this content belongs to a group; empty for 1:1. Group messages
+  /// are encrypted with the sender's sender key (senderKey ciphertext);
+  /// control content (SKDM, group updates) is sent over pairwise sessions.
+  public var groupID: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Body: Equatable, Sendable {
@@ -87,10 +110,104 @@ public nonisolated struct Relay_Content_Content: Sendable {
     case receipt(Relay_Content_ReceiptMessage)
     case typing(Relay_Content_TypingMessage)
     case reaction(Relay_Content_ReactionMessage)
-    /// Reserved for later phases (groups, media):
-    /// SenderKeyDistribution sender_key_distribution = 5;
-    /// AttachmentMessage attachment = 6;
+    case senderKeyDistribution(Relay_Content_SenderKeyDistribution)
+    case groupUpdate(Relay_Content_GroupUpdate)
     case delete(Relay_Content_DeleteMessage)
+
+  }
+
+  public init() {}
+}
+
+/// Carries a libsignal Sender Key Distribution Message so a member can
+/// decrypt this sender's group messages. Sent 1:1 (pairwise-encrypted) to
+/// each member when joining a group or rotating the sender key.
+public nonisolated struct Relay_Content_SenderKeyDistribution: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// serialized SKDM
+  public var data: Data = Data()
+
+  /// UUID identifying the sender-key epoch
+  public var distributionID: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Notifies members that a group's roster/metadata changed; recipients
+/// re-sync the authoritative roster from the relay. `revision` lets clients
+/// drop stale updates; the rest drives a human-readable system line.
+public nonisolated struct Relay_Content_GroupUpdate: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var revision: Int64 = 0
+
+  public var action: Relay_Content_GroupUpdate.Action = .unspecified
+
+  /// account id that made the change
+  public var actor: String = String()
+
+  /// affected member (add/remove)
+  public var target: String = String()
+
+  /// group name (create/rename)
+  public var name: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public nonisolated enum Action: SwiftProtobuf.Enum, Swift.CaseIterable {
+    public typealias RawValue = Int
+    case unspecified // = 0
+    case create // = 1
+    case add // = 2
+    case remove // = 3
+    case leave // = 4
+    case rename // = 5
+    case UNRECOGNIZED(Int)
+
+    public init() {
+      self = .unspecified
+    }
+
+    public init?(rawValue: Int) {
+      switch rawValue {
+      case 0: self = .unspecified
+      case 1: self = .create
+      case 2: self = .add
+      case 3: self = .remove
+      case 4: self = .leave
+      case 5: self = .rename
+      default: self = .UNRECOGNIZED(rawValue)
+      }
+    }
+
+    public var rawValue: Int {
+      switch self {
+      case .unspecified: return 0
+      case .create: return 1
+      case .add: return 2
+      case .remove: return 3
+      case .leave: return 4
+      case .rename: return 5
+      case .UNRECOGNIZED(let i): return i
+      }
+    }
+
+    // The compiler won't synthesize support with the UNRECOGNIZED case.
+    public static let allCases: [Relay_Content_GroupUpdate.Action] = [
+      .unspecified,
+      .create,
+      .add,
+      .remove,
+      .leave,
+      .rename,
+    ]
 
   }
 
@@ -118,11 +235,50 @@ public nonisolated struct Relay_Content_TextMessage: Sendable {
   /// Clears the value of `quote`. Subsequent reads from it will return its default value.
   public mutating func clearQuote() {self._quote = nil}
 
+  /// Optional media; a message may carry text and/or attachments.
+  public var attachments: [Relay_Content_AttachmentPointer] = []
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _quote: Relay_Content_Quote? = nil
+}
+
+/// Points at an encrypted blob on the relay. The relay stores only the
+/// opaque ciphertext (AES-256-GCM: nonce‖ciphertext‖tag); the key and digest
+/// travel end-to-end inside the encrypted Content, never to the server.
+public nonisolated struct Relay_Content_AttachmentPointer: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// relay blob id
+  public var id: String = String()
+
+  /// AES-256-GCM key (32 bytes)
+  public var key: Data = Data()
+
+  /// SHA-256 of the uploaded ciphertext (integrity)
+  public var digest: Data = Data()
+
+  /// MIME type
+  public var contentType: String = String()
+
+  /// ciphertext size in bytes
+  public var size: UInt64 = 0
+
+  public var filename: String = String()
+
+  /// pixels (images)
+  public var width: UInt32 = 0
+
+  /// pixels (images)
+  public var height: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
 }
 
 /// A snapshot of the message being replied to. Self-contained (carries the
@@ -312,7 +468,7 @@ fileprivate nonisolated let _protobuf_package = "relay.content"
 
 nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Content"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{2}\u{3}delete\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -372,6 +528,32 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
           self.body = .reaction(v)
         }
       }()
+      case 5: try {
+        var v: Relay_Content_SenderKeyDistribution?
+        var hadOneofValue = false
+        if let current = self.body {
+          hadOneofValue = true
+          if case .senderKeyDistribution(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.body = .senderKeyDistribution(v)
+        }
+      }()
+      case 6: try {
+        var v: Relay_Content_GroupUpdate?
+        var hadOneofValue = false
+        if let current = self.body {
+          hadOneofValue = true
+          if case .groupUpdate(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.body = .groupUpdate(v)
+        }
+      }()
       case 7: try {
         var v: Relay_Content_DeleteMessage?
         var hadOneofValue = false
@@ -385,6 +567,7 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
           self.body = .delete(v)
         }
       }()
+      case 8: try { try decoder.decodeSingularStringField(value: &self.groupID) }()
       default: break
       }
     }
@@ -412,25 +595,126 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
       guard case .reaction(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
     }()
+    case .senderKeyDistribution?: try {
+      guard case .senderKeyDistribution(let v)? = self.body else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+    }()
+    case .groupUpdate?: try {
+      guard case .groupUpdate(let v)? = self.body else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
+    }()
     case .delete?: try {
       guard case .delete(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
     }()
     case nil: break
     }
+    if !self.groupID.isEmpty {
+      try visitor.visitSingularStringField(value: self.groupID, fieldNumber: 8)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Relay_Content_Content, rhs: Relay_Content_Content) -> Bool {
     if lhs.body != rhs.body {return false}
+    if lhs.groupID != rhs.groupID {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
+nonisolated extension Relay_Content_SenderKeyDistribution: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".SenderKeyDistribution"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}data\0\u{3}distribution_id\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBytesField(value: &self.data) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.distributionID) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.data.isEmpty {
+      try visitor.visitSingularBytesField(value: self.data, fieldNumber: 1)
+    }
+    if !self.distributionID.isEmpty {
+      try visitor.visitSingularStringField(value: self.distributionID, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_SenderKeyDistribution, rhs: Relay_Content_SenderKeyDistribution) -> Bool {
+    if lhs.data != rhs.data {return false}
+    if lhs.distributionID != rhs.distributionID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".GroupUpdate"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}revision\0\u{1}action\0\u{1}actor\0\u{1}target\0\u{1}name\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularInt64Field(value: &self.revision) }()
+      case 2: try { try decoder.decodeSingularEnumField(value: &self.action) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.actor) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.target) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.revision != 0 {
+      try visitor.visitSingularInt64Field(value: self.revision, fieldNumber: 1)
+    }
+    if self.action != .unspecified {
+      try visitor.visitSingularEnumField(value: self.action, fieldNumber: 2)
+    }
+    if !self.actor.isEmpty {
+      try visitor.visitSingularStringField(value: self.actor, fieldNumber: 3)
+    }
+    if !self.target.isEmpty {
+      try visitor.visitSingularStringField(value: self.target, fieldNumber: 4)
+    }
+    if !self.name.isEmpty {
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 5)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_GroupUpdate, rhs: Relay_Content_GroupUpdate) -> Bool {
+    if lhs.revision != rhs.revision {return false}
+    if lhs.action != rhs.action {return false}
+    if lhs.actor != rhs.actor {return false}
+    if lhs.target != rhs.target {return false}
+    if lhs.name != rhs.name {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_GroupUpdate.Action: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}CREATE\0\u{1}ADD\0\u{1}REMOVE\0\u{1}LEAVE\0\u{1}RENAME\0")
+}
+
 nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TextMessage"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}body\0\u{1}timestamp\0\u{1}quote\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}body\0\u{1}timestamp\0\u{1}quote\0\u{1}attachments\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -441,6 +725,7 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
       case 1: try { try decoder.decodeSingularStringField(value: &self.body) }()
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
       case 3: try { try decoder.decodeSingularMessageField(value: &self._quote) }()
+      case 4: try { try decoder.decodeRepeatedMessageField(value: &self.attachments) }()
       default: break
       }
     }
@@ -460,6 +745,9 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
     try { if let v = self._quote {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
     } }()
+    if !self.attachments.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.attachments, fieldNumber: 4)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -467,6 +755,72 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
     if lhs.body != rhs.body {return false}
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs._quote != rhs._quote {return false}
+    if lhs.attachments != rhs.attachments {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_AttachmentPointer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AttachmentPointer"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}key\0\u{1}digest\0\u{3}content_type\0\u{1}size\0\u{1}filename\0\u{1}width\0\u{1}height\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.id) }()
+      case 2: try { try decoder.decodeSingularBytesField(value: &self.key) }()
+      case 3: try { try decoder.decodeSingularBytesField(value: &self.digest) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.contentType) }()
+      case 5: try { try decoder.decodeSingularUInt64Field(value: &self.size) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.filename) }()
+      case 7: try { try decoder.decodeSingularUInt32Field(value: &self.width) }()
+      case 8: try { try decoder.decodeSingularUInt32Field(value: &self.height) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.id.isEmpty {
+      try visitor.visitSingularStringField(value: self.id, fieldNumber: 1)
+    }
+    if !self.key.isEmpty {
+      try visitor.visitSingularBytesField(value: self.key, fieldNumber: 2)
+    }
+    if !self.digest.isEmpty {
+      try visitor.visitSingularBytesField(value: self.digest, fieldNumber: 3)
+    }
+    if !self.contentType.isEmpty {
+      try visitor.visitSingularStringField(value: self.contentType, fieldNumber: 4)
+    }
+    if self.size != 0 {
+      try visitor.visitSingularUInt64Field(value: self.size, fieldNumber: 5)
+    }
+    if !self.filename.isEmpty {
+      try visitor.visitSingularStringField(value: self.filename, fieldNumber: 6)
+    }
+    if self.width != 0 {
+      try visitor.visitSingularUInt32Field(value: self.width, fieldNumber: 7)
+    }
+    if self.height != 0 {
+      try visitor.visitSingularUInt32Field(value: self.height, fieldNumber: 8)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_AttachmentPointer, rhs: Relay_Content_AttachmentPointer) -> Bool {
+    if lhs.id != rhs.id {return false}
+    if lhs.key != rhs.key {return false}
+    if lhs.digest != rhs.digest {return false}
+    if lhs.contentType != rhs.contentType {return false}
+    if lhs.size != rhs.size {return false}
+    if lhs.filename != rhs.filename {return false}
+    if lhs.width != rhs.width {return false}
+    if lhs.height != rhs.height {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

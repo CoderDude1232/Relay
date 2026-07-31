@@ -135,5 +135,30 @@ enum Schema {
                 try db.run("PRAGMA user_version = 5;")
             }
         }
+        if version < 6 {
+            // Media attachments. The encrypted blob lives on disk (App Group
+            // container); this table holds only the metadata + the key/digest
+            // needed to fetch and decrypt it. `downloaded` flips once the
+            // ciphertext is cached locally.
+            try db.transaction {
+                try db.run("""
+                    CREATE TABLE attachments (
+                        id           TEXT PRIMARY KEY,   -- relay blob id
+                        message_id   TEXT NOT NULL REFERENCES messages(id),
+                        key          BLOB NOT NULL,       -- AES-256-GCM key
+                        digest       BLOB NOT NULL,       -- SHA-256 of ciphertext
+                        content_type TEXT NOT NULL,
+                        size         INTEGER NOT NULL,
+                        filename     TEXT,
+                        width        INTEGER NOT NULL DEFAULT 0,
+                        height       INTEGER NOT NULL DEFAULT 0,
+                        downloaded   INTEGER NOT NULL DEFAULT 0,
+                        ordinal      INTEGER NOT NULL DEFAULT 0
+                    );
+                    """)
+                try db.run("CREATE INDEX idx_attachments_message ON attachments (message_id);")
+                try db.run("PRAGMA user_version = 6;")
+            }
+        }
     }
 }

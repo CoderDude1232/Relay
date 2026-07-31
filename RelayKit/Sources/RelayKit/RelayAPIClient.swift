@@ -9,9 +9,18 @@
 import CryptoCore
 import Foundation
 
-public enum RelayAPIError: Error {
+public enum RelayAPIError: Error, LocalizedError {
     case http(status: Int, message: String)
     case malformedResponse
+
+    public var errorDescription: String? {
+        switch self {
+        case .http(let status, let message):
+            return message.isEmpty ? "Server error (HTTP \(status))." : message
+        case .malformedResponse:
+            return "The server sent an unexpected response."
+        }
+    }
 }
 
 public struct RelayAPIClient: Sendable {
@@ -89,6 +98,29 @@ public struct RelayAPIClient: Sendable {
             "GET", "v1/keys/\(account)", body: nil as [String: String]?
         )
         return try response.devices.map { try $0.model() }
+    }
+
+    // MARK: - Attachments (opaque encrypted blobs)
+
+    /// Allocates a blob id, then uploads the encrypted bytes to it. Returns
+    /// the id to put in the AttachmentPointer.
+    public func uploadAttachment(_ ciphertext: Data) async throws -> String {
+        struct Response: Decodable { let id: String }
+        let created: Response = try await request(
+            "POST", "v1/attachments", body: nil as [String: String]?
+        )
+        var request = makeRequest("PUT", "v1/attachments/\(created.id)", authenticated: true)
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = ciphertext
+        _ = try await send(request)
+        return created.id
+    }
+
+    /// Downloads an encrypted blob by id (raw ciphertext).
+    public func downloadAttachment(id: String) async throws -> Data {
+        let request = makeRequest("GET", "v1/attachments/\(id)", authenticated: true)
+        let (data, _) = try await send(request)
+        return data
     }
 
     // MARK: - Request plumbing

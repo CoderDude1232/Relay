@@ -38,6 +38,14 @@ public struct IncomingEnvelope: Sendable, Equatable {
     public let serverTimestamp: Int64
     public let ephemeral: Bool
 
+    /// Builds an envelope from the serialized `relay.v1.Envelope` bytes — used
+    /// by the Notification Service Extension, which receives the envelope in
+    /// the APNs payload rather than over the WebSocket.
+    public init?(serializedEnvelope data: Data) {
+        guard let proto = try? Relay_V1_Envelope(serializedBytes: data) else { return nil }
+        self.init(proto)
+    }
+
     init?(_ proto: Relay_V1_Envelope) {
         guard let kind = MessageKind(wireType: proto.type) else { return nil }
         self.id = proto.id

@@ -20,11 +20,41 @@ message Content {
     ReceiptMessage receipt = 2;
     TypingMessage typing = 3;
     ReactionMessage reaction = 4;
+    SenderKeyDistribution sender_key_distribution = 5;
+    GroupUpdate group_update = 6;
     DeleteMessage delete = 7;
-    // Reserved for later phases (groups, media):
-    // SenderKeyDistribution sender_key_distribution = 5;
-    // AttachmentMessage attachment = 6;
   }
+  // Set when this content belongs to a group; empty for 1:1. Group messages
+  // are encrypted with the sender's sender key (senderKey ciphertext);
+  // control content (SKDM, group updates) is sent over pairwise sessions.
+  string group_id = 8;
+}
+
+// Carries a libsignal Sender Key Distribution Message so a member can
+// decrypt this sender's group messages. Sent 1:1 (pairwise-encrypted) to
+// each member when joining a group or rotating the sender key.
+message SenderKeyDistribution {
+  bytes data = 1;             // serialized SKDM
+  string distribution_id = 2; // UUID identifying the sender-key epoch
+}
+
+// Notifies members that a group's roster/metadata changed; recipients
+// re-sync the authoritative roster from the relay. `revision` lets clients
+// drop stale updates; the rest drives a human-readable system line.
+message GroupUpdate {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    CREATE = 1;
+    ADD = 2;
+    REMOVE = 3;
+    LEAVE = 4;
+    RENAME = 5;
+  }
+  int64 revision = 1;
+  Action action = 2;
+  string actor = 3;   // account id that made the change
+  string target = 4;  // affected member (add/remove)
+  string name = 5;    // group name (create/rename)
 }
 
 message TextMessage {
@@ -34,6 +64,22 @@ message TextMessage {
   int64 timestamp = 2;
   // Optional: set when this message is a reply to an earlier one.
   Quote quote = 3;
+  // Optional media; a message may carry text and/or attachments.
+  repeated AttachmentPointer attachments = 4;
+}
+
+// Points at an encrypted blob on the relay. The relay stores only the
+// opaque ciphertext (AES-256-GCM: nonce‖ciphertext‖tag); the key and digest
+// travel end-to-end inside the encrypted Content, never to the server.
+message AttachmentPointer {
+  string id = 1;            // relay blob id
+  bytes key = 2;            // AES-256-GCM key (32 bytes)
+  bytes digest = 3;         // SHA-256 of the uploaded ciphertext (integrity)
+  string content_type = 4;  // MIME type
+  uint64 size = 5;          // ciphertext size in bytes
+  string filename = 6;
+  uint32 width = 7;         // pixels (images)
+  uint32 height = 8;        // pixels (images)
 }
 
 // A snapshot of the message being replied to. Self-contained (carries the

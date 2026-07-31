@@ -72,7 +72,17 @@ All endpoints except account creation use HTTP Basic auth with username
 | `GET /v1/keys/count` | basic | Remaining one-time prekeys for this device → `{count}`. Clients replenish below ~20. |
 | `GET /v1/keys/{account}?device=N` | basic | Fetch prekey bundles (all devices when `?device` omitted), each with identity key, signed prekey and Kyber prekey. Consumes one one-time prekey per device; `oneTimePreKey` is `null` when the pool is exhausted (degraded PQXDH via signed prekeys only). |
 | `GET /v1/accounts/by-username/{username}` | basic | Resolve username → `{accountId}` |
+| `POST /v1/attachments` | basic | Allocate an attachment id → `201 {id}` |
+| `PUT /v1/attachments/{id}` | basic | Upload the encrypted blob (raw `application/octet-stream`) → `204`. `413` if over the size cap. The relay stores opaque ciphertext only. |
+| `GET /v1/attachments/{id}` | basic | Download the encrypted blob (raw bytes) → `200` / `404`. Reaped after the TTL. |
+| `POST /v1/groups` | basic | Create a group. Body `{name, members[]}` (creator added automatically) → `201 {id, name, distributionId, revision, members[]}`. |
+| `GET /v1/groups/{id}` | basic | Group roster + state; members only (`403` otherwise). |
+| `POST /v1/groups/{id}/members` | basic | Add a member. Body `{account}` → updated group. Revision bumps; distribution id unchanged. |
+| `DELETE /v1/groups/{id}/members/{account}` | basic | Remove a member (or self = leave) → updated group. **Rotates `distributionId`** so the removed member can't read future messages. |
+| `PUT /v1/groups/{id}` | basic | Rename. Body `{name}` → updated group. |
 | `GET /v1/ws` | basic | WebSocket upgrade for real-time delivery |
+
+The relay stores the group roster (member account ids) and a `distributionId` (the current sender-key epoch) but never sees group message plaintext — group messages are sender-key-encrypted and fanned out per member, exactly like 1:1 traffic.
 
 ## WebSocket protocol
 

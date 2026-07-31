@@ -79,6 +79,9 @@ public final class Database: @unchecked Sendable {
             }
             try run("PRAGMA journal_mode = WAL;")
             try run("PRAGMA foreign_keys = ON;")
+            // App and NSE open the same file; make a contended writer wait
+            // rather than fail immediately with SQLITE_BUSY.
+            try run("PRAGMA busy_timeout = 3000;")
         } catch {
             sqlite3_close(handle)
             handle = nil

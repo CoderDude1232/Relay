@@ -259,6 +259,32 @@ struct MessageStoreTests {
         #expect(remaining.map(\.id) == ["m2"])
     }
 
+    @Test func attachmentsPersistAndClearOnDelete() throws {
+        let storage = try SecureStore(path: tempDBPath(), key: .random(), credentials: TestCredentials())
+        let store = storage.messages
+        let convo = try store.conversation(withPeer: "bob-account")
+
+        let attachment = StoredAttachment(
+            id: "blob-1", key: Data(count: 32), digest: Data(count: 32),
+            contentType: "image/jpeg", size: 1234, filename: "photo.jpg",
+            width: 800, height: 600, isDownloaded: false
+        )
+        try store.insertMessage(
+            id: "m1", conversationId: convo, isOutgoing: false,
+            body: "", timestamp: 1000, status: .received, attachments: [attachment]
+        )
+
+        let loaded = try store.messages(in: convo)[0]
+        #expect(loaded.attachments == [attachment])
+
+        try store.markAttachmentDownloaded(id: "blob-1")
+        #expect(try store.messages(in: convo)[0].attachments[0].isDownloaded)
+
+        // Deleting the message removes its attachment rows too.
+        try store.deleteMessage(id: "m1")
+        #expect(try store.messages(in: convo).isEmpty)
+    }
+
     @Test func envelopeClaimIsExactlyOnce() throws {
         let storage = try SecureStore(path: tempDBPath(), key: .random(), credentials: TestCredentials())
         let store = storage.messages

@@ -49,6 +49,35 @@ public struct MessageReaction: Sendable, Equatable {
     }
 }
 
+/// A media attachment on a message. The encrypted blob lives on disk; this
+/// carries the metadata plus the key/digest needed to fetch and decrypt it.
+public struct StoredAttachment: Sendable, Equatable, Identifiable {
+    public let id: String            // relay blob id
+    public let key: Data             // AES-256-GCM key
+    public let digest: Data          // SHA-256 of the ciphertext
+    public let contentType: String
+    public let size: Int64
+    public let filename: String?
+    public let width: Int
+    public let height: Int
+    public let isDownloaded: Bool
+
+    public init(
+        id: String, key: Data, digest: Data, contentType: String, size: Int64,
+        filename: String?, width: Int, height: Int, isDownloaded: Bool
+    ) {
+        self.id = id
+        self.key = key
+        self.digest = digest
+        self.contentType = contentType
+        self.size = size
+        self.filename = filename
+        self.width = width
+        self.height = height
+        self.isDownloaded = isDownloaded
+    }
+}
+
 public struct StoredMessage: Sendable, Equatable, Identifiable {
     public let id: String
     public let conversationId: String
@@ -64,6 +93,8 @@ public struct StoredMessage: Sendable, Equatable, Identifiable {
     /// True once the message has been unsent (delete-for-everyone); the body
     /// is cleared and the UI shows a tombstone placeholder.
     public let isDeleted: Bool
+    /// Media attachments, in send order.
+    public let attachments: [StoredAttachment]
 }
 
 public final class MessageStore {
@@ -133,7 +164,8 @@ public final class MessageStore {
         body: String,
         timestamp: Int64,
         status: MessageStatus,
-        replyTo: QuotedMessage? = nil
+        replyTo: QuotedMessage? = nil,
+        attachments: [StoredAttachment] = []
     ) throws -> Bool {
         let inserted = try db.transaction {
             let exists = try !db.query("SELECT 1 FROM messages WHERE id = ?", [.text(id)]).isEmpty
@@ -154,6 +186,22 @@ public final class MessageStore {
                     replyTo.map { .text($0.text) } ?? .null,
                 ]
             )
+            for (ordinal, attachment) in attachments.enumerated() {
+                try db.run(
+                    """
+                    INSERT INTO attachments
+                        (id, message_id, key, digest, content_type, size, filename, width, height, downloaded, ordinal)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        .text(attachment.id), .text(id), .blob(attachment.key), .blob(attachment.digest),
+                        .text(attachment.contentType), .integer(attachment.size),
+                        attachment.filename.map { .text($0) } ?? .null,
+                        .integer(Int64(attachment.width)), .integer(Int64(attachment.height)),
+                        .integer(attachment.isDownloaded ? 1 : 0), .integer(Int64(ordinal)),
+                    ]
+                )
+            }
             try db.run(
                 "UPDATE conversations SET last_message_at = MAX(COALESCE(last_message_at, 0), ?) WHERE id = ?",
                 [.integer(timestamp), .text(conversationId)]
@@ -167,6 +215,7 @@ public final class MessageStore {
     /// their reply snapshots and reactions attached.
     public func messages(in conversationId: String, limit: Int = 100) throws -> [StoredMessage] {
         let reactions = try reactionsByTarget(in: conversationId)
+        let attachments = try attachmentsByMessage(in: conversationId)
         let rows = try db.query(
             """
             SELECT id, is_outgoing, body, timestamp, status,
@@ -191,9 +240,47 @@ public final class MessageStore {
                 status: MessageStatus(rawValue: row[4].string ?? "") ?? .received,
                 replyTo: replyTo,
                 reactions: reactions[timestamp] ?? [],
-                isDeleted: row[8].int64 == 1
+                isDeleted: row[8].int64 == 1,
+                attachments: attachments[row[0].string ?? ""] ?? []
             )
         }
+    }
+
+    private func attachmentsByMessage(in conversationId: String) throws -> [String: [StoredAttachment]] {
+        let rows = try db.query(
+            """
+            SELECT a.message_id, a.id, a.key, a.digest, a.content_type, a.size,
+                   a.filename, a.width, a.height, a.downloaded
+            FROM attachments a
+            JOIN messages m ON m.id = a.message_id
+            WHERE m.conversation_id = ?
+            ORDER BY a.ordinal ASC
+            """,
+            [.text(conversationId)]
+        )
+        var result: [String: [StoredAttachment]] = [:]
+        for row in rows {
+            guard let messageId = row[0].string else { continue }
+            result[messageId, default: []].append(
+                StoredAttachment(
+                    id: row[1].string ?? "",
+                    key: row[2].data ?? Data(),
+                    digest: row[3].data ?? Data(),
+                    contentType: row[4].string ?? "application/octet-stream",
+                    size: row[5].int64 ?? 0,
+                    filename: row[6].string,
+                    width: Int(row[7].int64 ?? 0),
+                    height: Int(row[8].int64 ?? 0),
+                    isDownloaded: row[9].int64 == 1
+                )
+            )
+        }
+        return result
+    }
+
+    /// Marks an attachment's ciphertext as cached locally on disk.
+    public func markAttachmentDownloaded(id: String) throws {
+        try db.run("UPDATE attachments SET downloaded = 1 WHERE id = ?", [.text(id)])
     }
 
     private func reactionsByTarget(in conversationId: String) throws -> [Int64: [MessageReaction]] {
@@ -278,6 +365,14 @@ public final class MessageStore {
                 "DELETE FROM reactions WHERE conversation_id = ? AND target_timestamp = ?",
                 [.text(conversationId), .integer(targetTimestamp)]
             )
+            try db.run(
+                """
+                DELETE FROM attachments WHERE message_id IN (
+                    SELECT id FROM messages WHERE conversation_id = ? AND timestamp = ?
+                )
+                """,
+                [.text(conversationId), .integer(targetTimestamp)]
+            )
             return true
         }
     }
@@ -291,6 +386,7 @@ public final class MessageStore {
             )
             guard let row = rows.first, let conversationId = row[0].string,
                   let timestamp = row[1].int64 else { return }
+            try db.run("DELETE FROM attachments WHERE message_id = ?", [.text(id)])
             try db.run("DELETE FROM messages WHERE id = ?", [.text(id)])
             try db.run(
                 "DELETE FROM reactions WHERE conversation_id = ? AND target_timestamp = ?",

@@ -14,15 +14,36 @@ import (
 	"time"
 
 	"github.com/relayapp/relay-server/internal/api"
+	"github.com/relayapp/relay-server/internal/apns"
+	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/store"
 )
+
+// runBlobGC periodically reaps attachment blobs older than ttl.
+func runBlobGC(blobs *blob.Store, ttl time.Duration) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := blobs.GC(ttl); err != nil {
+			slog.Warn("blob gc failed", "err", err)
+		}
+	}
+}
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	dbPath := flag.String("db", "relay.db", "path to SQLite database")
 	tlsCert := flag.String("tls-cert", "", "path to TLS certificate (enables HTTPS/WSS)")
 	tlsKey := flag.String("tls-key", "", "path to TLS private key")
+	blobDir := flag.String("blobs", "attachments", "directory for encrypted attachment blobs")
+	maxAttachment := flag.Int64("max-attachment", 25<<20, "max attachment blob size in bytes")
+	blobTTL := flag.Duration("attachment-ttl", 30*24*time.Hour, "how long to keep attachment blobs")
+	apnsKey := flag.String("apns-key", "", "path to APNs .p8 auth key (enables push)")
+	apnsKeyID := flag.String("apns-key-id", "", "APNs key id")
+	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
+	apnsTopic := flag.String("apns-topic", "com.morgandaly.RelayTexting", "APNs topic (app bundle id)")
+	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
 	flag.Parse()
 
 	if (*tlsCert == "") != (*tlsKey == "") {
@@ -37,10 +58,26 @@ func main() {
 	}
 	defer st.Close()
 
+	blobs, err := blob.Open(*blobDir, *maxAttachment)
+	if err != nil {
+		slog.Error("failed to open blob store", "err", err)
+		os.Exit(1)
+	}
+	go runBlobGC(blobs, *blobTTL)
+
 	h := hub.New(st)
+	if *apnsKey != "" {
+		pusher, err := apns.New(*apnsKey, *apnsKeyID, *apnsTeamID, *apnsTopic, *apnsProduction)
+		if err != nil {
+			slog.Error("failed to load APNs key", "err", err)
+			os.Exit(1)
+		}
+		h.SetPusher(pusher)
+		slog.Info("apns push enabled", "topic", *apnsTopic, "production", *apnsProduction)
+	}
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           api.New(st, h).Handler(),
+		Handler:           api.New(st, h, blobs).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

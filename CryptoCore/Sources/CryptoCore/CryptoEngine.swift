@@ -229,8 +229,57 @@ public final class CryptoEngine {
                 context: context
             )
         case .senderKey:
-            throw CryptoEngineError.unsupportedMessageKind // groups phase
+            // Group message: decrypt with the sender's distributed sender key
+            // (libsignal finds it from the distribution id embedded in the
+            // ciphertext). The SKDM must have been processed beforehand.
+            return try LibSignalClient.groupDecrypt(
+                message.data,
+                from: address,
+                store: store,
+                context: context
+            )
         }
+    }
+
+    // MARK: - Groups (sender keys)
+
+    /// Creates (or loads) this device's sender key for `distributionId` and
+    /// returns the Sender Key Distribution Message to hand to each group
+    /// member over their pairwise session, so they can decrypt our group
+    /// messages. A fresh `distributionId` yields a fresh sender key (used to
+    /// rotate when a member is removed).
+    public func senderKeyDistributionMessage(distributionId: UUID) throws -> Data {
+        let skdm = try SenderKeyDistributionMessage(
+            from: localAddress,
+            distributionId: distributionId,
+            store: store,
+            context: context
+        )
+        return skdm.serialize()
+    }
+
+    /// Processes a peer's SKDM so we can later decrypt their group messages.
+    public func processSenderKeyDistribution(_ data: Data, from address: ProtocolAddress) throws {
+        let skdm = try SenderKeyDistributionMessage(bytes: data)
+        try LibSignalClient.processSenderKeyDistributionMessage(
+            skdm,
+            from: address,
+            store: store,
+            context: context
+        )
+    }
+
+    /// Encrypts a group message once with our sender key; the same ciphertext
+    /// is fanned out to every member device.
+    public func groupEncrypt(_ plaintext: Data, distributionId: UUID) throws -> SecureMessage {
+        let ciphertext = try LibSignalClient.groupEncrypt(
+            plaintext,
+            from: localAddress,
+            distributionId: distributionId,
+            store: store,
+            context: context
+        )
+        return SecureMessage(kind: .senderKey, data: ciphertext.serialize())
     }
 
     // MARK: - Safety numbers
