@@ -173,6 +173,9 @@ final class MessagingService {
             if let groupUpdate = result.groupUpdate {
                 await handleGroupUpdate(groupUpdate)
             }
+            if let profile = result.profile {
+                await applyPeerProfile(profile)
+            }
         } catch {
             log.error("failed to process envelope \(envelope.id): \(error)")
         }
@@ -275,6 +278,8 @@ final class MessagingService {
     func displayName(forAccount account: String) -> String {
         if account == credentials.accountId { return "You" }
         if let nick = nickname(forAccount: account) { return nick }
+        if let stored = (try? storage.messages.peerProfile(account: account)) ?? nil,
+           let name = stored.displayName, !name.isEmpty { return name }
         if let name = username(forAccount: account) { return name }
         return String(account.prefix(8))
     }
@@ -324,11 +329,12 @@ final class MessagingService {
 
     func setMyDisplayName(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, trimmed != myDisplayName else { return }
         try? storage.database.run(
             "INSERT OR REPLACE INTO kv (key, value) VALUES ('me:name', ?)",
             [.blob(Data(trimmed.utf8))]
         )
+        bumpMyProfileRevision()
     }
 
     /// This user's profile photo as image bytes (already downscaled by the
@@ -348,6 +354,118 @@ final class MessagingService {
         } else {
             try? storage.database.run("DELETE FROM kv WHERE key = 'me:avatar'")
         }
+        bumpMyProfileRevision()
+    }
+
+    // MARK: - Profile distribution (E2EE)
+
+    /// My profile "clock", bumped whenever the name/avatar changes. A peer
+    /// keeps the newest by revision; a bump also re-arms sending to every peer.
+    private var myProfileRevision: Int64 {
+        readKVInt("me:rev")
+    }
+
+    private func bumpMyProfileRevision() {
+        writeKVInt("me:rev", Int64(Date().timeIntervalSince1970 * 1000))
+        // Invalidate the cached avatar upload; it belongs to the old revision.
+        try? storage.database.run("DELETE FROM kv WHERE key IN ('me:aptr', 'me:aptrrev')")
+    }
+
+    /// Sends my current profile to a peer over the pairwise session if they
+    /// haven't already received this revision. Called when opening a chat.
+    private func sendMyProfileIfNeeded(toPeer account: String) async {
+        let rev = myProfileRevision
+        guard rev > 0 else { return } // nothing set yet
+        guard readKVInt("pfsent:\(account)") < rev else { return }
+        do {
+            var content = Relay_Content_Content()
+            content.profile.displayName = myDisplayName ?? ""
+            content.profile.timestamp = rev
+            if let pointer = try await currentAvatarPointer() {
+                content.profile.avatar = pointer
+            }
+            try await sendContent(try content.serializedData(), toPeer: account, clientTimestamp: rev)
+            writeKVInt("pfsent:\(account)", rev)
+        } catch {
+            log.error("profile send failed: \(error)")
+        }
+    }
+
+    /// Seals + uploads my avatar once per revision, caching the resulting
+    /// pointer so it isn't re-uploaded for every peer.
+    private func currentAvatarPointer() async throws -> Relay_Content_AttachmentPointer? {
+        guard let data = myAvatarData else { return nil }
+        let rev = myProfileRevision
+        if readKVInt("me:aptrrev") == rev,
+           let cached = ((try? storage.database.query(
+               "SELECT value FROM kv WHERE key = 'me:aptr'").first?.first?.data) ?? nil),
+           let pointer = try? Relay_Content_AttachmentPointer(serializedBytes: cached) {
+            return pointer
+        }
+        let sealed = try AttachmentCipher.seal(data)
+        let id = try await api.uploadAttachment(sealed.ciphertext)
+        var pointer = Relay_Content_AttachmentPointer()
+        pointer.id = id
+        pointer.key = sealed.key
+        pointer.digest = sealed.digest
+        pointer.contentType = "image/jpeg"
+        pointer.size = UInt64(sealed.ciphertext.count)
+        if let encoded = try? pointer.serializedData() {
+            try? storage.database.run(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES ('me:aptr', ?)", [.blob(encoded)])
+            writeKVInt("me:aptrrev", rev)
+        }
+        return pointer
+    }
+
+    /// Stores a peer's incoming profile (newest-wins), downloading + decrypting
+    /// a changed avatar via the blob pipeline. No-op if we already have a
+    /// newer revision.
+    private func applyPeerProfile(_ profile: ProfileInfo) async {
+        let existing = (try? storage.messages.peerProfile(account: profile.account)) ?? nil
+        if let existing, existing.revision >= profile.revision { return }
+
+        var avatarData = existing?.avatarData
+        var avatarId = existing?.avatarId
+        if let avatar = profile.avatar {
+            if avatar.id != existing?.avatarId {
+                if let ciphertext = try? await api.downloadAttachment(id: avatar.id),
+                   let plaintext = try? AttachmentCipher.open(ciphertext, key: avatar.key, digest: avatar.digest) {
+                    avatarData = plaintext
+                    avatarId = avatar.id
+                }
+            }
+        } else {
+            avatarData = nil // peer cleared their photo
+            avatarId = nil
+        }
+        try? storage.messages.upsertProfile(
+            account: profile.account,
+            displayName: profile.displayName.isEmpty ? nil : profile.displayName,
+            avatarId: avatarId, avatarData: avatarData, revision: profile.revision
+        )
+        refreshConversations()
+        if let id = activeConversationId { refreshActiveMessages(ifShowing: id) }
+    }
+
+    /// A peer's avatar image bytes from their profile, if any.
+    func peerAvatarData(forAccount account: String) -> Data? {
+        ((try? storage.messages.peerProfile(account: account)) ?? nil)?.avatarData
+    }
+
+    private func readKVInt(_ key: String) -> Int64 {
+        guard let data = ((try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(key)]).first?.first?.data) ?? nil),
+              let string = String(data: data, encoding: .utf8), let value = Int64(string)
+        else { return 0 }
+        return value
+    }
+
+    private func writeKVInt(_ key: String, _ value: Int64) {
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+            [.text(key), .blob(Data(String(value).utf8))]
+        )
     }
 
     private func cachedUsername(_ account: String) -> String? {
@@ -761,6 +879,7 @@ final class MessagingService {
                 await resolveUsernames(group.members)
             } else if let peer = resolvedPeerAccount(for: conversationId) {
                 await resolveUsernames([peer])
+                await sendMyProfileIfNeeded(toPeer: peer)
             }
         }
     }

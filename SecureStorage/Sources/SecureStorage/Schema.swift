@@ -186,5 +186,24 @@ enum Schema {
                 try db.run("PRAGMA user_version = 7;")
             }
         }
+
+        if version < 8 {
+            // Peer profiles (self-set display name + avatar), distributed E2EE.
+            // avatar_data holds the already-decrypted image bytes for display;
+            // avatar_id tracks the source blob so unchanged avatars aren't
+            // re-downloaded. revision is the sender's clock (newest wins).
+            try db.transaction {
+                try db.run("""
+                    CREATE TABLE profiles (
+                        account_id   TEXT PRIMARY KEY,
+                        display_name TEXT,
+                        avatar_id    TEXT,
+                        avatar_data  BLOB,
+                        revision     INTEGER NOT NULL DEFAULT 0
+                    );
+                    """)
+                try db.run("PRAGMA user_version = 8;")
+            }
+        }
     }
 }

@@ -98,6 +98,14 @@ public nonisolated struct Relay_Content_Content: Sendable {
     set {body = .delete(newValue)}
   }
 
+  public var profile: Relay_Content_ProfileUpdate {
+    get {
+      if case .profile(let v)? = body {return v}
+      return Relay_Content_ProfileUpdate()
+    }
+    set {body = .profile(newValue)}
+  }
+
   /// Set when this content belongs to a group; empty for 1:1. Group messages
   /// are encrypted with the sender's sender key (senderKey ciphertext);
   /// control content (SKDM, group updates) is sent over pairwise sessions.
@@ -113,6 +121,7 @@ public nonisolated struct Relay_Content_Content: Sendable {
     case senderKeyDistribution(Relay_Content_SenderKeyDistribution)
     case groupUpdate(Relay_Content_GroupUpdate)
     case delete(Relay_Content_DeleteMessage)
+    case profile(Relay_Content_ProfileUpdate)
 
   }
 
@@ -279,6 +288,38 @@ public nonisolated struct Relay_Content_AttachmentPointer: Sendable {
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+}
+
+/// A sender's self-set profile (display name + optional avatar). Sent over a
+/// pairwise session to a peer so it stays end-to-end encrypted — the relay
+/// only ever sees the ciphertext and the (already-encrypted) avatar blob. The
+/// avatar reuses the AttachmentPointer/AES-256-GCM blob pipeline. Recipients
+/// keep the newest by `timestamp`.
+public nonisolated struct Relay_Content_ProfileUpdate: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var displayName: String = String()
+
+  /// optional; unset means no photo
+  public var avatar: Relay_Content_AttachmentPointer {
+    get {_avatar ?? Relay_Content_AttachmentPointer()}
+    set {_avatar = newValue}
+  }
+  /// Returns true if `avatar` has been explicitly set.
+  public var hasAvatar: Bool {self._avatar != nil}
+  /// Clears the value of `avatar`. Subsequent reads from it will return its default value.
+  public mutating func clearAvatar() {self._avatar = nil}
+
+  /// sender clock; newest wins
+  public var timestamp: Int64 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _avatar: Relay_Content_AttachmentPointer? = nil
 }
 
 /// A snapshot of the message being replied to. Self-contained (carries the
@@ -468,7 +509,7 @@ fileprivate nonisolated let _protobuf_package = "relay.content"
 
 nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Content"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0\u{1}profile\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -568,6 +609,19 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
         }
       }()
       case 8: try { try decoder.decodeSingularStringField(value: &self.groupID) }()
+      case 9: try {
+        var v: Relay_Content_ProfileUpdate?
+        var hadOneofValue = false
+        if let current = self.body {
+          hadOneofValue = true
+          if case .profile(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.body = .profile(v)
+        }
+      }()
       default: break
       }
     }
@@ -607,11 +661,14 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
       guard case .delete(let v)? = self.body else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
     }()
-    case nil: break
+    default: break
     }
     if !self.groupID.isEmpty {
       try visitor.visitSingularStringField(value: self.groupID, fieldNumber: 8)
     }
+    try { if case .profile(let v)? = self.body {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 9)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -821,6 +878,50 @@ nonisolated extension Relay_Content_AttachmentPointer: SwiftProtobuf.Message, Sw
     if lhs.filename != rhs.filename {return false}
     if lhs.width != rhs.width {return false}
     if lhs.height != rhs.height {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ProfileUpdate"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.displayName) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._avatar) }()
+      case 3: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if !self.displayName.isEmpty {
+      try visitor.visitSingularStringField(value: self.displayName, fieldNumber: 1)
+    }
+    try { if let v = self._avatar {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
+    if self.timestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_ProfileUpdate, rhs: Relay_Content_ProfileUpdate) -> Bool {
+    if lhs.displayName != rhs.displayName {return false}
+    if lhs._avatar != rhs._avatar {return false}
+    if lhs.timestamp != rhs.timestamp {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

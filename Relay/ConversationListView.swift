@@ -105,9 +105,13 @@ private struct ConversationRow: View {
         return service.displayName(forAccount: conversation.peerAccount)
     }
 
+    private var avatarData: Data? {
+        conversation.isGroup ? nil : service.peerAvatarData(forAccount: conversation.peerAccount)
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            AvatarView(name: displayName, size: 48)
+            AvatarView(name: displayName, size: 48, imageData: avatarData)
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     if conversation.isGroup {

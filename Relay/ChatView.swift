@@ -53,6 +53,11 @@ struct ChatView: View {
         return "Chat"
     }
 
+    private var peerAvatar: Data? {
+        guard !isGroup, let account = conversation?.peerAccount else { return nil }
+        return service.peerAvatarData(forAccount: account)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -111,7 +116,7 @@ struct ChatView: View {
                     if isGroup { showingGroupInfo = true } else { showingContactCard = true }
                 } label: {
                     VStack(spacing: 0) {
-                        AvatarView(name: peerName, size: 30)
+                        AvatarView(name: peerName, size: 30, imageData: isGroup ? nil : peerAvatar)
                         HStack(spacing: 3) {
                             if let symbol = verification?.state.titleSymbol {
                                 Image(systemName: symbol.name)
@@ -596,6 +601,19 @@ private struct MessageBubble: View {
         message.replyTo == nil && message.body.isJumbomojiCandidate && message.attachments.isEmpty
     }
 
+    /// The account whose avatar/name belongs on this incoming bubble: the
+    /// sender in a group, otherwise the 1:1 peer.
+    private var senderAccount: String? {
+        if isGroup { return message.senderAccount }
+        return service.conversations.first { $0.id == conversationId }?.peerAccount
+    }
+    private var avatarName: String {
+        isGroup ? service.displayName(forAccount: message.senderAccount ?? "") : peerName
+    }
+    private var avatarData: Data? {
+        senderAccount.flatMap { service.peerAvatarData(forAccount: $0) }
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if message.isOutgoing {
@@ -603,7 +621,7 @@ private struct MessageBubble: View {
             } else {
                 // Avatar only on the last bubble of a run, like iMessage.
                 if position.closesGroup {
-                    AvatarView(name: peerName, size: 28)
+                    AvatarView(name: avatarName, size: 28, imageData: avatarData)
                 } else {
                     Color.clear.frame(width: 28, height: 1)
                 }

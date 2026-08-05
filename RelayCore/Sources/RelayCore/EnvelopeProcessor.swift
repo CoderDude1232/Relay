@@ -50,6 +50,20 @@ public struct GroupUpdateInfo: Sendable {
     public let name: String
 }
 
+/// A peer's self-set profile. The caller stores it (and downloads the avatar
+/// blob, if any) — kept out of the processor so it stays network-free.
+public struct ProfileInfo: Sendable {
+    public struct Avatar: Sendable {
+        public let id: String
+        public let key: Data
+        public let digest: Data
+    }
+    public let account: String
+    public let displayName: String
+    public let avatar: Avatar?
+    public let revision: Int64
+}
+
 public struct ProcessedEnvelope: Sendable {
     public enum Outcome: Sendable {
         case stored, applied, duplicate, ignored
@@ -62,6 +76,7 @@ public struct ProcessedEnvelope: Sendable {
     public let sideEffects: EnvelopeSideEffects
     public let typingStarted: Bool?
     public let groupUpdate: GroupUpdateInfo?
+    public let profile: ProfileInfo?
 
     public init(
         outcome: Outcome,
@@ -70,7 +85,8 @@ public struct ProcessedEnvelope: Sendable {
         notification: NotificationContent? = nil,
         sideEffects: EnvelopeSideEffects = EnvelopeSideEffects(),
         typingStarted: Bool? = nil,
-        groupUpdate: GroupUpdateInfo? = nil
+        groupUpdate: GroupUpdateInfo? = nil,
+        profile: ProfileInfo? = nil
     ) {
         self.outcome = outcome
         self.peerAccount = peerAccount
@@ -79,6 +95,7 @@ public struct ProcessedEnvelope: Sendable {
         self.sideEffects = sideEffects
         self.typingStarted = typingStarted
         self.groupUpdate = groupUpdate
+        self.profile = profile
     }
 }
 
@@ -186,6 +203,18 @@ public struct EnvelopeProcessor {
                 name: update.name
             )
             return ProcessedEnvelope(outcome: .applied, peerAccount: envelope.senderAccount, groupUpdate: info)
+
+        case .profile(let profile):
+            let avatar: ProfileInfo.Avatar? = profile.hasAvatar
+                ? ProfileInfo.Avatar(id: profile.avatar.id, key: profile.avatar.key, digest: profile.avatar.digest)
+                : nil
+            let info = ProfileInfo(
+                account: envelope.senderAccount,
+                displayName: profile.displayName,
+                avatar: avatar,
+                revision: profile.timestamp
+            )
+            return ProcessedEnvelope(outcome: .applied, peerAccount: envelope.senderAccount, profile: info)
 
         case .typing(let typing):
             // Ephemeral, 1:1 only for now — release the dedup claim.

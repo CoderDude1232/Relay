@@ -99,6 +99,20 @@ public struct StoredAttachment: Sendable, Equatable, Identifiable {
     }
 }
 
+public struct StoredProfile: Sendable, Equatable {
+    public let displayName: String?
+    public let avatarId: String?
+    public let avatarData: Data?
+    public let revision: Int64
+
+    public init(displayName: String?, avatarId: String?, avatarData: Data?, revision: Int64) {
+        self.displayName = displayName
+        self.avatarId = avatarId
+        self.avatarData = avatarData
+        self.revision = revision
+    }
+}
+
 public struct StoredMessage: Sendable, Equatable, Identifiable {
     public let id: String
     public let conversationId: String
@@ -373,6 +387,44 @@ public final class MessageStore {
     /// Marks an attachment's ciphertext as cached locally on disk.
     public func markAttachmentDownloaded(id: String) throws {
         try db.run("UPDATE attachments SET downloaded = 1 WHERE id = ?", [.text(id)])
+    }
+
+    // MARK: - Profiles
+
+    /// A peer's self-set profile (display name + decrypted avatar bytes).
+    public func peerProfile(account: String) throws -> StoredProfile? {
+        let rows = try db.query(
+            "SELECT display_name, avatar_id, avatar_data, revision FROM profiles WHERE account_id = ?",
+            [.text(account)]
+        )
+        guard let row = rows.first else { return nil }
+        return StoredProfile(
+            displayName: row[0].string,
+            avatarId: row[1].string,
+            avatarData: row[2].data,
+            revision: row[3].int64 ?? 0
+        )
+    }
+
+    /// Replaces a peer's profile row wholesale (the caller resolves newest-wins
+    /// and avatar reuse before calling).
+    public func upsertProfile(
+        account: String, displayName: String?, avatarId: String?,
+        avatarData: Data?, revision: Int64
+    ) throws {
+        try db.run(
+            """
+            INSERT OR REPLACE INTO profiles (account_id, display_name, avatar_id, avatar_data, revision)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                .text(account),
+                displayName.map { SQLValue.text($0) } ?? .null,
+                avatarId.map { SQLValue.text($0) } ?? .null,
+                avatarData.map { SQLValue.blob($0) } ?? .null,
+                .integer(revision),
+            ]
+        )
     }
 
     private func reactionsByTarget(in conversationId: String) throws -> [Int64: [MessageReaction]] {

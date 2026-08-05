@@ -135,7 +135,7 @@ func (x ReceiptMessage_Type) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ReceiptMessage_Type.Descriptor instead.
 func (ReceiptMessage_Type) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{8, 0}
+	return file_content_proto_rawDescGZIP(), []int{9, 0}
 }
 
 type TypingMessage_Action int32
@@ -184,7 +184,7 @@ func (x TypingMessage_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TypingMessage_Action.Descriptor instead.
 func (TypingMessage_Action) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{9, 0}
+	return file_content_proto_rawDescGZIP(), []int{10, 0}
 }
 
 type Content struct {
@@ -198,6 +198,7 @@ type Content struct {
 	//	*Content_SenderKeyDistribution
 	//	*Content_GroupUpdate
 	//	*Content_Delete
+	//	*Content_Profile
 	Body isContent_Body `protobuf_oneof:"body"`
 	// Set when this content belongs to a group; empty for 1:1. Group messages
 	// are encrypted with the sender's sender key (senderKey ciphertext);
@@ -307,6 +308,15 @@ func (x *Content) GetDelete() *DeleteMessage {
 	return nil
 }
 
+func (x *Content) GetProfile() *ProfileUpdate {
+	if x != nil {
+		if x, ok := x.Body.(*Content_Profile); ok {
+			return x.Profile
+		}
+	}
+	return nil
+}
+
 func (x *Content) GetGroupId() string {
 	if x != nil {
 		return x.GroupId
@@ -346,6 +356,10 @@ type Content_Delete struct {
 	Delete *DeleteMessage `protobuf:"bytes,7,opt,name=delete,proto3,oneof"`
 }
 
+type Content_Profile struct {
+	Profile *ProfileUpdate `protobuf:"bytes,9,opt,name=profile,proto3,oneof"`
+}
+
 func (*Content_Text) isContent_Body() {}
 
 func (*Content_Receipt) isContent_Body() {}
@@ -359,6 +373,8 @@ func (*Content_SenderKeyDistribution) isContent_Body() {}
 func (*Content_GroupUpdate) isContent_Body() {}
 
 func (*Content_Delete) isContent_Body() {}
+
+func (*Content_Profile) isContent_Body() {}
 
 // Carries a libsignal Sender Key Distribution Message so a member can
 // decrypt this sender's group messages. Sent 1:1 (pairwise-encrypted) to
@@ -669,6 +685,71 @@ func (x *AttachmentPointer) GetHeight() uint32 {
 	return 0
 }
 
+// A sender's self-set profile (display name + optional avatar). Sent over a
+// pairwise session to a peer so it stays end-to-end encrypted — the relay
+// only ever sees the ciphertext and the (already-encrypted) avatar blob. The
+// avatar reuses the AttachmentPointer/AES-256-GCM blob pipeline. Recipients
+// keep the newest by `timestamp`.
+type ProfileUpdate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DisplayName   string                 `protobuf:"bytes,1,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	Avatar        *AttachmentPointer     `protobuf:"bytes,2,opt,name=avatar,proto3" json:"avatar,omitempty"`        // optional; unset means no photo
+	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // sender clock; newest wins
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileUpdate) Reset() {
+	*x = ProfileUpdate{}
+	mi := &file_content_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileUpdate) ProtoMessage() {}
+
+func (x *ProfileUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileUpdate.ProtoReflect.Descriptor instead.
+func (*ProfileUpdate) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ProfileUpdate) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *ProfileUpdate) GetAvatar() *AttachmentPointer {
+	if x != nil {
+		return x.Avatar
+	}
+	return nil
+}
+
+func (x *ProfileUpdate) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 // A snapshot of the message being replied to. Self-contained (carries the
 // quoted text) so the reply renders without a lookup and survives the
 // original being deleted, following Signal's model.
@@ -686,7 +767,7 @@ type Quote struct {
 
 func (x *Quote) Reset() {
 	*x = Quote{}
-	mi := &file_content_proto_msgTypes[5]
+	mi := &file_content_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -698,7 +779,7 @@ func (x *Quote) String() string {
 func (*Quote) ProtoMessage() {}
 
 func (x *Quote) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[5]
+	mi := &file_content_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -711,7 +792,7 @@ func (x *Quote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Quote.ProtoReflect.Descriptor instead.
 func (*Quote) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{5}
+	return file_content_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Quote) GetTargetTimestamp() int64 {
@@ -753,7 +834,7 @@ type DeleteMessage struct {
 
 func (x *DeleteMessage) Reset() {
 	*x = DeleteMessage{}
-	mi := &file_content_proto_msgTypes[6]
+	mi := &file_content_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -765,7 +846,7 @@ func (x *DeleteMessage) String() string {
 func (*DeleteMessage) ProtoMessage() {}
 
 func (x *DeleteMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[6]
+	mi := &file_content_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -778,7 +859,7 @@ func (x *DeleteMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMessage.ProtoReflect.Descriptor instead.
 func (*DeleteMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{6}
+	return file_content_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DeleteMessage) GetTargetTimestamp() int64 {
@@ -816,7 +897,7 @@ type ReactionMessage struct {
 
 func (x *ReactionMessage) Reset() {
 	*x = ReactionMessage{}
-	mi := &file_content_proto_msgTypes[7]
+	mi := &file_content_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -828,7 +909,7 @@ func (x *ReactionMessage) String() string {
 func (*ReactionMessage) ProtoMessage() {}
 
 func (x *ReactionMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[7]
+	mi := &file_content_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -841,7 +922,7 @@ func (x *ReactionMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionMessage.ProtoReflect.Descriptor instead.
 func (*ReactionMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{7}
+	return file_content_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ReactionMessage) GetEmoji() string {
@@ -893,7 +974,7 @@ type ReceiptMessage struct {
 
 func (x *ReceiptMessage) Reset() {
 	*x = ReceiptMessage{}
-	mi := &file_content_proto_msgTypes[8]
+	mi := &file_content_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -905,7 +986,7 @@ func (x *ReceiptMessage) String() string {
 func (*ReceiptMessage) ProtoMessage() {}
 
 func (x *ReceiptMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[8]
+	mi := &file_content_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -918,7 +999,7 @@ func (x *ReceiptMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiptMessage.ProtoReflect.Descriptor instead.
 func (*ReceiptMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{8}
+	return file_content_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReceiptMessage) GetType() ReceiptMessage_Type {
@@ -946,7 +1027,7 @@ type TypingMessage struct {
 
 func (x *TypingMessage) Reset() {
 	*x = TypingMessage{}
-	mi := &file_content_proto_msgTypes[9]
+	mi := &file_content_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -958,7 +1039,7 @@ func (x *TypingMessage) String() string {
 func (*TypingMessage) ProtoMessage() {}
 
 func (x *TypingMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[9]
+	mi := &file_content_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -971,7 +1052,7 @@ func (x *TypingMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TypingMessage.ProtoReflect.Descriptor instead.
 func (*TypingMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{9}
+	return file_content_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *TypingMessage) GetAction() TypingMessage_Action {
@@ -992,7 +1073,7 @@ var File_content_proto protoreflect.FileDescriptor
 
 const file_content_proto_rawDesc = "" +
 	"\n" +
-	"\rcontent.proto\x12\rrelay.content\"\xe8\x03\n" +
+	"\rcontent.proto\x12\rrelay.content\"\xa2\x04\n" +
 	"\aContent\x120\n" +
 	"\x04text\x18\x01 \x01(\v2\x1a.relay.content.TextMessageH\x00R\x04text\x129\n" +
 	"\areceipt\x18\x02 \x01(\v2\x1d.relay.content.ReceiptMessageH\x00R\areceipt\x126\n" +
@@ -1000,7 +1081,8 @@ const file_content_proto_rawDesc = "" +
 	"\breaction\x18\x04 \x01(\v2\x1e.relay.content.ReactionMessageH\x00R\breaction\x12^\n" +
 	"\x17sender_key_distribution\x18\x05 \x01(\v2$.relay.content.SenderKeyDistributionH\x00R\x15senderKeyDistribution\x12?\n" +
 	"\fgroup_update\x18\x06 \x01(\v2\x1a.relay.content.GroupUpdateH\x00R\vgroupUpdate\x126\n" +
-	"\x06delete\x18\a \x01(\v2\x1c.relay.content.DeleteMessageH\x00R\x06delete\x12\x19\n" +
+	"\x06delete\x18\a \x01(\v2\x1c.relay.content.DeleteMessageH\x00R\x06delete\x128\n" +
+	"\aprofile\x18\t \x01(\v2\x1c.relay.content.ProfileUpdateH\x00R\aprofile\x12\x19\n" +
 	"\bgroup_id\x18\b \x01(\tR\agroupIdB\x06\n" +
 	"\x04body\"T\n" +
 	"\x15SenderKeyDistribution\x12\x12\n" +
@@ -1035,7 +1117,11 @@ const file_content_proto_rawDesc = "" +
 	"\x04size\x18\x05 \x01(\x04R\x04size\x12\x1a\n" +
 	"\bfilename\x18\x06 \x01(\tR\bfilename\x12\x14\n" +
 	"\x05width\x18\a \x01(\rR\x05width\x12\x16\n" +
-	"\x06height\x18\b \x01(\rR\x06height\"^\n" +
+	"\x06height\x18\b \x01(\rR\x06height\"\x8a\x01\n" +
+	"\rProfileUpdate\x12!\n" +
+	"\fdisplay_name\x18\x01 \x01(\tR\vdisplayName\x128\n" +
+	"\x06avatar\x18\x02 \x01(\v2 .relay.content.AttachmentPointerR\x06avatar\x12\x1c\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"^\n" +
 	"\x05Quote\x12)\n" +
 	"\x10target_timestamp\x18\x01 \x01(\x03R\x0ftargetTimestamp\x12\x16\n" +
 	"\x06author\x18\x02 \x01(\tR\x06author\x12\x12\n" +
@@ -1077,7 +1163,7 @@ func file_content_proto_rawDescGZIP() []byte {
 }
 
 var file_content_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_content_proto_goTypes = []any{
 	(GroupUpdate_Action)(0),       // 0: relay.content.GroupUpdate.Action
 	(ReceiptMessage_Type)(0),      // 1: relay.content.ReceiptMessage.Type
@@ -1087,30 +1173,33 @@ var file_content_proto_goTypes = []any{
 	(*GroupUpdate)(nil),           // 5: relay.content.GroupUpdate
 	(*TextMessage)(nil),           // 6: relay.content.TextMessage
 	(*AttachmentPointer)(nil),     // 7: relay.content.AttachmentPointer
-	(*Quote)(nil),                 // 8: relay.content.Quote
-	(*DeleteMessage)(nil),         // 9: relay.content.DeleteMessage
-	(*ReactionMessage)(nil),       // 10: relay.content.ReactionMessage
-	(*ReceiptMessage)(nil),        // 11: relay.content.ReceiptMessage
-	(*TypingMessage)(nil),         // 12: relay.content.TypingMessage
+	(*ProfileUpdate)(nil),         // 8: relay.content.ProfileUpdate
+	(*Quote)(nil),                 // 9: relay.content.Quote
+	(*DeleteMessage)(nil),         // 10: relay.content.DeleteMessage
+	(*ReactionMessage)(nil),       // 11: relay.content.ReactionMessage
+	(*ReceiptMessage)(nil),        // 12: relay.content.ReceiptMessage
+	(*TypingMessage)(nil),         // 13: relay.content.TypingMessage
 }
 var file_content_proto_depIdxs = []int32{
 	6,  // 0: relay.content.Content.text:type_name -> relay.content.TextMessage
-	11, // 1: relay.content.Content.receipt:type_name -> relay.content.ReceiptMessage
-	12, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
-	10, // 3: relay.content.Content.reaction:type_name -> relay.content.ReactionMessage
+	12, // 1: relay.content.Content.receipt:type_name -> relay.content.ReceiptMessage
+	13, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
+	11, // 3: relay.content.Content.reaction:type_name -> relay.content.ReactionMessage
 	4,  // 4: relay.content.Content.sender_key_distribution:type_name -> relay.content.SenderKeyDistribution
 	5,  // 5: relay.content.Content.group_update:type_name -> relay.content.GroupUpdate
-	9,  // 6: relay.content.Content.delete:type_name -> relay.content.DeleteMessage
-	0,  // 7: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
-	8,  // 8: relay.content.TextMessage.quote:type_name -> relay.content.Quote
-	7,  // 9: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
-	1,  // 10: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
-	2,  // 11: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	10, // 6: relay.content.Content.delete:type_name -> relay.content.DeleteMessage
+	8,  // 7: relay.content.Content.profile:type_name -> relay.content.ProfileUpdate
+	0,  // 8: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
+	9,  // 9: relay.content.TextMessage.quote:type_name -> relay.content.Quote
+	7,  // 10: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
+	7,  // 11: relay.content.ProfileUpdate.avatar:type_name -> relay.content.AttachmentPointer
+	1,  // 12: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
+	2,  // 13: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_content_proto_init() }
@@ -1126,6 +1215,7 @@ func file_content_proto_init() {
 		(*Content_SenderKeyDistribution)(nil),
 		(*Content_GroupUpdate)(nil),
 		(*Content_Delete)(nil),
+		(*Content_Profile)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1133,7 +1223,7 @@ func file_content_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_content_proto_rawDesc), len(file_content_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -23,6 +23,7 @@ message Content {
     SenderKeyDistribution sender_key_distribution = 5;
     GroupUpdate group_update = 6;
     DeleteMessage delete = 7;
+    ProfileUpdate profile = 9;
   }
   // Set when this content belongs to a group; empty for 1:1. Group messages
   // are encrypted with the sender's sender key (senderKey ciphertext);
@@ -80,6 +81,17 @@ message AttachmentPointer {
   string filename = 6;
   uint32 width = 7;         // pixels (images)
   uint32 height = 8;        // pixels (images)
+}
+
+// A sender's self-set profile (display name + optional avatar). Sent over a
+// pairwise session to a peer so it stays end-to-end encrypted — the relay
+// only ever sees the ciphertext and the (already-encrypted) avatar blob. The
+// avatar reuses the AttachmentPointer/AES-256-GCM blob pipeline. Recipients
+// keep the newest by `timestamp`.
+message ProfileUpdate {
+  string display_name = 1;
+  AttachmentPointer avatar = 2; // optional; unset means no photo
+  int64 timestamp = 3;          // sender clock; newest wins
 }
 
 // A snapshot of the message being replied to. Self-contained (carries the

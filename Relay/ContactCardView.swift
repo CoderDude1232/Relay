@@ -32,7 +32,7 @@ struct ContactCardView: View {
             List {
                 Section {
                     VStack(spacing: 10) {
-                        AvatarView(name: displayName, size: 72)
+                        AvatarView(name: displayName, size: 72, imageData: service.peerAvatarData(forAccount: account))
                         Text(displayName).font(.title2.bold())
                         if let username {
                             Text("@\(username)")
