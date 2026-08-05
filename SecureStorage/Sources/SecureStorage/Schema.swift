@@ -160,5 +160,31 @@ enum Schema {
                 try db.run("PRAGMA user_version = 6;")
             }
         }
+        if version < 7 {
+            // Groups. A group is a conversation with `group_id` set; its
+            // roster/metadata (mirrored from the relay) lives in group_state +
+            // group_members. Messages record `sender_account` so group bubbles
+            // can be attributed (1:1 leaves it null).
+            try db.transaction {
+                try db.run("ALTER TABLE conversations ADD COLUMN group_id TEXT;")
+                try db.run("ALTER TABLE messages ADD COLUMN sender_account TEXT;")
+                try db.run("""
+                    CREATE TABLE group_state (
+                        id              TEXT PRIMARY KEY,
+                        name            TEXT NOT NULL,
+                        distribution_id TEXT NOT NULL,
+                        revision        INTEGER NOT NULL DEFAULT 0
+                    );
+                    """)
+                try db.run("""
+                    CREATE TABLE group_members (
+                        group_id   TEXT NOT NULL,
+                        account_id TEXT NOT NULL,
+                        PRIMARY KEY (group_id, account_id)
+                    );
+                    """)
+                try db.run("PRAGMA user_version = 7;")
+            }
+        }
     }
 }

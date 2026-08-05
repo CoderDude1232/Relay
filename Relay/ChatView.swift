@@ -30,7 +30,10 @@ struct ChatView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingImage: MessagingService.PendingAttachment?
     @State private var showingVerification = false
+    @State private var showingGroupInfo = false
     @State private var verification: MessagingService.PeerVerification?
+
+    private var isGroup: Bool { conversation?.isGroup == true }
     @State private var lastTypingSentAt: Date?
     @FocusState private var composerFocused: Bool
 
@@ -61,6 +64,7 @@ struct ChatView: View {
                                 peerName: peerName,
                                 service: service,
                                 conversationId: conversationId,
+                                isGroup: isGroup,
                                 onLongPress: { actionTarget = message },
                                 onReply: { beginReply(message) }
                             )
@@ -87,7 +91,7 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Button {
-                    showingVerification = true
+                    if isGroup { showingGroupInfo = true } else { showingVerification = true }
                 } label: {
                     VStack(spacing: 0) {
                         AvatarView(name: peerName, size: 30)
@@ -114,6 +118,13 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showingVerification, onDismiss: refreshVerification) {
             VerificationView(service: service, conversationId: conversationId, peerName: peerName)
+        }
+        .sheet(isPresented: $showingGroupInfo) {
+            GroupInfoView(
+                service: service,
+                conversationId: conversationId,
+                ownAccountId: service.credentials.accountId
+            )
         }
         .sheet(item: $actionTarget) { message in
             MessageActionsSheet(
@@ -402,6 +413,7 @@ private struct MessageRow: View {
     let peerName: String
     let service: MessagingService
     let conversationId: String
+    let isGroup: Bool
     let onLongPress: () -> Void
     let onReply: () -> Void
 
@@ -414,6 +426,7 @@ private struct MessageRow: View {
             peerName: peerName,
             service: service,
             conversationId: conversationId,
+            isGroup: isGroup,
             onTapReactions: onLongPress
         )
         .offset(x: dragOffset)
@@ -452,7 +465,13 @@ private struct MessageBubble: View {
     let peerName: String
     let service: MessagingService
     let conversationId: String
+    let isGroup: Bool
     let onTapReactions: () -> Void
+
+    private var showsSenderLabel: Bool {
+        isGroup && !message.isOutgoing && (position == .single || position == .first)
+            && !(message.senderAccount ?? "").isEmpty
+    }
 
     private var isJumbo: Bool {
         message.replyTo == nil && message.body.isJumbomojiCandidate && message.attachments.isEmpty
@@ -472,6 +491,12 @@ private struct MessageBubble: View {
             }
 
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 3) {
+                if showsSenderLabel {
+                    Text(String((message.senderAccount ?? "").prefix(8)))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tint)
+                        .padding(.leading, 4)
+                }
                 bubbleContent
                     .overlay(alignment: message.isOutgoing ? .bottomLeading : .bottomTrailing) {
                         if !message.reactions.isEmpty {

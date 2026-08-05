@@ -170,6 +170,9 @@ final class MessagingService {
                 refreshConversations()
                 refreshActiveMessages(ifShowing: conversationId)
             }
+            if let groupUpdate = result.groupUpdate {
+                await handleGroupUpdate(groupUpdate)
+            }
         } catch {
             log.error("failed to process envelope \(envelope.id): \(error)")
         }
@@ -192,6 +195,10 @@ final class MessagingService {
         replyTo: QuotedMessage? = nil,
         attachments pending: [PendingAttachment] = []
     ) async {
+        if let group = try? groupForConversation(conversationId) {
+            await sendGroupMessage(text, in: conversationId, group: group, replyTo: replyTo, attachments: pending)
+            return
+        }
         guard let peer = try? peerAccount(for: conversationId) else { return }
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let localId = UUID().uuidString
@@ -251,6 +258,235 @@ final class MessagingService {
             try? storage.messages.updateStatus(messageId: localId, status: .failed)
         }
         refreshActiveMessages(ifShowing: conversationId)
+    }
+
+    // MARK: - Groups
+
+    /// The stored group backing a conversation (nil for 1:1), for the UI.
+    func group(for conversationId: String) -> StoredGroup? {
+        try? groupForConversation(conversationId)
+    }
+
+    /// The stored group backing a conversation, or nil for 1:1.
+    private func groupForConversation(_ conversationId: String) throws -> StoredGroup? {
+        guard let groupId = try storage.database.query(
+            "SELECT group_id FROM conversations WHERE id = ?", [.text(conversationId)]
+        ).first?.first?.string else { return nil }
+        return try storage.messages.group(id: groupId)
+    }
+
+    /// Creates a group (server holds the roster), sets up our sender key,
+    /// and notifies members to sync. Returns the local conversation id.
+    func createGroup(name: String, memberUsernames: [String]) async throws -> String {
+        var members: [String] = []
+        for username in memberUsernames {
+            let account = try await api.lookupAccount(username: username)
+            members.append(account)
+            try? await refreshSessions(withPeer: account) // need pairwise sessions for SKDM/control
+        }
+        let gs = try await api.createGroup(name: name, members: members)
+        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        refreshConversations()
+        if let stored = try storage.messages.group(id: gs.id) {
+            try? await distributeSenderKeyIfNeeded(group: stored)
+            await sendGroupUpdate(.create, group: stored, target: "")
+        }
+        return try storage.messages.groupConversationId(groupId: gs.id) ?? ""
+    }
+
+    func addGroupMember(username: String, toGroup groupId: String) async throws {
+        let account = try await api.lookupAccount(username: username)
+        try? await refreshSessions(withPeer: account)
+        let gs = try await api.addGroupMember(groupId: groupId, account: account)
+        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        refreshConversations()
+        if let stored = try storage.messages.group(id: gs.id) {
+            try? await distributeSenderKeyIfNeeded(group: stored) // reaches the new member
+            await sendGroupUpdate(.add, group: stored, target: account)
+        }
+    }
+
+    func removeGroupMember(_ account: String, fromGroup groupId: String) async throws {
+        let gs = try await api.removeGroupMember(groupId: groupId, account: account) // server rotates distributionId
+        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        refreshConversations()
+        if let stored = try storage.messages.group(id: gs.id) {
+            try? await distributeSenderKeyIfNeeded(group: stored) // fresh epoch → redistribute to remaining
+            await sendGroupUpdate(.remove, group: stored, target: account)
+        }
+    }
+
+    func leaveGroup(_ groupId: String) async throws {
+        let gs = try await api.removeGroupMember(groupId: groupId, account: credentials.accountId)
+        let remaining = StoredGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        await sendGroupUpdate(.leave, group: remaining, target: credentials.accountId)
+        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        refreshConversations()
+    }
+
+    private func sendGroupMessage(
+        _ text: String, in conversationId: String, group: StoredGroup,
+        replyTo: QuotedMessage?, attachments pending: [PendingAttachment]
+    ) async {
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let localId = UUID().uuidString
+        guard let distributionId = UUID(uuidString: group.distributionId) else { return }
+        do {
+            try await distributeSenderKeyIfNeeded(group: group)
+            let (storedAttachments, pointers) = try await encryptAttachments(pending)
+
+            try storage.messages.insertMessage(
+                id: localId, conversationId: conversationId, isOutgoing: true,
+                body: text, timestamp: timestamp, status: .sending,
+                replyTo: replyTo, attachments: storedAttachments,
+                senderAccount: credentials.accountId
+            )
+            refreshConversations()
+            refreshActiveMessages(ifShowing: conversationId)
+
+            var content = Relay_Content_Content()
+            content.text.body = text
+            content.text.timestamp = timestamp
+            if let replyTo {
+                content.text.quote.targetTimestamp = replyTo.targetTimestamp
+                content.text.quote.author = replyTo.author
+                content.text.quote.text = replyTo.text
+            }
+            content.text.attachments = pointers
+            content.groupID = group.id
+
+            // Encrypt once with our sender key, fan the same ciphertext out.
+            let sealed = try engine.groupEncrypt(try content.serializedData(), distributionId: distributionId)
+            for member in group.members where member != credentials.accountId {
+                try await sendEncrypted(sealed, toPeer: member, clientTimestamp: timestamp)
+            }
+            try storage.messages.updateStatus(messageId: localId, status: .sent)
+        } catch {
+            log.error("group send failed: \(error)")
+            try? storage.messages.updateStatus(messageId: localId, status: .failed)
+        }
+        refreshActiveMessages(ifShowing: conversationId)
+    }
+
+    /// Sends our SKDM (pairwise-encrypted) to any members who don't yet have
+    /// it for the group's current distribution id. Tracked in the kv table so
+    /// we only distribute once per epoch per member.
+    private func distributeSenderKeyIfNeeded(group: StoredGroup) async throws {
+        guard let distributionId = UUID(uuidString: group.distributionId) else { return }
+        let key = "skdm:\(group.id):\(group.distributionId)"
+        var sent = Set(loadStringArray(key))
+        let targets = group.members.filter { $0 != credentials.accountId && !sent.contains($0) }
+        guard !targets.isEmpty else { return }
+
+        let skdm = try engine.senderKeyDistributionMessage(distributionId: distributionId)
+        var content = Relay_Content_Content()
+        content.senderKeyDistribution.data = skdm
+        content.senderKeyDistribution.distributionID = group.distributionId
+        content.groupID = group.id
+        let data = try content.serializedData()
+        for member in targets {
+            do {
+                try await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
+                sent.insert(member)
+            } catch {
+                log.warning("SKDM send to \(member) failed: \(error)")
+            }
+        }
+        saveStringArray(key, Array(sent))
+    }
+
+    private func sendGroupUpdate(_ action: Relay_Content_GroupUpdate.Action, group: StoredGroup, target: String) async {
+        var content = Relay_Content_Content()
+        content.groupUpdate.action = action
+        content.groupUpdate.actor = credentials.accountId
+        content.groupUpdate.target = target
+        content.groupUpdate.name = group.name
+        content.groupUpdate.revision = group.revision
+        content.groupID = group.id
+        guard let data = try? content.serializedData() else { return }
+        for member in group.members where member != credentials.accountId {
+            try? await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
+        }
+    }
+
+    /// Fans an already-encrypted message (e.g. a sender-key group message) to
+    /// every device of `account`, with the same mismatch-retry as 1:1 sends.
+    private func sendEncrypted(_ message: SecureMessage, toPeer account: String, clientTimestamp: Int64) async throws {
+        guard let socket else { throw RelayWebSocketError.notConnected }
+        if knownDevices(ofPeer: account).isEmpty {
+            try await refreshSessions(withPeer: account)
+        }
+        func payloads() -> [DeviceMessagePayload] {
+            knownDevices(ofPeer: account).map {
+                DeviceMessagePayload(deviceId: $0.id, registrationId: $0.registrationId, message: message)
+            }
+        }
+        var outcome = try await socket.send(to: account, messages: payloads(), clientTimestamp: clientTimestamp)
+        if case .mismatchedDevices = outcome {
+            try await refreshSessions(withPeer: account)
+            outcome = try await socket.send(to: account, messages: payloads(), clientTimestamp: clientTimestamp)
+        }
+        guard case .ok = outcome else {
+            throw RelayAPIError.http(status: 0, message: "group send rejected: \(outcome)")
+        }
+    }
+
+    /// Re-syncs a group's roster from the relay after a GroupUpdate. If we
+    /// were the one removed, the fetch 403s and we simply stop.
+    private func handleGroupUpdate(_ info: GroupUpdateInfo) async {
+        if info.action == .remove, info.target == credentials.accountId { return }
+        do {
+            let gs = try await api.fetchGroup(id: info.groupId)
+            try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+            refreshConversations()
+            if let convoId = try storage.messages.groupConversationId(groupId: gs.id) {
+                refreshActiveMessages(ifShowing: convoId)
+            }
+        } catch {
+            log.warning("group sync failed for \(info.groupId): \(error)")
+        }
+    }
+
+    private func encryptAttachments(
+        _ pending: [PendingAttachment]
+    ) async throws -> ([StoredAttachment], [Relay_Content_AttachmentPointer]) {
+        var stored: [StoredAttachment] = []
+        var pointers: [Relay_Content_AttachmentPointer] = []
+        for item in pending {
+            let sealed = try AttachmentCipher.seal(item.data)
+            let id = try await api.uploadAttachment(sealed.ciphertext)
+            try? attachmentStore.write(sealed.ciphertext, for: id)
+            stored.append(StoredAttachment(
+                id: id, key: sealed.key, digest: sealed.digest, contentType: item.contentType,
+                size: Int64(sealed.ciphertext.count), filename: item.filename,
+                width: item.width, height: item.height, isDownloaded: true
+            ))
+            var pointer = Relay_Content_AttachmentPointer()
+            pointer.id = id
+            pointer.key = sealed.key
+            pointer.digest = sealed.digest
+            pointer.contentType = item.contentType
+            pointer.size = UInt64(sealed.ciphertext.count)
+            if let filename = item.filename { pointer.filename = filename }
+            pointer.width = UInt32(item.width)
+            pointer.height = UInt32(item.height)
+            pointers.append(pointer)
+        }
+        return (stored, pointers)
+    }
+
+    private func loadStringArray(_ key: String) -> [String] {
+        guard let data = try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(key)]
+        ).first?.first?.data else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+
+    private func saveStringArray(_ key: String, _ value: [String]) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(data)]
+        )
     }
 
     // MARK: - Attachments

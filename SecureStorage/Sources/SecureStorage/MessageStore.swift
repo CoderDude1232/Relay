@@ -14,6 +14,27 @@ public struct Conversation: Sendable, Equatable, Identifiable {
     public let peerUsername: String?
     public let lastMessageAt: Int64?
     public let lastMessageBody: String?
+    /// Non-nil for group conversations (equals the group id).
+    public let groupId: String?
+
+    public var isGroup: Bool { groupId != nil }
+}
+
+/// A group's roster + state, mirrored from the relay.
+public struct StoredGroup: Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let distributionId: String
+    public let revision: Int64
+    public let members: [String]
+
+    public init(id: String, name: String, distributionId: String, revision: Int64, members: [String]) {
+        self.id = id
+        self.name = name
+        self.distributionId = distributionId
+        self.revision = revision
+        self.members = members
+    }
 }
 
 public enum MessageStatus: String, Sendable {
@@ -95,6 +116,8 @@ public struct StoredMessage: Sendable, Equatable, Identifiable {
     public let isDeleted: Bool
     /// Media attachments, in send order.
     public let attachments: [StoredAttachment]
+    /// For group messages, the account id of the sender (nil for 1:1).
+    public let senderAccount: String?
 }
 
 public final class MessageStore {
@@ -136,7 +159,8 @@ public final class MessageStore {
         let rows = try db.query("""
             SELECT c.id, c.peer_account, c.peer_username, c.last_message_at,
                    (SELECT body FROM messages m WHERE m.conversation_id = c.id
-                    ORDER BY m.timestamp DESC LIMIT 1)
+                    ORDER BY m.timestamp DESC LIMIT 1),
+                   c.group_id
             FROM conversations c
             ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC
             """)
@@ -146,9 +170,74 @@ public final class MessageStore {
                 peerAccount: $0[1].string ?? "",
                 peerUsername: $0[2].string,
                 lastMessageAt: $0[3].int64,
-                lastMessageBody: $0[4].string
+                lastMessageBody: $0[4].string,
+                groupId: $0[5].string
             )
         }
+    }
+
+    // MARK: - Groups
+
+    /// Creates or updates a group's local state + roster, ensuring a
+    /// conversation row exists for it (peer_account == group id).
+    public func upsertGroup(
+        id: String, name: String, distributionId: String, revision: Int64, members: [String]
+    ) throws {
+        try db.transaction {
+            // Ensure the conversation exists and is tagged as a group.
+            let existing = try db.query(
+                "SELECT id FROM conversations WHERE peer_account = ?", [.text(id)]
+            ).first?.first?.string
+            if existing == nil {
+                try db.run(
+                    """
+                    INSERT INTO conversations (id, peer_account, peer_username, created_at, group_id)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [.text(UUID().uuidString), .text(id), .text(name),
+                     .integer(Int64(Date().timeIntervalSince1970 * 1000)), .text(id)]
+                )
+            } else {
+                try db.run(
+                    "UPDATE conversations SET peer_username = ?, group_id = ? WHERE peer_account = ?",
+                    [.text(name), .text(id), .text(id)]
+                )
+            }
+            try db.run(
+                "INSERT OR REPLACE INTO group_state (id, name, distribution_id, revision) VALUES (?, ?, ?, ?)",
+                [.text(id), .text(name), .text(distributionId), .integer(revision)]
+            )
+            try db.run("DELETE FROM group_members WHERE group_id = ?", [.text(id)])
+            for member in members {
+                try db.run(
+                    "INSERT OR IGNORE INTO group_members (group_id, account_id) VALUES (?, ?)",
+                    [.text(id), .text(member)]
+                )
+            }
+        }
+    }
+
+    public func group(id: String) throws -> StoredGroup? {
+        guard let row = try db.query(
+            "SELECT name, distribution_id, revision FROM group_state WHERE id = ?", [.text(id)]
+        ).first else { return nil }
+        let members = try db.query(
+            "SELECT account_id FROM group_members WHERE group_id = ? ORDER BY account_id", [.text(id)]
+        ).compactMap { $0.first?.string }
+        return StoredGroup(
+            id: id,
+            name: row[0].string ?? "",
+            distributionId: row[1].string ?? "",
+            revision: row[2].int64 ?? 0,
+            members: members
+        )
+    }
+
+    /// The conversation id for a group (nil if not yet created locally).
+    public func groupConversationId(groupId: String) throws -> String? {
+        try db.query(
+            "SELECT id FROM conversations WHERE peer_account = ?", [.text(groupId)]
+        ).first?.first?.string
     }
 
     // MARK: - Messages
@@ -165,7 +254,8 @@ public final class MessageStore {
         timestamp: Int64,
         status: MessageStatus,
         replyTo: QuotedMessage? = nil,
-        attachments: [StoredAttachment] = []
+        attachments: [StoredAttachment] = [],
+        senderAccount: String? = nil
     ) throws -> Bool {
         let inserted = try db.transaction {
             let exists = try !db.query("SELECT 1 FROM messages WHERE id = ?", [.text(id)]).isEmpty
@@ -174,8 +264,8 @@ public final class MessageStore {
                 """
                 INSERT INTO messages
                     (id, conversation_id, is_outgoing, body, timestamp, status, created_at,
-                     reply_to_timestamp, reply_to_author, reply_to_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     reply_to_timestamp, reply_to_author, reply_to_text, sender_account)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     .text(id), .text(conversationId), .integer(isOutgoing ? 1 : 0),
@@ -184,6 +274,7 @@ public final class MessageStore {
                     replyTo.map { .integer($0.targetTimestamp) } ?? .null,
                     replyTo.map { .text($0.author) } ?? .null,
                     replyTo.map { .text($0.text) } ?? .null,
+                    senderAccount.map { .text($0) } ?? .null,
                 ]
             )
             for (ordinal, attachment) in attachments.enumerated() {
@@ -219,7 +310,7 @@ public final class MessageStore {
         let rows = try db.query(
             """
             SELECT id, is_outgoing, body, timestamp, status,
-                   reply_to_timestamp, reply_to_author, reply_to_text, deleted FROM (
+                   reply_to_timestamp, reply_to_author, reply_to_text, deleted, sender_account FROM (
                 SELECT * FROM messages WHERE conversation_id = ?
                 ORDER BY timestamp DESC LIMIT ?
             ) ORDER BY timestamp ASC
@@ -241,7 +332,8 @@ public final class MessageStore {
                 replyTo: replyTo,
                 reactions: reactions[timestamp] ?? [],
                 isDeleted: row[8].int64 == 1,
-                attachments: attachments[row[0].string ?? ""] ?? []
+                attachments: attachments[row[0].string ?? ""] ?? [],
+                senderAccount: row[9].string
             )
         }
     }

@@ -10,6 +10,7 @@ struct ConversationListView: View {
     let service: MessagingService
 
     @State private var showingNewConversation = false
+    @State private var showingNewGroup = false
     @State private var newUsername = ""
     @State private var newConversationError: String?
     @State private var path = NavigationPath()
@@ -41,11 +42,25 @@ struct ConversationListView: View {
                     ConnectionBadge(state: service.connectionState)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingNewConversation = true
+                    Menu {
+                        Button {
+                            showingNewConversation = true
+                        } label: {
+                            Label("New Chat", systemImage: "person")
+                        }
+                        Button {
+                            showingNewGroup = true
+                        } label: {
+                            Label("New Group", systemImage: "person.3")
+                        }
                     } label: {
                         Image(systemName: "square.and.pencil")
                     }
+                }
+            }
+            .sheet(isPresented: $showingNewGroup) {
+                NewGroupView(service: service) { conversationId in
+                    path.append(conversationId)
                 }
             }
             .alert("New Conversation", isPresented: $showingNewConversation) {
@@ -89,6 +104,11 @@ private struct ConversationRow: View {
             AvatarView(name: conversation.peerUsername ?? conversation.peerAccount, size: 48)
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
+                    if conversation.isGroup {
+                        Image(systemName: "person.3.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text(displayName)
                         .font(.headline)
                     Spacer()

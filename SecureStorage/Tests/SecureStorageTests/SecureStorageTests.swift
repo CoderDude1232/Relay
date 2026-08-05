@@ -297,6 +297,33 @@ struct MessageStoreTests {
         #expect(try store.claimEnvelope(id: "env-2"))
     }
 
+    @Test func groupStateRosterAndConversation() throws {
+        let storage = try SecureStore(path: tempDBPath(), key: .random(), credentials: TestCredentials())
+        let store = storage.messages
+
+        try store.upsertGroup(id: "grp-1", name: "Trip", distributionId: "dist-1", revision: 1,
+                              members: ["me", "bob", "carol"])
+        let g = try #require(try store.group(id: "grp-1"))
+        #expect(g.name == "Trip" && g.distributionId == "dist-1" && g.revision == 1)
+        #expect(g.members == ["bob", "carol", "me"]) // ordered by account_id
+
+        // A group conversation exists and is flagged as a group.
+        let convoId = try #require(try store.groupConversationId(groupId: "grp-1"))
+        let convo = try #require(try store.conversations().first { $0.id == convoId })
+        #expect(convo.isGroup && convo.groupId == "grp-1" && convo.peerUsername == "Trip")
+
+        // A group message records its sender for attribution.
+        try store.insertMessage(id: "gm1", conversationId: convoId, isOutgoing: false,
+                                body: "hi all", timestamp: 1000, status: .received, senderAccount: "bob")
+        #expect(try store.messages(in: convoId)[0].senderAccount == "bob")
+
+        // Upsert with new roster + distribution id (a rotation) replaces state.
+        try store.upsertGroup(id: "grp-1", name: "Trip", distributionId: "dist-2", revision: 3,
+                              members: ["me", "bob"])
+        let rotated = try #require(try store.group(id: "grp-1"))
+        #expect(rotated.distributionId == "dist-2" && rotated.members == ["bob", "me"])
+    }
+
     @Test func receiptsUpgradeButNeverDowngrade() throws {
         let storage = try SecureStore(path: tempDBPath(), key: .random(), credentials: TestCredentials())
         let store = storage.messages

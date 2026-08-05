@@ -5,9 +5,10 @@
 //  The single, shared incoming pipeline. Both the app (over the WebSocket)
 //  and the Notification Service Extension (from the push payload) run an
 //  envelope through here: it claims the envelope exactly once, decrypts it
-//  (advancing the Double Ratchet in the shared store), applies the content,
-//  and returns what happened. Network side-effects (receipts, username
-//  lookups) are *returned* rather than performed, so the NSE can ignore them.
+//  (advancing the Double Ratchet / applying sender keys in the shared store),
+//  applies the content, and returns what happened. Network side-effects
+//  (receipts, username lookups, group re-sync) are *returned* rather than
+//  performed, so the NSE can ignore them.
 //
 
 import CryptoCore
@@ -17,13 +18,15 @@ import RelayKit
 import SecureStorage
 import SwiftProtobuf
 
-/// Actions the caller may perform after processing. The NSE ignores these;
-/// the app sends the receipt and does the username backfill.
+/// Actions the caller may perform after processing. The NSE ignores these.
 public struct EnvelopeSideEffects: Sendable {
-    /// Send a delivery receipt for this sender timestamp to the peer.
     public var deliveryReceiptTimestamp: Int64?
-    /// The conversation has no username yet; resolve it from the relay.
     public var backfillUsernameForAccount: String?
+
+    public init(deliveryReceiptTimestamp: Int64? = nil, backfillUsernameForAccount: String? = nil) {
+        self.deliveryReceiptTimestamp = deliveryReceiptTimestamp
+        self.backfillUsernameForAccount = backfillUsernameForAccount
+    }
 }
 
 /// A user-visible message worth surfacing as a notification.
@@ -33,12 +36,23 @@ public struct NotificationContent: Sendable {
     public let body: String
 }
 
+public enum GroupAction: Sendable {
+    case create, add, remove, leave, rename, unknown
+}
+
+/// A group membership/metadata change; the caller re-syncs the roster from
+/// the relay and inserts a system line.
+public struct GroupUpdateInfo: Sendable {
+    public let groupId: String
+    public let action: GroupAction
+    public let actor: String
+    public let target: String
+    public let name: String
+}
+
 public struct ProcessedEnvelope: Sendable {
     public enum Outcome: Sendable {
-        case stored      // a new message row was inserted
-        case applied     // reaction/receipt/delete applied to existing state
-        case duplicate   // already processed (or replayed) — nothing to do
-        case ignored     // nothing persistent (e.g. typing)
+        case stored, applied, duplicate, ignored
     }
 
     public let outcome: Outcome
@@ -46,8 +60,26 @@ public struct ProcessedEnvelope: Sendable {
     public let conversationId: String?
     public let notification: NotificationContent?
     public let sideEffects: EnvelopeSideEffects
-    /// Non-nil when the envelope was a typing indicator (true = started).
     public let typingStarted: Bool?
+    public let groupUpdate: GroupUpdateInfo?
+
+    public init(
+        outcome: Outcome,
+        peerAccount: String? = nil,
+        conversationId: String? = nil,
+        notification: NotificationContent? = nil,
+        sideEffects: EnvelopeSideEffects = EnvelopeSideEffects(),
+        typingStarted: Bool? = nil,
+        groupUpdate: GroupUpdateInfo? = nil
+    ) {
+        self.outcome = outcome
+        self.peerAccount = peerAccount
+        self.conversationId = conversationId
+        self.notification = notification
+        self.sideEffects = sideEffects
+        self.typingStarted = typingStarted
+        self.groupUpdate = groupUpdate
+    }
 }
 
 public struct EnvelopeProcessor {
@@ -59,140 +91,123 @@ public struct EnvelopeProcessor {
         self.engine = engine
     }
 
-    /// Claims, decrypts and applies one envelope. Throws only on unexpected
-    /// storage failures; decrypt failures are surfaced by rethrowing (callers
-    /// still ack, per poison-message handling).
     public func process(_ envelope: IncomingEnvelope) throws -> ProcessedEnvelope {
-        // Exactly-once: destructive decryption must run in one process only.
         guard try storage.messages.claimEnvelope(id: envelope.id) else {
-            return ProcessedEnvelope(
-                outcome: .duplicate, peerAccount: envelope.senderAccount,
-                conversationId: nil, notification: nil,
-                sideEffects: EnvelopeSideEffects(), typingStarted: nil
-            )
+            return ProcessedEnvelope(outcome: .duplicate, peerAccount: envelope.senderAccount)
         }
 
         let sender = try ProtocolAddress(name: envelope.senderAccount, deviceId: envelope.senderDevice)
         let plaintext = try engine.decrypt(envelope.message, from: sender)
         let content = try Relay_Content_Content(serializedBytes: plaintext)
-        var effects = EnvelopeSideEffects()
+        let groupId = content.groupID.isEmpty ? nil : content.groupID
+
+        // A chat message lands in the group conversation (keyed by group id)
+        // or the 1:1 conversation with the sender.
+        func chatConversation() throws -> String {
+            try storage.messages.conversation(withPeer: groupId ?? envelope.senderAccount)
+        }
 
         switch content.body {
         case .text(let text):
-            let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
+            let conversationId = try chatConversation()
             let quote: QuotedMessage? = text.hasQuote
-                ? QuotedMessage(
-                    targetTimestamp: text.quote.targetTimestamp,
-                    author: text.quote.author,
-                    text: text.quote.text
-                )
+                ? QuotedMessage(targetTimestamp: text.quote.targetTimestamp, author: text.quote.author, text: text.quote.text)
                 : nil
-            let attachments = text.attachments.map { pointer in
+            let attachments = text.attachments.map { p in
                 StoredAttachment(
-                    id: pointer.id,
-                    key: pointer.key,
-                    digest: pointer.digest,
-                    contentType: pointer.contentType,
-                    size: Int64(pointer.size),
-                    filename: pointer.filename.isEmpty ? nil : pointer.filename,
-                    width: Int(pointer.width),
-                    height: Int(pointer.height),
-                    isDownloaded: false
+                    id: p.id, key: p.key, digest: p.digest, contentType: p.contentType,
+                    size: Int64(p.size), filename: p.filename.isEmpty ? nil : p.filename,
+                    width: Int(p.width), height: Int(p.height), isDownloaded: false
                 )
             }
             let inserted = try storage.messages.insertMessage(
-                id: envelope.id,
-                conversationId: conversationId,
-                isOutgoing: false,
-                body: text.body,
-                timestamp: text.timestamp,
-                status: .received,
-                replyTo: quote,
-                attachments: attachments
+                id: envelope.id, conversationId: conversationId, isOutgoing: false,
+                body: text.body, timestamp: text.timestamp, status: .received,
+                replyTo: quote, attachments: attachments,
+                senderAccount: groupId == nil ? nil : envelope.senderAccount
             )
-            if inserted {
+            var effects = EnvelopeSideEffects()
+            if inserted, groupId == nil {
+                // Group delivery receipts to every member are noisy; 1:1 only.
                 effects.deliveryReceiptTimestamp = text.timestamp
             }
-            if !hasUsername(conversationId: conversationId) {
+            if groupId == nil, !hasUsername(conversationId: conversationId) {
                 effects.backfillUsernameForAccount = envelope.senderAccount
             }
+            let preview = text.body.isEmpty && !attachments.isEmpty ? "📷 Photo" : text.body
             return ProcessedEnvelope(
                 outcome: inserted ? .stored : .duplicate,
                 peerAccount: envelope.senderAccount,
                 conversationId: conversationId,
                 notification: inserted
-                    ? NotificationContent(
-                        senderAccount: envelope.senderAccount,
-                        conversationId: conversationId,
-                        body: text.body.isEmpty && !attachments.isEmpty ? "📷 Photo" : text.body
-                    )
+                    ? NotificationContent(senderAccount: envelope.senderAccount, conversationId: conversationId, body: preview)
                     : nil,
-                sideEffects: effects,
-                typingStarted: nil
+                sideEffects: effects
             )
 
         case .reaction(let reaction):
-            let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
+            let conversationId = try chatConversation()
             try storage.messages.setReaction(
-                conversationId: conversationId,
-                targetTimestamp: reaction.targetTimestamp,
-                author: envelope.senderAccount,
-                isOutgoing: false,
-                emoji: reaction.emoji,
-                remove: reaction.remove
+                conversationId: conversationId, targetTimestamp: reaction.targetTimestamp,
+                author: envelope.senderAccount, isOutgoing: false,
+                emoji: reaction.emoji, remove: reaction.remove
             )
             return ProcessedEnvelope(
-                outcome: .applied,
-                peerAccount: envelope.senderAccount,
-                conversationId: conversationId,
-                notification: reaction.remove
-                    ? nil
-                    : NotificationContent(senderAccount: envelope.senderAccount, conversationId: conversationId, body: "Reacted \(reaction.emoji)"),
-                sideEffects: effects,
-                typingStarted: nil
+                outcome: .applied, peerAccount: envelope.senderAccount, conversationId: conversationId,
+                notification: reaction.remove ? nil
+                    : NotificationContent(senderAccount: envelope.senderAccount, conversationId: conversationId, body: "Reacted \(reaction.emoji)")
             )
 
         case .receipt(let receipt):
-            let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
+            let conversationId = try chatConversation()
             try storage.messages.applyReceipt(
-                conversationId: conversationId,
-                timestamps: receipt.messageTimestamps,
+                conversationId: conversationId, timestamps: receipt.messageTimestamps,
                 status: receipt.type == .read ? .read : .delivered
             )
-            return ProcessedEnvelope(
-                outcome: .applied, peerAccount: envelope.senderAccount,
-                conversationId: conversationId, notification: nil,
-                sideEffects: effects, typingStarted: nil
-            )
+            return ProcessedEnvelope(outcome: .applied, peerAccount: envelope.senderAccount, conversationId: conversationId)
 
         case .delete(let deletion):
-            let conversationId = try storage.messages.conversation(withPeer: envelope.senderAccount)
-            try storage.messages.markDeleted(
-                conversationId: conversationId,
-                targetTimestamp: deletion.targetTimestamp
+            let conversationId = try chatConversation()
+            try storage.messages.markDeleted(conversationId: conversationId, targetTimestamp: deletion.targetTimestamp)
+            return ProcessedEnvelope(outcome: .applied, peerAccount: envelope.senderAccount, conversationId: conversationId)
+
+        case .senderKeyDistribution(let skd):
+            // Store the sender's group sender key so their .senderKey group
+            // messages decrypt from here on.
+            try engine.processSenderKeyDistribution(skd.data, from: sender)
+            return ProcessedEnvelope(outcome: .applied, peerAccount: envelope.senderAccount)
+
+        case .groupUpdate(let update):
+            let info = GroupUpdateInfo(
+                groupId: content.groupID,
+                action: Self.action(update.action),
+                actor: update.actor,
+                target: update.target,
+                name: update.name
             )
-            return ProcessedEnvelope(
-                outcome: .applied, peerAccount: envelope.senderAccount,
-                conversationId: conversationId, notification: nil,
-                sideEffects: effects, typingStarted: nil
-            )
+            return ProcessedEnvelope(outcome: .applied, peerAccount: envelope.senderAccount, groupUpdate: info)
 
         case .typing(let typing):
-            // Ephemeral: nothing to store, and it's never pushed, so it needs
-            // no dedup — release the claim to keep the table from growing.
+            // Ephemeral, 1:1 only for now — release the dedup claim.
             try? storage.messages.releaseEnvelope(id: envelope.id)
             return ProcessedEnvelope(
                 outcome: .ignored, peerAccount: envelope.senderAccount,
-                conversationId: nil, notification: nil,
-                sideEffects: effects, typingStarted: typing.action == .started
+                typingStarted: groupId == nil ? (typing.action == .started) : nil
             )
 
         case .none:
-            return ProcessedEnvelope(
-                outcome: .ignored, peerAccount: envelope.senderAccount,
-                conversationId: nil, notification: nil,
-                sideEffects: effects, typingStarted: nil
-            )
+            return ProcessedEnvelope(outcome: .ignored, peerAccount: envelope.senderAccount)
+        }
+    }
+
+    private static func action(_ a: Relay_Content_GroupUpdate.Action) -> GroupAction {
+        switch a {
+        case .create: .create
+        case .add: .add
+        case .remove: .remove
+        case .leave: .leave
+        case .rename: .rename
+        default: .unknown
         }
     }
 

@@ -100,6 +100,28 @@ public struct RelayAPIClient: Sendable {
         return try response.devices.map { try $0.model() }
     }
 
+    // MARK: - Groups (server-stored roster)
+
+    public func createGroup(name: String, members: [String]) async throws -> GroupState {
+        try await request("POST", "v1/groups", body: CreateGroupRequest(name: name, members: members))
+    }
+
+    public func fetchGroup(id: String) async throws -> GroupState {
+        try await request("GET", "v1/groups/\(id)", body: nil as String?)
+    }
+
+    public func addGroupMember(groupId: String, account: String) async throws -> GroupState {
+        try await request("POST", "v1/groups/\(groupId)/members", body: AccountRequest(account: account))
+    }
+
+    public func removeGroupMember(groupId: String, account: String) async throws -> GroupState {
+        try await request("DELETE", "v1/groups/\(groupId)/members/\(account)", body: nil as String?)
+    }
+
+    public func renameGroup(groupId: String, name: String) async throws -> GroupState {
+        try await request("PUT", "v1/groups/\(groupId)", body: NameRequest(name: name))
+    }
+
     // MARK: - Attachments (opaque encrypted blobs)
 
     /// Allocates a blob id, then uploads the encrypted bytes to it. Returns
@@ -165,6 +187,30 @@ public struct RelayAPIClient: Sendable {
         request.httpBody = try JSONEncoder().encode(body)
         _ = try await send(request)
     }
+}
+
+// MARK: - Groups
+
+/// A group's roster + state as returned by the relay.
+public struct GroupState: Decodable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let distributionId: String
+    public let revision: Int64
+    public let members: [String]
+}
+
+private struct CreateGroupRequest: Encodable {
+    let name: String
+    let members: [String]
+}
+
+private struct AccountRequest: Encodable {
+    let account: String
+}
+
+private struct NameRequest: Encodable {
+    let name: String
 }
 
 // MARK: - Wire DTOs (base64 binary fields)
