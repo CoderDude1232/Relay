@@ -763,10 +763,18 @@ private struct AttachmentImageView: View {
             } else {
                 ZStack {
                     Rectangle().fill(.fill.tertiary)
-                    Image(systemName: failed ? "exclamationmark.triangle" : "photo")
+                    if failed {
+                        VStack(spacing: 4) {
+                            Image(systemName: "arrow.clockwise")
+                            Text("Tap to retry").font(.caption2)
+                        }
                         .foregroundStyle(.secondary)
-                    if !failed { ProgressView() }
+                    } else {
+                        ProgressView()
+                    }
                 }
+                .contentShape(.rect)
+                .onTapGesture { if failed { Task { await load() } } }
             }
         }
         .frame(width: 240, height: height)
@@ -775,6 +783,7 @@ private struct AttachmentImageView: View {
     }
 
     private func load() async {
+        failed = false
         if !attachment.isDownloaded {
             await service.downloadAttachment(attachment, in: conversationId)
         }

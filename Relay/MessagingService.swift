@@ -832,11 +832,23 @@ final class MessagingService {
     /// Deletes a message from this device only (no tombstone is sent).
     func deleteMessage(_ messageId: String, in conversationId: String) {
         do {
+            reapAttachmentBlobs(messageId: messageId)
             try storage.messages.deleteMessage(id: messageId)
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
             log.error("delete message failed: \(error)")
+        }
+    }
+
+    /// Removes the on-disk ciphertext for a message's attachments (storage
+    /// only tracks metadata; the blob files live in the App Group container).
+    private func reapAttachmentBlobs(messageId: String) {
+        let ids = (try? storage.database.query(
+            "SELECT id FROM attachments WHERE message_id = ?", [.text(messageId)]
+        )) ?? []
+        for row in ids {
+            if let id = row.first?.string { attachmentStore.delete(id) }
         }
     }
 
@@ -858,6 +870,7 @@ final class MessagingService {
         let conversationId = message.conversationId
         guard canUnsend(message), let peer = resolvedPeerAccount(for: conversationId) else { return }
         do {
+            reapAttachmentBlobs(messageId: message.id)
             try storage.messages.markDeleted(
                 conversationId: conversationId,
                 targetTimestamp: message.timestamp
