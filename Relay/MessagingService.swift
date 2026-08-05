@@ -262,9 +262,34 @@ final class MessagingService {
 
     // MARK: - Groups
 
+    /// Sentinel sender for locally-inserted group system lines.
+    static let systemSender = "__system__"
+
     /// The stored group backing a conversation (nil for 1:1), for the UI.
     func group(for conversationId: String) -> StoredGroup? {
         try? groupForConversation(conversationId)
+    }
+
+    /// A human name for an account: "You" for self, the known username from a
+    /// 1:1 conversation if we have one, else a short account prefix.
+    func displayName(forAccount account: String) -> String {
+        if account == credentials.accountId { return "You" }
+        if let name = (try? storage.database.query(
+            "SELECT peer_username FROM conversations WHERE peer_account = ?", [.text(account)]
+        ).first?.first?.string) ?? nil { return name }
+        return String(account.prefix(8))
+    }
+
+    /// Inserts a centered "system" line (e.g. "Alice added Bob") into a group.
+    private func insertSystemLine(_ text: String, inGroup groupId: String) {
+        guard let conversationId = (try? storage.messages.groupConversationId(groupId: groupId)) ?? nil else { return }
+        try? storage.messages.insertMessage(
+            id: UUID().uuidString, conversationId: conversationId, isOutgoing: false,
+            body: text, timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+            status: .received, senderAccount: Self.systemSender
+        )
+        refreshConversations()
+        refreshActiveMessages(ifShowing: conversationId)
     }
 
     /// The stored group backing a conversation, or nil for 1:1.
@@ -291,6 +316,7 @@ final class MessagingService {
             try? await distributeSenderKeyIfNeeded(group: stored)
             await sendGroupUpdate(.create, group: stored, target: "")
         }
+        insertSystemLine("You created “\(name)”", inGroup: gs.id)
         return try storage.messages.groupConversationId(groupId: gs.id) ?? ""
     }
 
@@ -304,6 +330,7 @@ final class MessagingService {
             try? await distributeSenderKeyIfNeeded(group: stored) // reaches the new member
             await sendGroupUpdate(.add, group: stored, target: account)
         }
+        insertSystemLine("You added \(username)", inGroup: groupId)
     }
 
     func removeGroupMember(_ account: String, fromGroup groupId: String) async throws {
@@ -314,6 +341,7 @@ final class MessagingService {
             try? await distributeSenderKeyIfNeeded(group: stored) // fresh epoch → redistribute to remaining
             await sendGroupUpdate(.remove, group: stored, target: account)
         }
+        insertSystemLine("You removed \(displayName(forAccount: account))", inGroup: groupId)
     }
 
     func leaveGroup(_ groupId: String) async throws {
@@ -322,6 +350,7 @@ final class MessagingService {
         await sendGroupUpdate(.leave, group: remaining, target: credentials.accountId)
         try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
         refreshConversations()
+        insertSystemLine("You left", inGroup: gs.id)
     }
 
     private func sendGroupMessage(
@@ -442,8 +471,23 @@ final class MessagingService {
             if let convoId = try storage.messages.groupConversationId(groupId: gs.id) {
                 refreshActiveMessages(ifShowing: convoId)
             }
+            if let line = systemLine(for: info) {
+                insertSystemLine(line, inGroup: info.groupId)
+            }
         } catch {
             log.warning("group sync failed for \(info.groupId): \(error)")
+        }
+    }
+
+    private func systemLine(for info: GroupUpdateInfo) -> String? {
+        let actor = displayName(forAccount: info.actor)
+        switch info.action {
+        case .create: return "\(actor) created the group"
+        case .add: return "\(actor) added \(displayName(forAccount: info.target))"
+        case .remove: return "\(actor) removed \(displayName(forAccount: info.target))"
+        case .leave: return "\(actor) left"
+        case .rename: return "\(actor) renamed the group to “\(info.name)”"
+        case .unknown: return nil
         }
     }
 

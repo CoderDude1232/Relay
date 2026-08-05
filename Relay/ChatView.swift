@@ -58,17 +58,26 @@ struct ChatView: View {
                                 .padding(.vertical, 12)
                                 .id(id)
                         case .message(let message, let position):
-                            MessageRow(
-                                message: message,
-                                position: position,
-                                peerName: peerName,
-                                service: service,
-                                conversationId: conversationId,
-                                isGroup: isGroup,
-                                onLongPress: { actionTarget = message },
-                                onReply: { beginReply(message) }
-                            )
-                            .id(message.id)
+                            if message.senderAccount == MessagingService.systemSender {
+                                Text(message.body)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 6)
+                                    .id(message.id)
+                            } else {
+                                MessageRow(
+                                    message: message,
+                                    position: position,
+                                    peerName: peerName,
+                                    service: service,
+                                    conversationId: conversationId,
+                                    isGroup: isGroup,
+                                    onLongPress: { actionTarget = message },
+                                    onReply: { beginReply(message) }
+                                )
+                                .id(message.id)
+                            }
                         }
                     }
                     if service.peerTyping {
@@ -492,7 +501,7 @@ private struct MessageBubble: View {
 
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 3) {
                 if showsSenderLabel {
-                    Text(String((message.senderAccount ?? "").prefix(8)))
+                    Text(service.displayName(forAccount: message.senderAccount ?? ""))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.tint)
                         .padding(.leading, 4)
