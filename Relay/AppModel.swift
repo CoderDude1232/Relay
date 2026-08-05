@@ -120,10 +120,11 @@ final class AppModel {
 
     /// Registers a fresh account, publishes its first keys, and persists
     /// the credentials in the Keychain.
-    func register(serverURL: URL, username: String, password: String) async throws {
+    func register(serverURL: URL, username: String, displayName: String, password: String) async throws {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
         let credentials = try await api.register(username: username, password: password)
         let service = try makeService(credentials: credentials, serverURL: serverURL, username: username)
+        service.setMyDisplayName(displayName)
         try await service.publishInitialKeys()
 
         let saved = SavedAccount(

@@ -12,12 +12,15 @@ struct OnboardingView: View {
 
     @State private var serverURL = "https://192.168.0.134:8089"
     @State private var username = ""
+    @State private var displayName = ""
     @State private var password = ""
     @State private var isRegistering = false
     @State private var errorMessage: String?
 
     private var canSubmit: Bool {
-        URL(string: serverURL) != nil && !username.isEmpty && password.count >= 8 && !isRegistering
+        URL(string: serverURL) != nil && !username.isEmpty
+            && !displayName.trimmingCharacters(in: .whitespaces).isEmpty
+            && password.count >= 8 && !isRegistering
     }
 
     var body: some View {
@@ -43,6 +46,8 @@ struct OnboardingView: View {
                     .textContentType(.username)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                TextField("Display name", text: $displayName)
+                    .textContentType(.name)
                 SecureField("Password (min 8 characters)", text: $password)
                     .textContentType(.newPassword)
             }
@@ -82,7 +87,7 @@ struct OnboardingView: View {
         errorMessage = nil
         Task {
             do {
-                try await model.register(serverURL: url, username: username, password: password)
+                try await model.register(serverURL: url, username: username, displayName: displayName, password: password)
             } catch {
                 errorMessage = "Registration failed: \(error.localizedDescription)"
             }

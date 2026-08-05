@@ -312,6 +312,44 @@ final class MessagingService {
         if let id = activeConversationId { refreshActiveMessages(ifShowing: id) }
     }
 
+    // MARK: - Own profile
+
+    /// This user's self-set display name (shown to peers once profile
+    /// distribution lands). Stored locally in kv.
+    var myDisplayName: String? {
+        (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = 'me:name'"
+        ).first?.first?.data).flatMap { $0 }.map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    func setMyDisplayName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES ('me:name', ?)",
+            [.blob(Data(trimmed.utf8))]
+        )
+    }
+
+    /// This user's profile photo as image bytes (already downscaled by the
+    /// caller). Nil if unset. Stored locally in kv.
+    var myAvatarData: Data? {
+        (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = 'me:avatar'"
+        ).first?.first?.data).flatMap { $0 }
+    }
+
+    func setMyAvatarData(_ data: Data?) {
+        if let data {
+            try? storage.database.run(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES ('me:avatar', ?)",
+                [.blob(data)]
+            )
+        } else {
+            try? storage.database.run("DELETE FROM kv WHERE key = 'me:avatar'")
+        }
+    }
+
     private func cachedUsername(_ account: String) -> String? {
         (try? storage.database.query(
             "SELECT value FROM kv WHERE key = ?", [.text("un:\(account)")]
