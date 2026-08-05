@@ -274,10 +274,46 @@ final class MessagingService {
     /// 1:1 conversation if we have one, else a short account prefix.
     func displayName(forAccount account: String) -> String {
         if account == credentials.accountId { return "You" }
+        if let cached = cachedUsername(account) { return cached }
         if let name = (try? storage.database.query(
             "SELECT peer_username FROM conversations WHERE peer_account = ?", [.text(account)]
         ).first?.first?.string) ?? nil { return name }
         return String(account.prefix(8))
+    }
+
+    private func cachedUsername(_ account: String) -> String? {
+        (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text("un:\(account)")]
+        ).first?.first?.data).flatMap { $0 }.map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    private func cacheUsername(_ account: String, _ username: String) {
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+            [.text("un:\(account)"), .blob(Data(username.utf8))]
+        )
+    }
+
+    /// Resolves any unknown account ids to usernames via the relay, caching
+    /// them (and updating the 1:1 conversation title if one exists). Cheap and
+    /// idempotent — skips accounts already known.
+    func resolveUsernames(_ accounts: [String]) async {
+        var changed = false
+        for account in Set(accounts) where account != credentials.accountId {
+            if cachedUsername(account) != nil { continue }
+            guard let username = try? await api.lookupUsername(account: account) else { continue }
+            cacheUsername(account, username)
+            if existingConversation(withPeer: account) != nil {
+                _ = try? storage.messages.conversation(withPeer: account, username: username)
+            }
+            changed = true
+        }
+        if changed {
+            refreshConversations()
+            if let conversationId = activeConversationId {
+                refreshActiveMessages(ifShowing: conversationId)
+            }
+        }
     }
 
     /// Inserts a centered "system" line (e.g. "Alice added Bob") into a group.
@@ -317,6 +353,7 @@ final class MessagingService {
             await sendGroupUpdate(.create, group: stored, target: "")
         }
         insertSystemLine("You created “\(name)”", inGroup: gs.id)
+        await resolveUsernames(gs.members)
         return try storage.messages.groupConversationId(groupId: gs.id) ?? ""
     }
 
@@ -471,6 +508,7 @@ final class MessagingService {
             if let convoId = try storage.messages.groupConversationId(groupId: gs.id) {
                 refreshActiveMessages(ifShowing: convoId)
             }
+            await resolveUsernames(gs.members)
             if let line = systemLine(for: info) {
                 insertSystemLine(line, inGroup: info.groupId)
             }
@@ -649,6 +687,13 @@ final class MessagingService {
         typingResetTask?.cancel()
         refreshActiveMessages(ifShowing: conversationId)
         Task { await markVisibleMessagesRead(in: conversationId) }
+        Task {
+            if let group = group(for: conversationId) {
+                await resolveUsernames(group.members)
+            } else if let peer = resolvedPeerAccount(for: conversationId) {
+                await resolveUsernames([peer])
+            }
+        }
     }
 
     func closeConversation() {
