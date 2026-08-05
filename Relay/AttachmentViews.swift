@@ -9,8 +9,10 @@
 //  user explicitly opens/shares a file.
 //
 
+import QuickLook
 import SecureStorage
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 extension StoredAttachment {
@@ -87,15 +89,15 @@ struct VoiceNoteBubble: View {
 // MARK: - Generic file
 
 /// A file-attachment bubble: document icon, filename, and size. Tapping
-/// downloads (if needed), decrypts to a temp file, and presents the share
-/// sheet so the file can be opened in another app or saved.
+/// downloads (if needed), decrypts to a temp file, and opens a Quick Look
+/// preview (which offers its own share/save actions).
 struct FileAttachmentBubble: View {
     let attachment: StoredAttachment
     let service: MessagingService
     let conversationId: String
     let isOutgoing: Bool
 
-    @State private var share: ShareItem?
+    @State private var preview: PreviewItem?
     @State private var busy = false
 
     private var tint: Color { isOutgoing ? .white : .primary }
@@ -128,7 +130,10 @@ struct FileAttachmentBubble: View {
             .frame(width: 220)
         }
         .buttonStyle(.plain)
-        .sheet(item: $share) { item in ActivityView(url: item.url) }
+        .fullScreenCover(item: $preview) { item in
+            QuickLookPreview(url: item.url)
+                .ignoresSafeArea()
+        }
     }
 
     private var sizeLabel: String {
@@ -147,24 +152,114 @@ struct FileAttachmentBubble: View {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         do {
             try plaintext.write(to: url, options: .atomic)
-            share = ShareItem(url: url)
+            preview = PreviewItem(url: url)
         } catch {}
     }
 }
 
-/// Wraps a temp file URL so it can drive a `.sheet(item:)`.
-struct ShareItem: Identifiable {
+/// Wraps a temp file URL so it can drive a `.fullScreenCover(item:)`.
+struct PreviewItem: Identifiable {
     let id = UUID()
     let url: URL
 }
 
-/// Minimal UIActivityViewController bridge for sharing/opening a file.
-struct ActivityView: UIViewControllerRepresentable {
+// MARK: - System bridges
+
+/// Quick Look preview for an on-disk file (documents, PDFs, media, …). Quick
+/// Look supplies its own share/save toolbar.
+struct QuickLookPreview: UIViewControllerRepresentable {
     let url: URL
 
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .done, target: context.coordinator, action: #selector(Coordinator.done)
+        )
+        let nav = UINavigationController(rootViewController: controller)
+        context.coordinator.nav = nav
+        return nav
     }
 
-    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+    func updateUIViewController(_ controller: UINavigationController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let url: URL
+        weak var nav: UINavigationController?
+        init(url: URL) { self.url = url }
+
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+        func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
+            url as NSURL
+        }
+
+        @objc func done() { nav?.dismiss(animated: true) }
+    }
+}
+
+/// Presents the system camera to capture a single photo.
+struct CameraPicker: UIViewControllerRepresentable {
+    let onCapture: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: CameraPicker
+        init(_ parent: CameraPicker) { self.parent = parent }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let image = info[.originalImage] as? UIImage { parent.onCapture(image) }
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
+
+/// Full-screen, pinch-to-zoom preview for an image attachment.
+struct FullScreenImageView: View {
+    let image: UIImage
+    @Environment(\.dismiss) private var dismiss
+    @State private var scale: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(scale)
+                .gesture(
+                    MagnifyGesture()
+                        .onChanged { scale = max(1, $0.magnification) }
+                        .onEnded { _ in withAnimation { scale = 1 } }
+                )
+        }
+        .overlay(alignment: .topTrailing) {
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding()
+            }
+        }
+        .onTapGesture { dismiss() }
+    }
 }

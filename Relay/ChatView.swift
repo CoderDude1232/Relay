@@ -32,6 +32,7 @@ struct ChatView: View {
     @State private var pendingAttachment: MessagingService.PendingAttachment?
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
+    @State private var showingCamera = false
     @State private var recorder = VoiceRecorder()
     @State private var recordDenied = false
     @State private var showingVerification = false
@@ -239,20 +240,24 @@ struct ChatView: View {
                     HStack(spacing: 10) {
                         Menu {
                             Button("Photo", systemImage: "photo") { showingPhotoPicker = true }
+                            if cameraAvailable {
+                                Button("Camera", systemImage: "camera") { showingCamera = true }
+                            }
                             Button("File", systemImage: "doc") { showingFileImporter = true }
+                            Button("Emoji", systemImage: "face.smiling") { showingComposerEmoji = true }
                         } label: {
                             Image(systemName: "plus")
                                 .font(.system(size: 22))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.white)
                                 .frame(width: 30, height: 30)
                         }
 
                         Button {
-                            showingComposerEmoji = true
+                            startRecording()
                         } label: {
-                            Image(systemName: "face.smiling")
-                                .font(.system(size: 24))
-                                .foregroundStyle(.secondary)
+                            Image(systemName: "mic.fill")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.white)
                                 .frame(width: 30, height: 30)
                         }
                         .buttonStyle(.plain)
@@ -264,26 +269,15 @@ struct ChatView: View {
                             .padding(.vertical, 9)
                             .glassEffect()
 
-                        if canSend {
-                            Button {
-                                send()
-                            } label: {
-                                Image(systemName: "arrow.up")
-                                    .fontWeight(.bold)
-                                    .frame(width: 22, height: 22)
-                            }
-                            .buttonStyle(.glassProminent)
-                        } else {
-                            Button {
-                                startRecording()
-                            } label: {
-                                Image(systemName: "mic.fill")
-                                    .font(.system(size: 20))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 30, height: 30)
-                            }
-                            .buttonStyle(.plain)
+                        Button {
+                            send()
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .fontWeight(.bold)
+                                .frame(width: 22, height: 22)
                         }
+                        .buttonStyle(.glassProminent)
+                        .disabled(!canSend)
                     }
                     .padding(.horizontal)
                     .padding(.bottom, 6)
@@ -300,6 +294,27 @@ struct ChatView: View {
         } message: {
             Text("Enable microphone access in Settings to record voice messages.")
         }
+        .fullScreenCover(isPresented: $showingCamera) {
+            CameraPicker { image in sendCameraPhoto(image) }
+                .ignoresSafeArea()
+        }
+    }
+
+    private var cameraAvailable: Bool {
+        UIImagePickerController.isSourceTypeAvailable(.camera)
+    }
+
+    /// Sends a freshly captured photo immediately (no pending/edit stage).
+    private func sendCameraPhoto(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        let photo = MessagingService.PendingAttachment(
+            data: data,
+            contentType: "image/jpeg",
+            filename: nil,
+            width: Int(image.size.width * image.scale),
+            height: Int(image.size.height * image.scale)
+        )
+        Task { await service.sendMessage("", in: conversationId, replyTo: nil, attachments: [photo]) }
     }
 
     /// Replaces the compose row while a voice message is being recorded.
@@ -850,6 +865,7 @@ private struct AttachmentImageView: View {
 
     @State private var image: UIImage?
     @State private var failed = false
+    @State private var previewing = false
 
     private var height: CGFloat {
         guard attachment.width > 0, attachment.height > 0 else { return 240 }
@@ -863,6 +879,8 @@ private struct AttachmentImageView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .contentShape(.rect)
+                    .onTapGesture { previewing = true }
             } else {
                 ZStack {
                     Rectangle().fill(.fill.tertiary)
@@ -883,6 +901,9 @@ private struct AttachmentImageView: View {
         .frame(width: 240, height: height)
         .clipShape(.rect(cornerRadius: 16))
         .task(id: attachment.id) { await load() }
+        .fullScreenCover(isPresented: $previewing) {
+            if let image { FullScreenImageView(image: image) }
+        }
     }
 
     private func load() async {
