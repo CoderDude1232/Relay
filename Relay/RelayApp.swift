@@ -12,6 +12,7 @@ import UserNotifications
 @main
 struct RelayApp: App {
     @State private var model = AppModel()
+    @State private var appearance = ChatAppearance()
     @Environment(\.scenePhase) private var scenePhase
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -19,6 +20,7 @@ struct RelayApp: App {
         WindowGroup {
             ContentView()
                 .environment(model)
+                .environment(appearance)
                 .task {
                     appDelegate.model = model
                     model.boot()

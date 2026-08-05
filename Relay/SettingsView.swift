@@ -88,6 +88,14 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Appearance") {
+                    NavigationLink {
+                        AppearanceSettingsView()
+                    } label: {
+                        Label("Chat Appearance", systemImage: "paintbrush")
+                    }
+                }
+
                 Section("Security") {
                     LabeledContent("Encryption", value: "Signal protocol (PQXDH)")
                     LabeledContent("Local storage", value: "SQLCipher encrypted")

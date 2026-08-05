@@ -24,6 +24,8 @@ struct ChatView: View {
     let service: MessagingService
     let conversationId: String
 
+    @Environment(ChatAppearance.self) private var appearance
+
     @State private var draft = ""
     @State private var replyingTo: StoredMessage?
     @State private var actionTarget: StoredMessage?
@@ -107,6 +109,7 @@ struct ChatView: View {
             .onChange(of: service.activeMessages.count) { scrollToBottom(proxy) }
             .onChange(of: service.peerTyping) { if service.peerTyping { scrollToBottom(proxy) } }
         }
+        .background { appearance.background.ignoresSafeArea() }
         .navigationTitle(peerName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
@@ -592,6 +595,8 @@ private struct MessageBubble: View {
     let isGroup: Bool
     let onTapReactions: () -> Void
 
+    @Environment(ChatAppearance.self) private var appearance
+
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
             && !(message.senderAccount ?? "").isEmpty
@@ -697,7 +702,7 @@ private struct MessageBubble: View {
             .padding(.horizontal, 13)
             .padding(.vertical, 8)
             .background(
-                message.isOutgoing ? AnyShapeStyle(.tint) : AnyShapeStyle(.fill.secondary),
+                message.isOutgoing ? AnyShapeStyle(appearance.bubbleTint) : AnyShapeStyle(.fill.secondary),
                 in: .rect(cornerRadii: cornerRadii)
             )
             .foregroundStyle(message.isOutgoing ? .white : .primary)
