@@ -27,7 +27,7 @@ struct ConversationListView: View {
                 } else {
                     List(service.conversations) { conversation in
                         NavigationLink(value: conversation.id) {
-                            ConversationRow(conversation: conversation)
+                            ConversationRow(conversation: conversation, service: service)
                         }
                     }
                     .listStyle(.plain)
@@ -94,14 +94,20 @@ struct ConversationListView: View {
 
 private struct ConversationRow: View {
     let conversation: Conversation
+    let service: MessagingService
 
+    // Groups carry their name in peerUsername; 1:1s resolve through the
+    // service so a custom name (nickname) takes precedence.
     private var displayName: String {
-        conversation.peerUsername ?? String(conversation.peerAccount.prefix(8))
+        if conversation.isGroup {
+            return conversation.peerUsername ?? "Group"
+        }
+        return service.displayName(forAccount: conversation.peerAccount)
     }
 
     var body: some View {
         HStack(spacing: 12) {
-            AvatarView(name: conversation.peerUsername ?? conversation.peerAccount, size: 48)
+            AvatarView(name: displayName, size: 48)
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     if conversation.isGroup {

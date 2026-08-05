@@ -270,15 +270,46 @@ final class MessagingService {
         try? groupForConversation(conversationId)
     }
 
-    /// A human name for an account: "You" for self, the known username from a
-    /// 1:1 conversation if we have one, else a short account prefix.
+    /// A human name for an account, in precedence order: "You" for self, a
+    /// user-set nickname, the known username, else a short account prefix.
     func displayName(forAccount account: String) -> String {
         if account == credentials.accountId { return "You" }
-        if let cached = cachedUsername(account) { return cached }
-        if let name = (try? storage.database.query(
-            "SELECT peer_username FROM conversations WHERE peer_account = ?", [.text(account)]
-        ).first?.first?.string) ?? nil { return name }
+        if let nick = nickname(forAccount: account) { return nick }
+        if let name = username(forAccount: account) { return name }
         return String(account.prefix(8))
+    }
+
+    /// The known username for an account (no nickname or prefix fallback),
+    /// for showing the underlying handle on a contact card.
+    func username(forAccount account: String) -> String? {
+        if let cached = cachedUsername(account) { return cached }
+        return (try? storage.database.query(
+            "SELECT peer_username FROM conversations WHERE peer_account = ?", [.text(account)]
+        ).first?.first?.string) ?? nil
+    }
+
+    /// A user-set display-name override for a peer, if any. Stored in the kv
+    /// table (like the username cache) keyed by account id.
+    func nickname(forAccount account: String) -> String? {
+        (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text("nick:\(account)")]
+        ).first?.first?.data).flatMap { $0 }.map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Sets (or clears, when empty) a peer's display-name override and
+    /// refreshes any views showing the name.
+    func setNickname(_ name: String?, forAccount account: String) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, !trimmed.isEmpty {
+            try? storage.database.run(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                [.text("nick:\(account)"), .blob(Data(trimmed.utf8))]
+            )
+        } else {
+            try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text("nick:\(account)")])
+        }
+        refreshConversations()
+        if let id = activeConversationId { refreshActiveMessages(ifShowing: id) }
     }
 
     private func cachedUsername(_ account: String) -> String? {

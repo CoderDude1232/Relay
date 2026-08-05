@@ -36,6 +36,7 @@ struct ChatView: View {
     @State private var recorder = VoiceRecorder()
     @State private var recordDenied = false
     @State private var showingVerification = false
+    @State private var showingContactCard = false
     @State private var showingGroupInfo = false
     @State private var verification: MessagingService.PeerVerification?
 
@@ -48,7 +49,8 @@ struct ChatView: View {
     }
 
     private var peerName: String {
-        conversation?.peerUsername ?? String((conversation?.peerAccount ?? "Chat").prefix(8))
+        if let account = conversation?.peerAccount { return service.displayName(forAccount: account) }
+        return "Chat"
     }
 
     var body: some View {
@@ -106,7 +108,7 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Button {
-                    if isGroup { showingGroupInfo = true } else { showingVerification = true }
+                    if isGroup { showingGroupInfo = true } else { showingContactCard = true }
                 } label: {
                     VStack(spacing: 0) {
                         AvatarView(name: peerName, size: 30)
@@ -140,6 +142,9 @@ struct ChatView: View {
                 conversationId: conversationId,
                 ownAccountId: service.credentials.accountId
             )
+        }
+        .sheet(isPresented: $showingContactCard, onDismiss: refreshVerification) {
+            ContactCardView(service: service, conversationId: conversationId)
         }
         .sheet(item: $actionTarget) { message in
             MessageActionsSheet(
