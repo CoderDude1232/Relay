@@ -11,6 +11,9 @@ struct SettingsView: View {
 
     @Environment(AppModel.self) private var model
     @State private var confirmingSignOut = false
+    @State private var editingServer = false
+    @State private var serverDraft = ""
+    @State private var serverError: String?
 
     var body: some View {
         NavigationStack {
@@ -37,7 +40,17 @@ struct SettingsView: View {
                             .truncationMode(.middle)
                     }
                     LabeledContent("Device", value: "#\(service.credentials.deviceId)")
-                    LabeledContent("Server", value: service.serverURL.absoluteString)
+                    Button {
+                        serverDraft = service.serverURL.absoluteString
+                        serverError = nil
+                        editingServer = true
+                    } label: {
+                        LabeledContent("Server", value: service.serverURL.absoluteString)
+                    }
+                    .tint(.primary)
+                    if let serverError {
+                        Text(serverError).font(.footnote).foregroundStyle(.red)
+                    }
                 }
 
                 Section("Security") {
@@ -62,6 +75,22 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("Message history only exists on this device — it cannot be recovered.")
+            }
+            .alert("Change Server", isPresented: $editingServer) {
+                TextField("https://host:port", text: $serverDraft)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                Button("Update") {
+                    guard let url = URL(string: serverDraft.trimmingCharacters(in: .whitespaces)) else {
+                        serverError = "That doesn't look like a valid URL."
+                        return
+                    }
+                    serverError = model.updateServerURL(url)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Reconnects this account to a new relay URL without deleting your messages.")
             }
         }
     }

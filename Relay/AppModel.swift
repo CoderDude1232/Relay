@@ -77,6 +77,35 @@ final class AppModel {
         if case .ready(let service) = phase { service.start() }
     }
 
+    /// Points the existing account at a new relay URL (e.g. after the Mac's
+    /// LAN IP changed) and reconnects — without wiping local data. Returns an
+    /// error message on failure, nil on success.
+    @discardableResult
+    func updateServerURL(_ url: URL) -> String? {
+        guard case .ready(let old) = phase,
+              let data = try? keychain.loadSecret(for: Self.accountSecretName),
+              let saved = try? JSONDecoder().decode(SavedAccount.self, from: data)
+        else { return "Not signed in." }
+        old.stop()
+        let updated = SavedAccount(
+            accountId: saved.accountId, deviceId: saved.deviceId,
+            password: saved.password, serverURL: url, username: saved.username
+        )
+        do {
+            try keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
+            let service = try makeService(
+                credentials: RelayCredentials(accountId: saved.accountId, deviceId: saved.deviceId, password: saved.password),
+                serverURL: url, username: saved.username
+            )
+            service.start()
+            phase = .ready(service)
+            uploadPushTokenIfReady()
+            return nil
+        } catch {
+            return "Couldn't switch server: \(error.localizedDescription)"
+        }
+    }
+
     /// Records the APNs device token and uploads it if a session is ready.
     /// The token can arrive before or after onboarding, so we stash it.
     func setAPNSDeviceToken(_ data: Data) {

@@ -10,7 +10,7 @@ import SwiftUI
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
 
-    @State private var serverURL = "https://192.168.0.133:8089"
+    @State private var serverURL = "https://192.168.0.134:8089"
     @State private var username = ""
     @State private var password = ""
     @State private var isRegistering = false
