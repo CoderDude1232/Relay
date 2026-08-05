@@ -60,6 +60,15 @@ struct ChatView: View {
         return service.peerAvatarData(forAccount: account)
     }
 
+    /// "Online" or "Last seen …" under the title, for 1:1 chats.
+    private var presenceText: String? {
+        guard !isGroup, let presence = service.peerPresence else { return nil }
+        if presence.online { return "Online" }
+        guard presence.lastSeen > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: Double(presence.lastSeen) / 1000)
+        return "Last seen \(date.formatted(.relative(presentation: .named)))"
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -127,6 +136,11 @@ struct ChatView: View {
                             }
                             Text(peerName)
                                 .font(.caption2.weight(.semibold))
+                        }
+                        if let presenceText {
+                            Text(presenceText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }

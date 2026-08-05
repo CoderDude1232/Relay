@@ -72,6 +72,8 @@ All endpoints except account creation use HTTP Basic auth with username
 | `GET /v1/keys/count` | basic | Remaining one-time prekeys for this device → `{count}`. Clients replenish below ~20. |
 | `GET /v1/keys/{account}?device=N` | basic | Fetch prekey bundles (all devices when `?device` omitted), each with identity key, signed prekey and Kyber prekey. Consumes one one-time prekey per device; `oneTimePreKey` is `null` when the pool is exhausted (degraded PQXDH via signed prekeys only). |
 | `GET /v1/accounts/by-username/{username}` | basic | Resolve username → `{accountId}` |
+| `GET /v1/accounts/{account}` | basic | Resolve account id → `{username}` |
+| `GET /v1/presence/{account}` | basic | Connection state → `{online, lastSeen}`. `online` = any device has a live WebSocket; `lastSeen` is ms since epoch of the last connect/disconnect (0 if never). |
 | `POST /v1/attachments` | basic | Allocate an attachment id → `201 {id}` |
 | `PUT /v1/attachments/{id}` | basic | Upload the encrypted blob (raw `application/octet-stream`) → `204`. `413` if over the size cap. The relay stores opaque ciphertext only. |
 | `GET /v1/attachments/{id}` | basic | Download the encrypted blob (raw bytes) → `200` / `404`. Reaped after the TTL. |

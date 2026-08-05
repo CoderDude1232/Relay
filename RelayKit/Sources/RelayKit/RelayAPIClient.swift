@@ -23,6 +23,12 @@ public enum RelayAPIError: Error, LocalizedError {
     }
 }
 
+/// An account's connection state: online now, or when last seen (ms epoch).
+public struct Presence: Decodable, Sendable, Equatable {
+    public let online: Bool
+    public let lastSeen: Int64
+}
+
 public struct RelayAPIClient: Sendable {
     public let baseURL: URL
     public let credentials: RelayCredentials?
@@ -68,6 +74,14 @@ public struct RelayAPIClient: Sendable {
             "GET", "v1/accounts/\(account)", body: nil as [String: String]?
         )
         return response.username
+    }
+
+    /// An account's live connection state and last-seen time (ms since epoch).
+    public func presence(account: String) async throws -> Presence {
+        let response: Presence = try await request(
+            "GET", "v1/presence/\(account)", body: nil as [String: String]?
+        )
+        return response
     }
 
     public func setAPNSToken(_ token: String) async throws {

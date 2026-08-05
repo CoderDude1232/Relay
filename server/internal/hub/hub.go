@@ -8,7 +8,9 @@ package hub
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/store"
@@ -56,7 +58,21 @@ func (h *Hub) Register(accountID string, deviceID uint32, s Session) ([][]byte, 
 	h.sessions[key(accountID, deviceID)] = s
 	h.mu.Unlock()
 	slog.Info("ws: session registered (online)", "account", accountID, "device", deviceID)
+	_ = h.store.SetLastSeen(accountID, time.Now().UnixMilli())
 	return h.store.QueuedEnvelopes(accountID, deviceID)
+}
+
+// IsOnline reports whether any device of the account has a live session.
+func (h *Hub) IsOnline(accountID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	prefix := accountID + "/"
+	for k := range h.sessions {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Unregister detaches a session if it is still the current one for the
@@ -68,6 +84,7 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 	if h.sessions[k] == s {
 		delete(h.sessions, k)
 		slog.Info("ws: session unregistered (offline)", "account", accountID, "device", deviceID)
+		_ = h.store.SetLastSeen(accountID, time.Now().UnixMilli())
 	}
 }
 

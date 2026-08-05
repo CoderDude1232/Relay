@@ -37,6 +37,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
 	mux.HandleFunc("GET /v1/accounts/by-username/{username}", s.auth(s.handleLookupUsername))
 	mux.HandleFunc("GET /v1/accounts/{account}", s.auth(s.handleLookupAccount))
+	mux.HandleFunc("GET /v1/presence/{account}", s.auth(s.handlePresence))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.auth(s.handleUploadAttachment))
 	mux.HandleFunc("GET /v1/attachments/{id}", s.auth(s.handleDownloadAttachment))
@@ -162,6 +163,19 @@ func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, _ *
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"username": username})
+}
+
+// handlePresence reports whether an account currently has a live connection
+// and, if not, when it was last seen (ms since epoch, 0 if never).
+func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+	account := r.PathValue("account")
+	online := s.hub.IsOnline(account)
+	lastSeen, err := s.store.LastSeen(account)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"online": online, "lastSeen": lastSeen})
 }
 
 // ---------------------------------------------------------------------------

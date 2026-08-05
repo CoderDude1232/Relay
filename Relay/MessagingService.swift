@@ -874,6 +874,11 @@ final class MessagingService {
         typingResetTask?.cancel()
         refreshActiveMessages(ifShowing: conversationId)
         Task { await markVisibleMessagesRead(in: conversationId) }
+        if group(for: conversationId) == nil, let peer = resolvedPeerAccount(for: conversationId) {
+            startPresencePolling(peer: peer)
+        } else {
+            stopPresencePolling()
+        }
         Task {
             if let group = group(for: conversationId) {
                 await resolveUsernames(group.members)
@@ -889,6 +894,33 @@ final class MessagingService {
         activeMessages = []
         peerTyping = false
         typingResetTask?.cancel()
+        stopPresencePolling()
+    }
+
+    // MARK: - Presence
+
+    /// The open 1:1 peer's live connection state, refreshed every ~20s while
+    /// the chat is on screen. Nil in groups or before the first fetch.
+    private(set) var peerPresence: Presence?
+    private var presenceTask: Task<Void, Never>?
+
+    private func startPresencePolling(peer: String) {
+        presenceTask?.cancel()
+        peerPresence = nil
+        presenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                if let presence = try? await self?.api.presence(account: peer) {
+                    self?.peerPresence = presence
+                }
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+            }
+        }
+    }
+
+    private func stopPresencePolling() {
+        presenceTask?.cancel()
+        presenceTask = nil
+        peerPresence = nil
     }
 
     private func markVisibleMessagesRead(in conversationId: String) async {

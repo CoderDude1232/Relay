@@ -115,6 +115,10 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 CREATE INDEX IF NOT EXISTS idx_group_members_account
     ON group_members (account_id);
+CREATE TABLE IF NOT EXISTS presence (
+    account_id TEXT PRIMARY KEY,
+    last_seen  INTEGER NOT NULL
+);
 `)
 	return err
 }
@@ -245,6 +249,26 @@ func (s *Store) SetAPNSToken(accountID string, deviceID uint32, token string) er
 	_, err := s.db.Exec(`UPDATE devices SET apns_token = ? WHERE account_id = ? AND device_id = ?`,
 		token, accountID, deviceID)
 	return err
+}
+
+// SetLastSeen records when an account was last connected (ms since epoch).
+func (s *Store) SetLastSeen(accountID string, ts int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO presence (account_id, last_seen) VALUES (?, ?)
+		 ON CONFLICT(account_id) DO UPDATE SET last_seen = excluded.last_seen`,
+		accountID, ts,
+	)
+	return err
+}
+
+// LastSeen returns the account's last-connected time (ms), or 0 if unknown.
+func (s *Store) LastSeen(accountID string) (int64, error) {
+	var ts int64
+	err := s.db.QueryRow(`SELECT last_seen FROM presence WHERE account_id = ?`, accountID).Scan(&ts)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return ts, err
 }
 
 // APNSToken returns the device's APNs token, or "" if it hasn't registered one.
