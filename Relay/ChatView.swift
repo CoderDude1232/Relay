@@ -18,6 +18,7 @@ import RelayKit
 import SecureStorage
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     let service: MessagingService
@@ -28,7 +29,11 @@ struct ChatView: View {
     @State private var actionTarget: StoredMessage?
     @State private var showingComposerEmoji = false
     @State private var photoItem: PhotosPickerItem?
-    @State private var pendingImage: MessagingService.PendingAttachment?
+    @State private var pendingAttachment: MessagingService.PendingAttachment?
+    @State private var showingPhotoPicker = false
+    @State private var showingFileImporter = false
+    @State private var recorder = VoiceRecorder()
+    @State private var recordDenied = false
     @State private var showingVerification = false
     @State private var showingGroupInfo = false
     @State private var verification: MessagingService.PeerVerification?
@@ -221,55 +226,110 @@ struct ChatView: View {
                 )
                 .padding(.horizontal)
             }
-            if let pendingImage {
-                PendingAttachmentBar(image: pendingImage, onCancel: { clearPendingImage() })
+            if let pendingAttachment {
+                PendingAttachmentBar(attachment: pendingAttachment, onCancel: { clearPendingAttachment() })
                     .padding(.horizontal)
             }
             GlassEffectContainer {
-                HStack(spacing: 10) {
-                    PhotosPicker(selection: $photoItem, matching: .images) {
-                        Image(systemName: "photo.on.rectangle")
-                            .font(.system(size: 22))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 30, height: 30)
-                    }
+                if recorder.isRecording {
+                    recordingBar
+                        .padding(.horizontal)
+                        .padding(.bottom, 6)
+                } else {
+                    HStack(spacing: 10) {
+                        Menu {
+                            Button("Photo", systemImage: "photo") { showingPhotoPicker = true }
+                            Button("File", systemImage: "doc") { showingFileImporter = true }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 22))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 30, height: 30)
+                        }
 
-                    Button {
-                        showingComposerEmoji = true
-                    } label: {
-                        Image(systemName: "face.smiling")
-                            .font(.system(size: 24))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(.plain)
+                        Button {
+                            showingComposerEmoji = true
+                        } label: {
+                            Image(systemName: "face.smiling")
+                                .font(.system(size: 24))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
 
-                    TextField("Message \(peerName)…", text: $draft, axis: .vertical)
-                        .lineLimit(1...5)
-                        .focused($composerFocused)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 9)
-                        .glassEffect()
+                        TextField("Message \(peerName)…", text: $draft, axis: .vertical)
+                            .lineLimit(1...5)
+                            .focused($composerFocused)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                            .glassEffect()
 
-                    Button {
-                        send()
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .fontWeight(.bold)
-                            .frame(width: 22, height: 22)
+                        if canSend {
+                            Button {
+                                send()
+                            } label: {
+                                Image(systemName: "arrow.up")
+                                    .fontWeight(.bold)
+                                    .frame(width: 22, height: 22)
+                            }
+                            .buttonStyle(.glassProminent)
+                        } else {
+                            Button {
+                                startRecording()
+                            } label: {
+                                Image(systemName: "mic.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 30, height: 30)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.glassProminent)
-                    .disabled(!canSend)
+                    .padding(.horizontal)
+                    .padding(.bottom, 6)
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 6)
             }
         }
         .onChange(of: photoItem) { _, item in loadPickedPhoto(item) }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItem, matching: .images)
+        .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.item]) { result in
+            if case .success(let url) = result { loadPickedFile(url) }
+        }
+        .alert("Microphone Access Needed", isPresented: $recordDenied) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Enable microphone access in Settings to record voice messages.")
+        }
+    }
+
+    /// Replaces the compose row while a voice message is being recorded.
+    private var recordingBar: some View {
+        HStack(spacing: 14) {
+            Button {
+                recorder.cancel()
+            } label: {
+                Image(systemName: "trash").font(.system(size: 20)).foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+
+            Circle().fill(.red).frame(width: 9, height: 9)
+            Text(formatDuration(recorder.elapsed))
+                .font(.body.monospacedDigit())
+            Spacer()
+            Button {
+                finishRecording()
+            } label: {
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 30))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .glassEffect()
     }
 
     private var canSend: Bool {
-        pendingImage != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        pendingAttachment != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func loadPickedPhoto(_ item: PhotosPickerItem?) {
@@ -277,7 +337,7 @@ struct ChatView: View {
         Task {
             guard let data = try? await item.loadTransferable(type: Data.self),
                   let image = UIImage(data: data) else { return }
-            pendingImage = MessagingService.PendingAttachment(
+            pendingAttachment = MessagingService.PendingAttachment(
                 data: data,
                 contentType: "image/jpeg",
                 filename: nil,
@@ -287,8 +347,38 @@ struct ChatView: View {
         }
     }
 
-    private func clearPendingImage() {
-        pendingImage = nil
+    /// Reads a document-picker selection into a pending attachment. The picker
+    /// hands back a security-scoped URL we must open before reading.
+    private func loadPickedFile(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { return }
+        let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+            ?? "application/octet-stream"
+        pendingAttachment = MessagingService.PendingAttachment(
+            data: data,
+            contentType: mime,
+            filename: url.lastPathComponent,
+            width: 0,
+            height: 0
+        )
+    }
+
+    private func startRecording() {
+        Task {
+            if await recorder.start() == false { recordDenied = true }
+        }
+    }
+
+    /// Stops recording and sends the clip immediately (voice notes have no
+    /// pending/edit stage), matching the tap-to-record, tap-to-send flow.
+    private func finishRecording() {
+        guard let clip = recorder.finish() else { return }
+        Task { await service.sendMessage("", in: conversationId, replyTo: nil, attachments: [clip]) }
+    }
+
+    private func clearPendingAttachment() {
+        pendingAttachment = nil
         photoItem = nil
     }
 
@@ -302,10 +392,10 @@ struct ChatView: View {
                 text: String($0.body.prefix(240))
             )
         }
-        let attachments = pendingImage.map { [$0] } ?? []
+        let attachments = pendingAttachment.map { [$0] } ?? []
         draft = ""
         replyingTo = nil
-        clearPendingImage()
+        clearPendingAttachment()
         Task { await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments) }
     }
 
@@ -552,8 +642,9 @@ private struct MessageBubble: View {
             Text(message.body)
                 .font(.system(size: 52))
                 .padding(.vertical, 2)
-        } else if !message.attachments.isEmpty && message.body.isEmpty && message.replyTo == nil {
-            // Media-only message: show the image(s) with no bubble fill.
+        } else if !message.attachments.isEmpty && message.body.isEmpty && message.replyTo == nil
+                    && message.attachments.allSatisfy(\.isImage) {
+            // Image-only message: show the image(s) with no bubble fill.
             attachmentStack
         } else {
             VStack(alignment: .leading, spacing: 6) {
@@ -578,7 +669,19 @@ private struct MessageBubble: View {
     @ViewBuilder
     private var attachmentStack: some View {
         ForEach(message.attachments) { attachment in
-            AttachmentImageView(attachment: attachment, service: service, conversationId: conversationId)
+            if attachment.isImage {
+                AttachmentImageView(attachment: attachment, service: service, conversationId: conversationId)
+            } else if attachment.isAudio {
+                VoiceNoteBubble(
+                    attachment: attachment, service: service,
+                    conversationId: conversationId, isOutgoing: message.isOutgoing
+                )
+            } else {
+                FileAttachmentBubble(
+                    attachment: attachment, service: service,
+                    conversationId: conversationId, isOutgoing: message.isOutgoing
+                )
+            }
         }
     }
 
@@ -795,23 +898,36 @@ private struct AttachmentImageView: View {
     }
 }
 
-/// A thumbnail of the picked-but-unsent image shown above the composer.
+/// A preview of the picked-but-unsent attachment shown above the composer
+/// (image thumbnail, or an icon + name for files).
 private struct PendingAttachmentBar: View {
-    let image: MessagingService.PendingAttachment
+    let attachment: MessagingService.PendingAttachment
     let onCancel: () -> Void
+
+    private var isImage: Bool { attachment.contentType.hasPrefix("image/") }
 
     var body: some View {
         HStack(spacing: 10) {
-            if let ui = UIImage(data: image.data) {
+            if isImage, let ui = UIImage(data: attachment.data) {
                 Image(uiImage: ui)
                     .resizable()
                     .scaledToFill()
                     .frame(width: 44, height: 44)
                     .clipShape(.rect(cornerRadius: 8))
+                Text("Photo")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: "doc.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+                Text(attachment.filename ?? "File")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            Text("Photo")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Button {
                 onCancel()
