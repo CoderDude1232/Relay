@@ -537,7 +537,7 @@ func (s *Server) handleCallOffer(w http.ResponseWriter, r *http.Request, dev *st
 // Rate-limited by source IP to prevent bulk enumeration.
 func (s *Server) handleLookupUsername(w http.ResponseWriter, r *http.Request) {
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if !lookupLimiter.allow("uname:" + ip) {
+	if !usernameLookupLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
 		return
 	}
@@ -554,7 +554,7 @@ func (s *Server) handleLookupUsername(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLookupEmail(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !lookupLimiter.allow(dev.AccountID) {
+	if !emailLookupLimiter.allow(dev.AccountID) {
 		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
 		return
 	}
@@ -1207,6 +1207,8 @@ func (s *Server) PruneStaleLimiterKeys() {
 		groupJoinLimiter,
 		presenceLimiter,
 		lookupLimiter,
+		emailLookupLimiter,
+		usernameLookupLimiter,
 		keyUploadLimiter,
 	} {
 		now := time.Now()
@@ -1241,28 +1243,37 @@ const (
 	maxOneTimePreKeysPerUpload = 200
 )
 
-// 5 registrations per source IP per hour.
-var accountCreationLimiter = newSlidingWindowLimiter(5, time.Hour)
+// 20 registrations per source IP per hour.
+var accountCreationLimiter = newSlidingWindowLimiter(20, time.Hour)
 
-// 60 prekey-bundle fetches per (requester, target) pair per hour.
+// 200 prekey-bundle fetches per (requester, target) pair per hour.
 // Prevents one account from draining another's one-time prekey pool.
 // Own-account fetches (device sync) are exempt.
-var preKeyFetchLimiter = newSlidingWindowLimiter(60, time.Hour)
+var preKeyFetchLimiter = newSlidingWindowLimiter(200, time.Hour)
 
-// 10 group creations per account per day.
-var groupCreateLimiter = newSlidingWindowLimiter(10, 24*time.Hour)
+// 20 group creations per account per day.
+var groupCreateLimiter = newSlidingWindowLimiter(20, 24*time.Hour)
 
-// 20 invite-join attempts per account per hour to prevent token brute-forcing.
-var groupJoinLimiter = newSlidingWindowLimiter(20, time.Hour)
+// 50 invite-join attempts per account per hour to prevent token brute-forcing.
+var groupJoinLimiter = newSlidingWindowLimiter(50, time.Hour)
 
-// 120 presence lookups per account per minute (one per second on average).
-var presenceLimiter = newSlidingWindowLimiter(120, time.Minute)
+// 300 presence lookups per account per minute.
+var presenceLimiter = newSlidingWindowLimiter(300, time.Minute)
 
-// 120 account/username lookups per account per hour to prevent enumeration.
-var lookupLimiter = newSlidingWindowLimiter(120, time.Hour)
+// lookupLimiter: general account/profile lookups per account per hour (search, profile fetches).
+var lookupLimiter = newSlidingWindowLimiter(600, time.Hour)
 
-// 20 key uploads per account per hour; normal clients upload once then top up.
-var keyUploadLimiter = newSlidingWindowLimiter(20, time.Hour)
+// emailLookupLimiter: contact-discovery lookups per account per hour.
+// Contact sync fires one request per address book email — needs to cover
+// a full address book in a single sync pass without hitting the limit.
+var emailLookupLimiter = newSlidingWindowLimiter(3000, time.Hour)
+
+// usernameLookupLimiter: unauthenticated username-availability checks per IP per hour.
+// Debounced in the client, but generous enough for normal sign-up typing.
+var usernameLookupLimiter = newSlidingWindowLimiter(600, time.Hour)
+
+// 100 key uploads per account per hour.
+var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)
 
 // ipRateLimiter kept for backward compatibility with existing call site.
 type ipRateLimiter = slidingWindowLimiter
