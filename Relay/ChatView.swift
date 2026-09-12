@@ -13,6 +13,10 @@
 //  composer, and live typing indicators.
 //
 
+import CoreLocation
+import Foundation
+import MapKit
+import OSLog
 import PhotosUI
 import RelayKit
 import SecureStorage
@@ -23,15 +27,22 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     let service: MessagingService
     let conversationId: String
+    var onClose: (() -> Void)? = nil
 
     @Environment(ChatAppearance.self) private var appearance
+    @Environment(CallManager.self) private var callManager
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var draft = ""
     @State private var replyingTo: StoredMessage?
-    @State private var actionTarget: StoredMessage?
+    @State private var forwardTarget: ForwardPayload?
+    @State private var infoTarget: StoredMessage?
+    @State private var selectedMessageIds: Set<String> = []
+    @State private var showingAttachmentPreview = false
     @State private var showingComposerEmoji = false
-    @State private var photoItem: PhotosPickerItem?
-    @State private var pendingAttachment: MessagingService.PendingAttachment?
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var pendingAttachments: [MessagingService.PendingAttachment] = []
+    @State private var viewOnce = false
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
     @State private var showingCamera = false
@@ -40,11 +51,50 @@ struct ChatView: View {
     @State private var showingVerification = false
     @State private var showingContactCard = false
     @State private var showingGroupInfo = false
+    @State private var showingChatSettings = false
     @State private var verification: MessagingService.PeerVerification?
+    // AI
+    @State private var smartReplies: [String] = []
+    @State private var showingSummary = false
+    @State private var summaryText: String?
+    @State private var isFetchingAI = false
+    // Notepad
+    @State private var showingNotepad = false
+    @State private var showingPollComposer = false
+    // Schedule
+    @State private var showingSchedulePicker = false
+    @State private var scheduledDate = Date().addingTimeInterval(3600)
+    // Location
+    @State private var showingLocationPicker = false
+    @State private var locationShareDuration: TimeInterval = 3600
+    @State private var locationManager = LocationShareManager.shared
+    @State private var chatAIEnabled: Bool = false
+    @State private var chatNotepadEnabled: Bool = false
 
     private var isGroup: Bool { conversation?.isGroup == true }
+    private var isNoteToSelf: Bool { conversation?.peerAccount == service.noteToSelfAccount }
+    private var callControlsDisabled: Bool {
+        if case .idle = callManager.state { return false }
+        return true
+    }
+    @State private var pinnedMessage: StoredMessage?
+    @State private var showingStarred = false
+    @State private var mentionQuery: String? = nil
     @State private var lastTypingSentAt: Date?
-    @FocusState private var composerFocused: Bool
+    @State private var isAtBottom = true
+    @State private var scrollViewProxy: ScrollViewProxy?
+    // In-chat search
+    @State private var inChatSearchActive = false
+    @State private var inChatQuery = ""
+    @State private var inChatMatches: [StoredMessage] = []
+    @State private var inChatMatchIndex = 0
+    @State private var composerFocused = false
+    @State private var composerContext = ComposerContext()
+    @State private var showFormattingBar = false
+    @State private var editingMessage: StoredMessage? = nil
+    @State private var safariURL: URL?
+    @State private var initialScrollDone = false
+    @State private var newMessageBanner: String? = nil
 
     private var conversation: Conversation? {
         service.conversations.first { $0.id == conversationId }
@@ -60,6 +110,20 @@ struct ChatView: View {
         return service.peerAvatarData(forAccount: account)
     }
 
+    private var isSelectingMessages: Bool { !selectedMessageIds.isEmpty }
+
+    private var selectedMessages: [StoredMessage] {
+        service.activeMessages.filter { selectedMessageIds.contains($0.id) }
+    }
+
+    private var connectionSubtitle: String? {
+        switch service.connectionState {
+        case .connected: return nil
+        case .connecting: return "Connecting..."
+        case .disconnected: return "Offline"
+        }
+    }
+
     /// "Online" or "Last seen …" under the title, for 1:1 chats.
     private var presenceText: String? {
         guard !isGroup, let presence = service.peerPresence else { return nil }
@@ -69,25 +133,39 @@ struct ChatView: View {
         return "Last seen \(date.formatted(.relative(presentation: .named)))"
     }
 
-    var body: some View {
+    private var rawScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: 0) {
                     ForEach(displayItems) { item in
                         switch item {
                         case .dateSeparator(let id, let label):
                             Text(label)
-                                .font(.caption.weight(.medium))
+                                .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                                .padding(.vertical, 12)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(.ultraThinMaterial, in: .capsule)
+                                .shadow(color: .black.opacity(0.06), radius: 4, y: 1)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
                                 .id(id)
+                        case .unreadSeparator:
+                            HStack(spacing: 8) {
+                                Rectangle().fill(Color.accentColor.opacity(0.4)).frame(height: 1)
+                                Text("New Messages")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .fixedSize()
+                                Rectangle().fill(Color.accentColor.opacity(0.4)).frame(height: 1)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
                         case .message(let message, let position):
                             if message.senderAccount == MessagingService.systemSender {
-                                Text(message.body)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                SystemMessageView(rawBody: message.body)
                                     .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 6)
+                                    .padding(.vertical, 4)
                                     .id(message.id)
                             } else {
                                 MessageRow(
@@ -97,15 +175,24 @@ struct ChatView: View {
                                     service: service,
                                     conversationId: conversationId,
                                     isGroup: isGroup,
-                                    onLongPress: { actionTarget = message },
-                                    onReply: { beginReply(message) }
+                                    onReply: { beginReply(message) },
+                                    onForward: { forwardTarget = ForwardPayload(messages: [message]) },
+                                    onEdit: { editingMessage = message; draft = message.body; composerFocused = true },
+                                    onInfo: { infoTarget = message },
+                                    onUpdatePin: { pinnedMessage = service.pinnedMessage(for: conversationId) },
+                                    isCurrentSearchMatch: isCurrentSearchMatch(message),
+                                    isSelectionMode: isSelectingMessages,
+                                    isSelected: selectedMessageIds.contains(message.id),
+                                    onToggleSelection: { toggleMessageSelection(message) },
+                                    onBeginSelection: { beginMessageSelection(message) }
                                 )
+                                .padding(.top, (position == .first || position == .single) ? 6 : 1)
                                 .id(message.id)
                             }
                         }
                     }
-                    if service.peerTyping {
-                        TypingIndicatorView(peerName: peerName)
+                    if service.typingConversations.contains(conversationId) {
+                        TypingIndicatorView(peerName: peerName, imageData: peerAvatar)
                             .id(Self.typingAnchor)
                             .transition(.opacity)
                     }
@@ -113,50 +200,333 @@ struct ChatView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
             }
-            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: service.activeMessages.count) { scrollToBottom(proxy) }
-            .onChange(of: service.peerTyping) { if service.peerTyping { scrollToBottom(proxy) } }
+            .opacity(initialScrollDone ? 1 : 0)
+            .onChange(of: service.messagesLoadedConversationId) { _, loaded in
+                guard loaded == conversationId, !initialScrollDone else { return }
+                // Scroll first (queued for next layout pass), then reveal the view
+                // so the user never sees the top-to-bottom jump.
+                DispatchQueue.main.async {
+                    scrollToBottom(proxy, animated: false)
+                    DispatchQueue.main.async { initialScrollDone = true }
+                }
+            }
+            .onChange(of: service.activeMessages.count) {
+                guard initialScrollDone else { return }
+                guard let last = service.activeMessages.last else { return }
+                if last.isOutgoing || isAtBottom {
+                    scrollToBottom(proxy)
+                } else {
+                    let sender = isGroup
+                        ? service.displayName(forAccount: last.senderAccount ?? "")
+                        : peerName
+                    withAnimation(.spring(duration: 0.3)) { newMessageBanner = sender }
+                    Task {
+                        try? await Task.sleep(for: .seconds(3))
+                        withAnimation(.spring(duration: 0.3)) { newMessageBanner = nil }
+                    }
+                }
+                fetchSmartReplies(for: last)
+                if !last.isOutgoing { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+            }
+            .onChange(of: service.typingConversations.contains(conversationId)) { _, isTyping in
+                if isTyping { scrollToBottom(proxy) }
+            }
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height < 300
+            } action: { _, atBottom in
+                withAnimation(.spring(duration: 0.2)) { isAtBottom = atBottom }
+                if atBottom { withAnimation(.spring(duration: 0.3)) { newMessageBanner = nil } }
+            }
+            .onAppear {
+                scrollViewProxy = proxy
+            }
+            .overlay {
+                if service.messagesLoadedConversationId == conversationId
+                    && service.activeMessages.isEmpty
+                    && !inChatSearchActive {
+                    chatEmptyState
+                }
+            }
         }
-        .background { appearance.background.ignoresSafeArea() }
+    }
+
+    @ViewBuilder
+    private var chatEmptyState: some View {
+        VStack(spacing: 16) {
+            AvatarView(
+                name: peerName,
+                size: 80,
+                imageData: isGroup ? service.group(for: conversationId)?.avatarData : peerAvatar
+            )
+            VStack(spacing: 5) {
+                Text(peerName)
+                    .font(.title3.weight(.semibold))
+                Text(isNoteToSelf ? "Write a note to yourself" : "Say hi to \(peerName)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            if !isNoteToSelf {
+                HStack(spacing: 5) {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2.weight(.semibold))
+                    Text("End-to-end encrypted")
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(.ultraThinMaterial, in: Capsule())
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+    }
+
+    var body: some View {
+        rawScrollView
+        .background { appearance.background.ignoresSafeArea(.all) }
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "https" || url.scheme == "http" else { return .systemAction }
+            safariURL = url
+            return .handled
+        })
+        .sheet(item: $safariURL) { url in
+            SafariView(url: url).ignoresSafeArea()
+        }
         .navigationTitle(peerName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
+        .toolbar(horizontalSizeClass == .compact ? .hidden : .visible, for: .tabBar)
+        .toolbarBackground(.clear, for: .navigationBar)
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .toolbar {
+            if horizontalSizeClass == .regular, let onClose {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        onClose()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                }
+            }
             ToolbarItem(placement: .principal) {
                 Button {
                     if isGroup { showingGroupInfo = true } else { showingContactCard = true }
                 } label: {
-                    VStack(spacing: 0) {
-                        AvatarView(name: peerName, size: 30, imageData: isGroup ? nil : peerAvatar)
-                        HStack(spacing: 3) {
-                            if let symbol = verification?.state.titleSymbol {
-                                Image(systemName: symbol.name)
-                                    .foregroundStyle(symbol.tint)
+                    HStack(spacing: 8) {
+                        AvatarView(name: peerName, size: 34, imageData: isGroup ? service.group(for: conversationId)?.avatarData : peerAvatar)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 4) {
+                                if let symbol = verification?.state.titleSymbol {
+                                    Image(systemName: symbol.name)
+                                        .foregroundStyle(symbol.tint)
+                                        .font(.caption2)
+                                }
+                                Text(peerName)
+                                    .font(.subheadline.weight(.semibold))
                             }
-                            Text(peerName)
-                                .font(.caption2.weight(.semibold))
-                        }
-                        if let presenceText {
-                            Text(presenceText)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            if let connectionSubtitle {
+                                Text(connectionSubtitle)
+                                    .font(.caption2)
+                                    .foregroundStyle(service.connectionState == .connecting ? .orange : .secondary)
+                            } else if let presenceText {
+                                Text(presenceText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else if let secs = conversation?.disappearingSeconds, secs > 0 {
+                                Label(disappearingLabel(secs), systemImage: "timer")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
                         }
                     }
                 }
                 .tint(.primary)
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: 12) {
+                    if !isGroup && !isNoteToSelf {
+                        Button {
+                            if let account = conversation?.peerAccount {
+                                Task { await callManager.startCall(peerAccount: account, peerName: peerName) }
+                            }
+                        } label: {
+                            Image(systemName: "phone.fill")
+                        }
+                        .disabled(callControlsDisabled)
+
+                        Button {
+                            if let account = conversation?.peerAccount {
+                                Task { await callManager.startCall(peerAccount: account, peerName: peerName, kind: .video) }
+                            }
+                        } label: {
+                            Image(systemName: "video.fill")
+                        }
+                        .disabled(callControlsDisabled)
+                    }
+
+                    if isGroup, let grp = service.group(for: conversationId) {
+                        Button {
+                            let others = grp.members.filter { $0 != (callManager.ownAccountId ?? "") }
+                            Task {
+                                await callManager.startGroupCall(
+                                    groupId: grp.id,
+                                    groupName: grp.name,
+                                    participants: others,
+                                    kind: .audio
+                                )
+                            }
+                        } label: {
+                            Image(systemName: "phone.badge.plus")
+                        }
+                        .disabled(callManager.isInGroupCall || callControlsDisabled)
+                    }
+
+                    Menu {
+                        Button {
+                            inChatSearchActive.toggle()
+                            if !inChatSearchActive { inChatQuery = ""; inChatMatches = [] }
+                        } label: {
+                            Label(inChatSearchActive ? "Close Search" : "Search Chat", systemImage: "magnifyingglass")
+                        }
+
+                        if chatNotepadEnabled {
+                            Button {
+                                showingNotepad = true
+                            } label: {
+                                Label("Shared Notepad", systemImage: "note.text")
+                            }
+                        }
+
+                        if #available(iOS 26.0, *), chatAIEnabled, !isGroup, AIAssistant.shared.isAvailable {
+                            Button {
+                                Task { await fetchSummary() }
+                            } label: {
+                                Label("AI Summary", systemImage: isFetchingAI ? "hourglass" : "sparkles")
+                            }
+                            .disabled(isFetchingAI)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .accessibilityLabel("Chat actions")
+                }
+            }
         }
         .safeAreaInset(edge: .top) {
-            if verification?.state == .changed {
-                safetyNumberChangedBanner
+            VStack(spacing: 0) {
+                if inChatSearchActive {
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search in conversation…", text: $inChatQuery)
+                            .autocorrectionDisabled()
+                            .onSubmit { runInChatSearch() }
+                        if !inChatMatches.isEmpty {
+                            Text("\(inChatMatchIndex + 1)/\(inChatMatches.count)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Button { stepInChatMatch(by: -1) } label: {
+                                Image(systemName: "chevron.up")
+                            }
+                            .buttonStyle(.plain)
+                            Button { stepInChatMatch(by: 1) } label: {
+                                Image(systemName: "chevron.down")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .glassCompat(in: .rect(cornerRadius: 18))
+                    .padding(.horizontal, 10)
+                    .padding(.top, 6)
+                    .padding(.bottom, 4)
+                    .onChange(of: inChatQuery) { _, _ in runInChatSearch() }
+                }
+                if let pinnedMessage {
+                    PinnedMessageBanner(message: pinnedMessage) {
+                        service.pinMessage(pinnedMessage.id, pinned: false, in: conversationId)
+                        self.pinnedMessage = nil
+                    }
+                }
+                if verification?.state == .changed {
+                    safetyNumberChangedBanner
+                }
             }
         }
         .safeAreaInset(edge: .bottom) {
-            composeBar
+            VStack(spacing: 0) {
+                if !isAtBottom {
+                    HStack {
+                        Spacer()
+                        Button {
+                            if let p = scrollViewProxy { scrollToBottom(p) }
+                        } label: {
+                            ZStack(alignment: .topTrailing) {
+                                Image(systemName: "chevron.down")
+                                    .font(.callout.weight(.bold))
+                                    .frame(width: 34, height: 34)
+                                    .glassCompat(in: .circle)
+                                if let count = conversation?.unreadCount, count > 0 {
+                                    Text("\(count)")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(Color.accentColor, in: .capsule)
+                                        .offset(x: 6, y: -6)
+                                        .contentTransition(.numericText(countsDown: false))
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 16)
+                    }
+                    .padding(.bottom, 6)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                if !mentionSuggestions.isEmpty {
+                    mentionPicker
+                }
+                if !smartReplies.isEmpty {
+                    smartReplyStrip
+                }
+                if let sender = newMessageBanner {
+                    Button {
+                        withAnimation(.spring(duration: 0.3)) { newMessageBanner = nil }
+                        if let p = scrollViewProxy { scrollToBottom(p) }
+                    } label: {
+                        Label("New message from \(sender)", systemImage: "arrow.down.circle.fill")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.accentColor, in: .capsule)
+                            .shadow(color: .accentColor.opacity(0.3), radius: 8, y: 4)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 4)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                if isAnnounceOnlyBlocked {
+                    Label("Only admins can send messages", systemImage: "megaphone.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(.ultraThinMaterial)
+                } else if isSelectingMessages {
+                    selectionActionBar
+                } else {
+                    composeBar
+                }
+            }
+            .animation(.spring(duration: 0.2), value: isAtBottom)
+            .animation(.spring(duration: 0.3), value: newMessageBanner != nil)
         }
         .sheet(isPresented: $showingVerification, onDismiss: refreshVerification) {
-            VerificationView(service: service, conversationId: conversationId, peerName: peerName)
+            NavigationStack { VerificationView(service: service, conversationId: conversationId, peerName: peerName) }
         }
         .sheet(isPresented: $showingGroupInfo) {
             GroupInfoView(
@@ -165,46 +535,203 @@ struct ChatView: View {
                 ownAccountId: service.credentials.accountId
             )
         }
-        .sheet(isPresented: $showingContactCard, onDismiss: refreshVerification) {
-            ContactCardView(service: service, conversationId: conversationId)
+        .sheet(isPresented: $showingContactCard, onDismiss: {
+            refreshVerification()
+            chatAIEnabled = UserDefaults.standard.bool(forKey: "chat.ai.\(conversationId)")
+            chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
+        }) {
+            ContactCardView(service: service, conversationId: conversationId, onActivateSearch: {
+                showingContactCard = false
+                inChatSearchActive = true
+            })
         }
-        .sheet(item: $actionTarget) { message in
-            MessageActionsSheet(
-                message: message,
-                isOwnAuthor: isOwn(message),
-                peerName: peerName,
-                canUnsend: service.canUnsend(message),
-                onReact: { service.toggleReaction($0, on: message) },
-                onReply: { beginReply(message) },
-                onUnsend: { service.unsend(message) },
-                onDelete: { service.deleteMessage(message.id, in: conversationId) }
-            )
+        .sheet(isPresented: $showingChatSettings, onDismiss: {
+            chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
+        }) {
+            if let conversation {
+                NavigationStack { ChatPrivacySettingsView(service: service, conversation: conversation) }
+            }
+        }
+        .sheet(item: $forwardTarget) { payload in
+            ForwardMessageSheet(payload: payload, service: service)
+        }
+        .sheet(item: $infoTarget) { message in
+            NavigationStack {
+                MessageInfoView(
+                    message: message, isOwnAuthor: isOwn(message), peerName: peerName,
+                    service: service, conversationId: conversationId, isGroup: isGroup
+                )
+            }
         }
         .sheet(isPresented: $showingComposerEmoji) {
             EmojiPicker { draft += $0 }
         }
-        .onAppear {
-            service.openConversation(conversationId)
-            refreshVerification()
+        .sheet(isPresented: $showingAttachmentPreview) {
+            PendingAttachmentPreviewSheet(
+                attachments: pendingAttachments,
+                caption: $draft,
+                viewOnce: $viewOnce,
+                onRemove: removePendingAttachment,
+                onSend: send
+            )
         }
-        .onChange(of: service.activeMessages.count) { refreshVerification() }
-        .onChange(of: draft) { _, newValue in updateTypingState(for: newValue) }
+        .sheet(isPresented: $showingNotepad) {
+            NotepadView(service: service, conversationId: conversationId, peerName: peerName)
+        }
+        .sheet(isPresented: $showingSummary) {
+            SummarySheet(text: summaryText ?? "")
+        }
+        .sheet(isPresented: $showingStarred) {
+            NavigationStack { StarredMessagesView(service: service, conversationId: conversationId, peerName: peerName) }
+        }
+        .sheet(isPresented: $showingSchedulePicker) {
+            SchedulePickerSheet(
+                draft: draft,
+                scheduledDate: $scheduledDate
+            ) { date in
+                let body = draft
+                service.scheduleMessage(body, in: conversationId, at: date)
+                draft = ""
+                clearPendingAttachments()
+            }
+        }
+        .sheet(isPresented: $showingPollComposer) {
+            PollComposerSheet { question, options, multiSelect in
+                Task { await service.sendPoll(question: question, options: options, multiSelect: multiSelect, in: conversationId) }
+            }
+        }
+        .sheet(isPresented: $showingLocationPicker) {
+            LocationShareSheet(duration: $locationShareDuration) { duration in
+                locationManager.start(in: conversationId, duration: duration, service: service)
+                // Send first update immediately so the bubble appears
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    if let loc = locationManager.latestLocation {
+                        let payload = LocationPayload(
+                            lat: loc.coordinate.latitude,
+                            lng: loc.coordinate.longitude,
+                            exp: Int64((Date().timeIntervalSince1970 + duration) * 1000),
+                            stop: false
+                        )
+                        await service.sendMessage(payload.encode(), in: conversationId)
+                    }
+                }
+            }
+        }
+        .onAppear {
+            refreshVerification()
+            pinnedMessage = service.pinnedMessage(for: conversationId)
+            draft = service.readDraft(for: conversationId)
+            chatAIEnabled = UserDefaults.standard.bool(forKey: "chat.ai.\(conversationId)")
+            chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
+        }
+        .onChange(of: service.activeMessages.count) {
+            refreshVerification()
+            pinnedMessage = service.pinnedMessage(for: conversationId)
+        }
+        .onChange(of: service.blockedSafetyWarningConversationId) { _, blockedConversationId in
+            guard blockedConversationId == conversationId else { return }
+            refreshVerification()
+            showingVerification = true
+            service.clearBlockedSafetyWarning()
+        }
+        .onChange(of: draft) { _, newValue in
+            let normalized = normalizedDraft(newValue)
+            if normalized != newValue {
+                draft = normalized
+                return
+            }
+            updateTypingState(for: normalized)
+            if isGroup {
+                let words = normalized.components(separatedBy: .whitespacesAndNewlines)
+                if let lastWord = words.last, lastWord.hasPrefix("@") {
+                    mentionQuery = String(lastWord.dropFirst())
+                } else {
+                    mentionQuery = nil
+                }
+            }
+        }
         .onDisappear {
             if lastTypingSentAt != nil { service.sendTyping(.stopped, in: conversationId) }
-            service.closeConversation()
+            if editingMessage == nil { service.saveDraft(draft, for: conversationId) }
+            editingMessage = nil
+        }
+    }
+
+    // MARK: - AI helpers
+
+    private func fetchSummary() async {
+        guard #available(iOS 26.0, *) else { return }
+        guard !isFetchingAI else { return }
+        isFetchingAI = true
+        defer { isFetchingAI = false }
+        do {
+            summaryText = try await AIAssistant.shared.summarize(service.activeMessages)
+            showingSummary = true
+        } catch {
+            summaryText = error.localizedDescription
+            showingSummary = true
+        }
+    }
+
+    private func fetchSmartReplies(for message: StoredMessage) {
+        guard chatAIEnabled else { return }
+        guard #available(iOS 26.0, *), AIAssistant.shared.isAvailable, !message.isOutgoing else { return }
+        Task {
+            let replies = (try? await AIAssistant.shared.suggestReplies(to: message, peerName: peerName)) ?? []
+            withAnimation(.spring(duration: 0.25)) { smartReplies = replies }
+        }
+    }
+
+    // MARK: - Smart reply strip
+
+    private var smartReplyStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(smartReplies, id: \.self) { reply in
+                    Button {
+                        draft = reply
+                        withAnimation { smartReplies = [] }
+                        composerFocused = true
+                    } label: {
+                        Text(reply)
+                            .font(.subheadline)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .glassCompat(in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button {
+                    withAnimation { smartReplies = [] }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss suggestions")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
         }
     }
 
     private static let typingAnchor = "typing-indicator"
+    private static let maxDraftLines = 4
+    private static let composerControlHeight: CGFloat = 44
+    private static let composerAccessoryWidth: CGFloat = 48
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        withAnimation(.snappy) {
-            if service.peerTyping {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let action = {
+            if service.typingConversations.contains(conversationId) {
                 proxy.scrollTo(Self.typingAnchor, anchor: .bottom)
             } else if let last = service.activeMessages.last {
                 proxy.scrollTo(last.id, anchor: .bottom)
             }
         }
+        if animated { withAnimation(.snappy) { action() } } else { action() }
     }
 
     private var safetyNumberChangedBanner: some View {
@@ -226,14 +753,98 @@ struct ChatView: View {
         verification = service.peerVerification(for: conversationId)
     }
 
+    private var mentionSuggestions: [String] {
+        guard isGroup, let q = mentionQuery else { return [] }
+        let members = service.group(for: conversationId)?.members ?? []
+        return members.filter { account in
+            account != service.credentials.accountId &&
+            (q.isEmpty || service.displayName(forAccount: account).localizedCaseInsensitiveContains(q))
+        }
+    }
+
+    private var mentionPicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(mentionSuggestions, id: \.self) { account in
+                    Button {
+                        insertMention(account)
+                    } label: {
+                        HStack(spacing: 6) {
+                            AvatarView(name: service.displayName(forAccount: account), size: 24,
+                                       imageData: service.peerAvatarData(forAccount: account))
+                            Text(service.displayName(forAccount: account))
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .glassCompat(in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private func insertMention(_ account: String) {
+        let name = service.displayName(forAccount: account)
+        // Replace the trailing @partial with @name
+        var words = draft.components(separatedBy: .whitespacesAndNewlines)
+        if words.last?.hasPrefix("@") == true {
+            words[words.count - 1] = "@\(name)"
+        } else {
+            words.append("@\(name)")
+        }
+        draft = words.joined(separator: " ") + " "
+        mentionQuery = nil
+    }
+
+    private func disappearingLabel(_ seconds: Int64) -> String {
+        switch seconds {
+        case ..<60: return "\(seconds)s"
+        case ..<3600: return "\(seconds / 60)m"
+        case ..<86400: return "\(seconds / 3600)h"
+        default: return "\(seconds / 86400)d"
+        }
+    }
+
     /// Whether a message was authored by the local user (drives quote/reply
     /// attribution).
     private func isOwn(_ message: StoredMessage) -> Bool {
         message.isOutgoing
     }
 
+    @ViewBuilder
     private func quoteAuthor(of message: StoredMessage) -> String {
         message.isOutgoing ? service.credentials.accountId : (conversation?.peerAccount ?? "")
+    }
+
+    private func runInChatSearch() {
+        let q = inChatQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { inChatMatches = []; return }
+        inChatMatches = service.activeMessages.filter {
+            $0.body.localizedCaseInsensitiveContains(q)
+        }
+        inChatMatchIndex = inChatMatches.isEmpty ? 0 : inChatMatches.count - 1
+        scrollToMatch()
+    }
+
+    private func stepInChatMatch(by delta: Int) {
+        guard !inChatMatches.isEmpty else { return }
+        inChatMatchIndex = (inChatMatchIndex + delta + inChatMatches.count) % inChatMatches.count
+        scrollToMatch()
+    }
+
+    private func scrollToMatch() {
+        guard inChatMatchIndex < inChatMatches.count else { return }
+        let id = inChatMatches[inChatMatchIndex].id
+        withAnimation { scrollViewProxy?.scrollTo(id, anchor: .center) }
+    }
+
+    private func isCurrentSearchMatch(_ message: StoredMessage) -> Bool {
+        guard inChatSearchActive, inChatMatches.indices.contains(inChatMatchIndex) else { return false }
+        return inChatMatches[inChatMatchIndex].id == message.id
     }
 
     private func beginReply(_ message: StoredMessage) {
@@ -241,10 +852,144 @@ struct ChatView: View {
         composerFocused = true
     }
 
+    // MARK: - Selection actions
+
+    private var selectionActionBar: some View {
+        GlassContainer {
+            HStack(spacing: 10) {
+                Button { clearMessageSelection() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .bold))
+                        .frame(width: 38, height: 38)
+                        .glassCompat(in: .circle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Done selecting")
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(selectedMessageIds.count) selected")
+                        .font(.subheadline.weight(.semibold))
+                        .contentTransition(.numericText())
+                    Text("Choose an action")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .lineLimit(1)
+
+                Spacer(minLength: 0)
+                selectionActionButton("doc.on.doc", label: "Copy") { copySelectedMessages() }
+                    .disabled(!selectedMessages.contains { !$0.body.isEmpty })
+                selectionActionButton("arrowshape.turn.up.right", label: "Forward") { forwardSelectedMessages() }
+                    .disabled(!selectedMessages.contains { !$0.body.isEmpty })
+                selectionActionButton("star", label: "Star") { starSelectedMessages() }
+                selectionActionButton("trash", label: "Delete", role: .destructive) { deleteSelectedMessages() }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .glassCompat(in: .rect(cornerRadius: 24))
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+        }
+    }
+
+    private func selectionActionButton(
+        _ systemName: String,
+        label: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: systemName)
+                    .font(.system(size: 17, weight: .semibold))
+                Text(label)
+                    .font(.caption2)
+            }
+            .frame(width: 52)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func beginMessageSelection(_ message: StoredMessage) {
+        guard message.senderAccount != MessagingService.systemSender else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        selectedMessageIds = [message.id]
+        composerFocused = false
+    }
+
+    private func toggleMessageSelection(_ message: StoredMessage) {
+        if selectedMessageIds.contains(message.id) {
+            selectedMessageIds.remove(message.id)
+        } else {
+            selectedMessageIds.insert(message.id)
+        }
+    }
+
+    private func clearMessageSelection() {
+        selectedMessageIds.removeAll()
+    }
+
+    private func copySelectedMessages() {
+        let text = selectedMessages
+            .map(\.body)
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        clearMessageSelection()
+    }
+
+    private func forwardSelectedMessages() {
+        let messages = selectedMessages.filter { !$0.body.isEmpty }
+        guard !messages.isEmpty else { return }
+        forwardTarget = ForwardPayload(messages: messages)
+        clearMessageSelection()
+    }
+
+    private func starSelectedMessages() {
+        for message in selectedMessages {
+            service.starMessage(message.id, starred: true, in: conversationId)
+        }
+        clearMessageSelection()
+    }
+
+    private func deleteSelectedMessages() {
+        for message in selectedMessages {
+            service.deleteMessage(message.id, in: conversationId)
+        }
+        clearMessageSelection()
+    }
+
     // MARK: - Compose bar
+
+    private var formattingBar: some View {
+        HStack(spacing: 2) {
+            FormatButton(symbol: "bold", tip: "Bold") {
+                composerContext.applyFormat(prefix: "**", suffix: "**")
+            }
+            FormatButton(symbol: "italic", tip: "Italic") {
+                composerContext.applyFormat(prefix: "_", suffix: "_")
+            }
+            FormatButton(symbol: "strikethrough", tip: "Strikethrough") {
+                composerContext.applyFormat(prefix: "~~", suffix: "~~")
+            }
+            FormatButton(symbol: "chevron.left.forwardslash.chevron.right", tip: "Code") {
+                composerContext.applyFormat(prefix: "`", suffix: "`")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
 
     private var composeBar: some View {
         VStack(spacing: 8) {
+            if let editingMessage {
+                EditPreviewBar(message: editingMessage) {
+                    self.editingMessage = nil
+                    draft = ""
+                }
+                .padding(.horizontal)
+            }
             if let replyingTo {
                 ReplyPreviewBar(
                     message: replyingTo,
@@ -254,65 +999,113 @@ struct ChatView: View {
                 )
                 .padding(.horizontal)
             }
-            if let pendingAttachment {
-                PendingAttachmentBar(attachment: pendingAttachment, onCancel: { clearPendingAttachment() })
-                    .padding(.horizontal)
+            if !pendingAttachments.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(pendingAttachments.enumerated()), id: \.offset) { index, attachment in
+                                PendingAttachmentBar(
+                                    attachment: attachment,
+                                    onPreview: { showingAttachmentPreview = true },
+                                    onCancel: { removePendingAttachment(at: index) }
+                                )
+                                .frame(width: pendingAttachments.count == 1 ? nil : 156)
+                            }
+                        }
+                        .padding(.horizontal)
+                    }
+                    if pendingAttachments.allSatisfy({ $0.contentType.hasPrefix("image/") }) {
+                        Button {
+                            viewOnce.toggle()
+                        } label: {
+                            Label("View once", systemImage: viewOnce ? "eye.fill" : "eye.slash")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(viewOnce ? Color.accentColor.opacity(0.15) : Color(.secondarySystemFill), in: .capsule)
+                                .foregroundStyle(viewOnce ? Color.accentColor : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                    }
+                }
             }
-            GlassEffectContainer {
+            if showFormattingBar {
+                formattingBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            GlassContainer {
                 if recorder.isRecording {
                     recordingBar
                         .padding(.horizontal)
                         .padding(.bottom, 6)
                 } else {
-                    HStack(spacing: 10) {
+                    HStack(alignment: .bottom, spacing: 6) {
                         Menu {
-                            Button("Photo", systemImage: "photo") { showingPhotoPicker = true }
-                            if cameraAvailable {
-                                Button("Camera", systemImage: "camera") { showingCamera = true }
+                            if !isNoteToSelf {
+                                Button("Photo / Video", systemImage: "photo") { showingPhotoPicker = true }
+                                if cameraAvailable {
+                                    Button("Camera", systemImage: "camera") { showingCamera = true }
+                                }
+                                Button("File", systemImage: "doc") { showingFileImporter = true }
+                                Button("Location", systemImage: "location.fill") { showingLocationPicker = true }
+                                Button("Poll", systemImage: "chart.bar.xaxis") { showingPollComposer = true }
                             }
-                            Button("File", systemImage: "doc") { showingFileImporter = true }
                             Button("Emoji", systemImage: "face.smiling") { showingComposerEmoji = true }
+                            Button(showFormattingBar ? "Hide Formatting" : "Format", systemImage: "textformat") {
+                                withAnimation(.spring(duration: 0.2)) { showFormattingBar.toggle() }
+                            }
                         } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 22))
-                                .foregroundStyle(.white)
-                                .frame(width: 30, height: 30)
-                        }
-
-                        Button {
-                            startRecording()
-                        } label: {
-                            Image(systemName: "mic.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(.white)
-                                .frame(width: 30, height: 30)
+                            composerAccessoryIcon("plus")
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("More message options")
 
-                        TextField("Message \(peerName)…", text: $draft, axis: .vertical)
-                            .lineLimit(1...5)
-                            .focused($composerFocused)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .glassEffect()
-
-                        Button {
-                            send()
-                        } label: {
-                            Image(systemName: "arrow.up")
-                                .fontWeight(.bold)
-                                .frame(width: 22, height: 22)
+                        if showRecordButton {
+                            Button { startRecording() } label: {
+                                composerAccessoryIcon("mic.fill")
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Record voice message")
+                            .transition(.opacity)
                         }
-                        .buttonStyle(.glassProminent)
-                        .disabled(!canSend)
+
+                        FormattingTextEditor(
+                            text: $draft,
+                            placeholder: isNoteToSelf ? "Write a note…" : "Message \(peerName)…",
+                            maxLines: Self.maxDraftLines,
+                            context: composerContext,
+                            isFocused: $composerFocused
+                        )
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(minHeight: Self.composerControlHeight)
+                        .glassCompat(in: .rect(cornerRadius: draftContainsLineBreak ? 16 : 22))
+
+                        if showSendButton {
+                            Button { send() } label: {
+                                composerSendIcon
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(editingMessage == nil ? "Send message" : "Save edit")
+                            .simultaneousGesture(
+                                LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+                                    guard canSend, editingMessage == nil else { return }
+                                    scheduledDate = Date().addingTimeInterval(3600)
+                                    showingSchedulePicker = true
+                                }
+                            )
+                            .transition(.opacity)
+                        }
                     }
+                    .animation(.easeOut(duration: 0.12), value: showRecordButton)
+                    .animation(.easeOut(duration: 0.12), value: showSendButton)
                     .padding(.horizontal)
                     .padding(.bottom, 6)
                 }
             }
         }
-        .onChange(of: photoItem) { _, item in loadPickedPhoto(item) }
-        .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItem, matching: .images)
+        .onChange(of: photoItems) { _, items in loadPickedPhotos(items) }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItems, maxSelectionCount: 10, matching: .any(of: [.images, .videos]))
         .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result { loadPickedFile(url) }
         }
@@ -367,26 +1160,111 @@ struct ChatView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .glassEffect()
+        .glassCompat()
+    }
+
+    private func composerAccessoryIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 18, weight: .bold))
+            .foregroundStyle(Color(.label))
+            .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
+            .contentShape(.capsule)
+            .glassCompat(in: .capsule)
+    }
+
+    private var composerSendIcon: some View {
+        Image(systemName: composerActionSymbol)
+            .font(.system(size: 18, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
+            .contentShape(.capsule)
+            .background(Color.accentColor, in: .capsule)
+            .glassCompat(in: .capsule)
+    }
+
+    private var isAnnounceOnlyBlocked: Bool {
+        service.isAnnounceOnly(conversationId: conversationId) && !service.isAdmin(in: conversationId)
     }
 
     private var canSend: Bool {
-        pendingAttachment != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !isAnnounceOnlyBlocked
+        && (!pendingAttachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
-    private func loadPickedPhoto(_ item: PhotosPickerItem?) {
-        guard let item else { return }
+    private var showRecordButton: Bool {
+        !canSend && editingMessage == nil
+    }
+
+    private var showSendButton: Bool {
+        canSend || editingMessage != nil
+    }
+
+    private var composerActionSymbol: String {
+        editingMessage != nil ? "checkmark" : "arrow.up"
+    }
+
+    private var draftContainsLineBreak: Bool {
+        draft.contains("\n") || draft.contains("\r")
+    }
+
+    private func normalizedDraft(_ text: String) -> String {
+        let normalizedNewlines = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalizedNewlines.components(separatedBy: "\n")
+        guard lines.count > Self.maxDraftLines else { return normalizedNewlines }
+        return lines.prefix(Self.maxDraftLines).joined(separator: "\n")
+    }
+
+    private func loadPickedPhotos(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
         Task {
-            guard let data = try? await item.loadTransferable(type: Data.self),
-                  let image = UIImage(data: data) else { return }
-            pendingAttachment = MessagingService.PendingAttachment(
-                data: data,
-                contentType: "image/jpeg",
-                filename: nil,
-                width: Int(image.size.width * image.scale),
-                height: Int(image.size.height * image.scale)
+            var loaded: [MessagingService.PendingAttachment] = []
+            for item in items.prefix(10) {
+                if let attachment = await pendingAttachment(from: item) {
+                    loaded.append(attachment)
+                }
+            }
+            guard !loaded.isEmpty else { return }
+            pendingAttachments = loaded
+            if !pendingAttachments.allSatisfy({ $0.contentType.hasPrefix("image/") }) {
+                viewOnce = false
+            }
+        }
+    }
+
+    private func pendingAttachment(from item: PhotosPickerItem) async -> MessagingService.PendingAttachment? {
+        let isVideo = item.supportedContentTypes.contains {
+            $0.conforms(to: .movie) || $0.conforms(to: .video) || $0.conforms(to: .audiovisualContent)
+        }
+        let isGIF = item.supportedContentTypes.contains { $0.conforms(to: .gif) }
+        guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
+        if isVideo {
+            let mime = item.supportedContentTypes.first {
+                $0.conforms(to: .movie) || $0.conforms(to: .video)
+            }?.preferredMIMEType ?? "video/mp4"
+            return MessagingService.PendingAttachment(
+                data: data, contentType: mime, filename: "video.mp4", width: 0, height: 0
             )
         }
+        if isGIF {
+            let image = UIImage(data: data)
+            return MessagingService.PendingAttachment(
+                data: data,
+                contentType: "image/gif",
+                filename: "image.gif",
+                width: image.map { Int($0.size.width * $0.scale) } ?? 0,
+                height: image.map { Int($0.size.height * $0.scale) } ?? 0
+            )
+        }
+        guard let image = UIImage(data: data) else { return nil }
+        return MessagingService.PendingAttachment(
+            data: data,
+            contentType: "image/jpeg",
+            filename: nil,
+            width: Int(image.size.width * image.scale),
+            height: Int(image.size.height * image.scale)
+        )
     }
 
     /// Reads a document-picker selection into a pending attachment. The picker
@@ -397,13 +1275,14 @@ struct ChatView: View {
         guard let data = try? Data(contentsOf: url) else { return }
         let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
             ?? "application/octet-stream"
-        pendingAttachment = MessagingService.PendingAttachment(
+        pendingAttachments = [MessagingService.PendingAttachment(
             data: data,
             contentType: mime,
             filename: url.lastPathComponent,
             width: 0,
             height: 0
-        )
+        )]
+        viewOnce = false
     }
 
     private func startRecording() {
@@ -419,14 +1298,34 @@ struct ChatView: View {
         Task { await service.sendMessage("", in: conversationId, replyTo: nil, attachments: [clip]) }
     }
 
-    private func clearPendingAttachment() {
-        pendingAttachment = nil
-        photoItem = nil
+    private func clearPendingAttachments() {
+        pendingAttachments = []
+        photoItems = []
+    }
+
+    private func removePendingAttachment(at index: Int) {
+        guard pendingAttachments.indices.contains(index) else { return }
+        pendingAttachments.remove(at: index)
+        if pendingAttachments.isEmpty {
+            photoItems = []
+            viewOnce = false
+        } else if !pendingAttachments.allSatisfy({ $0.contentType.hasPrefix("image/") }) {
+            viewOnce = false
+        }
     }
 
     private func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        // Edit mode: update existing message body instead of sending a new one.
+        if let target = editingMessage {
+            guard !text.isEmpty else { return }
+            draft = ""
+            editingMessage = nil
+            service.editMessage(target, newBody: text)
+            return
+        }
         let reply = replyingTo.map {
             QuotedMessage(
                 targetTimestamp: $0.timestamp,
@@ -434,10 +1333,12 @@ struct ChatView: View {
                 text: String($0.body.prefix(240))
             )
         }
-        let attachments = pendingAttachment.map { [$0] } ?? []
+        let attachments = pendingAttachments
+        if viewOnce && !attachments.isEmpty { text = "~once~" + text }
         draft = ""
         replyingTo = nil
-        clearPendingAttachment()
+        viewOnce = false
+        clearPendingAttachments()
         Task { await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments) }
     }
 
@@ -451,7 +1352,7 @@ struct ChatView: View {
             }
         } else {
             let now = Date()
-            if lastTypingSentAt == nil || now.timeIntervalSince(lastTypingSentAt!) > 4 {
+            if lastTypingSentAt.map({ now.timeIntervalSince($0) > 4 }) ?? true {
                 service.sendTyping(.started, in: conversationId)
                 lastTypingSentAt = now
             }
@@ -462,11 +1363,13 @@ struct ChatView: View {
 
     private enum DisplayItem: Identifiable {
         case dateSeparator(id: String, label: String)
+        case unreadSeparator
         case message(StoredMessage, position: BubblePosition)
 
         var id: String {
             switch self {
             case .dateSeparator(let id, _): id
+            case .unreadSeparator: "unread-separator"
             case .message(let message, _): message.id
             }
         }
@@ -477,34 +1380,44 @@ struct ChatView: View {
 
     private var displayItems: [DisplayItem] {
         let messages = service.activeMessages
+        let readAt = service.conversations.first { $0.id == conversationId }?.readAt ?? 0
         var items: [DisplayItem] = []
         let calendar = Calendar.current
+        var unreadSeparatorInserted = false
 
         for (index, message) in messages.enumerated() {
             let date = Date(timeIntervalSince1970: Double(message.timestamp) / 1000)
             let previous = index > 0 ? messages[index - 1] : nil
             let next = index + 1 < messages.count ? messages[index + 1] : nil
 
-            if previous == nil || !calendar.isDate(
-                Date(timeIntervalSince1970: Double(previous!.timestamp) / 1000),
-                inSameDayAs: date
-            ) {
+            if previous.map({ !calendar.isDate(
+                Date(timeIntervalSince1970: Double($0.timestamp) / 1000),
+                inSameDayAs: date) }) ?? true {
                 items.append(.dateSeparator(id: "day-\(message.id)", label: Self.dayLabel(date)))
             }
 
-            let groupsWithPrevious = previous.map {
-                $0.isOutgoing == message.isOutgoing
-                    && message.timestamp - $0.timestamp < Self.groupWindowMillis
+            // Insert "New Messages" separator before the first unread incoming message.
+            if !unreadSeparatorInserted && !message.isOutgoing && message.timestamp > readAt {
+                items.append(.unreadSeparator)
+                unreadSeparatorInserted = true
+            }
+
+            let groupsWithPrevious = previous.map { prev -> Bool in
+                guard prev.isOutgoing == message.isOutgoing else { return false }
+                // In group chats each sender's run is independent.
+                if !message.isOutgoing && prev.senderAccount != message.senderAccount { return false }
+                return message.timestamp - prev.timestamp < Self.groupWindowMillis
                     && calendar.isDate(
-                        Date(timeIntervalSince1970: Double($0.timestamp) / 1000),
+                        Date(timeIntervalSince1970: Double(prev.timestamp) / 1000),
                         inSameDayAs: date
                     )
             } ?? false
-            let groupsWithNext = next.map {
-                $0.isOutgoing == message.isOutgoing
-                    && $0.timestamp - message.timestamp < Self.groupWindowMillis
+            let groupsWithNext = next.map { nxt -> Bool in
+                guard nxt.isOutgoing == message.isOutgoing else { return false }
+                if !message.isOutgoing && nxt.senderAccount != message.senderAccount { return false }
+                return nxt.timestamp - message.timestamp < Self.groupWindowMillis
                     && calendar.isDate(
-                        Date(timeIntervalSince1970: Double($0.timestamp) / 1000),
+                        Date(timeIntervalSince1970: Double(nxt.timestamp) / 1000),
                         inSameDayAs: date
                     )
             } ?? false
@@ -524,6 +1437,174 @@ struct ChatView: View {
         if Calendar.current.isDateInToday(date) { return "Today" }
         if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
         return date.formatted(.dateTime.weekday(.wide).day().month(.wide))
+    }
+}
+
+struct StarredMessagesView: View {
+    let service: MessagingService
+    let conversationId: String
+    let peerName: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var starred: [StoredMessage] { service.starredMessages(for: conversationId) }
+
+    var body: some View {
+        Group {
+            if starred.isEmpty {
+                ContentUnavailableView(
+                    "No Starred Messages",
+                    systemImage: "star",
+                    description: Text("Long-press any message and tap Star to bookmark it.")
+                )
+            } else {
+                List(starred) { message in
+                    HStack(alignment: .top, spacing: 10) {
+                        AvatarView(
+                            name: message.isOutgoing ? "You" : peerName,
+                            size: 36,
+                            imageData: message.isOutgoing
+                                ? service.myAvatarData
+                                : service.peerAvatarData(forAccount:
+                                    service.conversations.first { $0.id == conversationId }?.peerAccount ?? "")
+                        )
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text(message.isOutgoing ? "You" : peerName)
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer(minLength: 0)
+                                Text(Date(timeIntervalSince1970: Double(message.timestamp) / 1000)
+                                    .formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Text(message.body.isEmpty ? "(attachment)" : message.body)
+                                .font(.subheadline)
+                                .foregroundStyle(.primary)
+                                .lineLimit(4)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            service.starMessage(message.id, starred: false, in: conversationId)
+                        } label: {
+                            Label("Unstar", systemImage: "star.slash")
+                        }
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+        .navigationTitle("Starred Messages")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct PinnedMessageBanner: View {
+    let message: StoredMessage
+    let onUnpin: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "pin.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tint)
+            Text(message.body.isEmpty ? "Pinned message" : message.body)
+                .font(.footnote)
+                .lineLimit(1)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 0)
+            Button(action: onUnpin) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+    }
+}
+
+struct ChatPrivacySettingsView: View {
+    let service: MessagingService
+    let conversation: Conversation
+
+    @State private var isPinned: Bool
+    @State private var mediaRequiresBiometric: Bool
+    @State private var requireBiometricChat: Bool
+    @State private var hidePreviews: Bool
+    @State private var disappearingSeconds: Int64
+    @State private var notepadEnabled: Bool
+
+    init(service: MessagingService, conversation: Conversation) {
+        self.service = service
+        self.conversation = conversation
+        _isPinned = State(initialValue: conversation.isPinned)
+        _mediaRequiresBiometric = State(initialValue: conversation.mediaRequiresBiometric)
+        _requireBiometricChat = State(initialValue: conversation.requireBiometricChat)
+        _hidePreviews = State(initialValue: conversation.hidePreviews)
+        _disappearingSeconds = State(initialValue: conversation.disappearingSeconds)
+        _notepadEnabled = State(initialValue: UserDefaults.standard.bool(forKey: "chat.notepad.\(conversation.id)"))
+    }
+
+    var body: some View {
+        Form {
+            Section("Conversation") {
+                Toggle("Pinned", isOn: $isPinned)
+                Toggle("Hide previews in chat list", isOn: $hidePreviews)
+            }
+
+            Section("Privacy") {
+                Toggle("Require Face ID for media", isOn: $mediaRequiresBiometric)
+                Toggle("Require Face ID to open chat", isOn: $requireBiometricChat)
+            }
+
+            Section("Disappearing Messages") {
+                Picker("Timer", selection: $disappearingSeconds) {
+                    Text("Off").tag(Int64(0))
+                    Text("5 minutes").tag(Int64(5 * 60))
+                    Text("1 hour").tag(Int64(60 * 60))
+                    Text("8 hours").tag(Int64(8 * 60 * 60))
+                    Text("1 day").tag(Int64(24 * 60 * 60))
+                    Text("1 week").tag(Int64(7 * 24 * 60 * 60))
+                    Text("30 days").tag(Int64(30 * 24 * 60 * 60))
+                }
+            }
+
+            Section("Features") {
+                Toggle("Shared notepad", isOn: $notepadEnabled)
+            }
+        }
+        .navigationTitle("Chat Settings")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: isPinned) { _, value in
+            service.setConversationPinned(conversation.id, pinned: value)
+        }
+        .onChange(of: mediaRequiresBiometric) { _, _ in savePrivacy() }
+        .onChange(of: requireBiometricChat) { _, _ in savePrivacy() }
+        .onChange(of: hidePreviews) { _, _ in savePrivacy() }
+        .onChange(of: disappearingSeconds) { _, value in
+            service.setDisappearingSeconds(conversation.id, seconds: value)
+        }
+        .onChange(of: notepadEnabled) { _, value in
+            UserDefaults.standard.set(value, forKey: "chat.notepad.\(conversation.id)")
+        }
+    }
+
+    private func savePrivacy() {
+        service.setConversationPrivacy(
+            conversation.id,
+            mediaRequiresBiometric: mediaRequiresBiometric,
+            requireBiometricChat: requireBiometricChat,
+            hidePreviews: hidePreviews,
+            screenSecurity: true
+        )
     }
 }
 
@@ -547,7 +1628,7 @@ private extension VerificationState {
 
 // MARK: - Message row (gestures)
 
-/// Wraps a bubble with swipe-to-reply and long-press-for-actions.
+/// Wraps a bubble with swipe-to-reply plus custom quick reactions and actions.
 private struct MessageRow: View {
     let message: StoredMessage
     let position: BubblePosition
@@ -555,31 +1636,225 @@ private struct MessageRow: View {
     let service: MessagingService
     let conversationId: String
     let isGroup: Bool
-    let onLongPress: () -> Void
     let onReply: () -> Void
+    let onForward: () -> Void
+    let onEdit: () -> Void
+    let onInfo: () -> Void
+    let onUpdatePin: () -> Void
+    var isCurrentSearchMatch = false
+    var isSelectionMode = false
+    var isSelected = false
+    let onToggleSelection: () -> Void
+    let onBeginSelection: () -> Void
 
     @State private var dragOffset: CGFloat = 0
+    @State private var hasTriggeredReplyHaptic = false
+    @State private var showingQuickReactions = false
+    @State private var confirmDelete = false
 
     var body: some View {
-        MessageBubble(
-            message: message,
-            position: position,
-            peerName: peerName,
-            service: service,
-            conversationId: conversationId,
-            isGroup: isGroup,
-            onTapReactions: onLongPress
-        )
+        HStack(spacing: 8) {
+            if isSelectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .frame(width: 34, height: 34)
+                    .glassCompat(in: .circle)
+                    .transition(.opacity)
+            }
+            MessageBubble(
+                message: message,
+                position: position,
+                peerName: peerName,
+                service: service,
+                conversationId: conversationId,
+                isGroup: isGroup,
+                isCurrentSearchMatch: isCurrentSearchMatch,
+                onInfo: onInfo
+            )
+        }
+        .padding(.vertical, isSelected ? 2 : 0)
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .padding(.horizontal, -4)
+                    .transition(.opacity)
+            }
+        }
         .offset(x: dragOffset)
         .background(alignment: message.isOutgoing ? .trailing : .leading) {
+            let progress = Double(min(1.0, abs(dragOffset) / 55.0))
             Image(systemName: "arrowshape.turn.up.left.fill")
-                .foregroundStyle(.secondary)
-                .opacity(Double(min(1, abs(dragOffset) / 55)))
+                .foregroundStyle(.tint)
+                .opacity(progress)
+                .scaleEffect(0.4 + 0.6 * progress)
+                .rotationEffect(.degrees(-30 + 30 * progress))
                 .padding(.horizontal, 24)
         }
+        .overlay(alignment: message.isOutgoing ? .topTrailing : .topLeading) {
+            if showingQuickReactions {
+                quickMessageOverlay
+                    .offset(y: -92)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .zIndex(5)
+            }
+        }
         .contentShape(.rect)
-        .onLongPressGesture(minimumDuration: 0.4) { onLongPress() }
-        .gesture(replyDrag)
+        .onTapGesture {
+            if showingQuickReactions {
+                withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = false }
+            } else if isSelectionMode {
+                onToggleSelection()
+            }
+        }
+        .onTapGesture(count: 2) {
+            guard !isSelectionMode else { return }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            service.toggleReaction("❤️", on: message)
+        }
+        .onLongPressGesture(minimumDuration: 0.24) {
+            guard !isSelectionMode, !message.isDeleted else { return }
+            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+            withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = true }
+        }
+        .gesture(replyDrag, including: isSelectionMode ? .subviews : .all)
+        .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                service.deleteMessage(message.id, in: conversationId)
+            }
+        }
+    }
+
+    private var quickMessageOverlay: some View {
+        VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 8) {
+            quickReactionBar
+            quickActionTray
+        }
+        .frame(maxWidth: 330, alignment: message.isOutgoing ? .trailing : .leading)
+    }
+
+    private var quickReactionBar: some View {
+        HStack(spacing: 2) {
+            ForEach(quickReactions, id: \.self) { emoji in
+                Button {
+                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                    service.toggleReaction(emoji, on: message)
+                    withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = false }
+                } label: {
+                    Text(emoji)
+                        .font(.system(size: 24))
+                        .frame(width: 38, height: 38)
+                        .background(
+                            message.reactions.first(where: \.isOutgoing)?.emoji == emoji
+                                ? AnyShapeStyle(Color.accentColor.opacity(0.24))
+                                : AnyShapeStyle(Color.clear),
+                            in: .circle
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .glassCompat(in: .capsule)
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+    }
+
+    private var quickActionTray: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                quickActionButton("arrowshape.turn.up.left", label: "Reply") { onReply() }
+                quickActionButton("checkmark.circle", label: "Select") { onBeginSelection() }
+                if message.isOutgoing && message.attachments.isEmpty {
+                    quickActionButton("pencil", label: "Edit") { onEdit() }
+                }
+                if !message.body.isEmpty {
+                    quickActionButton("doc.on.doc", label: "Copy") { UIPasteboard.general.string = message.body }
+                    quickActionButton("arrowshape.turn.up.right", label: "Forward") { onForward() }
+                }
+                quickActionButton(message.isStarred ? "star.slash" : "star", label: message.isStarred ? "Unstar" : "Star") {
+                    service.starMessage(message.id, starred: !message.isStarred, in: conversationId)
+                }
+                quickActionButton(message.isPinned ? "pin.slash" : "pin", label: message.isPinned ? "Unpin" : "Pin") {
+                    service.pinMessage(message.id, pinned: !message.isPinned, in: conversationId)
+                    onUpdatePin()
+                }
+                quickActionButton("info.circle", label: "Info") { onInfo() }
+                if service.canUnsend(message) {
+                    quickActionButton("arrow.uturn.backward", label: "Unsend", role: .destructive) { service.unsend(message) }
+                }
+                quickActionButton("trash", label: "Delete", role: .destructive) {
+                    confirmDelete = true
+                }
+            }
+            .padding(.horizontal, 9)
+        }
+        .frame(maxWidth: 330)
+        .padding(.vertical, 7)
+        .glassCompat(in: .capsule)
+        .shadow(color: .black.opacity(0.14), radius: 10, y: 5)
+    }
+
+    private func quickActionButton(
+        _ systemName: String,
+        label: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role) {
+            withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = false }
+            action()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(role == .destructive ? Color.red : Color.primary)
+                .frame(width: 34, height: 34)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        if !message.isDeleted {
+            Section {
+                Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
+                Button("Select", systemImage: "checkmark.circle") { onBeginSelection() }
+                if message.isOutgoing && message.attachments.isEmpty {
+                    Button("Edit", systemImage: "pencil") { onEdit() }
+                }
+                if !message.body.isEmpty {
+                    Button("Copy", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = message.body
+                    }
+                    Button("Forward", systemImage: "arrowshape.turn.up.right") { onForward() }
+                }
+            }
+            Section {
+                Button(message.isStarred ? "Unstar" : "Star",
+                       systemImage: message.isStarred ? "star.slash" : "star") {
+                    service.starMessage(message.id, starred: !message.isStarred, in: conversationId)
+                }
+                Button(message.isPinned ? "Unpin" : "Pin",
+                       systemImage: message.isPinned ? "pin.slash" : "pin") {
+                    service.pinMessage(message.id, pinned: !message.isPinned, in: conversationId)
+                    onUpdatePin()
+                }
+                Button("Info", systemImage: "info.circle") { onInfo() }
+            }
+        }
+        Section {
+            if service.canUnsend(message) {
+                Button("Unsend for Everyone", systemImage: "arrow.uturn.backward", role: .destructive) {
+                    service.unsend(message)
+                }
+            }
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                confirmDelete = true
+            }
+        }
     }
 
     private var replyDrag: some Gesture {
@@ -587,12 +1862,14 @@ private struct MessageRow: View {
             .onChanged { value in
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 dragOffset = max(-70, min(70, value.translation.width * 0.5))
+                if !hasTriggeredReplyHaptic && abs(value.translation.width) > 52 {
+                    hasTriggeredReplyHaptic = true
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
             }
             .onEnded { value in
-                if abs(value.translation.width) > 52 {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    onReply()
-                }
+                if abs(value.translation.width) > 52 { onReply() }
+                hasTriggeredReplyHaptic = false
                 withAnimation(.snappy) { dragOffset = 0 }
             }
     }
@@ -607,9 +1884,11 @@ private struct MessageBubble: View {
     let service: MessagingService
     let conversationId: String
     let isGroup: Bool
-    let onTapReactions: () -> Void
+    var isCurrentSearchMatch = false
+    var onInfo: () -> Void = {}
 
     @Environment(ChatAppearance.self) private var appearance
+    @State private var reactionDetailEmoji: String?
 
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
@@ -632,6 +1911,12 @@ private struct MessageBubble: View {
     private var avatarData: Data? {
         senderAccount.flatMap { service.peerAvatarData(forAccount: $0) }
     }
+
+    private var mediaRequiresBiometric: Bool {
+        service.conversations.first { $0.id == conversationId }?.mediaRequiresBiometric ?? true
+    }
+
+    private var isViewOnce: Bool { message.body.hasPrefix("~once~") }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -656,26 +1941,39 @@ private struct MessageBubble: View {
                 bubbleContent
                     .overlay(alignment: message.isOutgoing ? .bottomLeading : .bottomTrailing) {
                         if !message.reactions.isEmpty {
-                            ReactionBadges(chips: reactionChips, onTap: onTapReactions)
+                            ReactionBadges(chips: reactionChips, onTap: { reactionDetailEmoji = $0 })
                                 .offset(x: message.isOutgoing ? -6 : 6, y: 14)
                         }
                     }
                     .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
 
-                if position.closesGroup {
-                    HStack(spacing: 4) {
-                        Text(timeLabel)
-                        if message.isOutgoing {
-                            statusView
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
-                }
             }
 
             if !message.isOutgoing { Spacer(minLength: 56) }
+        }
+        .background {
+            if isCurrentSearchMatch {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+                    }
+                    .padding(.horizontal, 34)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.spring(duration: 0.25), value: isCurrentSearchMatch)
+        .sheet(item: Binding(
+            get: { reactionDetailEmoji.map { ReactionEmojiID(emoji: $0) } },
+            set: { reactionDetailEmoji = $0?.emoji }
+        )) { item in
+            ReactionAttributionSheet(
+                emoji: item.emoji,
+                reactions: message.reactions.filter { $0.emoji == item.emoji },
+                service: service
+            )
+            .presentationDetents([.fraction(0.4)])
         }
     }
 
@@ -699,6 +1997,20 @@ private struct MessageBubble: View {
             Text(message.body)
                 .font(.system(size: 52))
                 .padding(.vertical, 2)
+        } else if let locPayload = LocationPayload.decode(message.body) {
+            LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing)
+        } else if message.body.hasPrefix(notepadPrefix) {
+            NotepadUpdateBubble(isOutgoing: message.isOutgoing)
+        } else if message.body.hasPrefix("__poll__:") {
+            PollBubble(
+                message: message, service: service,
+                conversationId: conversationId, isOutgoing: message.isOutgoing
+            )
+        } else if isViewOnce && !message.attachments.isEmpty {
+            ViewOnceOverlay(
+                message: message, service: service,
+                conversationId: conversationId, isOutgoing: message.isOutgoing
+            )
         } else if !message.attachments.isEmpty && message.body.isEmpty && message.replyTo == nil
                     && message.attachments.allSatisfy(\.isImage) {
             // Image-only message: show the image(s) with no bubble fill.
@@ -706,18 +2018,49 @@ private struct MessageBubble: View {
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 if let quote = message.replyTo {
-                    QuotedContentView(quote: quote, isOutgoing: message.isOutgoing, peerName: peerName)
+                    let authorName = quote.author == service.credentials.accountId
+                        ? "You"
+                        : service.displayName(forAccount: quote.author)
+                    QuotedContentView(quote: quote, isOutgoing: message.isOutgoing, authorName: authorName)
                 }
                 attachmentStack
-                if !message.body.isEmpty {
-                    Text(message.body)
+                let displayBody = message.body.hasPrefix("~once~")
+                    ? String(message.body.dropFirst("~once~".count)) : message.body
+                if !displayBody.isEmpty {
+                    HStack(alignment: .lastTextBaseline, spacing: 7) {
+                        Text(formattedBody(displayBody))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        metadataRow
+                    }
+                    if message.editedAt != nil {
+                        Text("edited")
+                            .font(.caption2)
+                            .foregroundStyle(message.isOutgoing ? .white.opacity(0.65) : .secondary)
+                    }
+                    if let url = displayBody.firstURL {
+                        LinkPreviewView(url: url, isOutgoing: message.isOutgoing)
+                    }
+                } else {
+                    metadataRow
+                        .padding(.top, -2)
                 }
             }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
             .background(
-                message.isOutgoing ? AnyShapeStyle(appearance.bubbleTint) : AnyShapeStyle(.fill.secondary),
+                message.isOutgoing ? AnyShapeStyle(appearance.bubbleGradient) : AnyShapeStyle(Color(.systemBackground).opacity(0.92)),
                 in: .rect(cornerRadii: cornerRadii)
+            )
+            .overlay {
+                if !message.isOutgoing {
+                    UnevenRoundedRectangle(cornerRadii: cornerRadii, style: .continuous)
+                        .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
+                }
+            }
+            .shadow(
+                color: message.isOutgoing ? appearance.bubbleTint.opacity(0.30) : .black.opacity(0.05),
+                radius: 5, x: 0, y: 2
             )
             .foregroundStyle(message.isOutgoing ? .white : .primary)
         }
@@ -727,16 +2070,31 @@ private struct MessageBubble: View {
     private var attachmentStack: some View {
         ForEach(message.attachments) { attachment in
             if attachment.isImage {
-                AttachmentImageView(attachment: attachment, service: service, conversationId: conversationId)
+                AttachmentImageView(
+                    attachment: attachment,
+                    service: service,
+                    conversationId: conversationId,
+                    requiresBiometric: mediaRequiresBiometric,
+                    senderName: avatarName
+                )
             } else if attachment.isAudio {
                 VoiceNoteBubble(
                     attachment: attachment, service: service,
-                    conversationId: conversationId, isOutgoing: message.isOutgoing
+                    conversationId: conversationId, isOutgoing: message.isOutgoing,
+                    requiresBiometric: mediaRequiresBiometric
+                )
+            } else if attachment.isVideo {
+                VideoPlayerBubble(
+                    attachment: attachment, service: service,
+                    conversationId: conversationId, isOutgoing: message.isOutgoing,
+                    requiresBiometric: mediaRequiresBiometric
                 )
             } else {
                 FileAttachmentBubble(
                     attachment: attachment, service: service,
-                    conversationId: conversationId, isOutgoing: message.isOutgoing
+                    conversationId: conversationId, isOutgoing: message.isOutgoing,
+                    requiresBiometric: mediaRequiresBiometric,
+                    senderName: message.isOutgoing ? "You" : avatarName
                 )
             }
         }
@@ -754,18 +2112,35 @@ private struct MessageBubble: View {
         return order.map { ReactionChip(emoji: $0, count: counts[$0] ?? 0, mine: mine.contains($0)) }
     }
 
-    /// Tight corners on the grouped side, like iMessage runs.
     private var cornerRadii: RectangleCornerRadii {
-        let full: CGFloat = 18
-        let tight: CGFloat = 5
-        let topGrouped = position == .middle || position == .last
-        let bottomGrouped = position == .first || position == .middle
+        let radius: CGFloat = 20
         return RectangleCornerRadii(
-            topLeading: !message.isOutgoing && topGrouped ? tight : full,
-            bottomLeading: !message.isOutgoing && bottomGrouped ? tight : full,
-            bottomTrailing: message.isOutgoing && bottomGrouped ? tight : full,
-            topTrailing: message.isOutgoing && topGrouped ? tight : full
+            topLeading: radius,
+            bottomLeading: radius,
+            bottomTrailing: radius,
+            topTrailing: radius
         )
+    }
+
+    private func formattedBody(_ text: String) -> AttributedString {
+        var base = (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(text)
+        // Highlight @mentions of the local user in orange
+        if let username = service.username {
+            let target = "@\(username)"
+            let raw = String(base.characters)
+            var searchIdx = raw.startIndex
+            while let found = raw.range(of: target, options: .caseInsensitive, range: searchIdx..<raw.endIndex) {
+                if let lower = AttributedString.Index(found.lowerBound, within: base),
+                   let upper = AttributedString.Index(found.upperBound, within: base) {
+                    base[lower..<upper].foregroundColor = .orange
+                }
+                searchIdx = found.upperBound
+            }
+        }
+        return base
     }
 
     private var timeLabel: String {
@@ -773,9 +2148,32 @@ private struct MessageBubble: View {
             .formatted(date: .omitted, time: .shortened)
     }
 
+    private var metadataRow: some View {
+        HStack(spacing: 3) {
+            if message.isStarred {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(.yellow)
+            }
+            Text(timeLabel)
+            if message.isOutgoing {
+                statusView
+            }
+        }
+        .font(.system(size: 8.5, weight: .regular))
+        .foregroundStyle(message.isOutgoing ? .white.opacity(0.62) : .secondary)
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .fixedSize()
+        .contentShape(.rect)
+    }
+
+    /// In a group, the status aggregates every member's receipts.
+    private var effectiveStatus: MessageStatus {
+        isGroup ? service.groupAggregateStatus(for: message, in: conversationId) : message.status
+    }
+
     @ViewBuilder
     private var statusView: some View {
-        switch message.status {
+        switch effectiveStatus {
         case .sending:
             Image(systemName: "clock")
         case .sent:
@@ -784,10 +2182,13 @@ private struct MessageBubble: View {
             Image(systemName: "checkmark.circle")
         case .read:
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.tint)
+                .foregroundStyle(message.isOutgoing ? Color.white.opacity(0.72) : Color.accentColor)
         case .failed:
-            Image(systemName: "exclamationmark.circle.fill")
-                .foregroundStyle(.red)
+            HStack(spacing: 3) {
+                Image(systemName: "exclamationmark.circle.fill")
+                Text("Not Delivered")
+            }
+            .foregroundStyle(.red)
         case .received:
             EmptyView()
         }
@@ -805,32 +2206,60 @@ struct ReactionChip: Identifiable {
 
 private struct ReactionBadges: View {
     let chips: [ReactionChip]
-    let onTap: () -> Void
+    let onTap: (String) -> Void
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(chips) { chip in
-                HStack(spacing: 2) {
-                    Text(chip.emoji).font(.caption)
-                    if chip.count > 1 {
-                        Text("\(chip.count)")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
+                Button { onTap(chip.emoji) } label: {
+                    HStack(spacing: 2) {
+                        Text(chip.emoji).font(.caption)
+                        if chip.count > 1 {
+                            Text("\(chip.count)")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .glassCompat(in: .capsule)
+                    .overlay {
+                        Capsule().strokeBorder(
+                            chip.mine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.systemBackground).opacity(0.75)),
+                            lineWidth: chip.mine ? 1.5 : 1
+                        )
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color(.secondarySystemBackground), in: .capsule)
-                .overlay {
-                    Capsule().strokeBorder(
-                        chip.mine ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.systemBackground)),
-                        lineWidth: chip.mine ? 1.5 : 2
-                    )
-                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Reaction \(chip.emoji), \(chip.count)")
             }
         }
         .contentShape(.rect)
-        .onTapGesture(perform: onTap)
+    }
+}
+
+private struct ReactionEmojiID: Identifiable {
+    let emoji: String
+    var id: String { emoji }
+}
+
+private struct ReactionAttributionSheet: View {
+    let emoji: String
+    let reactions: [MessageReaction]
+    let service: MessagingService
+
+    var body: some View {
+        NavigationStack {
+            List(reactions, id: \.author) { reaction in
+                HStack(spacing: 12) {
+                    Text(reaction.emoji).font(.title2)
+                    Text(service.displayName(forAccount: reaction.author))
+                        .font(.body)
+                }
+            }
+            .navigationTitle("Reacted with \(emoji)")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 
@@ -839,18 +2268,21 @@ private struct ReactionBadges: View {
 private struct QuotedContentView: View {
     let quote: QuotedMessage
     let isOutgoing: Bool
-    let peerName: String
+    let authorName: String
 
     var body: some View {
         HStack(spacing: 6) {
             RoundedRectangle(cornerRadius: 2)
                 .fill(isOutgoing ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
                 .frame(width: 3)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(authorName)
+                    .font(.caption2.weight(.semibold))
+                    .opacity(isOutgoing ? 1 : 0.8)
                 Text(quote.text.isEmpty ? "Message" : quote.text)
                     .font(.footnote)
                     .lineLimit(2)
-                    .opacity(isOutgoing ? 0.9 : 0.8)
+                    .opacity(isOutgoing ? 0.8 : 0.7)
             }
             Spacer(minLength: 0)
         }
@@ -862,10 +2294,8 @@ private struct QuotedContentView: View {
     }
 }
 
-private struct ReplyPreviewBar: View {
+private struct EditPreviewBar: View {
     let message: StoredMessage
-    let isOwnAuthor: Bool
-    let peerName: String
     let onCancel: () -> Void
 
     var body: some View {
@@ -874,7 +2304,7 @@ private struct ReplyPreviewBar: View {
                 .fill(.tint)
                 .frame(width: 3, height: 34)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Reply to \(isOwnAuthor ? "You" : peerName)")
+                Text("Edit message")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tint)
                 Text(message.body)
@@ -892,7 +2322,82 @@ private struct ReplyPreviewBar: View {
             .buttonStyle(.plain)
         }
         .padding(10)
-        .background(.fill.tertiary, in: .rect(cornerRadius: 12))
+        .glassCompat(in: .rect(cornerRadius: 14))
+    }
+}
+
+private struct FormatButton: View {
+    let symbol: String
+    let tip: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Color(.label))
+                .frame(width: 36, height: 30)
+                .background(Color(.secondarySystemFill), in: .rect(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ReplyPreviewBar: View {
+    let message: StoredMessage
+    let isOwnAuthor: Bool
+    let peerName: String
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(.tint)
+                .frame(width: 3, height: 34)
+            if let symbol = attachmentSymbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30)
+                    .background(.fill.tertiary, in: .rect(cornerRadius: 7))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Reply to \(isOwnAuthor ? "You" : peerName)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+                Text(replySnippet)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Button {
+                onCancel()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .glassCompat(in: .rect(cornerRadius: 14))
+    }
+
+    private var attachmentSymbol: String? {
+        guard let attachment = message.attachments.first else { return nil }
+        if attachment.isImage { return "photo" }
+        if attachment.isVideo { return "video.fill" }
+        if attachment.isAudio { return "waveform" }
+        return "doc.fill"
+    }
+
+    private var replySnippet: String {
+        if !message.body.isEmpty { return message.body }
+        guard let attachment = message.attachments.first else { return "Message" }
+        if attachment.isImage { return "Photo" }
+        if attachment.isVideo { return "Video" }
+        if attachment.isAudio { return "Voice message" }
+        return attachment.filename ?? "File"
     }
 }
 
@@ -904,10 +2409,16 @@ private struct AttachmentImageView: View {
     let attachment: StoredAttachment
     let service: MessagingService
     let conversationId: String
+    let requiresBiometric: Bool
+    var senderName: String = ""
 
     @State private var image: UIImage?
+    @State private var gifData: Data?
     @State private var failed = false
-    @State private var previewing = false
+    @State private var preview: PreviewItem?
+    @State private var isUnlocked = false
+
+    private var isGIF: Bool { attachment.contentType == "image/gif" }
 
     private var height: CGFloat {
         guard attachment.width > 0, attachment.height > 0 else { return 240 }
@@ -917,12 +2428,40 @@ private struct AttachmentImageView: View {
 
     var body: some View {
         Group {
-            if let image {
+            if isGIF, let data = gifData {
+                AnimatedGIFView(data: data)
+                    .blur(radius: (requiresBiometric && !isUnlocked) ? 18 : 0)
+                    .overlay {
+                        if requiresBiometric && !isUnlocked {
+                            AttachmentPrivacyOverlay(label: "Unlock photo")
+                        }
+                    }
+                    .contentShape(.rect)
+                    .onTapGesture {
+                        if requiresBiometric && !isUnlocked {
+                            Task { await unlock() }
+                        } else {
+                            Task { await openPreview() }
+                        }
+                    }
+            } else if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .blur(radius: (requiresBiometric && !isUnlocked) ? 18 : 0)
+                    .overlay {
+                        if requiresBiometric && !isUnlocked {
+                            AttachmentPrivacyOverlay(label: "Unlock photo")
+                        }
+                    }
                     .contentShape(.rect)
-                    .onTapGesture { previewing = true }
+                    .onTapGesture {
+                        if requiresBiometric && !isUnlocked {
+                            Task { await unlock() }
+                        } else {
+                            Task { await openPreview() }
+                        }
+                    }
             } else {
                 ZStack {
                     Rectangle().fill(.fill.tertiary)
@@ -943,8 +2482,9 @@ private struct AttachmentImageView: View {
         .frame(width: 240, height: height)
         .clipShape(.rect(cornerRadius: 16))
         .task(id: attachment.id) { await load() }
-        .fullScreenCover(isPresented: $previewing) {
-            if let image { FullScreenImageView(image: image) }
+        .fullScreenCover(item: $preview) { item in
+            QuickLookPreview(url: item.url, title: senderName)
+                .ignoresSafeArea()
         }
     }
 
@@ -953,10 +2493,41 @@ private struct AttachmentImageView: View {
         if !attachment.isDownloaded {
             await service.downloadAttachment(attachment, in: conversationId)
         }
-        if let data = service.attachmentPlaintext(attachment), let ui = UIImage(data: data) {
+        guard let data = service.attachmentPlaintext(attachment) else {
+            failed = true
+            return
+        }
+        if isGIF {
+            gifData = data
+        } else if let ui = UIImage(data: data) {
             image = ui
         } else {
             failed = true
+        }
+    }
+
+    private func unlock() async {
+        guard await BiometricGate.authenticate(reason: "Unlock this photo in Relay.") else { return }
+        isUnlocked = true
+    }
+
+    private func openPreview() async {
+        if !attachment.isDownloaded {
+            await service.downloadAttachment(attachment, in: conversationId)
+        }
+        guard let data = service.attachmentPlaintext(attachment) else { return }
+        let ext = UTType(mimeType: attachment.contentType)?.preferredFilenameExtension ?? "jpg"
+        // Strip any directory traversal from server-provided filenames.
+        let rawName = attachment.filename.flatMap { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 }
+        let name = rawName ?? "\(attachment.id).\(ext)"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            try data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+            preview = PreviewItem(url: url)
+        } catch {
+            Logger(subsystem: "com.relaytextingapp.Relay", category: "chat")
+                .error("openPreview: write to tmp failed: \(error.localizedDescription)")
         }
     }
 }
@@ -965,9 +2536,11 @@ private struct AttachmentImageView: View {
 /// (image thumbnail, or an icon + name for files).
 private struct PendingAttachmentBar: View {
     let attachment: MessagingService.PendingAttachment
+    let onPreview: () -> Void
     let onCancel: () -> Void
 
     private var isImage: Bool { attachment.contentType.hasPrefix("image/") }
+    private var isVideo: Bool { attachment.contentType.hasPrefix("video/") }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -977,9 +2550,19 @@ private struct PendingAttachmentBar: View {
                     .scaledToFill()
                     .frame(width: 44, height: 44)
                     .clipShape(.rect(cornerRadius: 8))
-                Text("Photo")
+                Text(attachment.contentType == "image/gif" ? "GIF" : "Photo")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } else if isVideo {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+                Text(attachment.filename ?? "Video")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             } else {
                 Image(systemName: "doc.fill")
                     .font(.system(size: 22))
@@ -1001,25 +2584,157 @@ private struct PendingAttachmentBar: View {
             .buttonStyle(.plain)
         }
         .padding(10)
-        .background(.fill.tertiary, in: .rect(cornerRadius: 12))
+        .glassCompat(in: .rect(cornerRadius: 14))
+        .contentShape(.rect(cornerRadius: 12))
+        .onTapGesture { onPreview() }
+    }
+}
+
+private struct PendingAttachmentPreviewSheet: View {
+    let attachments: [MessagingService.PendingAttachment]
+    @Binding var caption: String
+    @Binding var viewOnce: Bool
+    let onRemove: (Int) -> Void
+    let onSend: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private var allowsViewOnce: Bool {
+        attachments.allSatisfy { $0.contentType.hasPrefix("image/") }
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
+                            previewCard(for: attachment, index: index)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+
+                TextField("Add a caption", text: $caption, axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, 16)
+
+                if allowsViewOnce {
+                    Toggle(isOn: $viewOnce) {
+                        Label("View once", systemImage: viewOnce ? "eye.fill" : "eye.slash")
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+            .padding(.top, 10)
+            .navigationTitle(attachments.count == 1 ? "Preview" : "\(attachments.count) Items")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        onSend()
+                        dismiss()
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                    }
+                    .disabled(attachments.isEmpty && caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    @ViewBuilder
+    private func previewCard(for attachment: MessagingService.PendingAttachment, index: Int) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if attachment.contentType.hasPrefix("image/"), let image = UIImage(data: attachment.data) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: attachment.contentType.hasPrefix("video/") ? "video.fill" : "doc.fill")
+                        .font(.system(size: 32, weight: .semibold))
+                    Text(attachment.filename ?? (attachment.contentType.hasPrefix("video/") ? "Video" : "File"))
+                        .font(.footnote)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.fill.tertiary)
+            }
+            Button { onRemove(index) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title3)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .black.opacity(0.55))
+            }
+            .buttonStyle(.plain)
+            .padding(8)
+        }
+        .frame(width: 220, height: 260)
+        .clipShape(.rect(cornerRadius: 18))
     }
 }
 
 // MARK: - Typing indicator
 
+// Renders system messages. Bodies prefixed with "call:" get a phone SF Symbol;
+// everything else renders as plain caption text.
+private struct SystemMessageView: View {
+    let rawBody: String
+
+    private var isCallMessage: Bool { rawBody.hasPrefix("call:") }
+    private var displayText: String {
+        isCallMessage ? String(rawBody.dropFirst("call:".count)) : rawBody
+    }
+    private var callIcon: String {
+        let t = displayText.lowercased()
+        if t.hasPrefix("missed") { return "phone.arrow.down.left.fill" }
+        if t.hasPrefix("outgoing") { return "phone.arrow.up.right.fill" }
+        return "phone.fill"
+    }
+
+    var body: some View {
+        Group {
+            if isCallMessage {
+                HStack(spacing: 4) {
+                    Image(systemName: callIcon)
+                    Text(displayText)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else {
+                Text(displayText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 private struct TypingIndicatorView: View {
     let peerName: String
+    var imageData: Data? = nil
     @State private var phase = 0
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            AvatarView(name: peerName, size: 28)
+            AvatarView(name: peerName, size: 28, imageData: imageData)
             HStack(spacing: 5) {
                 ForEach(0..<3, id: \.self) { index in
                     Circle()
                         .frame(width: 7, height: 7)
                         .foregroundStyle(.secondary)
-                        .opacity(phase == index ? 1 : 0.3)
+                        .opacity(phase == index ? 1 : 0.35)
+                        .offset(y: phase == index ? -4 : 0)
+                        .animation(.spring(duration: 0.3, bounce: 0.5).delay(Double(index) * 0.05), value: phase)
                 }
             }
             .padding(.horizontal, 14)
@@ -1029,124 +2744,87 @@ private struct TypingIndicatorView: View {
         }
         .task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(350))
-                withAnimation(.easeInOut(duration: 0.2)) { phase = (phase + 1) % 3 }
+                try? await Task.sleep(for: .milliseconds(400))
+                phase = (phase + 1) % 3
             }
         }
     }
 }
 
-// MARK: - Long-press actions sheet
 
-private struct MessageActionsSheet: View {
-    let message: StoredMessage
-    let isOwnAuthor: Bool
-    let peerName: String
-    let canUnsend: Bool
-    let onReact: (String) -> Void
-    let onReply: () -> Void
-    let onUnsend: () -> Void
-    let onDelete: () -> Void
+
+
+private struct ForwardPayload: Identifiable {
+    let id = UUID()
+    let messages: [StoredMessage]
+}
+
+private struct ForwardMessageSheet: View {
+    let payload: ForwardPayload
+    let service: MessagingService
 
     @Environment(\.dismiss) private var dismiss
-    @State private var showingEmojiPicker = false
+    @State private var isSending = false
 
-    private var myReaction: String? {
-        message.reactions.first(where: \.isOutgoing)?.emoji
+    private var conversations: [Conversation] {
+        service.conversations.filter { !$0.archived }
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if !message.isDeleted {
-                    reactionTray
-                        .padding()
-                }
-                List {
-                    if !message.isDeleted {
-                        Button {
-                            dismiss()
-                            onReply()
-                        } label: {
-                            Label("Reply", systemImage: "arrowshape.turn.up.left")
-                        }
-                        if !message.body.isEmpty {
-                            Button {
-                                UIPasteboard.general.string = message.body
-                                dismiss()
-                            } label: {
-                                Label("Copy", systemImage: "doc.on.doc")
+            Group {
+                if conversations.isEmpty {
+                    ContentUnavailableView(
+                        "No Conversations",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("Start a conversation first.")
+                    )
+                } else {
+                    List(conversations) { conv in
+                        Button { forward(to: conv.id) } label: {
+                            let convName = conv.isGroup
+                                ? (conv.peerUsername ?? "Group")
+                                : service.displayName(forAccount: conv.peerAccount)
+                            let avatarImg = conv.isGroup
+                                ? service.group(for: conv.id)?.avatarData
+                                : service.peerAvatarData(forAccount: conv.peerAccount)
+                            HStack(spacing: 12) {
+                                AvatarView(name: convName, size: 44, imageData: avatarImg)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(convName)
+                                        .font(.body.weight(.medium))
+                                    if !conv.isGroup, let username = conv.peerUsername {
+                                        Text("@\(username)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                             }
                         }
-                    }
-                    NavigationLink {
-                        MessageInfoView(message: message, isOwnAuthor: isOwnAuthor, peerName: peerName)
-                    } label: {
-                        Label("Info", systemImage: "info.circle")
-                    }
-                    if canUnsend {
-                        Button(role: .destructive) {
-                            dismiss()
-                            onUnsend()
-                        } label: {
-                            Label("Unsend for Everyone", systemImage: "arrow.uturn.backward")
-                        }
-                    }
-                    Button(role: .destructive) {
-                        dismiss()
-                        onDelete()
-                    } label: {
-                        Label("Delete for Me", systemImage: "trash")
+                        .disabled(isSending)
                     }
                 }
-                .listStyle(.plain)
             }
-            .navigationTitle("Message")
+            .navigationTitle("Forward to…")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingEmojiPicker) {
-                EmojiPicker { emoji in
-                    onReact(emoji)
-                    dismiss()
-                }
-            }
+            .overlay { if isSending { ProgressView() } }
         }
-        .presentationDetents([.medium, .large])
     }
 
-    private var reactionTray: some View {
-        HStack(spacing: 8) {
-            ForEach(quickReactions, id: \.self) { emoji in
-                Button {
-                    onReact(emoji)
-                    dismiss()
-                } label: {
-                    Text(emoji)
-                        .font(.system(size: 30))
-                        .padding(6)
-                        .background(
-                            myReaction == emoji ? AnyShapeStyle(.tint.opacity(0.25)) : AnyShapeStyle(.clear),
-                            in: .circle
-                        )
-                }
-                .buttonStyle(.plain)
+    private func forward(to conversationId: String) {
+        guard !isSending else { return }
+        isSending = true
+        Task {
+            for message in payload.messages where !message.body.isEmpty {
+                await service.sendMessage(message.body, in: conversationId)
             }
-            Button {
-                showingEmojiPicker = true
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 40, height: 40)
-                    .background(.fill.tertiary, in: .circle)
-            }
-            .buttonStyle(.plain)
+            dismiss()
         }
-        .frame(maxWidth: .infinity)
     }
 }
 
@@ -1154,13 +2832,28 @@ private struct MessageInfoView: View {
     let message: StoredMessage
     let isOwnAuthor: Bool
     let peerName: String
+    var service: MessagingService? = nil
+    var conversationId: String? = nil
+    var isGroup: Bool = false
+
+    private var groupReceipts: [(name: String, status: String)] {
+        guard isGroup, message.isOutgoing, let service, let conversationId else { return [] }
+        return service.groupReadReceipts(for: message, in: conversationId)
+    }
 
     var body: some View {
         List {
             LabeledContent("From", value: isOwnAuthor ? "You" : peerName)
             LabeledContent("Sent", value: fullTimestamp)
-            if message.isOutgoing {
+            if message.isOutgoing, !isGroup {
                 LabeledContent("Status", value: statusLabel)
+            }
+            if !groupReceipts.isEmpty {
+                Section("Read by \(groupReceipts.filter { $0.status == "Read" }.count) of \(groupReceipts.count)") {
+                    ForEach(groupReceipts, id: \.name) { receipt in
+                        LabeledContent(receipt.name, value: receipt.status)
+                    }
+                }
             }
         }
         .navigationTitle("Info")
@@ -1182,4 +2875,267 @@ private struct MessageInfoView: View {
         case .received: "Received"
         }
     }
+}
+
+// MARK: - LocationBubble
+
+private struct LocationBubble: View {
+    let payload: LocationPayload
+    let isOutgoing: Bool
+
+    private var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: payload.lat, longitude: payload.lng)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Map(initialPosition: .region(MKCoordinateRegion(
+                center: coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+            ))) {
+                Marker("", coordinate: coordinate)
+                    .tint(.red)
+            }
+            .frame(height: 150)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .disabled(true)
+
+            HStack(spacing: 4) {
+                Image(systemName: payload.stop || payload.isExpired ? "location.slash.fill" : "location.fill")
+                    .font(.caption)
+                Text(payload.stop ? "Stopped sharing"
+                     : payload.isExpired ? "Location expired"
+                     : "Live location")
+                    .font(.caption)
+            }
+            .foregroundStyle(isOutgoing ? .white.opacity(0.8) : .secondary)
+        }
+        .frame(maxWidth: 240)
+    }
+}
+
+// MARK: - NotepadUpdateBubble
+
+private struct NotepadUpdateBubble: View {
+    let isOutgoing: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "note.text")
+                .font(.subheadline)
+            Text("Notepad updated")
+                .font(.subheadline)
+        }
+        .foregroundStyle(isOutgoing ? .white.opacity(0.9) : .secondary)
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - SummarySheet
+
+private struct SummarySheet: View {
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(text.isEmpty ? "No summary available." : text)
+                    .font(.body)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .navigationTitle("AI Summary")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+// MARK: - SchedulePickerSheet
+
+private struct SchedulePickerSheet: View {
+    let draft: String
+    @Binding var scheduledDate: Date
+    let onSchedule: (Date) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                DatePicker(
+                    "Send at",
+                    selection: $scheduledDate,
+                    in: Date().addingTimeInterval(60)...,
+                    displayedComponents: [.date, .hourAndMinute]
+                )
+                .datePickerStyle(.graphical)
+
+                Section("Message") {
+                    Text(draft)
+                        .foregroundStyle(.secondary)
+                        .font(.body)
+                }
+            }
+            .navigationTitle("Schedule Message")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Schedule") {
+                        onSchedule(scheduledDate)
+                        dismiss()
+                    }
+                    .bold()
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+}
+
+// MARK: - LocationShareSheet
+
+private struct LocationShareSheet: View {
+    @Binding var duration: TimeInterval
+    let onStart: (TimeInterval) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    private let options: [(label: String, seconds: TimeInterval)] = [
+        ("15 minutes", 900),
+        ("1 hour", 3600),
+        ("8 hours", 28800)
+    ]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Share for") {
+                    ForEach(options, id: \.seconds) { opt in
+                        Button {
+                            duration = opt.seconds
+                        } label: {
+                            HStack {
+                                Text(opt.label)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if duration == opt.seconds {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Text("Your live location is shared end-to-end encrypted. Only the people in this conversation can see it.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Share Location")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Start") {
+                        onStart(duration)
+                        dismiss()
+                    }
+                    .bold()
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
+
+// MARK: - Screenshot prevention (UITextField secure canvas)
+
+/// Renders `content` inside UITextField's private secure canvas layer.
+// MARK: - View-once overlay
+
+private struct ViewOnceOverlay: View {
+    let message: StoredMessage
+    let service: MessagingService
+    let conversationId: String
+    let isOutgoing: Bool
+
+    @State private var viewed = false
+    @State private var image: UIImage?
+
+    private var tint: Color { isOutgoing ? .white : .primary }
+
+    var body: some View {
+        Group {
+            if viewed, let img = image {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 240)
+                    .clipShape(.rect(cornerRadius: 12))
+            } else {
+                Button { Task { await reveal() } } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "eye.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("View once")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(tint.opacity(0.15), in: .capsule)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(8)
+    }
+
+    private func reveal() async {
+        guard let attachment = message.attachments.first(where: { $0.isImage }) else { return }
+        if !attachment.isDownloaded {
+            await service.downloadAttachment(attachment, in: conversationId)
+        }
+        if let data = service.attachmentPlaintext(attachment),
+           let ui = UIImage(data: data) {
+            image = ui
+            viewed = true
+            // Evict from cache after display to enforce single-view.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                service.deleteViewOnceAttachment(attachment, in: conversationId)
+            }
+        }
+    }
+}
+
+// MARK: - In-app browser
+
+import SafariServices
+
+struct SafariView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+
+    func updateUIViewController(_ vc: SFSafariViewController, context: Context) {}
+}
+
+extension URL: @retroactive Identifiable {
+    public var id: String { absoluteString }
 }

@@ -41,13 +41,13 @@ message ClientFrame {
   }
 }
 
-// Fan-out send: one ciphertext per registered device of the destination
-// account. The sender must encrypt separately for every device; the server
-// rejects the request if the device list does not exactly match the
-// account's currently registered devices (see SendResponse).
-// When the destination is the sender's own account (sync messages), the
-// sending device itself must be omitted from `messages`.
+// Mailbox send: new clients place one opaque destination mailbox id in the
+// legacy destination_account field and send exactly one DeviceMessage for that
+// mailbox. The sender still encrypts separately for every recipient device, but
+// sends those envelopes as separate mailbox-addressed frames.
 message SendRequest {
+  // Legacy field name retained for wire compatibility. New clients put a
+  // random opaque mailbox id here, not an account id.
   string destination_account = 1;
   repeated DeviceMessage messages = 2;
   // Sender's clock, milliseconds since epoch. Used by clients as the
@@ -87,7 +87,37 @@ message ServerFrame {
     // Sent once after connect, when the offline queue has been fully
     // drained. Envelopes after this marker arrived in real time.
     QueueEmpty queue_empty = 3;
+    // A signed remote-wipe command from an authorized device. The server
+    // validates the signature shape before relaying; clients verify the full
+    // signature before deleting local storage. Stored for offline devices.
+    NukeCommand nuke = 4;
+    // Tells connected devices that the account's device list changed so they
+    // can refresh without polling. No E2EE needed — the account owns all devices.
+    DeviceListChanged device_list_changed = 5;
   }
+}
+
+// A signed remote-wipe command. The canonical signing payload is:
+//   "relay-nuke-v1\n{account_id}\n{command_id}\n{creation_time_ms}\n{initiating_device_id}"
+// signed with the initiating device's authorization key (ECDSA-P256, DER-encoded).
+// The server cannot forge a valid command; it only validates shape and relays.
+message NukeCommand {
+  string account_id          = 1;
+  string command_id          = 2;  // UUID; replay prevention — server rejects duplicates
+  int64  creation_time_ms    = 3;  // sender clock; server rejects if >5 minutes old
+  uint32 initiating_device_id = 4;
+  bytes  signature           = 5;  // ECDSA-P256 ASN.1/DER over the canonical payload
+}
+
+// Notifies connected devices that the account's device list has changed.
+message DeviceListChanged {
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    DEVICE_ADDED       = 1;
+    DEVICE_REMOVED     = 2;
+  }
+  Action action    = 1;
+  uint32 device_id = 2;  // the device that was added or removed
 }
 
 enum SendStatus {

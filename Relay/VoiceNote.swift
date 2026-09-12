@@ -110,6 +110,7 @@ final class VoicePlayer {
     /// Playback position as a fraction 0...1 of the clip's duration.
     private(set) var progress: Double = 0
     private(set) var duration: TimeInterval = 0
+    private(set) var rate: Double = 1.0
 
     private var player: AVAudioPlayer?
     private var ticker: Task<Void, Never>?
@@ -118,6 +119,7 @@ final class VoicePlayer {
     func prepare(_ data: Data) {
         guard player == nil else { return }
         player = try? AVAudioPlayer(data: data)
+        player?.enableRate = true
         player?.prepareToPlay()
         duration = player?.duration ?? 0
     }
@@ -133,10 +135,17 @@ final class VoicePlayer {
         } else {
             try? AVAudioSession.sharedInstance().setCategory(.playback)
             try? AVAudioSession.sharedInstance().setActive(true)
+            player.rate = Float(rate)
             player.play()
             isPlaying = true
             startTicking()
         }
+    }
+
+    /// Cycles through 1×, 1.5×, 2× playback speeds.
+    func cycleRate() {
+        rate = rate < 1.2 ? 1.5 : rate < 1.8 ? 2.0 : 1.0
+        player?.rate = Float(rate)
     }
 
     private func startTicking() {

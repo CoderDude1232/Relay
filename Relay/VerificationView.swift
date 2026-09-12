@@ -17,6 +17,7 @@
 import AVFoundation
 import CoreImage.CIFilterBuiltins
 import CryptoCore
+import Photos
 import SecureStorage
 import SwiftUI
 
@@ -29,6 +30,12 @@ struct VerificationView: View {
     @State private var verification: MessagingService.PeerVerification?
     @State private var showingScanner = false
     @State private var scanResult: ScanResult?
+    @State private var qrSaveStatus: QRSaveStatus?
+
+    private enum QRSaveStatus: Identifiable {
+        case saved, denied
+        var id: Int { self == .saved ? 0 : 1 }
+    }
 
     private enum ScanResult: Identifiable {
         case matched, mismatched
@@ -36,26 +43,19 @@ struct VerificationView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let verification {
-                    content(for: verification)
-                } else {
-                    ContentUnavailableView(
-                        "No Secure Session Yet",
-                        systemImage: "lock.slash",
-                        description: Text("Send a message to \(peerName) first, then come back to verify your safety number.")
-                    )
-                }
-            }
-            .navigationTitle("Verify Safety Number")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
+        Group {
+            if let verification {
+                content(for: verification)
+            } else {
+                ContentUnavailableView(
+                    "No Secure Session Yet",
+                    systemImage: "lock.slash",
+                    description: Text("Send a message to \(peerName) first, then come back to verify your safety number.")
+                )
             }
         }
+        .navigationTitle("Verify Safety Number")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
         .sheet(isPresented: $showingScanner) {
             ScannerSheet { scanned in
@@ -75,8 +75,17 @@ struct VerificationView: View {
                 return Alert(
                     title: Text("Codes Don’t Match"),
                     message: Text("This code does not match your safety number with \(peerName). Do not trust this conversation until the numbers match."),
-                    dismissButton: .default(Text("OK"))
+                    primaryButton: .default(Text("Scan Again")) { showingScanner = true },
+                    secondaryButton: .cancel(Text("OK"))
                 )
+            }
+        }
+        .alert(item: $qrSaveStatus) { status in
+            switch status {
+            case .saved:
+                return Alert(title: Text("Saved"), message: Text("QR code saved to your photo library."), dismissButton: .default(Text("OK")))
+            case .denied:
+                return Alert(title: Text("Photos Access Denied"), message: Text("Allow Photos access in Settings to save the QR code."), dismissButton: .default(Text("OK")))
             }
         }
     }
@@ -104,13 +113,23 @@ struct VerificationView: View {
                 SafetyNumberGrid(numeric: verification.safetyNumber.numeric)
 
                 if let qr = Self.qrImage(for: verification.safetyNumber.scannable) {
-                    Image(uiImage: qr)
-                        .interpolation(.none)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 200, height: 200)
-                        .padding(12)
-                        .background(.white, in: .rect(cornerRadius: 16))
+                    VStack(spacing: 8) {
+                        Image(uiImage: qr)
+                            .interpolation(.none)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 200, height: 200)
+                            .padding(12)
+                            .background(.white, in: .rect(cornerRadius: 16))
+                        Button {
+                            saveQRToPhotos(qr)
+                        } label: {
+                            Label("Save to Photos", systemImage: "square.and.arrow.down")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
 
                 Text("Compare these numbers with \(peerName) in person or over a call you trust — or tap Scan to check their code automatically.")
@@ -145,7 +164,7 @@ struct VerificationView: View {
                 Label("Scan \(peerName)’s Code", systemImage: "qrcode.viewfinder")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .glassProminentCompat()
 
             if state == .verified {
                 Button(role: .destructive) {
@@ -154,7 +173,7 @@ struct VerificationView: View {
                 } label: {
                     Text("Clear Verification").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .glassStyleCompat()
             } else {
                 Button {
                     service.setVerified(true, conversationId: conversationId)
@@ -162,7 +181,7 @@ struct VerificationView: View {
                 } label: {
                     Text("Mark as Verified").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .glassStyleCompat()
             }
         }
         .controlSize(.large)
@@ -172,6 +191,28 @@ struct VerificationView: View {
 
     private func reload() {
         verification = service.peerVerification(for: conversationId)
+    }
+
+    private func saveQRToPhotos(_ image: UIImage) {
+        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        switch status {
+        case .authorized, .limited:
+            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+            qrSaveStatus = .saved
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                DispatchQueue.main.async {
+                    if status == .authorized || status == .limited {
+                        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                        qrSaveStatus = .saved
+                    } else {
+                        qrSaveStatus = .denied
+                    }
+                }
+            }
+        default:
+            qrSaveStatus = .denied
+        }
     }
 
     private func handleScanned(_ scanned: String) {

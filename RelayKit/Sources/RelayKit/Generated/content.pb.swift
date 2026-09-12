@@ -35,81 +35,155 @@ fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobu
   typealias Version = _2
 }
 
-public nonisolated struct Relay_Content_Content: Sendable {
+public nonisolated struct Relay_Content_Content: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var body: Relay_Content_Content.OneOf_Body? = nil
+  public var body: OneOf_Body? {
+    get {return _storage._body}
+    set {_uniqueStorage()._body = newValue}
+  }
 
   public var text: Relay_Content_TextMessage {
     get {
-      if case .text(let v)? = body {return v}
+      if case .text(let v)? = _storage._body {return v}
       return Relay_Content_TextMessage()
     }
-    set {body = .text(newValue)}
+    set {_uniqueStorage()._body = .text(newValue)}
   }
 
   public var receipt: Relay_Content_ReceiptMessage {
     get {
-      if case .receipt(let v)? = body {return v}
+      if case .receipt(let v)? = _storage._body {return v}
       return Relay_Content_ReceiptMessage()
     }
-    set {body = .receipt(newValue)}
+    set {_uniqueStorage()._body = .receipt(newValue)}
   }
 
   public var typing: Relay_Content_TypingMessage {
     get {
-      if case .typing(let v)? = body {return v}
+      if case .typing(let v)? = _storage._body {return v}
       return Relay_Content_TypingMessage()
     }
-    set {body = .typing(newValue)}
+    set {_uniqueStorage()._body = .typing(newValue)}
   }
 
   public var reaction: Relay_Content_ReactionMessage {
     get {
-      if case .reaction(let v)? = body {return v}
+      if case .reaction(let v)? = _storage._body {return v}
       return Relay_Content_ReactionMessage()
     }
-    set {body = .reaction(newValue)}
+    set {_uniqueStorage()._body = .reaction(newValue)}
   }
 
   public var senderKeyDistribution: Relay_Content_SenderKeyDistribution {
     get {
-      if case .senderKeyDistribution(let v)? = body {return v}
+      if case .senderKeyDistribution(let v)? = _storage._body {return v}
       return Relay_Content_SenderKeyDistribution()
     }
-    set {body = .senderKeyDistribution(newValue)}
+    set {_uniqueStorage()._body = .senderKeyDistribution(newValue)}
   }
 
   public var groupUpdate: Relay_Content_GroupUpdate {
     get {
-      if case .groupUpdate(let v)? = body {return v}
+      if case .groupUpdate(let v)? = _storage._body {return v}
       return Relay_Content_GroupUpdate()
     }
-    set {body = .groupUpdate(newValue)}
+    set {_uniqueStorage()._body = .groupUpdate(newValue)}
   }
 
   public var delete: Relay_Content_DeleteMessage {
     get {
-      if case .delete(let v)? = body {return v}
+      if case .delete(let v)? = _storage._body {return v}
       return Relay_Content_DeleteMessage()
     }
-    set {body = .delete(newValue)}
+    set {_uniqueStorage()._body = .delete(newValue)}
   }
 
   public var profile: Relay_Content_ProfileUpdate {
     get {
-      if case .profile(let v)? = body {return v}
+      if case .profile(let v)? = _storage._body {return v}
       return Relay_Content_ProfileUpdate()
     }
-    set {body = .profile(newValue)}
+    set {_uniqueStorage()._body = .profile(newValue)}
+  }
+
+  public var call: Relay_Content_CallMessage {
+    get {
+      if case .call(let v)? = _storage._body {return v}
+      return Relay_Content_CallMessage()
+    }
+    set {_uniqueStorage()._body = .call(newValue)}
+  }
+
+  public var edit: Relay_Content_EditMessage {
+    get {
+      if case .edit(let v)? = _storage._body {return v}
+      return Relay_Content_EditMessage()
+    }
+    set {_uniqueStorage()._body = .edit(newValue)}
+  }
+
+  public var poll: Relay_Content_PollMessage {
+    get {
+      if case .poll(let v)? = _storage._body {return v}
+      return Relay_Content_PollMessage()
+    }
+    set {_uniqueStorage()._body = .poll(newValue)}
+  }
+
+  public var pollVote: Relay_Content_PollVote {
+    get {
+      if case .pollVote(let v)? = _storage._body {return v}
+      return Relay_Content_PollVote()
+    }
+    set {_uniqueStorage()._body = .pollVote(newValue)}
   }
 
   /// Set when this content belongs to a group; empty for 1:1. Group messages
   /// are encrypted with the sender's sender key (senderKey ciphertext);
   /// control content (SKDM, group updates) is sent over pairwise sessions.
-  public var groupID: String = String()
+  public var groupID: String {
+    get {_storage._groupID}
+    set {_uniqueStorage()._groupID = newValue}
+  }
+
+  /// Random bytes added before E2EE encryption so the relay observes fewer exact
+  /// plaintext-size differences. Clients ignore this field after decrypting.
+  public var padding: Data {
+    get {_storage._padding}
+    set {_uniqueStorage()._padding = newValue}
+  }
+
+  /// Sealed sender: sender's own account id and device id, encrypted inside the
+  /// Content so the relay's stored envelope can omit them without breaking decryption.
+  /// Clients MUST set these on every outgoing message. Recipients prefer these over
+  /// the Envelope's (server-stamped) sender fields.
+  public var senderAccountID: String {
+    get {_storage._senderAccountID}
+    set {_uniqueStorage()._senderAccountID = newValue}
+  }
+
+  public var senderDeviceID: UInt32 {
+    get {_storage._senderDeviceID}
+    set {_uniqueStorage()._senderDeviceID = newValue}
+  }
+
+  /// Disappearing-messages timer the sender had set for this conversation when the
+  /// message was composed, in milliseconds. 0 means no timer / no change. Recipients
+  /// sync their local timer to this value so both sides stay in lockstep.
+  public var expiresAfterMs: Int64 {
+    get {_storage._expiresAfterMs}
+    set {_uniqueStorage()._expiresAfterMs = newValue}
+  }
+
+  /// Peer account id of the original recipient; set only on sync copies sent to
+  /// own other devices. Empty on all messages sent to a peer.
+  public var syncRecipient: String {
+    get {_storage._syncRecipient}
+    set {_uniqueStorage()._syncRecipient = newValue}
+  }
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -122,10 +196,16 @@ public nonisolated struct Relay_Content_Content: Sendable {
     case groupUpdate(Relay_Content_GroupUpdate)
     case delete(Relay_Content_DeleteMessage)
     case profile(Relay_Content_ProfileUpdate)
+    case call(Relay_Content_CallMessage)
+    case edit(Relay_Content_EditMessage)
+    case poll(Relay_Content_PollMessage)
+    case pollVote(Relay_Content_PollVote)
 
   }
 
   public init() {}
+
+  fileprivate var _storage = _StorageClass.defaultInstance
 }
 
 /// Carries a libsignal Sender Key Distribution Message so a member can
@@ -168,6 +248,28 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
   /// group name (create/rename)
   public var name: String = String()
 
+  /// group description (describe)
+  public var description_p: String = String()
+
+  /// group avatar blob pointer (avatar action)
+  public var avatar: Relay_Content_AttachmentPointer {
+    get {_avatar ?? Relay_Content_AttachmentPointer()}
+    set {_avatar = newValue}
+  }
+  /// Returns true if `avatar` has been explicitly set.
+  public var hasAvatar: Bool {self._avatar != nil}
+  /// Clears the value of `avatar`. Subsequent reads from it will return its default value.
+  public mutating func clearAvatar() {self._avatar = nil}
+
+  /// Full member list after this change.
+  public var members: [String] = []
+
+  /// Full admin list after this change (promote/demote actions).
+  public var admins: [String] = []
+
+  /// New announce-only state (SET_ANNOUNCE_ONLY action).
+  public var announceOnly: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum Action: SwiftProtobuf.Enum, Swift.CaseIterable {
@@ -178,6 +280,22 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
     case remove // = 3
     case leave // = 4
     case rename // = 5
+
+    /// group description changed
+    case describe // = 6
+
+    /// group avatar changed
+    case avatar // = 7
+
+    /// target was promoted to admin
+    case promoteAdmin // = 8
+
+    /// target was demoted from admin
+    case demoteAdmin // = 9
+
+    /// announce_only toggled
+    case setAnnounceOnly // = 10
+
     case UNRECOGNIZED(Int)
 
     public init() {
@@ -192,6 +310,11 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
       case 3: self = .remove
       case 4: self = .leave
       case 5: self = .rename
+      case 6: self = .describe
+      case 7: self = .avatar
+      case 8: self = .promoteAdmin
+      case 9: self = .demoteAdmin
+      case 10: self = .setAnnounceOnly
       default: self = .UNRECOGNIZED(rawValue)
       }
     }
@@ -204,6 +327,11 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
       case .remove: return 3
       case .leave: return 4
       case .rename: return 5
+      case .describe: return 6
+      case .avatar: return 7
+      case .promoteAdmin: return 8
+      case .demoteAdmin: return 9
+      case .setAnnounceOnly: return 10
       case .UNRECOGNIZED(let i): return i
       }
     }
@@ -216,11 +344,18 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
       .remove,
       .leave,
       .rename,
+      .describe,
+      .avatar,
+      .promoteAdmin,
+      .demoteAdmin,
+      .setAnnounceOnly,
     ]
 
   }
 
   public init() {}
+
+  fileprivate var _avatar: Relay_Content_AttachmentPointer? = nil
 }
 
 public nonisolated struct Relay_Content_TextMessage: Sendable {
@@ -450,6 +585,114 @@ public nonisolated struct Relay_Content_ReceiptMessage: Sendable {
   public init() {}
 }
 
+/// Call signalling — all types use the same message; the type field selects
+/// the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
+/// offline devices. ANSWER, ICE, RINGING, and BUSY are sent ephemeral.
+/// GROUP_RING is non-ephemeral; GROUP_JOIN and GROUP_LEAVE are ephemeral.
+public nonisolated struct Relay_Content_CallMessage: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var type: Relay_Content_CallMessage.TypeEnum = .offer
+
+  /// stable UUID for the entire call session
+  public var callID: String = String()
+
+  /// SDP blob for OFFER / ANSWER
+  public var sdp: String = String()
+
+  /// JSON-encoded RTCIceCandidate for ICE
+  public var ice: String = String()
+
+  /// Group call conversation ID; empty for 1:1 calls.
+  public var groupID: String = String()
+
+  /// Mesh OFFER/ANSWER/ICE: which participant this message targets.
+  public var targetAccount: String = String()
+
+  /// GROUP_RING: full participant list.
+  public var participants: [String] = []
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public nonisolated enum TypeEnum: SwiftProtobuf.Enum, Swift.CaseIterable {
+    public typealias RawValue = Int
+    case offer // = 0
+    case answer // = 1
+    case ice // = 2
+    case hangup // = 3
+    case busy // = 4
+    case ringing // = 5
+    case groupRing // = 6
+    case groupJoin // = 7
+    case groupLeave // = 8
+    case UNRECOGNIZED(Int)
+
+    public init() {
+      self = .offer
+    }
+
+    public init?(rawValue: Int) {
+      switch rawValue {
+      case 0: self = .offer
+      case 1: self = .answer
+      case 2: self = .ice
+      case 3: self = .hangup
+      case 4: self = .busy
+      case 5: self = .ringing
+      case 6: self = .groupRing
+      case 7: self = .groupJoin
+      case 8: self = .groupLeave
+      default: self = .UNRECOGNIZED(rawValue)
+      }
+    }
+
+    public var rawValue: Int {
+      switch self {
+      case .offer: return 0
+      case .answer: return 1
+      case .ice: return 2
+      case .hangup: return 3
+      case .busy: return 4
+      case .ringing: return 5
+      case .groupRing: return 6
+      case .groupJoin: return 7
+      case .groupLeave: return 8
+      case .UNRECOGNIZED(let i): return i
+      }
+    }
+
+    // The compiler won't synthesize support with the UNRECOGNIZED case.
+    public static let allCases: [Relay_Content_CallMessage.TypeEnum] = [
+      .offer, .answer, .ice, .hangup, .busy, .ringing,
+      .groupRing, .groupJoin, .groupLeave,
+    ]
+
+  }
+
+  public init() {}
+}
+
+/// Edits a previously sent message in-place. Only the original author may edit;
+/// the recipient locates the target by (conversation, target_timestamp) and
+/// replaces its body. Attachments are not editable.
+public nonisolated struct Relay_Content_EditMessage: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Sender clock of the original message (its stable message id).
+  public var targetTimestamp: Int64 = 0
+
+  /// Replacement body text.
+  public var newBody: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 /// Sent with Envelope.ephemeral = true; never queued for offline devices.
 public nonisolated struct Relay_Content_TypingMessage: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
@@ -503,178 +746,346 @@ public nonisolated struct Relay_Content_TypingMessage: Sendable {
   public init() {}
 }
 
+/// A poll message. Recipients cast votes via PollVote; tallies aggregated client-side.
+public nonisolated struct Relay_Content_PollMessage: Sendable {
+  public var question: String = String()
+  public var options: [String] = []
+  /// When true, voters may select multiple options.
+  public var multiSelect: Bool = false
+  /// Sender clock; stable poll id for PollVote references.
+  public var timestamp: Int64 = 0
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+  public init() {}
+}
+
+/// A vote cast on a poll identified by (pollAuthor, pollTimestamp).
+public nonisolated struct Relay_Content_PollVote: Sendable {
+  public var pollAuthor: String = String()
+  public var pollTimestamp: Int64 = 0
+  /// Zero-based option indices selected.
+  public var selectedOptions: [UInt32] = []
+  public var timestamp: Int64 = 0
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate nonisolated let _protobuf_package = "relay.content"
 
 nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Content"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0\u{1}profile\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0\u{1}profile\0\u{1}call\0\u{1}edit\0\u{1}padding\0\u{3}sender_account_id\0\u{3}sender_device_id\0\u{3}expires_after_ms\0")
+
+  fileprivate class _StorageClass {
+    var _body: Relay_Content_Content.OneOf_Body?
+    var _groupID: String = String()
+    var _padding: Data = Data()
+    var _senderAccountID: String = String()
+    var _senderDeviceID: UInt32 = 0
+    var _expiresAfterMs: Int64 = 0
+    var _syncRecipient: String = String()
+
+      // This property is used as the initial default value for new instances of the type.
+      // The type itself is protecting the reference to its storage via CoW semantics.
+      // This will force a copy to be made of this reference when the first mutation occurs;
+      // hence, it is safe to mark this as `nonisolated(unsafe)`.
+      static nonisolated(unsafe) let defaultInstance = _StorageClass()
+
+    private init() {}
+
+    init(copying source: _StorageClass) {
+      _body = source._body
+      _groupID = source._groupID
+      _padding = source._padding
+      _senderAccountID = source._senderAccountID
+      _senderDeviceID = source._senderDeviceID
+      _expiresAfterMs = source._expiresAfterMs
+      _syncRecipient = source._syncRecipient
+    }
+  }
+
+  fileprivate mutating func _uniqueStorage() -> _StorageClass {
+    if !isKnownUniquelyReferenced(&_storage) {
+      _storage = _StorageClass(copying: _storage)
+    }
+    return _storage
+  }
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try {
-        var v: Relay_Content_TextMessage?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .text(let m) = current {v = m}
+    _ = _uniqueStorage()
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      while let fieldNumber = try decoder.nextFieldNumber() {
+        // The use of inline closures is to circumvent an issue where the compiler
+        // allocates stack space for every case branch when no optimizations are
+        // enabled. https://github.com/apple/swift-protobuf/issues/1034
+        switch fieldNumber {
+        case 1: try {
+          var v: Relay_Content_TextMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .text(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .text(v)
+          }
+        }()
+        case 2: try {
+          var v: Relay_Content_ReceiptMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .receipt(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .receipt(v)
+          }
+        }()
+        case 3: try {
+          var v: Relay_Content_TypingMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .typing(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .typing(v)
+          }
+        }()
+        case 4: try {
+          var v: Relay_Content_ReactionMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .reaction(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .reaction(v)
+          }
+        }()
+        case 5: try {
+          var v: Relay_Content_SenderKeyDistribution?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .senderKeyDistribution(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .senderKeyDistribution(v)
+          }
+        }()
+        case 6: try {
+          var v: Relay_Content_GroupUpdate?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .groupUpdate(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .groupUpdate(v)
+          }
+        }()
+        case 7: try {
+          var v: Relay_Content_DeleteMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .delete(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .delete(v)
+          }
+        }()
+        case 8: try { try decoder.decodeSingularStringField(value: &_storage._groupID) }()
+        case 9: try {
+          var v: Relay_Content_ProfileUpdate?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .profile(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .profile(v)
+          }
+        }()
+        case 10: try {
+          var v: Relay_Content_CallMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .call(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .call(v)
+          }
+        }()
+        case 11: try {
+          var v: Relay_Content_EditMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .edit(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .edit(v)
+          }
+        }()
+        case 12: try { try decoder.decodeSingularBytesField(value: &_storage._padding) }()
+        case 13: try { try decoder.decodeSingularStringField(value: &_storage._senderAccountID) }()
+        case 14: try { try decoder.decodeSingularUInt32Field(value: &_storage._senderDeviceID) }()
+        case 15: try { try decoder.decodeSingularInt64Field(value: &_storage._expiresAfterMs) }()
+        case 16: try { try decoder.decodeSingularStringField(value: &_storage._syncRecipient) }()
+        case 17: try {
+          var v: Relay_Content_PollMessage?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .poll(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .poll(v)
+          }
+        }()
+        case 18: try {
+          var v: Relay_Content_PollVote?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .pollVote(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .pollVote(v)
+          }
+        }()
+        default: break
         }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .text(v)
-        }
-      }()
-      case 2: try {
-        var v: Relay_Content_ReceiptMessage?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .receipt(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .receipt(v)
-        }
-      }()
-      case 3: try {
-        var v: Relay_Content_TypingMessage?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .typing(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .typing(v)
-        }
-      }()
-      case 4: try {
-        var v: Relay_Content_ReactionMessage?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .reaction(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .reaction(v)
-        }
-      }()
-      case 5: try {
-        var v: Relay_Content_SenderKeyDistribution?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .senderKeyDistribution(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .senderKeyDistribution(v)
-        }
-      }()
-      case 6: try {
-        var v: Relay_Content_GroupUpdate?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .groupUpdate(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .groupUpdate(v)
-        }
-      }()
-      case 7: try {
-        var v: Relay_Content_DeleteMessage?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .delete(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .delete(v)
-        }
-      }()
-      case 8: try { try decoder.decodeSingularStringField(value: &self.groupID) }()
-      case 9: try {
-        var v: Relay_Content_ProfileUpdate?
-        var hadOneofValue = false
-        if let current = self.body {
-          hadOneofValue = true
-          if case .profile(let m) = current {v = m}
-        }
-        try decoder.decodeSingularMessageField(value: &v)
-        if let v = v {
-          if hadOneofValue {try decoder.handleConflictingOneOf()}
-          self.body = .profile(v)
-        }
-      }()
-      default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    switch self.body {
-    case .text?: try {
-      guard case .text(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
-    }()
-    case .receipt?: try {
-      guard case .receipt(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
-    }()
-    case .typing?: try {
-      guard case .typing(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
-    }()
-    case .reaction?: try {
-      guard case .reaction(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
-    }()
-    case .senderKeyDistribution?: try {
-      guard case .senderKeyDistribution(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
-    }()
-    case .groupUpdate?: try {
-      guard case .groupUpdate(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
-    }()
-    case .delete?: try {
-      guard case .delete(let v)? = self.body else { preconditionFailure() }
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
-    }()
-    default: break
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every if/case branch local when no optimizations
+      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+      // https://github.com/apple/swift-protobuf/issues/1182
+      switch _storage._body {
+      case .text?: try {
+        guard case .text(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+      }()
+      case .receipt?: try {
+        guard case .receipt(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+      }()
+      case .typing?: try {
+        guard case .typing(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+      }()
+      case .reaction?: try {
+        guard case .reaction(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+      }()
+      case .senderKeyDistribution?: try {
+        guard case .senderKeyDistribution(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+      }()
+      case .groupUpdate?: try {
+        guard case .groupUpdate(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
+      }()
+      case .delete?: try {
+        guard case .delete(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
+      }()
+      default: break
+      }
+      if !_storage._groupID.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._groupID, fieldNumber: 8)
+      }
+      switch _storage._body {
+      case .profile?: try {
+        guard case .profile(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 9)
+      }()
+      case .call?: try {
+        guard case .call(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 10)
+      }()
+      case .edit?: try {
+        guard case .edit(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 11)
+      }()
+      case .poll?: try {
+        guard case .poll(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 17)
+      }()
+      case .pollVote?: try {
+        guard case .pollVote(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 18)
+      }()
+      default: break
+      }
+      if !_storage._padding.isEmpty {
+        try visitor.visitSingularBytesField(value: _storage._padding, fieldNumber: 12)
+      }
+      if !_storage._senderAccountID.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._senderAccountID, fieldNumber: 13)
+      }
+      if _storage._senderDeviceID != 0 {
+        try visitor.visitSingularUInt32Field(value: _storage._senderDeviceID, fieldNumber: 14)
+      }
+      if _storage._expiresAfterMs != 0 {
+        try visitor.visitSingularInt64Field(value: _storage._expiresAfterMs, fieldNumber: 15)
+      }
+      if !_storage._syncRecipient.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._syncRecipient, fieldNumber: 16)
+      }
     }
-    if !self.groupID.isEmpty {
-      try visitor.visitSingularStringField(value: self.groupID, fieldNumber: 8)
-    }
-    try { if case .profile(let v)? = self.body {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 9)
-    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Relay_Content_Content, rhs: Relay_Content_Content) -> Bool {
-    if lhs.body != rhs.body {return false}
-    if lhs.groupID != rhs.groupID {return false}
+    if lhs._storage !== rhs._storage {
+      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
+        let _storage = _args.0
+        let rhs_storage = _args.1
+        if _storage._body != rhs_storage._body {return false}
+        if _storage._groupID != rhs_storage._groupID {return false}
+        if _storage._padding != rhs_storage._padding {return false}
+        if _storage._senderAccountID != rhs_storage._senderAccountID {return false}
+        if _storage._senderDeviceID != rhs_storage._senderDeviceID {return false}
+        if _storage._expiresAfterMs != rhs_storage._expiresAfterMs {return false}
+        if _storage._syncRecipient != rhs_storage._syncRecipient {return false}
+        return true
+      }
+      if !storagesAreEqual {return false}
+    }
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -717,7 +1128,7 @@ nonisolated extension Relay_Content_SenderKeyDistribution: SwiftProtobuf.Message
 
 nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GroupUpdate"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}revision\0\u{1}action\0\u{1}actor\0\u{1}target\0\u{1}name\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}revision\0\u{1}action\0\u{1}actor\0\u{1}target\0\u{1}name\0\u{1}description\0\u{1}avatar\0\u{1}members\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -730,12 +1141,21 @@ nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftPro
       case 3: try { try decoder.decodeSingularStringField(value: &self.actor) }()
       case 4: try { try decoder.decodeSingularStringField(value: &self.target) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.description_p) }()
+      case 7: try { try decoder.decodeSingularMessageField(value: &self._avatar) }()
+      case 8: try { try decoder.decodeRepeatedStringField(value: &self.members) }()
+      case 9: try { try decoder.decodeRepeatedStringField(value: &self.admins) }()
+      case 10: try { try decoder.decodeSingularBoolField(value: &self.announceOnly) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
     if self.revision != 0 {
       try visitor.visitSingularInt64Field(value: self.revision, fieldNumber: 1)
     }
@@ -751,6 +1171,21 @@ nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftPro
     if !self.name.isEmpty {
       try visitor.visitSingularStringField(value: self.name, fieldNumber: 5)
     }
+    if !self.description_p.isEmpty {
+      try visitor.visitSingularStringField(value: self.description_p, fieldNumber: 6)
+    }
+    try { if let v = self._avatar {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
+    } }()
+    if !self.members.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.members, fieldNumber: 8)
+    }
+    if !self.admins.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.admins, fieldNumber: 9)
+    }
+    if self.announceOnly != false {
+      try visitor.visitSingularBoolField(value: self.announceOnly, fieldNumber: 10)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -760,13 +1195,18 @@ nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftPro
     if lhs.actor != rhs.actor {return false}
     if lhs.target != rhs.target {return false}
     if lhs.name != rhs.name {return false}
+    if lhs.description_p != rhs.description_p {return false}
+    if lhs._avatar != rhs._avatar {return false}
+    if lhs.members != rhs.members {return false}
+    if lhs.admins != rhs.admins {return false}
+    if lhs.announceOnly != rhs.announceOnly {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
 nonisolated extension Relay_Content_GroupUpdate.Action: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}CREATE\0\u{1}ADD\0\u{1}REMOVE\0\u{1}LEAVE\0\u{1}RENAME\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}CREATE\0\u{1}ADD\0\u{1}REMOVE\0\u{1}LEAVE\0\u{1}RENAME\0\u{1}DESCRIBE\0\u{1}AVATAR\0\u{3}PROMOTE_ADMIN\0\u{3}DEMOTE_ADMIN\0\u{3}SET_ANNOUNCE_ONLY\0")
 }
 
 nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
@@ -1091,6 +1531,120 @@ nonisolated extension Relay_Content_ReceiptMessage.TypeEnum: SwiftProtobuf._Prot
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0TYPE_UNSPECIFIED\0\u{1}TYPE_DELIVERY\0\u{1}TYPE_READ\0")
 }
 
+nonisolated extension Relay_Content_CallMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".CallMessage"
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    1: .same(proto: "type"),
+    2: .standard(proto: "call_id"),
+    3: .same(proto: "sdp"),
+    4: .same(proto: "ice"),
+    5: .standard(proto: "group_id"),
+    6: .standard(proto: "target_account"),
+    7: .same(proto: "participants"),
+  ]
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularEnumField(value: &self.type) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.callID) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.sdp) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.ice) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.groupID) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.targetAccount) }()
+      case 7: try { try decoder.decodeRepeatedStringField(value: &self.participants) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.type != .offer {
+      try visitor.visitSingularEnumField(value: self.type, fieldNumber: 1)
+    }
+    if !self.callID.isEmpty {
+      try visitor.visitSingularStringField(value: self.callID, fieldNumber: 2)
+    }
+    if !self.sdp.isEmpty {
+      try visitor.visitSingularStringField(value: self.sdp, fieldNumber: 3)
+    }
+    if !self.ice.isEmpty {
+      try visitor.visitSingularStringField(value: self.ice, fieldNumber: 4)
+    }
+    if !self.groupID.isEmpty {
+      try visitor.visitSingularStringField(value: self.groupID, fieldNumber: 5)
+    }
+    if !self.targetAccount.isEmpty {
+      try visitor.visitSingularStringField(value: self.targetAccount, fieldNumber: 6)
+    }
+    if !self.participants.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.participants, fieldNumber: 7)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_CallMessage, rhs: Relay_Content_CallMessage) -> Bool {
+    if lhs.type != rhs.type {return false}
+    if lhs.callID != rhs.callID {return false}
+    if lhs.sdp != rhs.sdp {return false}
+    if lhs.ice != rhs.ice {return false}
+    if lhs.groupID != rhs.groupID {return false}
+    if lhs.targetAccount != rhs.targetAccount {return false}
+    if lhs.participants != rhs.participants {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_CallMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
+    0: .same(proto: "OFFER"),
+    1: .same(proto: "ANSWER"),
+    2: .same(proto: "ICE"),
+    3: .same(proto: "HANGUP"),
+    4: .same(proto: "BUSY"),
+    5: .same(proto: "RINGING"),
+    6: .same(proto: "GROUP_RING"),
+    7: .same(proto: "GROUP_JOIN"),
+    8: .same(proto: "GROUP_LEAVE"),
+  ]
+}
+
+nonisolated extension Relay_Content_EditMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".EditMessage"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}target_timestamp\0\u{3}new_body\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularInt64Field(value: &self.targetTimestamp) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.newBody) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.targetTimestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.targetTimestamp, fieldNumber: 1)
+    }
+    if !self.newBody.isEmpty {
+      try visitor.visitSingularStringField(value: self.newBody, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_EditMessage, rhs: Relay_Content_EditMessage) -> Bool {
+    if lhs.targetTimestamp != rhs.targetTimestamp {return false}
+    if lhs.newBody != rhs.newBody {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
 nonisolated extension Relay_Content_TypingMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TypingMessage"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}action\0\u{1}timestamp\0")
@@ -1128,4 +1682,88 @@ nonisolated extension Relay_Content_TypingMessage: SwiftProtobuf.Message, SwiftP
 
 nonisolated extension Relay_Content_TypingMessage.Action: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}ACTION_STARTED\0\u{1}ACTION_STOPPED\0")
+}
+
+nonisolated extension Relay_Content_PollMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".PollMessage"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}question\0\u{1}options\0\u{3}multi_select\0\u{1}timestamp\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.question) }()
+      case 2: try { try decoder.decodeRepeatedStringField(value: &self.options) }()
+      case 3: try { try decoder.decodeSingularBoolField(value: &self.multiSelect) }()
+      case 4: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.question.isEmpty {
+      try visitor.visitSingularStringField(value: self.question, fieldNumber: 1)
+    }
+    if !self.options.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.options, fieldNumber: 2)
+    }
+    if self.multiSelect != false {
+      try visitor.visitSingularBoolField(value: self.multiSelect, fieldNumber: 3)
+    }
+    if self.timestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 4)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_PollMessage, rhs: Relay_Content_PollMessage) -> Bool {
+    if lhs.question != rhs.question {return false}
+    if lhs.options != rhs.options {return false}
+    if lhs.multiSelect != rhs.multiSelect {return false}
+    if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_PollVote: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".PollVote"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}poll_author\0\u{3}poll_timestamp\0\u{3}selected_options\0\u{1}timestamp\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.pollAuthor) }()
+      case 2: try { try decoder.decodeSingularInt64Field(value: &self.pollTimestamp) }()
+      case 3: try { try decoder.decodeRepeatedUInt32Field(value: &self.selectedOptions) }()
+      case 4: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.pollAuthor.isEmpty {
+      try visitor.visitSingularStringField(value: self.pollAuthor, fieldNumber: 1)
+    }
+    if self.pollTimestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.pollTimestamp, fieldNumber: 2)
+    }
+    if !self.selectedOptions.isEmpty {
+      try visitor.visitPackedUInt32Field(value: self.selectedOptions, fieldNumber: 3)
+    }
+    if self.timestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 4)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_PollVote, rhs: Relay_Content_PollVote) -> Bool {
+    if lhs.pollAuthor != rhs.pollAuthor {return false}
+    if lhs.pollTimestamp != rhs.pollTimestamp {return false}
+    if lhs.selectedOptions != rhs.selectedOptions {return false}
+    if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
 }

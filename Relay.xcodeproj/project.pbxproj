@@ -12,8 +12,20 @@
 		EC3C5122300C4AAF00D20386 /* SecureStorage in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5121300C4AAF00D20386 /* SecureStorage */; };
 		EC3C5125300C4AC600D20386 /* CryptoCore in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5124300C4AC600D20386 /* CryptoCore */; };
 		EC3C5128300C4ADE00D20386 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5127300C4ADE00D20386 /* RelayKit */; };
+		EC47B64130428F60009C986A /* RelayShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC47B63730428F60009C986A /* RelayShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		EC47B6513042CECE009C986A /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B6503042CECE009C986A /* WidgetKit.framework */; };
+		EC47B6533042CECE009C986A /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B6523042CECE009C986A /* SwiftUI.framework */; };
+		EC47B6623042CED1009C986A /* RelayWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC47B64F3042CECE009C986A /* RelayWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		EC47B66D3042CF4B009C986A /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B66C3042CF4B009C986A /* UserNotifications.framework */; };
+		EC47B66F3042CF4B009C986A /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B66E3042CF4B009C986A /* UserNotificationsUI.framework */; };
+		EC47B6793042CF4B009C986A /* RelayNotificationContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC47B66B3042CF4B009C986A /* RelayNotificationContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		EC47B6843042CF9F009C986A /* Intents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B6833042CF9F009C986A /* Intents.framework */; };
+		EC47B68B3042CF9F009C986A /* RelayIntentsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ECA1AD4B3018F09C001EF64A /* RelayCore in Frameworks */ = {isa = PBXBuildFile; productRef = ECA1AD4A3018F09C001EF64A /* RelayCore */; };
 		ECA1AD4E3018F0C0001EF64A /* RelayCore in Frameworks */ = {isa = PBXBuildFile; productRef = ECA1AD4D3018F0C0001EF64A /* RelayCore */; };
+		ECFD00A7302F3B6400F3E5E4 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = ECFD00A6302F3B6400F3E5E4 /* WebRTC */; };
+		ECFD00B230302C0300F3E5E4 /* ReplayKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = ECFD00B130302C0300F3E5E4 /* ReplayKit.framework */; };
+		ECFD00C830302C0300F3E5E4 /* RelayBroadcastUpload.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = ECFD00B030302C0300F3E5E4 /* RelayBroadcastUpload.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -23,6 +35,41 @@
 			proxyType = 1;
 			remoteGlobalIDString = EC3C50FA300B81C300D20386;
 			remoteInfo = NotificationServiceExtension;
+		};
+		EC47B63F30428F60009C986A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC3C50E1300B766C00D20386 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EC47B63630428F60009C986A;
+			remoteInfo = RelayShareExtension;
+		};
+		EC47B6603042CED1009C986A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC3C50E1300B766C00D20386 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EC47B64E3042CECE009C986A;
+			remoteInfo = RelayWidgetExtensionExtension;
+		};
+		EC47B6773042CF4B009C986A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC3C50E1300B766C00D20386 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EC47B66A3042CF4B009C986A;
+			remoteInfo = RelayNotificationContent;
+		};
+		EC47B6893042CF9F009C986A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC3C50E1300B766C00D20386 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EC47B6813042CF9F009C986A;
+			remoteInfo = RelayIntents;
+		};
+		ECFD00C630302C0300F3E5E4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC3C50E1300B766C00D20386 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ECFD00AF30302C0300F3E5E4;
+			remoteInfo = RelayBroadcastUpload;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -34,6 +81,11 @@
 			dstSubfolderSpec = 13;
 			files = (
 				EC3C5102300B81C300D20386 /* NotificationServiceExtension.appex in Embed Foundation Extensions */,
+				ECFD00C830302C0300F3E5E4 /* RelayBroadcastUpload.appex in Embed Foundation Extensions */,
+				EC47B68B3042CF9F009C986A /* RelayIntentsExtension.appex in Embed Foundation Extensions */,
+				EC47B6623042CED1009C986A /* RelayWidgetExtension.appex in Embed Foundation Extensions */,
+				EC47B64130428F60009C986A /* RelayShareExtension.appex in Embed Foundation Extensions */,
+				EC47B6793042CF4B009C986A /* RelayNotificationContent.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -43,6 +95,19 @@
 /* Begin PBXFileReference section */
 		EC3C50E9300B766C00D20386 /* Relay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Relay.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EC3C50FB300B81C300D20386 /* NotificationServiceExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationServiceExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC47B63730428F60009C986A /* RelayShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelayShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC47B64F3042CECE009C986A /* RelayWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelayWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC47B6503042CECE009C986A /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		EC47B6523042CECE009C986A /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		EC47B66B3042CF4B009C986A /* RelayNotificationContent.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelayNotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC47B66C3042CF4B009C986A /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
+		EC47B66E3042CF4B009C986A /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
+		EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelayIntentsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC47B6833042CF9F009C986A /* Intents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Intents.framework; path = System/Library/Frameworks/Intents.framework; sourceTree = SDKROOT; };
+		EC47B6923042D02A009C986A /* RelayIntentsExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RelayIntentsExtension.entitlements; sourceTree = "<group>"; };
+		ECFD00B030302C0300F3E5E4 /* RelayBroadcastUpload.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelayBroadcastUpload.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		ECFD00B130302C0300F3E5E4 /* ReplayKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ReplayKit.framework; path = System/Library/Frameworks/ReplayKit.framework; sourceTree = SDKROOT; };
+		ECFD00BD30302C0300F3E5E4 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -59,6 +124,41 @@
 				Info.plist,
 			);
 			target = EC3C50E8300B766C00D20386 /* Relay */;
+		};
+		EC47B64530428F60009C986A /* Exceptions for "RelayShareExtension" folder in "RelayShareExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = EC47B63630428F60009C986A /* RelayShareExtension */;
+		};
+		EC47B6663042CED1009C986A /* Exceptions for "RelayWidgetExtension" folder in "RelayWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = EC47B64E3042CECE009C986A /* RelayWidgetExtension */;
+		};
+		EC47B67D3042CF4B009C986A /* Exceptions for "RelayNotificationContent" folder in "RelayNotificationContent" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = EC47B66A3042CF4B009C986A /* RelayNotificationContent */;
+		};
+		EC47B68F3042CF9F009C986A /* Exceptions for "RelayIntents" folder in "RelayIntentsExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = EC47B6813042CF9F009C986A /* RelayIntentsExtension */;
+		};
+		ECFD00D030302C0300F3E5E4 /* Exceptions for "RelayBroadcastUpload" folder in "RelayBroadcastUpload" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = ECFD00AF30302C0300F3E5E4 /* RelayBroadcastUpload */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -79,6 +179,51 @@
 			path = NotificationServiceExtension;
 			sourceTree = "<group>";
 		};
+		EC47B63830428F60009C986A /* RelayShareExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EC47B64530428F60009C986A /* Exceptions for "RelayShareExtension" folder in "RelayShareExtension" target */,
+			);
+			path = RelayShareExtension;
+			sourceTree = "<group>";
+		};
+		EC47B6543042CECE009C986A /* RelayWidgetExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EC47B6663042CED1009C986A /* Exceptions for "RelayWidgetExtension" folder in "RelayWidgetExtension" target */,
+			);
+			path = RelayWidgetExtension;
+			sourceTree = "<group>";
+		};
+		EC47B6703042CF4B009C986A /* RelayNotificationContent */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EC47B67D3042CF4B009C986A /* Exceptions for "RelayNotificationContent" folder in "RelayNotificationContent" target */,
+			);
+			path = RelayNotificationContent;
+			sourceTree = "<group>";
+		};
+		EC47B6853042CF9F009C986A /* RelayIntents */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EC47B68F3042CF9F009C986A /* Exceptions for "RelayIntents" folder in "RelayIntentsExtension" target */,
+			);
+			path = RelayIntents;
+			sourceTree = "<group>";
+		};
+		ECFD00B330302C0300F3E5E4 /* RelayBroadcastUpload */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				ECFD00D030302C0300F3E5E4 /* Exceptions for "RelayBroadcastUpload" folder in "RelayBroadcastUpload" target */,
+			);
+			path = RelayBroadcastUpload;
+			sourceTree = "<group>";
+		};
+		ECFD00BF30302C0300F3E5E4 /* RelayBroadcastUploadSetupUI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = RelayBroadcastUploadSetupUI;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -87,6 +232,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EC3C5110300B90EA00D20386 /* LibSignalClient in Frameworks */,
+				ECFD00A7302F3B6400F3E5E4 /* WebRTC in Frameworks */,
 				EC3C5128300C4ADE00D20386 /* RelayKit in Frameworks */,
 				EC3C5122300C4AAF00D20386 /* SecureStorage in Frameworks */,
 				ECA1AD4B3018F09C001EF64A /* RelayCore in Frameworks */,
@@ -102,14 +248,62 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EC47B63430428F60009C986A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B64C3042CECE009C986A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EC47B6533042CECE009C986A /* SwiftUI.framework in Frameworks */,
+				EC47B6513042CECE009C986A /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B6683042CF4B009C986A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EC47B66F3042CF4B009C986A /* UserNotificationsUI.framework in Frameworks */,
+				EC47B66D3042CF4B009C986A /* UserNotifications.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B67F3042CF9F009C986A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EC47B6843042CF9F009C986A /* Intents.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ECFD00AD30302C0300F3E5E4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ECFD00B230302C0300F3E5E4 /* ReplayKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		EC3C50E0300B766C00D20386 = {
 			isa = PBXGroup;
 			children = (
+				EC47B6923042D02A009C986A /* RelayIntentsExtension.entitlements */,
 				EC3C50EB300B766C00D20386 /* Relay */,
 				EC3C50FC300B81C300D20386 /* NotificationServiceExtension */,
+				ECFD00B330302C0300F3E5E4 /* RelayBroadcastUpload */,
+				ECFD00BF30302C0300F3E5E4 /* RelayBroadcastUploadSetupUI */,
+				EC47B63830428F60009C986A /* RelayShareExtension */,
+				EC47B6543042CECE009C986A /* RelayWidgetExtension */,
+				EC47B6703042CF4B009C986A /* RelayNotificationContent */,
+				EC47B6853042CF9F009C986A /* RelayIntents */,
 				ECA1AD4C3018F0C0001EF64A /* Frameworks */,
 				EC3C50EA300B766C00D20386 /* Products */,
 			);
@@ -120,6 +314,11 @@
 			children = (
 				EC3C50E9300B766C00D20386 /* Relay.app */,
 				EC3C50FB300B81C300D20386 /* NotificationServiceExtension.appex */,
+				ECFD00B030302C0300F3E5E4 /* RelayBroadcastUpload.appex */,
+				EC47B63730428F60009C986A /* RelayShareExtension.appex */,
+				EC47B64F3042CECE009C986A /* RelayWidgetExtension.appex */,
+				EC47B66B3042CF4B009C986A /* RelayNotificationContent.appex */,
+				EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -127,6 +326,13 @@
 		ECA1AD4C3018F0C0001EF64A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				ECFD00B130302C0300F3E5E4 /* ReplayKit.framework */,
+				ECFD00BD30302C0300F3E5E4 /* UIKit.framework */,
+				EC47B6503042CECE009C986A /* WidgetKit.framework */,
+				EC47B6523042CECE009C986A /* SwiftUI.framework */,
+				EC47B66C3042CF4B009C986A /* UserNotifications.framework */,
+				EC47B66E3042CF4B009C986A /* UserNotificationsUI.framework */,
+				EC47B6833042CF9F009C986A /* Intents.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -147,6 +353,11 @@
 			);
 			dependencies = (
 				EC3C5101300B81C300D20386 /* PBXTargetDependency */,
+				ECFD00C730302C0300F3E5E4 /* PBXTargetDependency */,
+				EC47B64030428F60009C986A /* PBXTargetDependency */,
+				EC47B6613042CED1009C986A /* PBXTargetDependency */,
+				EC47B6783042CF4B009C986A /* PBXTargetDependency */,
+				EC47B68A3042CF9F009C986A /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				EC3C50EB300B766C00D20386 /* Relay */,
@@ -158,6 +369,7 @@
 				EC3C5124300C4AC600D20386 /* CryptoCore */,
 				EC3C5127300C4ADE00D20386 /* RelayKit */,
 				ECA1AD4A3018F09C001EF64A /* RelayCore */,
+				ECFD00A6302F3B6400F3E5E4 /* WebRTC */,
 			);
 			productName = Relay;
 			productReference = EC3C50E9300B766C00D20386 /* Relay.app */;
@@ -186,6 +398,116 @@
 			productReference = EC3C50FB300B81C300D20386 /* NotificationServiceExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		EC47B63630428F60009C986A /* RelayShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EC47B64230428F60009C986A /* Build configuration list for PBXNativeTarget "RelayShareExtension" */;
+			buildPhases = (
+				EC47B63330428F60009C986A /* Sources */,
+				EC47B63430428F60009C986A /* Frameworks */,
+				EC47B63530428F60009C986A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				EC47B63830428F60009C986A /* RelayShareExtension */,
+			);
+			name = RelayShareExtension;
+			packageProductDependencies = (
+			);
+			productName = RelayShareExtension;
+			productReference = EC47B63730428F60009C986A /* RelayShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		EC47B64E3042CECE009C986A /* RelayWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EC47B6633042CED1009C986A /* Build configuration list for PBXNativeTarget "RelayWidgetExtension" */;
+			buildPhases = (
+				EC47B64B3042CECE009C986A /* Sources */,
+				EC47B64C3042CECE009C986A /* Frameworks */,
+				EC47B64D3042CECE009C986A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				EC47B6543042CECE009C986A /* RelayWidgetExtension */,
+			);
+			name = RelayWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = RelayWidgetExtensionExtension;
+			productReference = EC47B64F3042CECE009C986A /* RelayWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		EC47B66A3042CF4B009C986A /* RelayNotificationContent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EC47B67A3042CF4B009C986A /* Build configuration list for PBXNativeTarget "RelayNotificationContent" */;
+			buildPhases = (
+				EC47B6673042CF4B009C986A /* Sources */,
+				EC47B6683042CF4B009C986A /* Frameworks */,
+				EC47B6693042CF4B009C986A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				EC47B6703042CF4B009C986A /* RelayNotificationContent */,
+			);
+			name = RelayNotificationContent;
+			packageProductDependencies = (
+			);
+			productName = RelayNotificationContent;
+			productReference = EC47B66B3042CF4B009C986A /* RelayNotificationContent.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		EC47B6813042CF9F009C986A /* RelayIntentsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EC47B68C3042CF9F009C986A /* Build configuration list for PBXNativeTarget "RelayIntentsExtension" */;
+			buildPhases = (
+				EC47B67E3042CF9F009C986A /* Sources */,
+				EC47B67F3042CF9F009C986A /* Frameworks */,
+				EC47B6803042CF9F009C986A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				EC47B6853042CF9F009C986A /* RelayIntents */,
+			);
+			name = RelayIntentsExtension;
+			packageProductDependencies = (
+			);
+			productName = RelayIntents;
+			productReference = EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		ECFD00AF30302C0300F3E5E4 /* RelayBroadcastUpload */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = ECFD00CD30302C0300F3E5E4 /* Build configuration list for PBXNativeTarget "RelayBroadcastUpload" */;
+			buildPhases = (
+				ECFD00AC30302C0300F3E5E4 /* Sources */,
+				ECFD00AD30302C0300F3E5E4 /* Frameworks */,
+				ECFD00AE30302C0300F3E5E4 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				ECFD00B330302C0300F3E5E4 /* RelayBroadcastUpload */,
+			);
+			name = RelayBroadcastUpload;
+			packageProductDependencies = (
+			);
+			productName = RelayBroadcastUpload;
+			productReference = ECFD00B030302C0300F3E5E4 /* RelayBroadcastUpload.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -193,7 +515,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2660;
+				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					EC3C50E8300B766C00D20386 = {
@@ -201,6 +523,21 @@
 					};
 					EC3C50FA300B81C300D20386 = {
 						CreatedOnToolsVersion = 26.6;
+					};
+					EC47B63630428F60009C986A = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					EC47B64E3042CECE009C986A = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					EC47B66A3042CF4B009C986A = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					EC47B6813042CF9F009C986A = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					ECFD00AF30302C0300F3E5E4 = {
+						CreatedOnToolsVersion = 27.0;
 					};
 				};
 			};
@@ -219,6 +556,7 @@
 				EC3C5123300C4AC600D20386 /* XCLocalSwiftPackageReference "CryptoCore" */,
 				EC3C5126300C4ADE00D20386 /* XCLocalSwiftPackageReference "RelayKit" */,
 				ECA1AD493018F09C001EF64A /* XCLocalSwiftPackageReference "RelayCore" */,
+				ECFD00A5302F3B6400F3E5E4 /* XCRemoteSwiftPackageReference "WebRTC" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EC3C50EA300B766C00D20386 /* Products */;
@@ -227,6 +565,11 @@
 			targets = (
 				EC3C50E8300B766C00D20386 /* Relay */,
 				EC3C50FA300B81C300D20386 /* NotificationServiceExtension */,
+				ECFD00AF30302C0300F3E5E4 /* RelayBroadcastUpload */,
+				EC47B63630428F60009C986A /* RelayShareExtension */,
+				EC47B64E3042CECE009C986A /* RelayWidgetExtension */,
+				EC47B66A3042CF4B009C986A /* RelayNotificationContent */,
+				EC47B6813042CF9F009C986A /* RelayIntentsExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -240,6 +583,41 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		EC3C50F9300B81C300D20386 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B63530428F60009C986A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B64D3042CECE009C986A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B6693042CF4B009C986A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B6803042CF9F009C986A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ECFD00AE30302C0300F3E5E4 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -263,6 +641,41 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EC47B63330428F60009C986A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B64B3042CECE009C986A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B6673042CF4B009C986A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC47B67E3042CF9F009C986A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ECFD00AC30302C0300F3E5E4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -270,6 +683,31 @@
 			isa = PBXTargetDependency;
 			target = EC3C50FA300B81C300D20386 /* NotificationServiceExtension */;
 			targetProxy = EC3C5100300B81C300D20386 /* PBXContainerItemProxy */;
+		};
+		EC47B64030428F60009C986A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EC47B63630428F60009C986A /* RelayShareExtension */;
+			targetProxy = EC47B63F30428F60009C986A /* PBXContainerItemProxy */;
+		};
+		EC47B6613042CED1009C986A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EC47B64E3042CECE009C986A /* RelayWidgetExtension */;
+			targetProxy = EC47B6603042CED1009C986A /* PBXContainerItemProxy */;
+		};
+		EC47B6783042CF4B009C986A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EC47B66A3042CF4B009C986A /* RelayNotificationContent */;
+			targetProxy = EC47B6773042CF4B009C986A /* PBXContainerItemProxy */;
+		};
+		EC47B68A3042CF9F009C986A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EC47B6813042CF9F009C986A /* RelayIntentsExtension */;
+			targetProxy = EC47B6893042CF9F009C986A /* PBXContainerItemProxy */;
+		};
+		ECFD00C730302C0300F3E5E4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ECFD00AF30302C0300F3E5E4 /* RelayBroadcastUpload */;
+			targetProxy = ECFD00C630302C0300F3E5E4 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -398,8 +836,9 @@
 		EC3C50F5300B766E00D20386 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = RelayIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Relay/Relay.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -407,13 +846,23 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Relay/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera to scan a contact's safety-number QR code and verify your conversation is secure.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your development server on the local network.";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NFCReaderUsageDescription = "Relay reads NFC tags to add contacts, and can write your contact link to an NFC sticker so others can add you with a tap.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera for encrypted video calls.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Relay matches your contacts emails against your existing conversations so you can see which contacts are on Relay. No contact data leaves your device.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Relay uses Face ID to unlock chats and attachment previews.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your local relay server over your Wi-Fi network to send and receive messages.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with the person you are chatting with. Location is only shared while you are actively in a conversation and have chosen to share it.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls.";
+				INFOPLIST_KEY_NSSiriUsageDescription = "Relay uses Siri to suggest your recent contacts when you share content from other apps.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -421,7 +870,7 @@
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-device";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-simulator";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayTexting;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -436,8 +885,9 @@
 		EC3C50F6300B766E00D20386 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = RelayIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Relay/Relay.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -445,13 +895,23 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Relay/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera to scan a contact's safety-number QR code and verify your conversation is secure.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your development server on the local network.";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NFCReaderUsageDescription = "Relay reads NFC tags to add contacts, and can write your contact link to an NFC sticker so others can add you with a tap.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera for encrypted video calls.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Relay matches your contacts emails against your existing conversations so you can see which contacts are on Relay. No contact data leaves your device.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Relay uses Face ID to unlock chats and attachment previews.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your local relay server over your Wi-Fi network to send and receive messages.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with the person you are chatting with. Location is only shared while you are actively in a conversation and have chosen to share it.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls.";
+				INFOPLIST_KEY_NSSiriUsageDescription = "Relay uses Siri to suggest your recent contacts when you share content from other apps.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
+				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -459,7 +919,7 @@
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-device";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-simulator";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayTexting;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -491,7 +951,7 @@
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-device";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-simulator";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayTexting.NotificationServiceExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.NotificationServiceExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -523,8 +983,322 @@
 				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-device";
 				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/third_party/libsignal-ffi/ios-simulator";
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayTexting.NotificationServiceExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.NotificationServiceExtension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		EC47B64330428F60009C986A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayShareExtension/RelayShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayShareExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		EC47B64430428F60009C986A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayShareExtension/RelayShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayShareExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		EC47B6643042CED1009C986A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = RelayWidgetExtension/RelayWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayWidgetExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayWidgetExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		EC47B6653042CED1009C986A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = RelayWidgetExtension/RelayWidgetExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayWidgetExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayWidgetExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		EC47B67B3042CF4B009C986A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayNotificationContent/RelayNotificationContent.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayNotificationContent/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayNotificationContent;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayNotificationContent;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		EC47B67C3042CF4B009C986A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayNotificationContent/RelayNotificationContent.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayNotificationContent/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayNotificationContent;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayNotificationContent;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		EC47B68D3042CF9F009C986A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayIntentsExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayIntents/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayIntents;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayIntents;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		EC47B68E3042CF9F009C986A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayIntentsExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayIntents/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelayIntents;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayIntents;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		ECFD00CE30302C0300F3E5E4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayBroadcastUpload/RelayBroadcastUpload.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayBroadcastUpload/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayBroadcastUpload;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		ECFD00CF30302C0300F3E5E4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelayBroadcastUpload/RelayBroadcastUpload.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelayBroadcastUpload/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.morgandaly.RelayMessenger.RelayBroadcastUpload;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -565,6 +1339,51 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		EC47B64230428F60009C986A /* Build configuration list for PBXNativeTarget "RelayShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC47B64330428F60009C986A /* Debug */,
+				EC47B64430428F60009C986A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EC47B6633042CED1009C986A /* Build configuration list for PBXNativeTarget "RelayWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC47B6643042CED1009C986A /* Debug */,
+				EC47B6653042CED1009C986A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EC47B67A3042CF4B009C986A /* Build configuration list for PBXNativeTarget "RelayNotificationContent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC47B67B3042CF4B009C986A /* Debug */,
+				EC47B67C3042CF4B009C986A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EC47B68C3042CF9F009C986A /* Build configuration list for PBXNativeTarget "RelayIntentsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC47B68D3042CF9F009C986A /* Debug */,
+				EC47B68E3042CF9F009C986A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		ECFD00CD30302C0300F3E5E4 /* Build configuration list for PBXNativeTarget "RelayBroadcastUpload" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ECFD00CE30302C0300F3E5E4 /* Debug */,
+				ECFD00CF30302C0300F3E5E4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -589,6 +1408,17 @@
 			relativePath = RelayCore;
 		};
 /* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		ECFD00A5302F3B6400F3E5E4 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC";
+			requirement = {
+				kind = exactVersion;
+				version = 151.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		EC3C510F300B90EA00D20386 /* LibSignalClient */ = {
@@ -615,6 +1445,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = ECA1AD493018F09C001EF64A /* XCLocalSwiftPackageReference "RelayCore" */;
 			productName = RelayCore;
+		};
+		ECFD00A6302F3B6400F3E5E4 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = ECFD00A5302F3B6400F3E5E4 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

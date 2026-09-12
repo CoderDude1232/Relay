@@ -88,6 +88,7 @@ public struct PreKeyPublication: Sendable, Equatable {
 /// is then established from the signed prekey alone (degraded but valid).
 public struct PeerPreKeyBundle: Sendable, Equatable {
     public let deviceId: UInt32
+    public let mailboxId: String?
     public let registrationId: UInt32
     public let identityKey: Data
     public let signedPreKey: SignedPublicPreKey
@@ -96,6 +97,7 @@ public struct PeerPreKeyBundle: Sendable, Equatable {
 
     public init(
         deviceId: UInt32,
+        mailboxId: String? = nil,
         registrationId: UInt32,
         identityKey: Data,
         signedPreKey: SignedPublicPreKey,
@@ -103,6 +105,7 @@ public struct PeerPreKeyBundle: Sendable, Equatable {
         oneTimePreKey: PublicPreKey?
     ) {
         self.deviceId = deviceId
+        self.mailboxId = mailboxId
         self.registrationId = registrationId
         self.identityKey = identityKey
         self.signedPreKey = signedPreKey

@@ -112,6 +112,47 @@ func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 	return nil
 }
 
+// PushVoIP sends a PushKit VoIP push that wakes the app and presents the
+// CallKit incoming-call UI. The payload must not contain content-available
+// (PushKit VoIP pushes are always treated as high-priority wakes by iOS).
+func (p *Pusher) PushVoIP(deviceToken, callID, callerAccount, callerName, kind string) error {
+	if kind == "" {
+		kind = "audio"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"call_id":        callID,
+		"caller_account": callerAccount,
+		"caller_name":    callerName,
+		"kind":           kind,
+	})
+	if err != nil {
+		return err
+	}
+	jwt, err := p.authToken()
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, p.host+"/3/device/"+deviceToken, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("authorization", "bearer "+jwt)
+	req.Header.Set("apns-topic", p.topic+".voip")
+	req.Header.Set("apns-push-type", "voip")
+	req.Header.Set("apns-priority", "10")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("apns voip status %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 // authToken returns a cached provider token, refreshing it before Apple's
 // ~1h expiry (they reject tokens older than 1h and newer than a few minutes).
 func (p *Pusher) authToken() (string, error) {

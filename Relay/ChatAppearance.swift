@@ -3,15 +3,13 @@
 //  Relay
 //
 //  Local, device-only chat personalization: a wallpaper behind the message
-//  list and the outgoing-bubble color. Nothing here is shared or synced —
-//  it's purely how *this* device renders chats. Persisted in UserDefaults
-//  (and a file for a custom wallpaper photo).
+//  list and the outgoing-bubble gradient. Nothing here is shared or synced —
+//  it's purely how *this* device renders chats.
 //
 
 import SwiftUI
 import UIKit
 
-/// A chat wallpaper: none, one of a few built-in gradients, or a custom photo.
 enum WallpaperStyle: String, CaseIterable, Identifiable {
     case none, sunset, ocean, forest, twilight, rose, graphite, photo
 
@@ -30,15 +28,14 @@ enum WallpaperStyle: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The two-stop gradient for a preset, or nil for `.none`/`.photo`.
     var gradient: LinearGradient? {
         let stops: [String]? = switch self {
-        case .sunset: ["FF7E5F", "FEB47B"]
-        case .ocean: ["2193B0", "6DD5ED"]
-        case .forest: ["134E5E", "71B280"]
+        case .sunset:   ["FF7E5F", "FEB47B"]
+        case .ocean:    ["2193B0", "6DD5ED"]
+        case .forest:   ["134E5E", "71B280"]
         case .twilight: ["4B2E83", "9D50BB"]
-        case .rose: ["C94B8F", "F6A5C0"]
-        case .graphite: ["232526", "414345"]
+        case .rose:     ["C94B8F", "F6A5C0"]
+        case .graphite: ["1C1C1E", "3A3A3C"]
         case .none, .photo: nil
         }
         guard let stops, let a = Color(hex: stops[0]), let b = Color(hex: stops[1]) else { return nil }
@@ -46,17 +43,42 @@ enum WallpaperStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// A curated theme pairing a wallpaper with a matching bubble gradient.
+struct AppearanceTheme: Identifiable {
+    let id: String
+    let name: String
+    let wallpaper: WallpaperStyle
+    let bubbleKey: String  // "RRGGBB-RRGGBB"
+}
+
 @Observable
 final class ChatAppearance {
-    /// Preset bubble colors offered in the picker (hex). `nil` = app accent.
-    static let bubblePalette: [String] = [
-        "0A84FF", "30D158", "5E5CE6", "FF375F", "FF9F0A", "BF5AF2", "64D2FF", "8E8E93",
+    /// Curated bubble gradient palette stored as "startHex-endHex". nil = accent.
+    static let bubblePalette: [(String, String)] = [
+        ("0A84FF", "5E5CE6"),  // blue → indigo
+        ("30D158", "00C7BE"),  // green → teal
+        ("BF5AF2", "FF2D55"),  // purple → pink
+        ("FF3B30", "FF9500"),  // red → amber
+        ("FF9500", "FFCC00"),  // amber → gold
+        ("34C759", "0A84FF"),  // green → blue
+        ("2C2C2E", "48484A"),  // graphite
+        ("FF2D55", "FF6B35"),  // coral-red
+    ]
+
+    /// Curated wallpaper + bubble combos — bubble contrasts against the wallpaper.
+    static let themes: [AppearanceTheme] = [
+        AppearanceTheme(id: "ocean",    name: "Ocean",    wallpaper: .ocean,    bubbleKey: "30D158-00C7BE"),  // green on blue
+        AppearanceTheme(id: "forest",   name: "Forest",   wallpaper: .forest,   bubbleKey: "FF9500-FFCC00"),  // amber on dark green
+        AppearanceTheme(id: "twilight", name: "Twilight", wallpaper: .twilight, bubbleKey: "00C7BE-30D158"),  // teal on purple
+        AppearanceTheme(id: "sunset",   name: "Sunset",   wallpaper: .sunset,   bubbleKey: "BF5AF2-5E5CE6"),  // purple on orange
+        AppearanceTheme(id: "rose",     name: "Rose",     wallpaper: .rose,     bubbleKey: "0A84FF-5E5CE6"),  // blue on pink
+        AppearanceTheme(id: "dark",     name: "Dark",     wallpaper: .graphite, bubbleKey: "0A84FF-5E5CE6"),  // blue on graphite
     ]
 
     var wallpaper: WallpaperStyle {
         didSet { defaults.set(wallpaper.rawValue, forKey: Keys.wallpaper) }
     }
-    /// Outgoing-bubble color as a hex string; nil uses the system accent.
+    /// Stored as "RRGGBB-RRGGBB" for a two-stop gradient; nil = accent color.
     var bubbleTintHex: String? {
         didSet { defaults.set(bubbleTintHex, forKey: Keys.bubbleTint) }
     }
@@ -71,12 +93,31 @@ final class ChatAppearance {
         photoData = try? Data(contentsOf: Self.photoURL)
     }
 
-    /// The outgoing bubble fill.
-    var bubbleTint: Color {
-        bubbleTintHex.flatMap { Color(hex: $0) } ?? .accentColor
+    func applyTheme(_ theme: AppearanceTheme) {
+        wallpaper = theme.wallpaper
+        bubbleTintHex = theme.bubbleKey
     }
 
-    /// Stores (or clears) the custom wallpaper photo and selects/deselects it.
+    /// Parses the stored hex key into gradient start + end colors.
+    private func parsedStops() -> (Color, Color) {
+        guard let hex = bubbleTintHex else { return (.accentColor, .accentColor) }
+        let parts = hex.split(separator: "-", maxSplits: 1).map(String.init)
+        let a = parts.count > 0 ? Color(hex: parts[0]) : nil
+        let b = parts.count > 1 ? Color(hex: parts[1]) : nil
+        let first = a ?? .accentColor
+        let second = b ?? first
+        return (first, second)
+    }
+
+    /// Flat outgoing-bubble color (first gradient stop).
+    var bubbleTint: Color { parsedStops().0 }
+
+    /// Diagonal gradient for outgoing bubbles.
+    var bubbleGradient: LinearGradient {
+        let (a, b) = parsedStops()
+        return LinearGradient(colors: [a, b], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
     func setPhoto(_ data: Data?) {
         photoData = data
         if let data {
@@ -88,7 +129,23 @@ final class ChatAppearance {
         }
     }
 
-    /// The full-bleed background view for the current wallpaper.
+    /// Subtle tint for non-chat views (chat list, calls, settings).
+    @ViewBuilder
+    var appBackground: some View {
+        switch wallpaper {
+        case .none:
+            EmptyView()
+        case .photo:
+            if let photoData, let ui = UIImage(data: photoData) {
+                Image(uiImage: ui).resizable().scaledToFill().opacity(0.08)
+            }
+        default:
+            if let gradient = wallpaper.gradient {
+                gradient.opacity(0.07)
+            }
+        }
+    }
+
     @ViewBuilder
     var background: some View {
         switch wallpaper {
@@ -114,7 +171,6 @@ final class ChatAppearance {
 }
 
 extension Color {
-    /// Builds a color from a 6-digit RRGGBB hex string (with or without `#`).
     init?(hex: String) {
         var s = hex.trimmingCharacters(in: .whitespaces)
         if s.hasPrefix("#") { s.removeFirst() }

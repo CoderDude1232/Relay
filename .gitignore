@@ -1,6 +1,14 @@
 # Vendored libsignal (recreate with scripts/setup-libsignal.sh)
 third_party/
 
+# Server build artifacts
+server/relayd
+server/relayd-linux
+server/relayd-new
+
+# Swift package build caches
+.build/
+
 # Xcode user state
 xcuserdata/
 *.xcuserstate

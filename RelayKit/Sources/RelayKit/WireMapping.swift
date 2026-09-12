@@ -112,3 +112,40 @@ public enum SendOutcome: Sendable, Equatable {
         }
     }
 }
+
+/// A signed remote-wipe command received from the relay.
+/// The receiver must verify the signature before wiping local storage.
+public struct NukeEvent: Sendable, Equatable {
+    public let accountId: String
+    public let commandId: String
+    public let creationTimeMs: Int64
+    public let initiatingDeviceId: UInt32
+    /// ECDSA-P256 ASN.1/DER signature over the canonical nuke payload.
+    public let signature: Data
+
+    init(_ proto: Relay_V1_NukeCommand) {
+        self.accountId = proto.accountID
+        self.commandId = proto.commandID
+        self.creationTimeMs = proto.creationTimeMs
+        self.initiatingDeviceId = proto.initiatingDeviceID
+        self.signature = proto.signature
+    }
+}
+
+/// Notifies the client that the account's device list changed.
+public struct DeviceListChangedEvent: Sendable, Equatable {
+    public enum Action: Sendable, Equatable {
+        case added, removed, unknown
+    }
+    public let action: Action
+    public let deviceId: UInt32
+
+    init(_ proto: Relay_V1_DeviceListChanged) {
+        switch proto.action {
+        case .deviceAdded: self.action = .added
+        case .deviceRemoved: self.action = .removed
+        default: self.action = .unknown
+        }
+        self.deviceId = proto.deviceID
+    }
+}

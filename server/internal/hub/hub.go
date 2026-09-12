@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/relayapp/relay-server/gen/relaypb"
+	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/store"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,20 +32,64 @@ type Pusher interface {
 	Push(deviceToken string, envelope []byte) error
 }
 
+// VoIPPusher sends a PushKit VoIP push to wake the app and present the
+// CallKit incoming-call UI. Optional; nil means calls only work in-foreground.
+type VoIPPusher interface {
+	PushVoIP(deviceToken, callID, callerAccount, callerName, kind string) error
+}
+
 type Hub struct {
-	store  *store.Store
-	pusher Pusher
+	store      *store.Store
+	pusher     Pusher
+	voipPusher VoIPPusher
 
 	mu       sync.RWMutex
 	sessions map[string]Session // key: accountID/deviceID
+	// lastSeen is intentionally kept in-memory only.
+	// Writing activity timestamps to disk would create metadata a warrant
+	// could retrieve; losing them on restart is an acceptable trade-off.
+	lastSeen map[string]int64 // accountID → Unix ms
 }
 
 func New(st *store.Store) *Hub {
-	return &Hub{store: st, sessions: make(map[string]Session)}
+	return &Hub{
+		store:    st,
+		sessions: make(map[string]Session),
+		lastSeen: make(map[string]int64),
+	}
 }
 
 // SetPusher attaches an APNs sender used to wake offline devices.
 func (h *Hub) SetPusher(p Pusher) { h.pusher = p }
+
+// SetVoIPPusher attaches a PushKit sender for incoming-call wakes.
+func (h *Hub) SetVoIPPusher(p VoIPPusher) { h.voipPusher = p }
+
+// PushCallToAccount sends a VoIP push to every device of accountID.
+func (h *Hub) PushCallToAccount(accountID, callID, callerAccount, callerName, kind string) {
+	if h.voipPusher == nil {
+		return
+	}
+	tokens, err := h.store.VoIPTokensForAccount(accountID)
+	if err != nil || len(tokens) == 0 {
+		if err != nil {
+			slog.Warn("voip: token lookup failed", "err", privlog.Error(err))
+		} else {
+			slog.Info("voip: no tokens for account")
+		}
+		return
+	}
+	for _, token := range tokens {
+		t := token
+		go func() {
+			if err := h.voipPusher.PushVoIP(t, callID, callerAccount, callerName, kind); err != nil {
+				slog.Warn("voip push failed", "err", privlog.Error(err))
+			} else {
+				slog.Info("voip push sent")
+			}
+		}()
+	}
+}
 
 func key(accountID string, deviceID uint32) string {
 	return fmt.Sprintf("%s/%d", accountID, deviceID)
@@ -56,9 +101,9 @@ func key(accountID string, deviceID uint32) string {
 func (h *Hub) Register(accountID string, deviceID uint32, s Session) ([][]byte, error) {
 	h.mu.Lock()
 	h.sessions[key(accountID, deviceID)] = s
+	h.lastSeen[accountID] = time.Now().UnixMilli()
 	h.mu.Unlock()
-	slog.Info("ws: session registered (online)", "account", accountID, "device", deviceID)
-	_ = h.store.SetLastSeen(accountID, time.Now().UnixMilli())
+	slog.Info("ws: session registered")
 	return h.store.QueuedEnvelopes(accountID, deviceID)
 }
 
@@ -83,9 +128,18 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 	k := key(accountID, deviceID)
 	if h.sessions[k] == s {
 		delete(h.sessions, k)
-		slog.Info("ws: session unregistered (offline)", "account", accountID, "device", deviceID)
-		_ = h.store.SetLastSeen(accountID, time.Now().UnixMilli())
+		slog.Info("ws: session unregistered")
+		h.lastSeen[accountID] = time.Now().UnixMilli()
 	}
+}
+
+// LastSeen returns the most recent connect/disconnect time for the account
+// in milliseconds since epoch, or 0 if not seen since server start.
+// This is intentionally in-memory only — never persisted to disk.
+func (h *Hub) LastSeen(accountID string) int64 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.lastSeen[accountID]
 }
 
 // Deliver routes one envelope to one device. Non-ephemeral envelopes are
@@ -110,8 +164,14 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 	h.mu.RUnlock()
 	if s != nil {
 		if !s.Send(frame) {
-			slog.Debug("hub: session backlogged, envelope stays queued",
-				"account", accountID, "device", deviceID)
+			// Socket is full or already gone (close frame not yet processed).
+			// The envelope is already queued; also fire an APNs push so the
+			// device wakes immediately rather than waiting for the 60s pong
+			// timeout to expire and the next reconnect to drain the queue.
+			slog.Debug("hub: session backlogged, also pushing")
+			if h.pusher != nil && !env.Ephemeral {
+				h.notifyOffline(accountID, deviceID, blob)
+			}
 		}
 		return nil
 	}
@@ -126,17 +186,55 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) {
 	token, err := h.store.APNSToken(accountID, deviceID)
 	if err != nil || token == "" {
-		slog.Info("apns: offline device has no token", "account", accountID, "device", deviceID)
+		if err != nil {
+			slog.Warn("apns: token lookup failed", "err", privlog.Error(err))
+		} else {
+			slog.Info("apns: offline device has no token")
+		}
 		return
 	}
-	slog.Info("apns: pushing to offline device", "account", accountID, "device", deviceID)
+	slog.Info("apns: pushing to offline device")
 	go func() {
 		if err := h.pusher.Push(token, envelope); err != nil {
-			slog.Warn("apns push failed", "account", accountID, "device", deviceID, "err", err)
+			slog.Warn("apns push failed", "err", privlog.Error(err))
 		} else {
-			slog.Info("apns push sent", "account", accountID, "device", deviceID)
+			slog.Info("apns push sent")
 		}
 	}()
+}
+
+// BroadcastNuke sends a NukeCommand frame to every live session of the account.
+// Connected devices self-destruct immediately; offline devices receive it on reconnect.
+func (h *Hub) BroadcastNuke(accountID string, nuke *relaypb.NukeCommand) {
+	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Nuke{Nuke: nuke}}
+	h.broadcastToAccount(accountID, frame)
+}
+
+// BroadcastDeviceListChanged notifies every live session of the account except
+// the initiating device that the device list changed.
+func (h *Hub) BroadcastDeviceListChanged(accountID string, exceptDeviceID uint32, action relaypb.DeviceListChanged_Action, changedDeviceID uint32) {
+	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_DeviceListChanged{
+		DeviceListChanged: &relaypb.DeviceListChanged{Action: action, DeviceId: changedDeviceID},
+	}}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	prefix := accountID + "/"
+	for k, s := range h.sessions {
+		if strings.HasPrefix(k, prefix) && k != key(accountID, exceptDeviceID) {
+			s.Send(frame)
+		}
+	}
+}
+
+func (h *Hub) broadcastToAccount(accountID string, frame *relaypb.ServerFrame) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	prefix := accountID + "/"
+	for k, s := range h.sessions {
+		if strings.HasPrefix(k, prefix) {
+			s.Send(frame)
+		}
+	}
 }
 
 // Ack removes a delivered envelope from the device's queue.

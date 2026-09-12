@@ -205,5 +205,139 @@ enum Schema {
                 try db.run("PRAGMA user_version = 8;")
             }
         }
+
+        if version < 9 {
+            // Per-member receipts for group messages. A 1:1 message keeps its
+            // single status column; a group message's author records each
+            // member's delivered/read state here (keyed by the message's
+            // sender clock) to drive "Read by N" and an aggregate status.
+            try db.transaction {
+                try db.run("""
+                    CREATE TABLE message_receipts (
+                        conversation_id   TEXT NOT NULL,
+                        message_timestamp INTEGER NOT NULL,
+                        member_account    TEXT NOT NULL,
+                        status            TEXT NOT NULL,
+                        PRIMARY KEY (conversation_id, message_timestamp, member_account)
+                    );
+                    """)
+                try db.run("PRAGMA user_version = 9;")
+            }
+        }
+
+        if version < 10 {
+            // Calls are stored independently from chat messages so the Calls
+            // tab can show missed, failed, declined, and completed sessions.
+            try db.transaction {
+                try db.run("""
+                    CREATE TABLE calls (
+                        id           TEXT PRIMARY KEY,
+                        peer_account TEXT NOT NULL,
+                        peer_name    TEXT NOT NULL,
+                        direction    TEXT NOT NULL,
+                        kind         TEXT NOT NULL,
+                        started_at   INTEGER NOT NULL,
+                        connected_at INTEGER,
+                        ended_at     INTEGER,
+                        outcome      TEXT NOT NULL
+                    );
+                    """)
+                try db.run("CREATE INDEX idx_calls_started_at ON calls (started_at DESC);")
+                try db.run("PRAGMA user_version = 10;")
+            }
+        }
+
+        if version < 11 {
+            // Conversation UX state: pinned ordering, local read position,
+            // disappearing-message TTL, and per-chat privacy controls.
+            try db.transaction {
+                try db.run("ALTER TABLE conversations ADD COLUMN pinned_at INTEGER;")
+                try db.run("ALTER TABLE conversations ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0;")
+                try db.run("ALTER TABLE conversations ADD COLUMN disappearing_seconds INTEGER NOT NULL DEFAULT 0;")
+                try db.run("ALTER TABLE conversations ADD COLUMN media_requires_biometric INTEGER NOT NULL DEFAULT 1;")
+                try db.run("ALTER TABLE conversations ADD COLUMN require_biometric_chat INTEGER NOT NULL DEFAULT 0;")
+                try db.run("ALTER TABLE conversations ADD COLUMN hide_previews INTEGER NOT NULL DEFAULT 0;")
+                try db.run("ALTER TABLE messages ADD COLUMN expires_at INTEGER;")
+                try db.run("CREATE INDEX idx_messages_expires_at ON messages (expires_at);")
+                try db.run("PRAGMA user_version = 11;")
+            }
+        }
+
+        if version < 12 {
+            // Archive conversations (hidden from main list) and pin specific
+            // messages (shown in a banner at the top of the chat).
+            try db.transaction {
+                try db.run("ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;")
+                try db.run("ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;")
+                try db.run("PRAGMA user_version = 12;")
+            }
+        }
+
+        if version < 13 {
+            // Starred messages: a per-user bookmark separate from pinning.
+            // Pinning is conversation-wide (shows a banner); starring is personal.
+            try db.transaction {
+                try db.run("ALTER TABLE messages ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;")
+                try db.run("CREATE INDEX idx_messages_starred ON messages (conversation_id, starred) WHERE starred = 1;")
+                try db.run("PRAGMA user_version = 13;")
+            }
+        }
+
+        if version < 14 {
+            // Conversation labels: user-defined tags (e.g. "Work", "Family")
+            // for filtering the conversation list.
+            try db.transaction {
+                try db.run("ALTER TABLE conversations ADD COLUMN label TEXT;")
+                try db.run("PRAGMA user_version = 14;")
+            }
+        }
+
+        if version < 15 {
+            // Per-conversation privacy: screen-capture protection and custom
+            // notification sound (nil = system default).
+            try db.transaction {
+                try db.run("ALTER TABLE conversations ADD COLUMN screen_security INTEGER NOT NULL DEFAULT 0;")
+                try db.run("ALTER TABLE conversations ADD COLUMN notification_sound TEXT;")
+                try db.run("PRAGMA user_version = 15;")
+            }
+        }
+
+        if version < 16 {
+            // Group profile: description text and avatar blob stored locally.
+            try db.transaction {
+                try db.run("ALTER TABLE group_state ADD COLUMN description TEXT NOT NULL DEFAULT '';")
+                try db.run("ALTER TABLE group_state ADD COLUMN avatar_data BLOB;")
+                try db.run("PRAGMA user_version = 16;")
+            }
+        }
+
+        if version < 17 {
+            // Message editing: timestamp when a message was last edited; NULL = unedited.
+            try db.transaction {
+                try db.run("ALTER TABLE messages ADD COLUMN edited_at INTEGER;")
+                try db.run("PRAGMA user_version = 17;")
+            }
+        }
+
+        if version < 18 {
+            // Admin roles and announce-only mode for groups.
+            // Poll votes: keyed by (conversation, poll_author, poll_timestamp, voter_account).
+            try db.transaction {
+                try db.run("ALTER TABLE group_state ADD COLUMN admins TEXT NOT NULL DEFAULT '[]';")
+                try db.run("ALTER TABLE group_state ADD COLUMN is_announce_only INTEGER NOT NULL DEFAULT 0;")
+                try db.run("""
+                    CREATE TABLE IF NOT EXISTS poll_votes (
+                        conversation_id  TEXT NOT NULL,
+                        poll_author      TEXT NOT NULL,
+                        poll_timestamp   INTEGER NOT NULL,
+                        voter_account    TEXT NOT NULL,
+                        selected_options TEXT NOT NULL DEFAULT '[]',
+                        voted_at         INTEGER NOT NULL,
+                        PRIMARY KEY (conversation_id, poll_author, poll_timestamp, voter_account)
+                    );
+                    """)
+                try db.run("PRAGMA user_version = 18;")
+            }
+        }
     }
 }

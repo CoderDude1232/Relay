@@ -68,6 +68,14 @@ public struct RelayAPIClient: Sendable {
         return response.accountId
     }
 
+    /// Changes the authenticated account's username. Throws RelayAPIError.http(409,…) if taken.
+    public func updateUsername(_ username: String) async throws {
+        try await requestExpectingNoContent(
+            "PUT", "v1/accounts/me/username",
+            body: ["username": username]
+        )
+    }
+
     public func lookupUsername(account: String) async throws -> String {
         struct Response: Decodable { let username: String }
         let response: Response = try await request(
@@ -86,6 +94,132 @@ public struct RelayAPIClient: Sendable {
 
     public func setAPNSToken(_ token: String) async throws {
         try await requestExpectingNoContent("PUT", "v1/devices/apns", body: ["token": token])
+    }
+
+    public func setVoIPToken(_ token: String) async throws {
+        try await requestExpectingNoContent("PUT", "v1/devices/voip", body: ["token": token])
+    }
+
+    /// Fetches the ECDSA-P256 auth public key for a device in the same account.
+    /// Used to independently verify nuke command signatures on the client.
+    public func deviceAuthKey(deviceId: UInt32) async throws -> Data {
+        struct Response: Decodable { let authPublicKey: String }
+        let r: Response = try await request("GET", "v1/devices/\(deviceId)/auth-key", body: nil as String?)
+        guard let data = Data(base64Encoded: r.authPublicKey) else {
+            throw RelayAPIError.malformedResponse
+        }
+        return data
+    }
+
+    public func setDeviceAuthorizationKey(_ publicKey: Data) async throws {
+        try await requestExpectingNoContent(
+            "PUT",
+            "v1/devices/auth-key",
+            body: DeviceAuthorizationKeyRequest(publicKey: publicKey.base64EncodedString())
+        )
+    }
+
+    /// Registers a new linked device under the same account. The primary device
+    /// calls this on behalf of the new device, supplying the password the new
+    /// device will use. Returns the new device's id.
+    public func addDevice(password: String, authorization: DeviceMutationAuthorization) async throws -> UInt32 {
+        struct Response: Decodable { let deviceId: UInt32 }
+        let r: Response = try await request(
+            "POST",
+            "v1/devices",
+            body: AddDeviceRequest(password: password, auth: authorization)
+        )
+        return r.deviceId
+    }
+
+    public func createDeviceLinkInvitation(authorization: DeviceMutationAuthorization) async throws -> DeviceLinkInvitation {
+        try await request(
+            "POST",
+            "v1/devices/link-invitations",
+            body: DeviceMutationRequest(auth: authorization)
+        )
+    }
+
+    public func claimDeviceLink(linkToken: String, verificationCode: String) async throws -> DeviceLinkClaim {
+        try await request(
+            "POST",
+            "v1/devices/link-claims",
+            body: DeviceLinkClaimRequest(linkToken: linkToken, verificationCode: verificationCode),
+            authenticated: false
+        )
+    }
+
+    public func deviceList() async throws -> LinkedDeviceList {
+        try await request("GET", "v1/devices", body: nil as String?)
+    }
+
+    /// Fetches time-limited TURN credentials (coturn REST API format).
+    /// Returns nil if TURN is not configured on the server.
+    public func fetchTurnCredentials() async throws -> TurnCredentials? {
+        do {
+            let creds: TurnCredentials = try await request("GET", "v1/turn-credentials", body: nil as String?)
+            return creds
+        } catch RelayAPIError.http(status: 404, message: _) {
+            return nil
+        }
+    }
+
+    /// Lists all devices registered to this account.
+    public func listDevices() async throws -> [LinkedDevice] {
+        let list = try await deviceList()
+        return list.devices
+    }
+
+    /// Removes a linked device. The primary device (id 1) cannot be removed.
+    public func removeDevice(deviceId: UInt32, authorization: DeviceMutationAuthorization) async throws {
+        try await requestExpectingNoContent(
+            "DELETE",
+            "v1/devices/\(deviceId)",
+            body: DeviceMutationRequest(auth: authorization)
+        )
+    }
+
+    /// Posts a signed remote-wipe command. The server validates signature shape and
+    /// relays it to all devices; each device verifies the full signature before wiping.
+    public func sendNukeCommand(commandId: String, creationTimeMs: Int64, initiatingDeviceId: UInt32, signature: Data) async throws {
+        struct NukeRequest: Encodable {
+            let commandId: String
+            let creationTimeMs: Int64
+            let initiatingDeviceId: UInt32
+            let signature: String
+        }
+        try await requestExpectingNoContent(
+            "POST", "v1/accounts/me/nuke",
+            body: NukeRequest(
+                commandId: commandId,
+                creationTimeMs: creationTimeMs,
+                initiatingDeviceId: initiatingDeviceId,
+                signature: signature.base64EncodedString()
+            )
+        )
+    }
+
+    /// Triggers a VoIP push to wake `account`'s device(s) for an incoming call.
+    public func triggerCallPush(
+        account: String,
+        callID: String,
+        callerName: String,
+        callerAccount: String,
+        kind: String = "audio"
+    ) async throws {
+        try await requestExpectingNoContent(
+            "POST", "v1/call/\(account)",
+            body: [
+                "callId": callID,
+                "call_id": callID,
+                "callerName": callerName,
+                "caller_name": callerName,
+                "callerAccount": callerAccount,
+                "caller_account": callerAccount,
+                "kind": kind,
+                "call_kind": kind,
+            ]
+        )
     }
 
     // MARK: - Prekeys
@@ -136,6 +270,35 @@ public struct RelayAPIClient: Sendable {
         try await request("PUT", "v1/groups/\(groupId)", body: NameRequest(name: name))
     }
 
+    public func setGroupDescription(groupId: String, description: String) async throws -> GroupState {
+        try await request("PUT", "v1/groups/\(groupId)", body: DescriptionRequest(description: description))
+    }
+
+    public func setGroupAvatarId(groupId: String, avatarId: String) async throws -> GroupState {
+        try await request("PUT", "v1/groups/\(groupId)", body: AvatarIdRequest(avatarId: avatarId))
+    }
+
+    public func createGroupInvite(groupId: String) async throws -> GroupInviteResponse {
+        try await request("POST", "v1/groups/\(groupId)/invite", body: nil as String?)
+    }
+
+    public func joinGroupByInvite(token: String) async throws -> GroupState {
+        try await request("POST", "v1/groups/join", body: TokenRequest(token: token))
+    }
+
+    public func promoteGroupAdmin(groupId: String, account: String) async throws -> GroupState {
+        try await request("POST", "v1/groups/\(groupId)/admins/\(account)", body: nil as String?)
+    }
+
+    public func demoteGroupAdmin(groupId: String, account: String) async throws -> GroupState {
+        try await request("DELETE", "v1/groups/\(groupId)/admins/\(account)", body: nil as String?)
+    }
+
+    public func setGroupAnnounceOnly(groupId: String, announceOnly: Bool) async throws -> GroupState {
+        struct Req: Encodable { let announceOnly: Bool }
+        return try await request("PUT", "v1/groups/\(groupId)/announce", body: Req(announceOnly: announceOnly))
+    }
+
     // MARK: - Attachments (opaque encrypted blobs)
 
     /// Allocates a blob id, then uploads the encrypted bytes to it. Returns
@@ -164,6 +327,7 @@ public struct RelayAPIClient: Sendable {
     private func makeRequest(_ method: String, _ path: String, authenticated: Bool) -> URLRequest {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
+        request.assumesHTTP3Capable = true
         if authenticated, let credentials {
             request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
         }
@@ -209,9 +373,94 @@ public struct RelayAPIClient: Sendable {
 public struct GroupState: Decodable, Sendable, Equatable {
     public let id: String
     public let name: String
+    public let description: String
+    public let avatarId: String
     public let distributionId: String
     public let revision: Int64
     public let members: [String]
+    public let admins: [String]
+    public let announceOnly: Bool
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        description = (try? c.decode(String.self, forKey: .description)) ?? ""
+        avatarId = (try? c.decode(String.self, forKey: .avatarId)) ?? ""
+        distributionId = try c.decode(String.self, forKey: .distributionId)
+        revision = try c.decode(Int64.self, forKey: .revision)
+        members = try c.decode([String].self, forKey: .members)
+        admins = (try? c.decode([String].self, forKey: .admins)) ?? []
+        announceOnly = (try? c.decode(Bool.self, forKey: .announceOnly)) ?? false
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, description, avatarId, distributionId, revision, members, admins, announceOnly
+    }
+}
+
+public struct GroupInviteResponse: Decodable, Sendable {
+    public let token: String
+    public let url: String
+}
+
+/// Time-limited TURN credentials in coturn REST API format.
+public struct TurnCredentials: Decodable, Sendable {
+    public let urls: [String]
+    public let username: String
+    public let credential: String
+    /// Lifetime in seconds from issue time.
+    public let ttl: Int
+}
+
+public struct LinkedDevice: Decodable, Sendable, Identifiable {
+    public let deviceId: UInt32
+    public let mailboxId: String?
+    public var id: UInt32 { deviceId }
+}
+
+public struct LinkedDeviceList: Decodable, Sendable {
+    public let devices: [LinkedDevice]
+    public let deviceListVersion: Int64
+}
+
+public struct DeviceMutationAuthorization: Encodable, Sendable {
+    public let expectedVersion: Int64
+    public let signerDeviceId: UInt32
+    public let signature: String
+
+    public init(expectedVersion: Int64, signerDeviceId: UInt32, signature: String) {
+        self.expectedVersion = expectedVersion
+        self.signerDeviceId = signerDeviceId
+        self.signature = signature
+    }
+}
+
+public struct DeviceLinkInvitation: Decodable, Sendable {
+    public let linkToken: String
+    public let verificationCode: String
+    public let expiresAt: Int64
+}
+
+public struct DeviceLinkClaim: Decodable, Sendable {
+    public let accountId: String
+    public let deviceId: UInt32
+    public let password: String
+    public let username: String?
+}
+
+private struct AddDeviceRequest: Encodable {
+    let password: String
+    let auth: DeviceMutationAuthorization
+}
+
+private struct DeviceMutationRequest: Encodable {
+    let auth: DeviceMutationAuthorization
+}
+
+private struct DeviceLinkClaimRequest: Encodable {
+    let linkToken: String
+    let verificationCode: String
 }
 
 private struct CreateGroupRequest: Encodable {
@@ -225,6 +474,22 @@ private struct AccountRequest: Encodable {
 
 private struct NameRequest: Encodable {
     let name: String
+}
+
+private struct DescriptionRequest: Encodable {
+    let description: String
+}
+
+private struct AvatarIdRequest: Encodable {
+    let avatarId: String
+}
+
+private struct TokenRequest: Encodable {
+    let token: String
+}
+
+private struct DeviceAuthorizationKeyRequest: Encodable {
+    let publicKey: String
 }
 
 // MARK: - Wire DTOs (base64 binary fields)
@@ -283,6 +548,7 @@ private struct PublicationDTO: Encodable {
 
 private struct BundleDTO: Decodable {
     let deviceId: UInt32
+    let mailboxId: String?
     let registrationId: UInt32
     let identityKey: String
     let signedPreKey: SignedPreKeyDTO
@@ -295,6 +561,7 @@ private struct BundleDTO: Decodable {
         }
         return PeerPreKeyBundle(
             deviceId: deviceId,
+            mailboxId: mailboxId,
             registrationId: registrationId,
             identityKey: identity,
             signedPreKey: try signedPreKey.model(),

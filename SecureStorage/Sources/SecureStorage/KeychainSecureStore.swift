@@ -41,6 +41,7 @@ public final class KeychainSecureStore {
         static let identityKeyPair = "identity-key-pair"
         static let registrationId = "registration-id"
         static let enclaveKeyTag = "app.relay.enclave-wrapping-key"
+        static let deviceAuthKeyTag = "app.relay.device-authorization-key"
     }
 
     private let config: KeychainConfiguration
@@ -87,7 +88,10 @@ public final class KeychainSecureStore {
         if let group = config.accessGroup { query[kSecAttrAccessGroup] = group }
         var existing: CFTypeRef?
         if SecItemCopyMatching(query as CFDictionary, &existing) == errSecSuccess {
-            return (existing as! SecKey)
+            guard let ref = existing, CFGetTypeID(ref) == SecKeyGetTypeID() else {
+                throw StorageError.secureEnclave("enclave wrapping key: unexpected type in Keychain result")
+            }
+            return unsafeDowncast(ref, to: SecKey.self)
         }
 
         var accessError: Unmanaged<CFError>?
@@ -120,6 +124,115 @@ public final class KeychainSecureStore {
             throw StorageError.secureEnclave("create: \(String(describing: createError?.takeRetainedValue()))")
         }
         return key
+    }
+
+    // MARK: - Device authorization key
+
+    private static let signingAlgorithm = SecKeyAlgorithm.ecdsaSignatureMessageX962SHA256
+
+    /// Returns the public half of this device's authorization key, creating a
+    /// non-exportable private key in the Secure Enclave where available. The
+    /// Simulator falls back to a Keychain-held private key so the feature stays
+    /// testable without changing app behavior.
+    public func deviceAuthorizationPublicKey() throws -> Data {
+        let key = try deviceAuthorizationPrivateKey()
+        guard let publicKey = SecKeyCopyPublicKey(key) else {
+            throw StorageError.secureEnclave("device auth public key unavailable")
+        }
+        var error: Unmanaged<CFError>?
+        guard let data = SecKeyCopyExternalRepresentation(publicKey, &error) else {
+            throw StorageError.secureEnclave("device auth public export: \(String(describing: error?.takeRetainedValue()))")
+        }
+        return data as Data
+    }
+
+    /// Signs device-control payloads for later stages. Stage 3A only uploads
+    /// the public key; Stage 3B will define the signed device-list payloads.
+    public func signDeviceAuthorizationPayload(_ payload: Data) throws -> Data {
+        let key = try deviceAuthorizationPrivateKey()
+        guard SecKeyIsAlgorithmSupported(key, .sign, Self.signingAlgorithm) else {
+            throw StorageError.secureEnclave("device auth signing unsupported")
+        }
+        var error: Unmanaged<CFError>?
+        guard let signature = SecKeyCreateSignature(key, Self.signingAlgorithm, payload as CFData, &error) else {
+            throw StorageError.secureEnclave("device auth sign: \(String(describing: error?.takeRetainedValue()))")
+        }
+        return signature as Data
+    }
+
+    private func deviceAuthorizationPrivateKey() throws -> SecKey {
+        if let existing = try loadDeviceAuthorizationPrivateKey() {
+            return existing
+        }
+        do {
+            return try createDeviceAuthorizationPrivateKey(secureEnclave: true)
+        } catch {
+            return try createDeviceAuthorizationPrivateKey(secureEnclave: false)
+        }
+    }
+
+    private func loadDeviceAuthorizationPrivateKey() throws -> SecKey? {
+        var query = keyQuery(tag: Item.deviceAuthKeyTag)
+        query[kSecReturnRef] = true
+        var result: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &result) {
+        case errSecSuccess:
+            guard let ref = result, CFGetTypeID(ref) == SecKeyGetTypeID() else {
+                throw StorageError.secureEnclave("device auth key: unexpected type in Keychain result")
+            }
+            return unsafeDowncast(ref, to: SecKey.self)
+        case errSecItemNotFound:
+            return nil
+        case let status:
+            throw StorageError.keychain(status: status)
+        }
+    }
+
+    private func createDeviceAuthorizationPrivateKey(secureEnclave: Bool) throws -> SecKey {
+        let tag = Data(Item.deviceAuthKeyTag.utf8)
+        var accessError: Unmanaged<CFError>?
+        guard
+            let access = SecAccessControlCreateWithFlags(
+                nil,
+                kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                .privateKeyUsage,
+                &accessError
+            )
+        else {
+            throw StorageError.secureEnclave("device auth access control: \(String(describing: accessError?.takeRetainedValue()))")
+        }
+
+        var privateKeyAttrs: [CFString: Any] = [
+            kSecAttrIsPermanent: true,
+            kSecAttrApplicationTag: tag,
+            kSecAttrAccessControl: access,
+        ]
+        if let group = config.accessGroup { privateKeyAttrs[kSecAttrAccessGroup] = group }
+
+        var attributes: [CFString: Any] = [
+            kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrKeySizeInBits: 256,
+            kSecPrivateKeyAttrs: privateKeyAttrs,
+        ]
+        if secureEnclave {
+            attributes[kSecAttrTokenID] = kSecAttrTokenIDSecureEnclave
+        }
+
+        var createError: Unmanaged<CFError>?
+        guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &createError) else {
+            throw StorageError.secureEnclave("device auth create: \(String(describing: createError?.takeRetainedValue()))")
+        }
+        return key
+    }
+
+    private func keyQuery(tag: String) -> [CFString: Any] {
+        var query: [CFString: Any] = [
+            kSecClass: kSecClassKey,
+            kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+            kSecAttrApplicationTag: Data(tag.utf8),
+        ]
+        if let group = config.accessGroup { query[kSecAttrAccessGroup] = group }
+        return query
     }
 
     private func wrap(_ plaintext: Data, with key: SecKey) throws -> Data {

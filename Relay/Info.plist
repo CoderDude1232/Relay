@@ -2,18 +2,43 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Relay uses the microphone to record voice messages you choose to send.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Relay uses the camera to take photos you choose to send.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.morgandaly.RelayMessenger</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>relay</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>RelayICEServerURLs</key>
+	<array>
+		<string>turn:api.relaymsg.app:3478?transport=udp</string>
+		<string>turn:api.relaymsg.app:3478?transport=tcp</string>
+		<string>stun:api.relaymsg.app:3478</string>
+		<string>stun:stun.l.google.com:19302</string>
+	</array>
+	<key>RelayTURNCredential</key>
+	<string>r3layTURN</string>
+	<key>RelayTURNUsername</key>
+	<string>relay</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.morgandaly.RelayMessenger.bg-refresh</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>fetch</string>
 		<string>remote-notification</string>
+		<string>voip</string>
+		<string>audio</string>
 	</array>
 </dict>
 </plist>

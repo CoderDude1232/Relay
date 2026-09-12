@@ -2,10 +2,16 @@ package api
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,7 +32,11 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	dsn := os.Getenv("RELAY_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set RELAY_TEST_DSN to run Postgres-backed API integration tests")
+	}
+	st, err := store.Open(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +45,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(New(st, hub.New(st), blobs).Handler())
+	srv := httptest.NewServer(New(st, hub.New(st), blobs, "", "").Handler())
 	t.Cleanup(srv.Close)
 	return &testEnv{t: t, srv: srv}
 }
@@ -45,6 +55,7 @@ type client struct {
 	accountID string
 	deviceID  uint32
 	password  string
+	authKey   *ecdsa.PrivateKey
 }
 
 func (e *testEnv) register(username, password string) *client {
@@ -54,7 +65,9 @@ func (e *testEnv) register(username, password string) *client {
 		DeviceID  uint32 `json:"deviceId"`
 	}
 	e.doJSON("POST", "/v1/accounts", "", "", map[string]string{"username": username, "password": password}, http.StatusCreated, &resp)
-	return &client{env: e, accountID: resp.AccountID, deviceID: resp.DeviceID, password: password}
+	c := &client{env: e, accountID: resp.AccountID, deviceID: resp.DeviceID, password: password}
+	c.uploadDeviceAuthKey()
+	return c
 }
 
 func (e *testEnv) doJSON(method, path, user, pass string, body any, wantStatus int, out any) {
@@ -86,6 +99,43 @@ func (e *testEnv) doJSON(method, path, user, pass string, body any, wantStatus i
 }
 
 func (c *client) authUser() string { return fmt.Sprintf("%s.%d", c.accountID, c.deviceID) }
+
+func (c *client) uploadDeviceAuthKey() {
+	c.env.t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		c.env.t.Fatal(err)
+	}
+	c.authKey = key
+	c.env.doJSON("PUT", "/v1/devices/auth-key", c.authUser(), c.password, map[string]string{
+		"publicKey": base64.StdEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), key.X, key.Y)),
+	}, http.StatusNoContent, nil)
+}
+
+func (c *client) deviceListVersion() int64 {
+	c.env.t.Helper()
+	var resp struct {
+		DeviceListVersion int64 `json:"deviceListVersion"`
+	}
+	c.env.doJSON("GET", "/v1/devices", c.authUser(), c.password, nil, http.StatusOK, &resp)
+	return resp.DeviceListVersion
+}
+
+func (c *client) signedDeviceMutation(action string, target uint32, password string) map[string]any {
+	c.env.t.Helper()
+	version := c.deviceListVersion()
+	payload := deviceMutationPayload(c.accountID, version, action, target, password)
+	digest := sha256.Sum256([]byte(payload))
+	signature, err := ecdsa.SignASN1(rand.Reader, c.authKey, digest[:])
+	if err != nil {
+		c.env.t.Fatal(err)
+	}
+	return map[string]any{
+		"expectedVersion": version,
+		"signerDeviceId":  c.deviceID,
+		"signature":       base64.StdEncoding.EncodeToString(signature),
+	}
+}
 
 func (c *client) uploadKeys(numOneTime int) {
 	c.env.t.Helper()
@@ -190,6 +240,35 @@ func sendFrame(dest string, msgs ...*relaypb.DeviceMessage) *relaypb.ClientFrame
 
 // ---------------------------------------------------------------------------
 
+func TestVerifyDeviceMutation(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := deviceMutationPayload("account-1", 7, "remove", 2, "")
+	digest := sha256.Sum256([]byte(payload))
+	signature, err := ecdsa.SignASN1(rand.Reader, privateKey, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := &store.Device{
+		AccountID:     "account-1",
+		DeviceID:      1,
+		AuthPublicKey: elliptic.Marshal(elliptic.P256(), privateKey.X, privateKey.Y),
+	}
+	auth := deviceMutationAuth{
+		ExpectedVersion: 7,
+		SignerDeviceID:  1,
+		Signature:       signature,
+	}
+	if err := verifyDeviceMutation(dev, auth, "remove", 2, ""); err != nil {
+		t.Fatalf("valid signature rejected: %v", err)
+	}
+	if err := verifyDeviceMutation(dev, auth, "remove", 3, ""); err == nil {
+		t.Fatal("signature accepted for different target device")
+	}
+}
+
 func TestPreKeyBundleConsumption(t *testing.T) {
 	env := newTestEnv(t)
 	alice := env.register("alice", "password-alice")
@@ -285,7 +364,11 @@ func TestMismatchedDevicesRejected(t *testing.T) {
 	bob.uploadKeys(1)
 
 	// Bob adds a second device; Alice only encrypts for device 1.
-	env.doJSON("POST", "/v1/devices", bob.authUser(), bob.password, map[string]string{"password": "password-bob2"}, http.StatusCreated, nil)
+	secondDevicePassword := "password-bob2"
+	env.doJSON("POST", "/v1/devices", bob.authUser(), bob.password, map[string]any{
+		"password": secondDevicePassword,
+		"auth":     bob.signedDeviceMutation("add", 0, secondDevicePassword),
+	}, http.StatusCreated, nil)
 
 	aliceWS := env.connect(alice)
 	aliceWS.writeFrame(sendFrame(bob.accountID, &relaypb.DeviceMessage{

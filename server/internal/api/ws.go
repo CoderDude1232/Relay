@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/relayapp/relay-server/gen/relaypb"
+	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/store"
 	"google.golang.org/protobuf/proto"
 )
@@ -60,7 +61,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 
 	queued, err := s.hub.Register(dev.AccountID, dev.DeviceID, sess)
 	if err != nil {
-		slog.Error("ws: queue drain failed", "err", err)
+		slog.Error("ws: queue drain failed", "err", privlog.Error(err))
 		conn.Close()
 		return
 	}
@@ -72,12 +73,37 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 
 	go sess.writePump()
 
+	// If a nuke was issued while this device was offline, deliver it directly
+	// and then close — the client will wipe itself and there is nothing left to
+	// drain. We write directly to the connection instead of going through the
+	// buffered channel so the frame is guaranteed to be sent before the deferred
+	// cleanup fires (close(sess.done) could race with writePump draining the
+	// channel and cause the nuke frame to be silently dropped).
+	if pending, err := s.store.PendingNukeForAccount(dev.AccountID); err != nil {
+		slog.Error("ws: pending nuke check failed", "err", privlog.Error(err))
+	} else if pending != nil {
+		nukeFrame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Nuke{
+			Nuke: &relaypb.NukeCommand{
+				AccountId:          pending.AccountID,
+				CommandId:          pending.CommandID,
+				CreationTimeMs:     pending.CreationTimeMs,
+				InitiatingDeviceId: pending.InitiatingDeviceID,
+				Signature:          pending.Signature,
+			},
+		}}
+		if data, err := proto.Marshal(nukeFrame); err == nil {
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			conn.WriteMessage(websocket.BinaryMessage, data) //nolint:errcheck
+		}
+		return
+	}
+
 	// Drain the offline queue, then mark it empty. These go through the
 	// same buffered channel as live traffic to keep ordering.
 	for _, blob := range queued {
 		env := &relaypb.Envelope{}
 		if err := proto.Unmarshal(blob, env); err != nil {
-			slog.Error("ws: corrupt queued envelope dropped", "err", err)
+			slog.Error("ws: corrupt queued envelope dropped", "err", privlog.Error(err))
 			continue
 		}
 		sess.Send(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}})
@@ -100,7 +126,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		}
 		frame := &relaypb.ClientFrame{}
 		if err := proto.Unmarshal(data, frame); err != nil {
-			slog.Warn("ws: unparseable client frame", "account", dev.AccountID, "device", dev.DeviceID)
+			slog.Warn("ws: unparseable client frame")
 			continue
 		}
 		switch p := frame.Payload.(type) {
@@ -110,7 +136,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 			sess.Send(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_SendResponse{SendResponse: resp}})
 		case *relaypb.ClientFrame_Ack:
 			if err := s.hub.Ack(dev.AccountID, dev.DeviceID, p.Ack.EnvelopeId); err != nil {
-				slog.Error("ws: ack failed", "err", err)
+				slog.Error("ws: ack failed", "err", privlog.Error(err))
 			}
 		}
 	}
@@ -124,7 +150,7 @@ func (sess *wsSession) writePump() {
 		case frame := <-sess.out:
 			data, err := proto.Marshal(frame)
 			if err != nil {
-				slog.Error("ws: marshal failed", "err", err)
+				slog.Error("ws: marshal failed", "err", privlog.Error(err))
 				continue
 			}
 			sess.conn.SetWriteDeadline(time.Now().Add(writeWait))
@@ -142,77 +168,76 @@ func (sess *wsSession) writePump() {
 	}
 }
 
-// handleSend validates the per-device fan-out and delivers one envelope per
-// destination device. The device list must exactly cover the destination
-// account's registered devices (minus the sending device on self-sends),
-// with matching registration ids — otherwise the whole send is rejected and
-// nothing is delivered, so a partial fan-out can never happen.
+// handleSend routes one encrypted payload to one opaque device mailbox. New
+// clients no longer send destination account IDs on this path; the protobuf
+// field is kept for wire compatibility but now contains a mailbox ID.
 func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *relaypb.SendResponse {
 	now := time.Now().UnixMilli()
 	resp := &relaypb.SendResponse{ServerTimestamp: now}
 
-	devices, err := s.store.Devices(req.DestinationAccount)
-	if err != nil {
-		slog.Error("send: device lookup failed", "err", err)
-		resp.Status = relaypb.SendStatus_SEND_STATUS_UNSPECIFIED
-		return resp
-	}
-	if len(devices) == 0 {
-		resp.Status = relaypb.SendStatus_SEND_STATUS_UNKNOWN_ACCOUNT
-		return resp
-	}
-
-	selfSend := req.DestinationAccount == sender.AccountID
-	expected := make(map[uint32]uint32) // device id -> registration id
-	for _, d := range devices {
-		if selfSend && d.DeviceID == sender.DeviceID {
-			continue
-		}
-		expected[d.DeviceID] = d.RegistrationID
-	}
-
-	provided := make(map[uint32]*relaypb.DeviceMessage, len(req.Messages))
-	for _, m := range req.Messages {
-		provided[m.DeviceId] = m
-	}
-	for id, regID := range expected {
-		m, ok := provided[id]
-		if !ok {
-			resp.MissingDevices = append(resp.MissingDevices, id)
-			continue
-		}
-		if m.RegistrationId != 0 && m.RegistrationId != regID {
-			resp.StaleDevices = append(resp.StaleDevices, id)
-		}
-	}
-	for id := range provided {
-		if _, ok := expected[id]; !ok {
-			resp.ExtraDevices = append(resp.ExtraDevices, id)
-		}
-	}
-	if len(resp.MissingDevices)+len(resp.ExtraDevices)+len(resp.StaleDevices) > 0 {
+	if len(req.Messages) != 1 {
 		resp.Status = relaypb.SendStatus_SEND_STATUS_MISMATCHED_DEVICES
 		return resp
 	}
 
-	for _, m := range req.Messages {
-		env := &relaypb.Envelope{
-			Id:              newEnvelopeID(),
-			SenderAccount:   sender.AccountID,
-			SenderDevice:    sender.DeviceID,
-			Type:            m.Type,
-			Content:         m.Content,
-			ClientTimestamp: req.ClientTimestamp,
-			ServerTimestamp: now,
-			Ephemeral:       req.Ephemeral,
-		}
-		if err := s.hub.Deliver(req.DestinationAccount, m.DeviceId, env); err != nil {
-			slog.Error("send: deliver failed", "err", err)
+	destination, err := s.store.DeviceByMailbox(req.DestinationAccount)
+	if err != nil {
+		if err == store.ErrNotFound {
+			resp.Status = relaypb.SendStatus_SEND_STATUS_UNKNOWN_ACCOUNT
+		} else {
+			slog.Error("send: mailbox lookup failed", "err", privlog.Error(err))
 			resp.Status = relaypb.SendStatus_SEND_STATUS_UNSPECIFIED
-			return resp
 		}
+		return resp
+	}
+
+	m := req.Messages[0]
+	if m.DeviceId != destination.DeviceID {
+		resp.ExtraDevices = append(resp.ExtraDevices, m.DeviceId)
+		resp.Status = relaypb.SendStatus_SEND_STATUS_MISMATCHED_DEVICES
+		return resp
+	}
+	if m.RegistrationId != 0 && m.RegistrationId != destination.RegistrationID {
+		resp.StaleDevices = append(resp.StaleDevices, m.DeviceId)
+		resp.Status = relaypb.SendStatus_SEND_STATUS_MISMATCHED_DEVICES
+		return resp
+	}
+
+	env := &relaypb.Envelope{
+		Id:              newEnvelopeID(),
+		SenderAccount:   sender.AccountID,
+		SenderDevice:    sender.DeviceID,
+		Type:            m.Type,
+		Content:         m.Content,
+		ClientTimestamp: req.ClientTimestamp,
+		ServerTimestamp: now,
+		Ephemeral:       req.Ephemeral,
+	}
+	if err := s.hub.Deliver(destination.AccountID, destination.DeviceID, env); err != nil {
+		slog.Error("send: deliver failed", "err", privlog.Error(err))
+		resp.Status = relaypb.SendStatus_SEND_STATUS_UNSPECIFIED
+		return resp
 	}
 	resp.Status = relaypb.SendStatus_SEND_STATUS_OK
+
+	// Cross-account send: tell the sender about other registered devices it
+	// didn't address. The message above was already delivered; the sender
+	// should send to the missing devices without re-sending to this one.
+	// Skip this for self-sends (own-device sync) so the phone doesn't get
+	// asked to re-send its own sync messages to itself.
+	if !req.Ephemeral && sender.AccountID != destination.AccountID {
+		all, err := s.store.Devices(destination.AccountID)
+		if err == nil {
+			for _, d := range all {
+				if d.DeviceID != destination.DeviceID {
+					resp.MissingDevices = append(resp.MissingDevices, d.DeviceID)
+				}
+			}
+			if len(resp.MissingDevices) > 0 {
+				resp.Status = relaypb.SendStatus_SEND_STATUS_MISMATCHED_DEVICES
+			}
+		}
+	}
 	return resp
 }
 

@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/relayapp/relay-server/internal/apns"
+	"github.com/relayapp/relay-server/internal/privlog"
 )
 
 func main() {
@@ -24,11 +25,11 @@ func main() {
 
 	p, err := apns.New(*keyPath, *keyID, *teamID, *topic, *production)
 	if err != nil {
-		fmt.Println("setup error:", err)
+		fmt.Println("setup error:", privlog.Error(err))
 		os.Exit(1)
 	}
 	if err := p.Push(*token, []byte("diagnostic")); err != nil {
-		fmt.Println("PUSH FAILED:", err)
+		fmt.Println("PUSH FAILED:", privlog.Error(err))
 		os.Exit(1)
 	}
 	fmt.Println("push accepted by APNs")

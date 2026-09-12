@@ -24,11 +24,32 @@ message Content {
     GroupUpdate group_update = 6;
     DeleteMessage delete = 7;
     ProfileUpdate profile = 9;
+    CallMessage call = 10;
+    EditMessage edit = 11;
+    PollMessage poll = 17;
+    PollVote poll_vote = 18;
   }
   // Set when this content belongs to a group; empty for 1:1. Group messages
   // are encrypted with the sender's sender key (senderKey ciphertext);
   // control content (SKDM, group updates) is sent over pairwise sessions.
   string group_id = 8;
+  // Random bytes added before E2EE encryption so the relay observes fewer exact
+  // plaintext-size differences. Clients ignore this field after decrypting.
+  bytes padding = 12;
+  // Sealed sender: sender's own account id and device id, encrypted inside the
+  // Content so the relay's stored envelope can omit them without breaking decryption.
+  // Clients MUST set these on every outgoing message. Recipients prefer these over
+  // the Envelope's (server-stamped) sender fields.
+  string sender_account_id = 13;
+  uint32 sender_device_id = 14;
+  // Disappearing-messages timer the sender had set for this conversation when the
+  // message was composed, in milliseconds. 0 means no timer / no change. Recipients
+  // sync their local timer to this value so both sides stay in lockstep.
+  int64 expires_after_ms = 15;
+  // Set only on sync copies sent to the sender's own other devices. Contains the
+  // peer account id of the original recipient so the linked device can store the
+  // message in the correct conversation as an outgoing message.
+  string sync_recipient = 16;
 }
 
 // Carries a libsignal Sender Key Distribution Message so a member can
@@ -50,12 +71,26 @@ message GroupUpdate {
     REMOVE = 3;
     LEAVE = 4;
     RENAME = 5;
+    DESCRIBE = 6;        // group description changed
+    AVATAR = 7;          // group avatar changed
+    PROMOTE_ADMIN = 8;   // target was promoted to admin
+    DEMOTE_ADMIN = 9;    // target was demoted from admin
+    SET_ANNOUNCE_ONLY = 10; // announce_only toggled
   }
   int64 revision = 1;
   Action action = 2;
-  string actor = 3;   // account id that made the change
-  string target = 4;  // affected member (add/remove)
-  string name = 5;    // group name (create/rename)
+  string actor = 3;             // account id that made the change
+  string target = 4;            // affected member (add/remove/promote/demote)
+  string name = 5;              // group name (create/rename)
+  string description = 6;       // group description (describe)
+  AttachmentPointer avatar = 7; // group avatar blob pointer (avatar action)
+  // Full member list after this change. Included by the sender on CREATE, ADD,
+  // REMOVE, and LEAVE so recipients can update their local roster.
+  repeated string members = 8;
+  // Full admin list after this change (promote/demote actions).
+  repeated string admins = 9;
+  // New announce-only state (SET_ANNOUNCE_ONLY action).
+  bool announce_only = 10;
 }
 
 message TextMessage {
@@ -147,6 +182,63 @@ message ReceiptMessage {
   Type type = 1;
   // client_timestamps of the messages being receipted.
   repeated int64 message_timestamps = 2;
+}
+
+// Call signalling — all types use the same message; the type field selects
+// the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
+// offline devices. ANSWER, ICE, RINGING, and BUSY are sent ephemeral.
+// GROUP_RING is non-ephemeral (must wake offline devices). GROUP_JOIN and
+// GROUP_LEAVE are ephemeral.
+message CallMessage {
+  enum Type {
+    OFFER      = 0;
+    ANSWER     = 1;
+    ICE        = 2;
+    HANGUP     = 3;
+    BUSY       = 4;
+    RINGING    = 5;
+    GROUP_RING  = 6;  // initiator → all members: "join this group call"
+    GROUP_JOIN  = 7;  // member → all: "I joined; initiate mesh SDP with me"
+    GROUP_LEAVE = 8;  // member → all: "I left the call"
+  }
+  Type   type    = 1;
+  string call_id = 2;  // stable UUID for the entire call session
+  string sdp     = 3;  // SDP blob for OFFER / ANSWER
+  string ice     = 4;  // JSON-encoded RTCIceCandidate for ICE
+  // Group call fields — empty for 1:1 calls.
+  string group_id       = 5;  // conversation group ID for group calls
+  string target_account = 6;  // mesh OFFER/ANSWER/ICE: which peer this is for
+  repeated string participants = 7;  // GROUP_RING: full participant list
+}
+
+// Edits a previously sent message in-place. Only the original author may edit;
+// the recipient locates the target by (conversation, target_timestamp) and
+// replaces its body. Attachments are not editable.
+message EditMessage {
+  // Sender clock of the original message (its stable message id).
+  int64 target_timestamp = 1;
+  // Replacement body text.
+  string new_body = 2;
+}
+
+// A poll sent in a conversation. Recipients cast votes via PollVote messages;
+// vote tallies are aggregated client-side from received votes.
+message PollMessage {
+  string question = 1;
+  repeated string options = 2;
+  // When true, voters may select multiple options.
+  bool multi_select = 3;
+  // Sender's clock; used as the stable poll id that PollVote messages reference.
+  int64 timestamp = 4;
+}
+
+// A vote cast on a PollMessage identified by (poll_author, poll_timestamp).
+// Sending a new vote for the same poll replaces the previous selection.
+message PollVote {
+  string poll_author = 1;         // account id of the poll creator
+  int64 poll_timestamp = 2;       // timestamp field from the PollMessage
+  repeated uint32 selected_options = 3; // zero-based option indices
+  int64 timestamp = 4;            // sender's clock for ordering
 }
 
 // Sent with Envelope.ephemeral = true; never queued for offline devices.

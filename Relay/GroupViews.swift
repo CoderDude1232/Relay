@@ -6,6 +6,7 @@
 //  drive MessagingService, which handles sender-key setup and rotation.
 //
 
+import PhotosUI
 import SecureStorage
 import SwiftUI
 
@@ -80,7 +81,7 @@ struct NewGroupView: View {
     }
 }
 
-/// Shows a group's members with add / remove / leave controls.
+/// Shows a group's info: avatar, description, name, members, invite link.
 struct GroupInfoView: View {
     let service: MessagingService
     let conversationId: String
@@ -88,7 +89,19 @@ struct GroupInfoView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var newMember = ""
+    @State private var editingName = false
+    @State private var draftName = ""
+    @State private var editingDescription = false
+    @State private var draftDescription = ""
+    @State private var inviteURL: String?
+    @State private var showingShareSheet = false
+    @State private var showingAvatarPicker = false
     @State private var working = false
+    @State private var errorMessage: String?
+    @State private var addMemberError: String?
+    @State private var descriptionExpanded = false
+    @State private var confirmLeave = false
+    @State private var memberToRemove: String?
 
     private var group: StoredGroup? { service.group(for: conversationId) }
 
@@ -96,45 +109,208 @@ struct GroupInfoView: View {
         NavigationStack {
             List {
                 if let group {
+                    // Avatar + name header
+                    Section {
+                        HStack(spacing: 16) {
+                            Button {
+                                showingAvatarPicker = true
+                            } label: {
+                                GroupAvatarView(data: group.avatarData, name: group.name, size: 64)
+                                    .overlay(alignment: .bottomTrailing) {
+                                        Image(systemName: "pencil.circle.fill")
+                                            .font(.system(size: 20))
+                                            .foregroundStyle(.white, .blue)
+                                            .offset(x: 4, y: 4)
+                                            .accessibilityHidden(true)
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Change group photo")
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(group.name)
+                                    .font(.headline)
+                                Text("\(group.members.count) members")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button {
+                                draftName = group.name
+                                editingName = true
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .foregroundStyle(.blue)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    // Description
+                    Section("Description") {
+                        if group.description.isEmpty {
+                            Button("Add a description…") {
+                                draftDescription = ""
+                                editingDescription = true
+                            }
+                            .foregroundStyle(.secondary)
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(alignment: .top) {
+                                    Text(group.description)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(descriptionExpanded ? nil : 3)
+                                    Spacer()
+                                    Button {
+                                        draftDescription = group.description
+                                        editingDescription = true
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                            .foregroundStyle(.blue)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                if group.description.count > 80 {
+                                    Button(descriptionExpanded ? "Read Less" : "Read More") {
+                                        withAnimation { descriptionExpanded.toggle() }
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                    }
+
+                    // Invite link
+                    Section("Invite") {
+                        Button {
+                            run {
+                                let url = try await service.createGroupInviteLink(groupId: group.id)
+                                await MainActor.run {
+                                    inviteURL = url
+                                    showingShareSheet = true
+                                }
+                            }
+                        } label: {
+                            Label("Create Invite Link", systemImage: "link.badge.plus")
+                        }
+                    }
+
+                    // Announce-only (admin-only setting)
+                    if group.admins.contains(ownAccountId) || group.isAnnounceOnly {
+                        Section("Permissions") {
+                            Toggle("Announce Only", isOn: Binding(
+                                get: { group.isAnnounceOnly },
+                                set: { newVal in run { try await service.setAnnounceOnly(newVal, in: group.id) } }
+                            ))
+                            .disabled(!group.admins.contains(ownAccountId))
+                        }
+                    }
+
+                    // Members
                     Section("Members (\(group.members.count))") {
                         ForEach(group.members, id: \.self) { member in
-                            HStack {
-                                Text(member == ownAccountId ? "You" : String(member.prefix(8)))
+                            let isAdmin = group.admins.contains(member)
+                            HStack(spacing: 12) {
+                                AvatarView(
+                                    name: service.displayName(forAccount: member),
+                                    size: 36,
+                                    imageData: service.peerAvatarData(forAccount: member)
+                                )
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack(spacing: 4) {
+                                        Text(service.displayName(forAccount: member))
+                                        if isAdmin {
+                                            Image(systemName: "crown.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(.yellow)
+                                        }
+                                    }
+                                    if member == ownAccountId {
+                                        Text("You")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
                                 Spacer()
                                 if member != ownAccountId {
                                     Button(role: .destructive) {
-                                        run { try await service.removeGroupMember(member, fromGroup: group.id) }
+                                        memberToRemove = member
                                     } label: {
                                         Image(systemName: "minus.circle")
                                     }
                                     .buttonStyle(.borderless)
                                 }
                             }
+                            .contextMenu {
+                                if group.admins.contains(ownAccountId) && member != ownAccountId {
+                                    if isAdmin {
+                                        Button(role: .destructive) {
+                                            run { try await service.demoteAdmin(in: group.id, account: member) }
+                                        } label: {
+                                            Label("Remove Admin", systemImage: "crown.slash")
+                                        }
+                                    } else {
+                                        Button {
+                                            run { try await service.promoteAdmin(in: group.id, account: member) }
+                                        } label: {
+                                            Label("Make Admin", systemImage: "crown")
+                                        }
+                                    }
+                                    Divider()
+                                    Button(role: .destructive) {
+                                        memberToRemove = member
+                                    } label: {
+                                        Label("Remove from Group", systemImage: "person.badge.minus")
+                                    }
+                                }
+                            }
                         }
                     }
+
                     Section("Add member") {
                         HStack {
                             TextField("Username", text: $newMember)
                                 .autocorrectionDisabled()
                                 .textInputAutocapitalization(.never)
+                                .submitLabel(.done)
+                                .onSubmit {
+                                    let username = newMember.trimmingCharacters(in: .whitespaces)
+                                    guard !username.isEmpty else { return }
+                                    addMember(username: username, groupId: group.id)
+                                }
                             Button("Add") {
                                 let username = newMember.trimmingCharacters(in: .whitespaces)
-                                newMember = ""
-                                run { try await service.addGroupMember(username: username, toGroup: group.id) }
+                                addMember(username: username, groupId: group.id)
                             }
                             .disabled(newMember.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
+                        if let addMemberError {
+                            Label(addMemberError, systemImage: "exclamationmark.circle.fill")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
                     }
+
                     Section {
                         Button("Leave Group", role: .destructive) {
-                            run(dismissAfter: true) { try await service.leaveGroup(group.id) }
+                            confirmLeave = true
+                        }
+                    }
+
+                    if let errorMessage {
+                        Section {
+                            Text(errorMessage)
+                                .foregroundStyle(.red)
+                                .font(.footnote)
                         }
                     }
                 } else {
                     Text("Group not available.")
                 }
             }
-            .navigationTitle(group?.name ?? "Group")
+            .navigationTitle("Group Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -142,15 +318,172 @@ struct GroupInfoView: View {
                 }
             }
             .overlay { if working { ProgressView() } }
+            // Rename alert
+            .alert("Rename Group", isPresented: $editingName) {
+                TextField("Name", text: $draftName)
+                Button("Save") {
+                    guard let group else { return }
+                    let name = draftName.trimmingCharacters(in: .whitespaces)
+                    guard !name.isEmpty else { return }
+                    run { try await service.renameGroup(groupId: group.id, name: name) }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            // Description alert
+            .alert("Group Description", isPresented: $editingDescription) {
+                TextField("Description", text: $draftDescription)
+                Button("Save") {
+                    guard let group else { return }
+                    run { try await service.setGroupDescription(draftDescription, groupId: group.id) }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            // Avatar picker
+            .sheet(isPresented: $showingAvatarPicker) {
+                if let group {
+                    GroupAvatarPickerSheet(service: service, groupId: group.id)
+                }
+            }
+            // Share sheet for invite link
+            .sheet(isPresented: $showingShareSheet) {
+                if let url = inviteURL {
+                    ShareSheet(items: [url])
+                }
+            }
+            // Leave group confirmation
+            .confirmationDialog("Leave this group?", isPresented: $confirmLeave, titleVisibility: .visible) {
+                Button("Leave Group", role: .destructive) {
+                    run(dismissAfter: true) { try await service.leaveGroup(group?.id ?? "") }
+                }
+            }
+            // Remove member confirmation
+            .confirmationDialog(
+                "Remove \(memberToRemove.flatMap { service.displayName(forAccount: $0) }.map { "\($0) from the group?" } ?? "member from the group?")",
+                isPresented: Binding(get: { memberToRemove != nil }, set: { if !$0 { memberToRemove = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Remove", role: .destructive) {
+                    if let m = memberToRemove, let gid = group?.id {
+                        run { try await service.removeGroupMember(m, fromGroup: gid) }
+                    }
+                    memberToRemove = nil
+                }
+            }
+        }
+    }
+
+    private func addMember(username: String, groupId: String) {
+        guard !username.isEmpty else { return }
+        newMember = ""
+        addMemberError = nil
+        working = true
+        Task {
+            do {
+                try await service.addGroupMember(username: username, toGroup: groupId)
+            } catch {
+                addMemberError = "Couldn't add \"\(username)\": \(error.localizedDescription)"
+            }
+            working = false
         }
     }
 
     private func run(dismissAfter: Bool = false, _ action: @escaping () async throws -> Void) {
         working = true
+        errorMessage = nil
         Task {
-            try? await action()
+            do {
+                try await action()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
             working = false
             if dismissAfter { dismiss() }
         }
     }
 }
+
+// MARK: - Group avatar display
+
+struct GroupAvatarView: View {
+    let data: Data?
+    let name: String
+    let size: CGFloat
+
+    var body: some View {
+        if let data, let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .clipShape(.circle)
+        } else {
+            Circle()
+                .fill(.quaternary)
+                .frame(width: size, height: size)
+                .overlay {
+                    Text(name.prefix(2).uppercased())
+                        .font(.system(size: size * 0.35, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+        }
+    }
+}
+
+// MARK: - Avatar picker sheet
+
+private struct GroupAvatarPickerSheet: View {
+    let service: MessagingService
+    let groupId: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedItem: PhotosPickerItem?
+    @State private var working = false
+    @State private var uploadError: String?
+
+    var body: some View {
+        NavigationStack {
+            PhotosPicker(
+                selection: $selectedItem,
+                matching: .images,
+                photoLibrary: .shared()
+            ) {
+                ContentUnavailableView("Pick a photo", systemImage: "photo.on.rectangle")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .navigationTitle("Group Photo")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .onChange(of: selectedItem) { _, item in
+                guard let item else { return }
+                working = true
+                uploadError = nil
+                Task {
+                    do {
+                        guard let data = try? await item.loadTransferable(type: Data.self) else {
+                            throw URLError(.cannotDecodeContentData)
+                        }
+                        try await service.setGroupAvatar(data, groupId: groupId)
+                        dismiss()
+                    } catch {
+                        uploadError = error.localizedDescription
+                    }
+                    working = false
+                }
+            }
+            .overlay { if working { ProgressView() } }
+            .alert("Photo Upload Failed", isPresented: Binding(
+                get: { uploadError != nil },
+                set: { if !$0 { uploadError = nil } }
+            )) {
+                Button("OK", role: .cancel) { uploadError = nil }
+            } message: {
+                Text(uploadError ?? "")
+            }
+        }
+    }
+}
+

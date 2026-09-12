@@ -1,0 +1,12 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["2P24M8G2CJ.com.morgandaly.RelayMessenger"],
+        "components": [
+          { "/": "/add/*" }
+        ]
+      }
+    ]
+  }
+}

@@ -2,94 +2,322 @@
 //  ContactCardView.swift
 //  Relay
 //
-//  A contact-info sheet for a 1:1 peer: avatar, display name, underlying
-//  username, and an editable custom display name (nickname). Also the entry
-//  point to safety-number verification. The nickname is a local override —
-//  it never leaves the device and takes precedence over the username
-//  everywhere the peer's name is shown.
+//  Contact info sheet for a 1:1 peer. Layout inspired by modern messaging apps:
+//  hero header → quick-action buttons → settings-style rows.
 //
 
+import RelayKit
 import SecureStorage
 import SwiftUI
 
 struct ContactCardView: View {
     let service: MessagingService
     let conversationId: String
+    var onActivateSearch: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(CallManager.self) private var callManager
+
     @State private var nickname = ""
-    @State private var showingVerification = false
+    @State private var editingNickname = false
+    @State private var nicknameDraft = ""
+    @State private var accountIdCopied = false
+    @State private var confirmResetSession = false
 
     private var conversation: Conversation? {
         service.conversations.first { $0.id == conversationId }
     }
     private var account: String { conversation?.peerAccount ?? "" }
+    private var isNoteToSelf: Bool { account == service.noteToSelfAccount }
     private var displayName: String { service.displayName(forAccount: account) }
     private var username: String? { service.username(forAccount: account) }
+
+    private var disappearingLabel: String {
+        guard let s = conversation?.disappearingSeconds, s > 0 else { return "Off" }
+        if s < 3600 { return "\(s / 60)m" }
+        if s < 86400 { return "\(s / 3600)h" }
+        return "\(s / 86400)d"
+    }
 
     var body: some View {
         NavigationStack {
             List {
+
+                // MARK: Hero header
                 Section {
                     VStack(spacing: 10) {
-                        AvatarView(name: displayName, size: 72, imageData: service.peerAvatarData(forAccount: account))
+                        AvatarView(
+                            name: displayName, size: 82,
+                            imageData: service.peerAvatarData(forAccount: account)
+                        )
                         Text(displayName).font(.title2.bold())
                         if let username {
                             Text("@\(username)")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
+                        if let presence = service.peerPresence {
+                            if presence.online {
+                                Text("Online")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            } else if presence.lastSeen > 0 {
+                                Text("Last seen \(Date(timeIntervalSince1970: Double(presence.lastSeen) / 1000).formatted(.relative(presentation: .named)))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity)
-                    .listRowBackground(Color.clear)
+                    .padding(.vertical, 10)
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
 
-                Section("Name") {
-                    TextField("Custom name", text: $nickname)
-                        .autocorrectionDisabled()
-                        .submitLabel(.done)
-                        .onSubmit(save)
-                    if !nickname.isEmpty {
-                        Button("Clear custom name", role: .destructive) {
-                            nickname = ""
-                            save()
+                // MARK: Quick actions
+                Section {
+                    HStack(spacing: 10) {
+                        if !isNoteToSelf {
+                            quickAction(icon: "video.fill", label: "Video") {
+                                dismiss()
+                                Task {
+                                    await callManager.startCall(
+                                        peerAccount: account, peerName: displayName, kind: .video)
+                                }
+                            }
+                            quickAction(icon: "phone.fill", label: "Voice") {
+                                dismiss()
+                                Task {
+                                    await callManager.startCall(
+                                        peerAccount: account, peerName: displayName)
+                                }
+                            }
+                        }
+                        quickAction(icon: service.isConversationMuted(conversationId) ? "bell.fill" : "bell.slash.fill",
+                                    label: service.isConversationMuted(conversationId) ? "Unmute" : "Mute") {
+                            service.setConversationMuted(conversationId, muted: !service.isConversationMuted(conversationId))
+                        }
+                        quickAction(icon: "magnifyingglass", label: "Search") {
+                            dismiss()
+                            onActivateSearch?()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 2)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+
+                // MARK: Conversation settings
+                Section {
+                    NavigationLink {
+                        DisappearingSheet(service: service, conversationId: conversationId)
+                    } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "timer", color: .orange)
+                            Text("Disappearing Messages").foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            Text(disappearingLabel).foregroundStyle(.secondary)
+                        }
+                    }
+
+                    contactRow(icon: "pencil", color: .gray,
+                               title: "Nickname",
+                               value: nickname.isEmpty ? "None" : nickname) {
+                        nicknameDraft = nickname
+                        editingNickname = true
+                    }
+
+                    NavigationLink(destination: AppearanceSettingsView()) {
+                        SettingsNavRow(systemName: "paintbrush.fill", color: .purple, title: "Chat Appearance")
+                    }
+                    NavigationLink(destination: MediaGalleryView(service: service, conversationId: conversationId)) {
+                        SettingsNavRow(systemName: "photo.stack.fill", color: .teal, title: "Media")
+                    }
+                    NavigationLink(destination: StarredMessagesView(service: service, conversationId: conversationId, peerName: displayName)) {
+                        SettingsNavRow(systemName: "star.fill", color: .yellow, title: "Starred Messages")
+                    }
+                    NavigationLink(destination: VerificationView(service: service, conversationId: conversationId, peerName: displayName)) {
+                        SettingsNavRow(systemName: "checkmark.shield.fill", color: .green, title: "Safety Number")
+                    }
+                    if let conv = service.conversations.first(where: { $0.id == conversationId }) {
+                        NavigationLink(destination: ChatPrivacySettingsView(service: service, conversation: conv)) {
+                            SettingsNavRow(systemName: "slider.horizontal.3", color: .blue, title: "Chat Settings")
                         }
                     }
                 }
 
-                Section("Security") {
+                // MARK: Account
+                Section("Account") {
                     Button {
-                        showingVerification = true
+                        UIPasteboard.general.string = account
+                        accountIdCopied = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            accountIdCopied = false
+                        }
                     } label: {
-                        Label("Verify Safety Number", systemImage: "checkmark.shield")
+                        HStack {
+                            Text("Account ID")
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            Text(accountIdCopied ? "Copied!" : account)
+                                .font(.caption.monospaced())
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(accountIdCopied ? .green : .secondary)
+                            Image(systemName: accountIdCopied ? "checkmark" : "doc.on.doc")
+                                .font(.caption)
+                                .foregroundStyle(accountIdCopied ? .green : .secondary)
+                        }
                     }
                     .tint(.primary)
                 }
 
-                Section("Account") {
-                    LabeledContent("Account ID") {
-                        Text(account)
-                            .font(.caption.monospaced())
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                // MARK: Block
+                Section {
+                    let blocked = service.isBlocked(account)
+                    Button {
+                        if blocked { service.unblockAccount(account) }
+                        else { service.blockAccount(account) }
+                    } label: {
+                        Label(
+                            blocked ? "Unblock \(displayName)" : "Block \(displayName)",
+                            systemImage: blocked ? "checkmark.circle" : "nosign"
+                        )
+                    }
+                    .tint(blocked ? .primary : .red)
+                }
+
+                if !isNoteToSelf {
+                    Section {
+                        Button(role: .destructive) {
+                            confirmResetSession = true
+                        } label: {
+                            Label("Reset Session", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    } footer: {
+                        Text("Forces a new Signal session on the next message. Use if messages show \"Not Delivered\" despite a working connection.")
                     }
                 }
             }
-            .navigationTitle("Contact")
+            .navigationTitle(displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { save(); dismiss() }
+                    Button("Done") { saveAndDismiss() }
                 }
             }
             .onAppear { nickname = service.nickname(forAccount: account) ?? "" }
-            .sheet(isPresented: $showingVerification) {
-                VerificationView(service: service, conversationId: conversationId, peerName: displayName)
+            .confirmationDialog("Reset session with \(displayName)?", isPresented: $confirmResetSession, titleVisibility: .visible) {
+                Button("Reset Session", role: .destructive) { service.resetSession(withPeer: account) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This forces a new encrypted session on the next message. Only use this if messages are stuck.")
+            }
+            .alert("Nickname", isPresented: $editingNickname) {
+                TextField("Custom name (optional)", text: $nicknameDraft)
+                    .autocorrectionDisabled()
+                Button("Save") {
+                    nickname = nicknameDraft
+                    service.setNickname(nicknameDraft, forAccount: account)
+                }
+                if !nickname.isEmpty {
+                    Button("Clear", role: .destructive) {
+                        nickname = ""
+                        service.setNickname("", forAccount: account)
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Shown only to you.")
             }
         }
     }
 
-    private func save() {
+    // MARK: - Helpers
+
+    @ViewBuilder
+    private func quickAction(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 19, weight: .semibold))
+                    .frame(width: 72, height: 46)
+                    .glassCompat(in: .rect(cornerRadius: 18))
+                Text(label)
+                    .font(.caption.weight(.medium))
+            }
+            .foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func contactRow(
+        icon: String, color: Color, title: String, value: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                SettingsIcon(systemName: icon, color: color)
+                Text(title).foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                Text(value).foregroundStyle(.secondary)
+            }
+        }
+        .tint(.primary)
+    }
+
+    private func saveAndDismiss() {
         service.setNickname(nickname, forAccount: account)
+        dismiss()
+    }
+}
+
+// MARK: - Disappearing messages picker
+
+private struct DisappearingSheet: View {
+    let service: MessagingService
+    let conversationId: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var seconds: Int64
+
+    private static let options: [(label: String, value: Int64)] = [
+        ("Off", 0),
+        ("5 minutes", 5 * 60),
+        ("1 hour", 60 * 60),
+        ("8 hours", 8 * 60 * 60),
+        ("1 day", 24 * 60 * 60),
+        ("1 week", 7 * 24 * 60 * 60),
+        ("30 days", 30 * 24 * 60 * 60),
+    ]
+
+    init(service: MessagingService, conversationId: String) {
+        self.service = service
+        self.conversationId = conversationId
+        let conv = service.conversations.first { $0.id == conversationId }
+        _seconds = State(initialValue: conv?.disappearingSeconds ?? 0)
+    }
+
+    var body: some View {
+        List(Self.options, id: \.value) { option in
+            Button {
+                seconds = option.value
+                service.setDisappearingSeconds(conversationId, seconds: option.value)
+                dismiss()
+            } label: {
+                HStack {
+                    Text(option.label).foregroundStyle(.primary)
+                    Spacer()
+                    if seconds == option.value {
+                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                    }
+                }
+            }
+            .tint(.primary)
+        }
+        .navigationTitle("Disappearing Messages")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

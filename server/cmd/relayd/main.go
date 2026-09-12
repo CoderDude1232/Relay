@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,10 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/relayapp/relay-server/internal/api"
 	"github.com/relayapp/relay-server/internal/apns"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -26,14 +30,24 @@ func runBlobGC(blobs *blob.Store, ttl time.Duration) {
 	defer ticker.Stop()
 	for range ticker.C {
 		if err := blobs.GC(ttl); err != nil {
-			slog.Warn("blob gc failed", "err", err)
+			slog.Warn("blob gc failed", "err", privlog.Error(err))
 		}
+	}
+}
+
+// runRateLimiterGC periodically removes stale keys from the in-memory rate
+// limiters so they don't grow unboundedly in long-running deployments.
+func runRateLimiterGC(h *api.Server) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.PruneStaleLimiterKeys()
 	}
 }
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
-	dbPath := flag.String("db", "relay.db", "path to SQLite database")
+	dsn := flag.String("dsn", "postgres://relay:relay@localhost/relay?sslmode=disable", "PostgreSQL DSN")
 	tlsCert := flag.String("tls-cert", "", "path to TLS certificate (enables HTTPS/WSS)")
 	tlsKey := flag.String("tls-key", "", "path to TLS private key")
 	blobDir := flag.String("blobs", "attachments", "directory for encrypted attachment blobs")
@@ -42,8 +56,10 @@ func main() {
 	apnsKey := flag.String("apns-key", "", "path to APNs .p8 auth key (enables push)")
 	apnsKeyID := flag.String("apns-key-id", "", "APNs key id")
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
-	apnsTopic := flag.String("apns-topic", "com.morgandaly.RelayTexting", "APNs topic (app bundle id)")
+	apnsTopic := flag.String("apns-topic", "com.morgandaly.RelayMessenger", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
+	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")
+	turnSecret := flag.String("turn-secret", "", "shared HMAC-SHA1 secret for coturn REST API credential generation")
 	flag.Parse()
 
 	if (*tlsCert == "") != (*tlsKey == "") {
@@ -51,16 +67,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := store.Open(*dsn)
 	if err != nil {
-		slog.Error("failed to open store", "err", err)
+		slog.Error("failed to open store", "err", privlog.Error(err))
 		os.Exit(1)
 	}
 	defer st.Close()
 
 	blobs, err := blob.Open(*blobDir, *maxAttachment)
 	if err != nil {
-		slog.Error("failed to open blob store", "err", err)
+		slog.Error("failed to open blob store", "err", privlog.Error(err))
 		os.Exit(1)
 	}
 	go runBlobGC(blobs, *blobTTL)
@@ -69,21 +85,58 @@ func main() {
 	if *apnsKey != "" {
 		pusher, err := apns.New(*apnsKey, *apnsKeyID, *apnsTeamID, *apnsTopic, *apnsProduction)
 		if err != nil {
-			slog.Error("failed to load APNs key", "err", err)
+			slog.Error("failed to load APNs key", "err", privlog.Error(err))
 			os.Exit(1)
 		}
 		h.SetPusher(pusher)
+		h.SetVoIPPusher(pusher) // same key/cert sends VoIP pushes on the .voip sub-topic
 		slog.Info("apns push enabled", "topic", *apnsTopic, "production", *apnsProduction)
 	}
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           api.New(st, h, blobs).Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+
+	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)
+	apiHandler := apiServer.Handler()
+	go runRateLimiterGC(apiServer)
+
+	// When TLS is enabled, run HTTP/3 (QUIC) on UDP alongside HTTP/2 on TCP.
+	// iOS URLSession with assumesHTTP3Capable=true will try QUIC first and fall
+	// back to TCP automatically — giving 0-RTT reconnects and no head-of-line
+	// blocking in congested networks.
+	var h3srv *http3.Server
+	servedHandler := apiHandler
 
 	tlsEnabled := *tlsCert != ""
+	if tlsEnabled {
+		h3srv = &http3.Server{
+			Addr:    *addr,
+			Handler: apiHandler,
+		}
+		// Wrap the TCP handler so HTTP/2 responses advertise Alt-Svc: h3,
+		// letting any client discover HTTP/3 even without assumesHTTP3Capable.
+		inner := apiHandler
+		servedHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h3srv.SetQUICHeaders(w.Header()) //nolint:errcheck
+			inner.ServeHTTP(w, r)
+		})
+		go func() {
+			slog.Info("http/3 listening", "addr", *addr)
+			if err := h3srv.ListenAndServeTLS(*tlsCert, *tlsKey); err != nil {
+				slog.Warn("http/3 server stopped", "err", err)
+			}
+		}()
+	}
+
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           servedHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		// Discard stdlib HTTP error logs — they include client IP addresses
+		// (e.g. TLS handshake failures from port scanners) which would persist
+		// in the systemd journal and be recoverable under a warrant.
+		ErrorLog: log.New(io.Discard, "", 0),
+	}
+
 	go func() {
-		slog.Info("relayd listening", "addr", *addr, "db", *dbPath, "tls", tlsEnabled)
+		slog.Info("relayd listening", "addr", *addr, "tls", tlsEnabled)
 		var err error
 		if tlsEnabled {
 			err = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
@@ -91,7 +144,7 @@ func main() {
 			err = srv.ListenAndServe()
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server failed", "err", err)
+			slog.Error("server failed", "err", privlog.Error(err))
 			os.Exit(1)
 		}
 	}()
@@ -102,6 +155,9 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if h3srv != nil {
+		h3srv.Close()
+	}
 	srv.Shutdown(ctx)
 	slog.Info("relayd stopped")
 }

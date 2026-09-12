@@ -31,8 +31,9 @@ public struct DatabaseKey: Sendable, Equatable {
 
     public static func random() -> DatabaseKey {
         var bytes = Data(count: byteCount)
-        let result = bytes.withUnsafeMutableBytes {
-            SecRandomCopyBytes(kSecRandomDefault, byteCount, $0.baseAddress!)
+        let result = bytes.withUnsafeMutableBytes { ptr -> OSStatus in
+            guard let base = ptr.baseAddress else { return errSecParam }
+            return SecRandomCopyBytes(kSecRandomDefault, byteCount, base)
         }
         precondition(result == errSecSuccess, "SecRandomCopyBytes failed")
         return DatabaseKey(bytes: bytes)

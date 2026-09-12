@@ -2,15 +2,17 @@
 //  RelayTLS.swift
 //  RelayKit
 //
-//  Certificate pinning for the relay connection. The dev relay uses a
-//  self-signed certificate (there is no public CA), so instead of the system
-//  trust chain we pin the server's public key: a URLSession delegate accepts
-//  a TLS connection only when the leaf certificate's SPKI SHA-256 matches a
-//  known pin. This defeats a same-network man-in-the-middle even without a CA.
+//  Certificate pinning for the relay connection.
 //
-//  Pinning the SPKI (not the whole certificate) means the pin stays valid
-//  when the cert is re-issued with the SAME key. Regenerate the pin with
-//  server/scripts/gen-dev-cert.sh and update `devPins` if the key changes.
+//  Production (api.relaymsg.app): uses a Let's Encrypt certificate trusted by
+//  iOS natively — no pin needed, system trust chain handles it. Pass an empty
+//  pins array (the default) to get a plain-trust session.
+//
+//  Dev relay (self-signed): pin the leaf SPKI so a LAN attacker can't MITM
+//  without the private key. Pass `devPins` explicitly when connecting to the
+//  dev server. Regenerate with server/scripts/gen-dev-cert.sh if the key changes.
+//
+//  Pinning the SPKI (not the whole cert) survives re-issuance with the same key.
 //
 
 import CryptoKit
@@ -18,17 +20,19 @@ import Foundation
 import Security
 
 public enum RelayTLS {
-    /// SPKI SHA-256 pins (base64) the client will accept. Currently the dev
-    /// relay's self-signed EC P-256 certificate.
+    /// SPKI SHA-256 pins (base64) for the dev self-signed EC P-256 certificate.
+    /// Not used for production (Let's Encrypt is trusted by system trust chain).
     public static let devPins: [String] = [
         "VIcPByBHSod3xIeNOgMo7e4AybcXVYSSLkd4YDmW5cw=",
     ]
 
-    /// A URLSession that pins the relay's public key. Safe to reuse for both
-    /// the REST client and the WebSocket. Plain-HTTP connections never raise a
-    /// server-trust challenge, so the same session also works untanged in
-    /// non-TLS dev setups.
-    public static func makeSession(pins: [String] = devPins) -> URLSession {
+    /// A URLSession configured for the relay.
+    /// - `pins` empty (default): system trust — correct for production Let's Encrypt certs.
+    /// - `pins` non-empty: SPKI-pinned — use for dev self-signed certs.
+    public static func makeSession(pins: [String] = []) -> URLSession {
+        if pins.isEmpty {
+            return URLSession(configuration: .default)
+        }
         let delegate = SPKIPinningDelegate(pins: Set(pins))
         return URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
     }

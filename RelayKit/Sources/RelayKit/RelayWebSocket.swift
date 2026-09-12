@@ -13,11 +13,16 @@
 //
 
 import Foundation
+import OSLog
 
 public enum RelayEvent: Sendable {
     case envelope(IncomingEnvelope)
     /// Offline queue fully delivered; subsequent envelopes are real-time.
     case queueDrained
+    /// A signed remote-wipe command. The client must verify the signature before wiping.
+    case nukeCommand(NukeEvent)
+    /// The account's device list changed; refresh device list from server.
+    case deviceListChanged(DeviceListChangedEvent)
     /// The connection ended; the stream finishes after this event.
     case disconnected
 }
@@ -38,6 +43,7 @@ public actor RelayWebSocket {
     private var pendingSends: [UInt64: CheckedContinuation<Relay_V1_SendResponse, any Error>] = [:]
 
     private var eventContinuation: AsyncStream<RelayEvent>.Continuation?
+    private let log = Logger(subsystem: "com.relaytextingapp.RelayKit", category: "websocket")
 
     public init(baseURL: URL, credentials: RelayCredentials, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -51,10 +57,22 @@ public actor RelayWebSocket {
     public func connect() -> AsyncStream<RelayEvent> {
         disconnectInternal()
 
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            let (stream, continuation) = AsyncStream.makeStream(of: RelayEvent.self)
+            continuation.finish()
+            return stream
+        }
         components.scheme = components.scheme == "https" ? "wss" : "ws"
-        var request = URLRequest(url: components.url!.appending(path: "v1/ws"))
+        guard let wsBaseURL = components.url else {
+            let (stream, continuation) = AsyncStream.makeStream(of: RelayEvent.self)
+            continuation.finish()
+            return stream
+        }
+        let url = wsBaseURL.appending(path: "v1/ws")
+        var request = URLRequest(url: url)
+        request.assumesHTTP3Capable = true
         request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
+        log.info("connecting to websocket endpoint")
 
         let task = session.webSocketTask(with: request)
         self.task = task
@@ -73,9 +91,11 @@ public actor RelayWebSocket {
         disconnectInternal()
     }
 
-    /// Fan-out send; suspends until the relay's verdict arrives.
+    /// Sends one or more encrypted payloads to a destination mailbox. The
+    /// generated protobuf field is still named `destinationAccount`, but new
+    /// servers interpret it as an opaque mailbox identifier.
     public func send(
-        to destinationAccount: String,
+        to destinationMailbox: String,
         messages: [DeviceMessagePayload],
         clientTimestamp: Int64,
         ephemeral: Bool = false
@@ -87,7 +107,7 @@ public actor RelayWebSocket {
         nextRequestId += 1
         frame.id = requestId
         var send = Relay_V1_SendRequest()
-        send.destinationAccount = destinationAccount
+        send.destinationAccount = destinationMailbox
         send.messages = messages.map(\.proto)
         send.clientTimestamp = clientTimestamp
         send.ephemeral = ephemeral
@@ -124,6 +144,7 @@ public actor RelayWebSocket {
             do {
                 message = try await task.receive()
             } catch {
+                log.warning("websocket receive failed")
                 return
             }
             guard case .data(let data) = message,
@@ -139,6 +160,10 @@ public actor RelayWebSocket {
                 }
             case .queueEmpty:
                 eventContinuation?.yield(.queueDrained)
+            case .nuke(let nuke):
+                eventContinuation?.yield(.nukeCommand(NukeEvent(nuke)))
+            case .deviceListChanged(let change):
+                eventContinuation?.yield(.deviceListChanged(DeviceListChangedEvent(change)))
             case .none:
                 break
             }

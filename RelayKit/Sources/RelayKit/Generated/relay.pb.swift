@@ -173,17 +173,17 @@ public nonisolated struct Relay_V1_ClientFrame: Sendable {
   public init() {}
 }
 
-/// Fan-out send: one ciphertext per registered device of the destination
-/// account. The sender must encrypt separately for every device; the server
-/// rejects the request if the device list does not exactly match the
-/// account's currently registered devices (see SendResponse).
-/// When the destination is the sender's own account (sync messages), the
-/// sending device itself must be omitted from `messages`.
+/// Mailbox send: new clients place one opaque destination mailbox id in the
+/// legacy destination_account field and send exactly one DeviceMessage for that
+/// mailbox. The sender still encrypts separately for every recipient device, but
+/// sends those envelopes as separate mailbox-addressed frames.
 public nonisolated struct Relay_V1_SendRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
+  /// Legacy field name retained for wire compatibility. New clients put a
+  /// random opaque mailbox id here, not an account id.
   public var destinationAccount: String = String()
 
   public var messages: [Relay_V1_DeviceMessage] = []
@@ -271,6 +271,27 @@ public nonisolated struct Relay_V1_ServerFrame: Sendable {
     set {payload = .queueEmpty(newValue)}
   }
 
+  /// A signed remote-wipe command from an authorized device. The server
+  /// validates the signature shape before relaying; clients verify the full
+  /// signature before deleting local storage. Stored for offline devices.
+  public var nuke: Relay_V1_NukeCommand {
+    get {
+      if case .nuke(let v)? = payload {return v}
+      return Relay_V1_NukeCommand()
+    }
+    set {payload = .nuke(newValue)}
+  }
+
+  /// Tells connected devices that the account's device list changed so they
+  /// can refresh without polling. No E2EE needed — the account owns all devices.
+  public var deviceListChanged: Relay_V1_DeviceListChanged {
+    get {
+      if case .deviceListChanged(let v)? = payload {return v}
+      return Relay_V1_DeviceListChanged()
+    }
+    set {payload = .deviceListChanged(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Payload: Equatable, Sendable {
@@ -279,6 +300,94 @@ public nonisolated struct Relay_V1_ServerFrame: Sendable {
     /// Sent once after connect, when the offline queue has been fully
     /// drained. Envelopes after this marker arrived in real time.
     case queueEmpty(Relay_V1_QueueEmpty)
+    /// A signed remote-wipe command from an authorized device. The server
+    /// validates the signature shape before relaying; clients verify the full
+    /// signature before deleting local storage. Stored for offline devices.
+    case nuke(Relay_V1_NukeCommand)
+    /// Tells connected devices that the account's device list changed so they
+    /// can refresh without polling. No E2EE needed — the account owns all devices.
+    case deviceListChanged(Relay_V1_DeviceListChanged)
+
+  }
+
+  public init() {}
+}
+
+/// A signed remote-wipe command. The canonical signing payload is:
+///   "relay-nuke-v1\n{account_id}\n{command_id}\n{creation_time_ms}\n{initiating_device_id}"
+/// signed with the initiating device's authorization key (ECDSA-P256, DER-encoded).
+/// The server cannot forge a valid command; it only validates shape and relays.
+public nonisolated struct Relay_V1_NukeCommand: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var accountID: String = String()
+
+  /// UUID; replay prevention — server rejects duplicates
+  public var commandID: String = String()
+
+  /// sender clock; server rejects if >5 minutes old
+  public var creationTimeMs: Int64 = 0
+
+  public var initiatingDeviceID: UInt32 = 0
+
+  /// ECDSA-P256 ASN.1/DER over the canonical payload
+  public var signature: Data = Data()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Notifies connected devices that the account's device list has changed.
+public nonisolated struct Relay_V1_DeviceListChanged: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var action: Relay_V1_DeviceListChanged.Action = .unspecified
+
+  /// the device that was added or removed
+  public var deviceID: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public nonisolated enum Action: SwiftProtobuf.Enum, Swift.CaseIterable {
+    public typealias RawValue = Int
+    case unspecified // = 0
+    case deviceAdded // = 1
+    case deviceRemoved // = 2
+    case UNRECOGNIZED(Int)
+
+    public init() {
+      self = .unspecified
+    }
+
+    public init?(rawValue: Int) {
+      switch rawValue {
+      case 0: self = .unspecified
+      case 1: self = .deviceAdded
+      case 2: self = .deviceRemoved
+      default: self = .UNRECOGNIZED(rawValue)
+      }
+    }
+
+    public var rawValue: Int {
+      switch self {
+      case .unspecified: return 0
+      case .deviceAdded: return 1
+      case .deviceRemoved: return 2
+      case .UNRECOGNIZED(let i): return i
+      }
+    }
+
+    // The compiler won't synthesize support with the UNRECOGNIZED case.
+    public static let allCases: [Relay_V1_DeviceListChanged.Action] = [
+      .unspecified,
+      .deviceAdded,
+      .deviceRemoved,
+    ]
 
   }
 
@@ -554,7 +663,7 @@ nonisolated extension Relay_V1_AckRequest: SwiftProtobuf.Message, SwiftProtobuf.
 
 nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ServerFrame"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}send_response\0\u{1}envelope\0\u{3}queue_empty\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}send_response\0\u{1}envelope\0\u{3}queue_empty\0\u{1}nuke\0\u{3}device_list_changed\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -601,6 +710,32 @@ nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf
           self.payload = .queueEmpty(v)
         }
       }()
+      case 4: try {
+        var v: Relay_V1_NukeCommand?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .nuke(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .nuke(v)
+        }
+      }()
+      case 5: try {
+        var v: Relay_V1_DeviceListChanged?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .deviceListChanged(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .deviceListChanged(v)
+        }
+      }()
       default: break
       }
     }
@@ -624,6 +759,14 @@ nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf
       guard case .queueEmpty(let v)? = self.payload else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
     }()
+    case .nuke?: try {
+      guard case .nuke(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+    }()
+    case .deviceListChanged?: try {
+      guard case .deviceListChanged(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+    }()
     case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
@@ -634,6 +777,95 @@ nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
+}
+
+nonisolated extension Relay_V1_NukeCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".NukeCommand"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}account_id\0\u{3}command_id\0\u{3}creation_time_ms\0\u{3}initiating_device_id\0\u{1}signature\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.accountID) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.commandID) }()
+      case 3: try { try decoder.decodeSingularInt64Field(value: &self.creationTimeMs) }()
+      case 4: try { try decoder.decodeSingularUInt32Field(value: &self.initiatingDeviceID) }()
+      case 5: try { try decoder.decodeSingularBytesField(value: &self.signature) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.accountID.isEmpty {
+      try visitor.visitSingularStringField(value: self.accountID, fieldNumber: 1)
+    }
+    if !self.commandID.isEmpty {
+      try visitor.visitSingularStringField(value: self.commandID, fieldNumber: 2)
+    }
+    if self.creationTimeMs != 0 {
+      try visitor.visitSingularInt64Field(value: self.creationTimeMs, fieldNumber: 3)
+    }
+    if self.initiatingDeviceID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.initiatingDeviceID, fieldNumber: 4)
+    }
+    if !self.signature.isEmpty {
+      try visitor.visitSingularBytesField(value: self.signature, fieldNumber: 5)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_V1_NukeCommand, rhs: Relay_V1_NukeCommand) -> Bool {
+    if lhs.accountID != rhs.accountID {return false}
+    if lhs.commandID != rhs.commandID {return false}
+    if lhs.creationTimeMs != rhs.creationTimeMs {return false}
+    if lhs.initiatingDeviceID != rhs.initiatingDeviceID {return false}
+    if lhs.signature != rhs.signature {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_V1_DeviceListChanged: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".DeviceListChanged"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}action\0\u{3}device_id\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularEnumField(value: &self.action) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.deviceID) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.action != .unspecified {
+      try visitor.visitSingularEnumField(value: self.action, fieldNumber: 1)
+    }
+    if self.deviceID != 0 {
+      try visitor.visitSingularUInt32Field(value: self.deviceID, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_V1_DeviceListChanged, rhs: Relay_V1_DeviceListChanged) -> Bool {
+    if lhs.action != rhs.action {return false}
+    if lhs.deviceID != rhs.deviceID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_V1_DeviceListChanged.Action: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}DEVICE_ADDED\0\u{1}DEVICE_REMOVED\0")
 }
 
 nonisolated extension Relay_V1_SendResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
