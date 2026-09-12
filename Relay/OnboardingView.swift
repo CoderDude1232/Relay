@@ -225,78 +225,50 @@ private struct BackgroundGradient: View {
     }
 }
 
-// MARK: - Welcome / feature slides
+// MARK: - Welcome
 
 private struct WelcomeView: View {
-    let onSignUp: () -> Void   // → email sign-up (AuthView)
-    let onSignIn: () -> Void   // → account recovery (RecoveryView)
+    let onSignUp: () -> Void
+    let onSignIn: () -> Void
     let onOAuthSession: (SupabaseSession) -> Void
     let onLinkDevice: () -> Void
 
-    @State private var currentPage = 0
     @State private var oauthLoading = false
     @State private var oauthError: String?
     @State private var pendingCodeVerifier: String?
     @State private var googleWebSession: ASWebAuthenticationSession?
 
-    private let features: [(icon: String, color: Color, title: String, desc: String)] = [
-        ("lock.shield.fill",  .purple, "Private by design",
-         "Every message is end-to-end encrypted with Signal's protocol. Not even we can read them."),
-        ("phone.slash",       .indigo, "No phone number",
-         "Sign up with just an email or your Apple / Google account. No SIM required."),
-        ("sparkles",          .blue,   "Built for humans",
-         "Reactions, replies, voice notes, file sharing, and on-device AI — all in one place."),
-    ]
-
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
 
-            // Logo — template image always renders white on the dark background
-            VStack(spacing: 16) {
+            // Brand
+            VStack(spacing: 14) {
                 Image("RelayLogo")
                     .resizable()
                     .scaledToFit()
                     .foregroundStyle(.white)
-                    .frame(width: 150, height: 150)
+                    .frame(width: 80, height: 80)
                 Text("Relay")
-                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .font(.system(size: 42, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
+                Text("Private messaging,\nend-to-end encrypted.")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
             }
-            .padding(.bottom, 48)
-
-            // Feature card carousel
-            TabView(selection: $currentPage) {
-                ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
-                    FeatureCard(icon: feature.icon, color: feature.color,
-                                title: feature.title, description: feature.desc)
-                        .tag(index)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .frame(height: 200)
-
-            // Page dots
-            HStack(spacing: 7) {
-                ForEach(0..<features.count, id: \.self) { i in
-                    Capsule()
-                        .fill(i == currentPage ? Color.white : Color.white.opacity(0.3))
-                        .frame(width: i == currentPage ? 20 : 7, height: 7)
-                        .animation(.spring(duration: 0.3), value: currentPage)
-                }
-            }
-            .padding(.top, 20)
 
             Spacer()
 
-            // CTA section — constrained width so buttons don't span edge-to-edge on iPad
-            VStack(spacing: 12) {
+            // Actions
+            VStack(spacing: 10) {
                 if oauthLoading {
                     ProgressView()
                         .tint(.white)
+                        .frame(maxWidth: .infinity)
                         .frame(height: 54)
                 } else {
-                    // Apple
                     SignInWithAppleButton(.continue) { request in
                         request.requestedScopes = [.email, .fullName]
                     } onCompletion: { result in
@@ -307,13 +279,11 @@ private struct WelcomeView: View {
                     .frame(height: 54)
                     .clipShape(.rect(cornerRadius: 14, style: .continuous))
 
-                    // Google
                     Button(action: startGoogleSignIn) {
                         HStack(spacing: 10) {
-                            GoogleGLogo()
-                                .frame(width: 22, height: 22)
+                            GoogleGLogo().frame(width: 20, height: 20)
                             Text("Continue with Google")
-                                .font(.system(size: 19, weight: .semibold))
+                                .font(.system(size: 17, weight: .semibold))
                                 .foregroundStyle(Color(red: 0.2, green: 0.2, blue: 0.2))
                         }
                         .frame(maxWidth: .infinity)
@@ -321,13 +291,12 @@ private struct WelcomeView: View {
                         .background(Color.white, in: .rect(cornerRadius: 14, style: .continuous))
                     }
 
-                    // Email — single button; the email flow handles both sign-in and sign-up
                     Button(action: onSignUp) {
-                        Text("Continue with email")
+                        Text("Create account with email")
                             .font(.system(size: 17, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .frame(height: 54)
-                            .background(Color.white.opacity(0.15), in: .rect(cornerRadius: 14, style: .continuous))
+                            .background(Color.white.opacity(0.13), in: .rect(cornerRadius: 14, style: .continuous))
                             .foregroundStyle(.white)
                     }
                 }
@@ -339,28 +308,33 @@ private struct WelcomeView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(Color.red.opacity(0.12), in: .rect(cornerRadius: 10, style: .continuous))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                // Subtle footer links
-                HStack(spacing: 20) {
-                    Button(action: onSignIn) {
+                // Sign-in row — visible, clearly labeled for returning users
+                Button(action: onSignIn) {
+                    HStack {
+                        Text("Already have an account?")
+                            .foregroundStyle(.white.opacity(0.5))
                         Text("Sign in")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.5))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .fontWeight(.semibold)
                     }
-                    Text("·")
-                        .foregroundStyle(.white.opacity(0.25))
-                    Button(action: onLinkDevice) {
-                        Text("Link device")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
+                    .font(.subheadline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
                 }
-                .padding(.top, 4)
+
+                Button(action: onLinkDevice) {
+                    Text("Link existing device")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.3))
+                }
+                .padding(.top, 2)
             }
             .frame(maxWidth: 420)
             .padding(.horizontal, 28)
-            .padding(.bottom, 48)
+            .padding(.bottom, 52)
         }
     }
 
@@ -485,35 +459,6 @@ private final class OAuthWindowContext: NSObject, ASWebAuthenticationPresentatio
             .compactMap { $0 as? UIWindowScene }
             .compactMap { $0.keyWindow }
             .first ?? ASPresentationAnchor()
-    }
-}
-
-private struct FeatureCard: View {
-    let icon: String
-    let color: Color
-    let title: String
-    let description: String
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.system(size: 36, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 64, height: 64)
-                .background(color.opacity(0.15), in: .circle)
-
-            VStack(spacing: 6) {
-                Text(title)
-                    .font(.title3.bold())
-                    .foregroundStyle(.white)
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.65))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-            }
-        }
-        .padding(.horizontal, 36)
     }
 }
 
