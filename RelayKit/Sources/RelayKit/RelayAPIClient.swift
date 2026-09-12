@@ -43,14 +43,17 @@ public struct RelayAPIClient: Sendable {
     // MARK: - Accounts
 
     /// Creates an account + primary device; needs no credentials.
-    public func register(username: String, password: String) async throws -> RelayCredentials {
+    /// Pass a non-nil email to enable contact discovery via address book.
+    public func register(username: String, email: String?, password: String) async throws -> RelayCredentials {
         struct Response: Decodable {
             let accountId: String
             let deviceId: UInt32
         }
+        var body: [String: String] = ["username": username, "password": password]
+        if let email, !email.isEmpty { body["email"] = email }
         let response: Response = try await request(
             "POST", "v1/accounts",
-            body: ["username": username, "password": password],
+            body: body,
             authenticated: false
         )
         return RelayCredentials(
@@ -66,6 +69,16 @@ public struct RelayAPIClient: Sendable {
             "GET", "v1/accounts/by-username/\(username)", body: nil as [String: String]?
         )
         return response.accountId
+    }
+
+    /// Looks up an account by email address. Returns (accountId, username) or throws if not found.
+    public func lookupAccount(byEmail email: String) async throws -> (accountId: String, username: String) {
+        struct Response: Decodable { let accountId: String; let username: String }
+        let encoded = email.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? email
+        let response: Response = try await request(
+            "GET", "v1/accounts/by-email/\(encoded)", body: nil as String?
+        )
+        return (response.accountId, response.username)
     }
 
     /// Changes the authenticated account's username. Throws RelayAPIError.http(409,…) if taken.

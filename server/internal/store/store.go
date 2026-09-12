@@ -23,6 +23,7 @@ import (
 var (
 	ErrNotFound                  = errors.New("store: not found")
 	ErrUsernameTaken             = errors.New("store: username already taken")
+	ErrAccountNotFound           = errors.New("store: account not found")
 	ErrAuthFailed                = errors.New("store: authentication failed")
 	ErrNotMember                 = errors.New("store: not a group member")
 	ErrNotAdmin                  = errors.New("store: not a group admin")
@@ -219,6 +220,9 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// Invite expiry: tokens older than 7 days are no longer valid.
 		`ALTER TABLE group_invites ADD COLUMN IF NOT EXISTS expires_at BIGINT NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS idx_group_invites_expires_at ON group_invites (expires_at)`,
+		// Contact discovery: store email on the account row.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email TEXT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts (email) WHERE email IS NOT NULL AND email <> ''`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -292,7 +296,8 @@ type DeviceLinkClaim struct {
 }
 
 // CreateAccount registers a new account and its primary device (device 1).
-func (s *Store) CreateAccount(username, password string) (accountID string, deviceID uint32, err error) {
+// email is optional; pass "" to omit it.
+func (s *Store) CreateAccount(username, email, password string) (accountID string, deviceID uint32, err error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return "", 0, err
@@ -311,8 +316,12 @@ func (s *Store) CreateAccount(username, password string) (accountID string, devi
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err = tx.Exec(ctx, `INSERT INTO accounts (id, username, created_at) VALUES ($1, $2, $3)`,
-		accountID, username, now); err != nil {
+	var emailVal any
+	if email != "" {
+		emailVal = email
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO accounts (id, username, email, created_at) VALUES ($1, $2, $3, $4)`,
+		accountID, username, emailVal, now); err != nil {
 		if isUniqueViolation(err) {
 			return "", 0, ErrUsernameTaken
 		}
@@ -323,6 +332,18 @@ func (s *Store) CreateAccount(username, password string) (accountID string, devi
 		return "", 0, err
 	}
 	return accountID, 1, tx.Commit(ctx)
+}
+
+// LookupAccountByEmail returns the accountID and username for the given email,
+// or ErrAccountNotFound if no account has that email.
+func (s *Store) LookupAccountByEmail(email string) (accountID, username string, err error) {
+	err = s.db.QueryRow(context.Background(),
+		`SELECT id, username FROM accounts WHERE email = $1`, email,
+	).Scan(&accountID, &username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", ErrAccountNotFound
+	}
+	return accountID, username, err
 }
 
 // AddDevice registers an additional device for an existing account.

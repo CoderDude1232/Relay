@@ -60,6 +60,7 @@ final class AppModel {
         let password: String
         let serverURL: URL
         let username: String?
+        let email: String?
         let supabaseUserId: String?  // optional: older saves didn't record it
     }
 
@@ -182,7 +183,8 @@ final class AppModel {
         let updated = SavedAccount(
             accountId: saved.accountId, deviceId: saved.deviceId,
             password: saved.password, serverURL: url,
-            username: saved.username, supabaseUserId: saved.supabaseUserId
+            username: saved.username, email: saved.email,
+            supabaseUserId: saved.supabaseUserId
         )
         do {
             try keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
@@ -245,7 +247,8 @@ final class AppModel {
                     let updated = SavedAccount(
                         accountId: saved.accountId, deviceId: saved.deviceId,
                         password: saved.password, serverURL: serverURL,
-                        username: saved.username, supabaseUserId: saved.supabaseUserId
+                        username: saved.username, email: saved.email,
+                        supabaseUserId: saved.supabaseUserId
                     )
                     try? keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
                 }
@@ -263,7 +266,7 @@ final class AppModel {
             return
         }
         do {
-            try await register(serverURL: serverURL, username: username, displayName: displayName, password: password, supabaseUserId: supabaseUserId)
+            try await register(serverURL: serverURL, username: username, email: email, displayName: displayName, password: password, supabaseUserId: supabaseUserId)
         } catch let e as SetupError {
             throw e
         } catch {
@@ -289,7 +292,8 @@ final class AppModel {
             let updated = SavedAccount(
                 accountId: saved.accountId, deviceId: saved.deviceId,
                 password: saved.password, serverURL: saved.serverURL,
-                username: newUsername, supabaseUserId: saved.supabaseUserId
+                username: newUsername, email: saved.email,
+                supabaseUserId: saved.supabaseUserId
             )
             try? keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
         }
@@ -319,12 +323,12 @@ final class AppModel {
 
     /// Registers a fresh account, publishes its first keys, and persists
     /// the credentials in the Keychain.
-    func register(serverURL: URL, username: String, displayName: String, password: String, supabaseUserId: String? = nil) async throws {
+    func register(serverURL: URL, username: String, email: String? = nil, displayName: String, password: String, supabaseUserId: String? = nil) async throws {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
 
         let credentials: RelayCredentials
         do {
-            credentials = try await api.register(username: username, password: password)
+            credentials = try await api.register(username: username, email: email, password: password)
         } catch {
             throw SetupError(step: "Create relay account (\(serverURL.host ?? serverURL.absoluteString))", underlying: error)
         }
@@ -343,6 +347,7 @@ final class AppModel {
             password: password,
             serverURL: serverURL,
             username: username,
+            email: email,
             supabaseUserId: supabaseUserId
         )
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
@@ -387,6 +392,7 @@ final class AppModel {
             password: claim.password,
             serverURL: payload.serverURL,
             username: claim.username ?? payload.username,
+            email: nil,
             supabaseUserId: nil
         )
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)

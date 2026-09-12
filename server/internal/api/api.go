@@ -63,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
 	mux.HandleFunc("GET /v1/accounts/by-username/{username}", s.auth(s.handleLookupUsername))
+	mux.HandleFunc("GET /v1/accounts/by-email/{email}", s.auth(s.handleLookupEmail))
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
 	mux.HandleFunc("GET /v1/devices/{id}/auth-key", s.auth(s.handleGetDeviceAuthKey))
@@ -133,6 +134,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		!validUsername.MatchString(req.Username) ||
@@ -140,7 +142,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "username (1–64 alphanumeric/._- chars) and password (8–1024 chars) required")
 		return
 	}
-	accountID, deviceID, err := s.store.CreateAccount(req.Username, req.Password)
+	accountID, deviceID, err := s.store.CreateAccount(req.Username, req.Email, req.Password)
 	if errors.Is(err, store.ErrUsernameTaken) {
 		httpError(w, http.StatusConflict, "username already taken")
 		return
@@ -488,6 +490,24 @@ func (s *Server) handleLookupUsername(w http.ResponseWriter, r *http.Request, de
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accountId": accountID})
+}
+
+func (s *Server) handleLookupEmail(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if !lookupLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
+		return
+	}
+	email := r.PathValue("email")
+	accountID, username, err := s.store.LookupAccountByEmail(email)
+	if errors.Is(err, store.ErrAccountNotFound) {
+		httpError(w, http.StatusNotFound, "no such user")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accountId": accountID, "username": username})
 }
 
 func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {

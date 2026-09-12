@@ -2,11 +2,14 @@
 //  ContactSyncView.swift
 //  Relay
 //
-//  Matches address book emails against known Relay conversation usernames.
-//  Only does a local cross-reference — no contact data leaves the device.
+//  Matches address book emails against Relay accounts via server lookup.
+//  Each email is checked against GET /v1/accounts/by-email — no bulk upload,
+//  no contact list stored on server. Lookups are authenticated so the server
+//  can rate-limit abuse.
 //
 
 import Contacts
+import RelayKit
 import SecureStorage
 import SwiftUI
 
@@ -20,16 +23,17 @@ struct ContactSyncView: View {
     enum SyncStatus { case idle, loading, done }
 
     struct ContactMatch: Identifiable {
-        let id: String  // conversation id
+        let id: String          // accountId
         let contactName: String
         let username: String
         let avatarData: Data?
+        var hasConversation: Bool
     }
 
     var body: some View {
         List {
             Section {
-                Text("Relay matches your address book emails against conversations you already have open. No data is sent to any server.")
+                Text("Relay checks your address book emails against accounts on the server. Your contacts are never uploaded — each email is looked up individually.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -53,14 +57,14 @@ struct ContactSyncView: View {
                     ContentUnavailableView(
                         "No Matches Found",
                         systemImage: "person.2",
-                        description: Text("None of your address book emails match open conversations.")
+                        description: Text("None of your contacts are on Relay yet.")
                     )
                 }
                 .listRowBackground(Color.clear)
             }
 
             if !matches.isEmpty {
-                Section("Matched Contacts") {
+                Section("On Relay") {
                     ForEach(matches) { match in
                         HStack(spacing: 14) {
                             AvatarView(name: match.contactName, size: 44, imageData: match.avatarData)
@@ -69,7 +73,15 @@ struct ContactSyncView: View {
                                 Text("@\(match.username)").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            if match.hasConversation {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            } else {
+                                Button("Message") {
+                                    Task { _ = try? await service.startConversation(username: match.username) }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
                         }
                     }
                 }
@@ -105,25 +117,62 @@ struct ContactSyncView: View {
                     CNContactEmailAddressesKey, CNContactImageDataKey] as [CNKeyDescriptor]
         let request = CNContactFetchRequest(keysToFetch: keys)
 
-        var found = [ContactMatch]()
-        let conversations = service.conversations
-
+        // Collect all (name, email, avatar) tuples from address book.
+        struct AddressEntry { let name: String; let email: String; let avatar: Data? }
+        var entries: [AddressEntry] = []
         try? store.enumerateContacts(with: request) { contact, _ in
             let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-            for email in contact.emailAddresses {
-                let emailStr = (email.value as String).lowercased()
-                if let conv = conversations.first(where: {
-                    $0.peerUsername?.lowercased() == emailStr
-                }) {
-                    found.append(ContactMatch(
-                        id: conv.id,
-                        contactName: name.isEmpty ? emailStr : name,
-                        username: conv.peerUsername ?? emailStr,
-                        avatarData: contact.imageData
-                    ))
-                    break
+            for address in contact.emailAddresses {
+                let email = (address.value as String).lowercased()
+                entries.append(AddressEntry(name: name.isEmpty ? email : name,
+                                            email: email,
+                                            avatar: contact.imageData))
+            }
+        }
+
+        // Deduplicate emails (keep first contact name seen for a given email).
+        var seen = Set<String>()
+        let deduped = entries.filter { seen.insert($0.email).inserted }
+
+        // Look up each email on the server. Fire requests concurrently but
+        // cap concurrency to 10 so we don't hammer the rate limiter.
+        let existingAccountIds = Set(service.conversations.map { $0.peerAccount })
+        var found: [ContactMatch] = []
+
+        await withTaskGroup(of: ContactMatch?.self) { group in
+            var inFlight = 0
+            var iterator = deduped.makeIterator()
+
+            func enqueue() {
+                while inFlight < 10, let entry = iterator.next() {
+                    inFlight += 1
+                    let e = entry
+                    group.addTask {
+                        guard let (accountId, username) = try? await service.apiClient.lookupAccount(byEmail: e.email)
+                        else { return nil }
+                        return ContactMatch(
+                            id: accountId,
+                            contactName: e.name,
+                            username: username,
+                            avatarData: e.avatar,
+                            hasConversation: existingAccountIds.contains(accountId)
+                        )
+                    }
                 }
             }
+
+            enqueue()
+            for await result in group {
+                inFlight -= 1
+                if let match = result { found.append(match) }
+                enqueue()
+            }
+        }
+
+        // Sort: existing conversations first, then alphabetically.
+        found.sort {
+            if $0.hasConversation != $1.hasConversation { return $0.hasConversation }
+            return $0.contactName < $1.contactName
         }
 
         await MainActor.run {
