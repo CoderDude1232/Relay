@@ -524,10 +524,7 @@ private struct NewChatSheet: View {
     @State private var authDenied = false
     @State private var isLoadingContacts = true
     @State private var searchText = ""
-    @State private var showingManualEntry = false
-    @State private var manualEmail = ""
-    @State private var manualError: String?
-    @State private var isStartingManual = false
+    @State private var showingUsernameSearch = false
     @State private var startingContactEmail: String?
     @State private var invitePayload: InvitePayload?
 
@@ -565,7 +562,7 @@ private struct NewChatSheet: View {
                 List {
                     // Quick-action rows
                     Section {
-                        actionRow("New Chat", icon: "square.and.pencil") { showingManualEntry = true }
+                        actionRow("Find by @username", icon: "magnifyingglass") { showingUsernameSearch = true }
                         actionRow("New Group", icon: "person.3") {
                             dismiss(); DispatchQueue.main.async { onNewGroup() }
                         }
@@ -630,7 +627,7 @@ private struct NewChatSheet: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingManualEntry) { manualEntrySheet }
+            .sheet(isPresented: $showingUsernameSearch) { usernameSearchSheet }
             .sheet(item: $invitePayload) { payload in
                 MessageComposeView(recipients: payload.recipients, body: payload.body)
                     .ignoresSafeArea()
@@ -662,59 +659,13 @@ private struct NewChatSheet: View {
     }
 
     @ViewBuilder
-    private var manualEntrySheet: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Email address", text: $manualEmail)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.emailAddress)
-                        .submitLabel(.go)
-                        .onSubmit { Task { await startManual() } }
-                } footer: {
-                    if let err = manualError {
-                        Text(err).foregroundStyle(.red)
-                    }
-                }
-            }
-            .navigationTitle("New Chat")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        showingManualEntry = false
-                        manualEmail = ""
-                        manualError = nil
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if isStartingManual {
-                        ProgressView()
-                    } else {
-                        Button("Start") { Task { await startManual() } }
-                            .disabled(manualEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-            }
-        }
-    }
-
-    private func startManual() async {
-        let email = manualEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !email.isEmpty else { return }
-        isStartingManual = true
-        manualError = nil
-        do {
-            let convId = try await service.startConversation(username: email)
-            isStartingManual = false
-            showingManualEntry = false
-            manualEmail = ""
+    private var usernameSearchSheet: some View {
+        UsernameSearchSheet(service: service) { convId in
+            showingUsernameSearch = false
             dismiss()
             onConversationStarted(convId)
-        } catch {
-            isStartingManual = false
-            manualError = "No Relay account found for that address."
+        } onDismiss: {
+            showingUsernameSearch = false
         }
     }
 
@@ -918,6 +869,124 @@ private struct MessageComposeView: UIViewControllerRepresentable {
         init(dismiss: DismissAction) { self.dismiss = dismiss }
         func messageComposeViewController(_ controller: MFMessageComposeViewController, didFinishWith result: MessageComposeResult) {
             dismiss()
+        }
+    }
+}
+
+// MARK: - Username search sheet
+
+private struct UsernameSearchSheet: View {
+    let service: MessagingService
+    let onConversationStarted: (String) -> Void
+    let onDismiss: () -> Void
+
+    enum LookupState: Equatable {
+        case idle, searching, found(accountId: String, username: String), notFound, error(String)
+    }
+
+    @State private var query = ""
+    @State private var lookupState: LookupState = .idle
+    @State private var lookupTask: Task<Void, Never>?
+    @State private var isStarting = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        Text("@")
+                            .foregroundStyle(.secondary)
+                            .font(.body.weight(.semibold))
+                        TextField("username", text: $query)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .onChange(of: query) { _, new in scheduleSearch(new) }
+                    }
+                } footer: {
+                    Text("Search for someone by their @username.")
+                        .font(.footnote)
+                }
+
+                switch lookupState {
+                case .idle:
+                    EmptyView()
+                case .searching:
+                    Section {
+                        HStack { Spacer(); ProgressView(); Spacer() }
+                    }
+                case .found(let accountId, let username):
+                    Section("Result") {
+                        HStack(spacing: 14) {
+                            AvatarView(name: username, size: 44, imageData: nil)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("@\(username)").font(.body.weight(.medium))
+                                Text(accountId.prefix(8)).font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            if isStarting {
+                                ProgressView()
+                            } else {
+                                Button("Message") { startConversation(username: username) }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                case .notFound:
+                    Section {
+                        Text("No user found for @\(query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                    }
+                case .error(let msg):
+                    Section {
+                        Label(msg, systemImage: "xmark.circle.fill").foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Find by @username")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { onDismiss() }
+                }
+            }
+        }
+    }
+
+    private func scheduleSearch(_ raw: String) {
+        let q = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        lookupTask?.cancel()
+        guard q.count >= 2 else { lookupState = .idle; return }
+        lookupState = .searching
+        lookupTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            do {
+                let accountId = try await service.apiClient.lookupAccount(username: q)
+                guard !Task.isCancelled else { return }
+                lookupState = .found(accountId: accountId, username: q)
+            } catch RelayAPIError.http(status: 404, _) {
+                guard !Task.isCancelled else { return }
+                lookupState = .notFound
+            } catch {
+                guard !Task.isCancelled else { return }
+                lookupState = .error(error.localizedDescription)
+            }
+        }
+    }
+
+    private func startConversation(username: String) {
+        isStarting = true
+        Task {
+            do {
+                let convId = try await service.startConversation(username: username)
+                isStarting = false
+                onConversationStarted(convId)
+            } catch {
+                isStarting = false
+                lookupState = .error("Couldn't start conversation: \(error.localizedDescription)")
+            }
         }
     }
 }

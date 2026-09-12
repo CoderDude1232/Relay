@@ -50,6 +50,7 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/accounts", s.handleCreateAccount)
+	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
 	mux.HandleFunc("POST /v1/devices/link-invitations", s.auth(s.handleCreateDeviceLinkInvitation))
 	mux.HandleFunc("POST /v1/devices/link-claims", s.handleClaimDeviceLink)
@@ -132,9 +133,10 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Email    string `json:"email"`
+		Username        string `json:"username"`
+		Password        string `json:"password"`
+		Email           string `json:"email"`
+		AccountPassword string `json:"accountPassword"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		!validUsername.MatchString(req.Username) ||
@@ -142,7 +144,11 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "username (1–64 alphanumeric/._- chars) and password (8–1024 chars) required")
 		return
 	}
-	accountID, deviceID, err := s.store.CreateAccount(req.Username, req.Email, req.Password)
+	if req.AccountPassword != "" && (len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes) {
+		httpError(w, http.StatusBadRequest, "accountPassword must be 8–1024 chars")
+		return
+	}
+	accountID, deviceID, err := s.store.CreateAccount(req.Username, req.Email, req.Password, req.AccountPassword)
 	if errors.Is(err, store.ErrUsernameTaken) {
 		httpError(w, http.StatusConflict, "username already taken")
 		return
@@ -161,6 +167,57 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		mailboxID = devices[0].MailboxID
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"accountId": accountID, "deviceId": deviceID, "mailboxId": mailboxID})
+}
+
+func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
+	// Rate-limit recovery attempts (same bucket as account creation per IP).
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !accountCreationLimiter.allow("recover:" + ip) {
+		httpError(w, http.StatusTooManyRequests, "recovery rate limit exceeded; try again later")
+		return
+	}
+	var req struct {
+		Email           string `json:"email"`
+		AccountPassword string `json:"accountPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.AccountPassword == "" {
+		httpError(w, http.StatusBadRequest, "email and accountPassword required")
+		return
+	}
+	accountID, username, deviceID, devicePassword, err := s.store.RecoverAccount(req.Email, req.AccountPassword)
+	switch {
+	case errors.Is(err, store.ErrAccountNotFound):
+		httpError(w, http.StatusNotFound, "no account with that email")
+		return
+	case errors.Is(err, store.ErrNoRecoveryPassword):
+		httpError(w, http.StatusUnprocessableEntity, "account has no recovery password; use device linking instead")
+		return
+	case errors.Is(err, store.ErrAuthFailed):
+		httpError(w, http.StatusUnauthorized, "incorrect recovery password")
+		return
+	case err != nil:
+		internalError(w, err)
+		return
+	}
+	devices, err := s.store.ListDevices(accountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	mailboxID := ""
+	for _, d := range devices {
+		if d.DeviceID == deviceID {
+			mailboxID = d.MailboxID
+			break
+		}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"accountId":      accountID,
+		"username":       username,
+		"deviceId":       deviceID,
+		"devicePassword": devicePassword,
+		"mailboxId":      mailboxID,
+	})
 }
 
 func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, dev *store.Device) {

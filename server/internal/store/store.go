@@ -24,6 +24,7 @@ var (
 	ErrNotFound                  = errors.New("store: not found")
 	ErrUsernameTaken             = errors.New("store: username already taken")
 	ErrAccountNotFound           = errors.New("store: account not found")
+	ErrNoRecoveryPassword        = errors.New("store: account has no recovery password configured")
 	ErrAuthFailed                = errors.New("store: authentication failed")
 	ErrNotMember                 = errors.New("store: not a group member")
 	ErrNotAdmin                  = errors.New("store: not a group admin")
@@ -223,6 +224,8 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// Contact discovery: store email on the account row.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email TEXT`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts (email) WHERE email IS NOT NULL AND email <> ''`,
+		// Account recovery: store a user-chosen password hash separate from per-device passwords.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_password_hash BYTEA`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -296,11 +299,19 @@ type DeviceLinkClaim struct {
 }
 
 // CreateAccount registers a new account and its primary device (device 1).
-// email is optional; pass "" to omit it.
-func (s *Store) CreateAccount(username, email, password string) (accountID string, deviceID uint32, err error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+// email and accountPassword are optional; pass "" to omit.
+// accountPassword, if set, is stored as a bcrypt hash for account recovery.
+func (s *Store) CreateAccount(username, email, devicePassword, accountPassword string) (accountID string, deviceID uint32, err error) {
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
 		return "", 0, err
+	}
+	var accountHash []byte
+	if accountPassword != "" {
+		accountHash, err = bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return "", 0, err
+		}
 	}
 	accountID = newUUID()
 	mailboxID, err := newMailboxID()
@@ -320,18 +331,81 @@ func (s *Store) CreateAccount(username, email, password string) (accountID strin
 	if email != "" {
 		emailVal = email
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO accounts (id, username, email, created_at) VALUES ($1, $2, $3, $4)`,
-		accountID, username, emailVal, now); err != nil {
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO accounts (id, username, email, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		accountID, username, emailVal, accountHash, now); err != nil {
 		if isUniqueViolation(err) {
 			return "", 0, ErrUsernameTaken
 		}
 		return "", 0, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
-		accountID, mailboxID, hash, now); err != nil {
+		accountID, mailboxID, deviceHash, now); err != nil {
 		return "", 0, err
 	}
 	return accountID, 1, tx.Commit(ctx)
+}
+
+// RecoverAccount verifies an account-level password by email and provisions a
+// new device, returning fresh device credentials. Does NOT bump device_list_version
+// so existing signed device-list assertions remain valid.
+func (s *Store) RecoverAccount(email, accountPassword string) (accountID, username string, deviceID uint32, devicePassword string, err error) {
+	ctx := context.Background()
+
+	var accountHash []byte
+	err = s.db.QueryRow(ctx,
+		`SELECT id, username, account_password_hash FROM accounts WHERE email = $1`, email,
+	).Scan(&accountID, &username, &accountHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", 0, "", ErrAccountNotFound
+	}
+	if err != nil {
+		return "", "", 0, "", err
+	}
+	if len(accountHash) == 0 {
+		return "", "", 0, "", ErrNoRecoveryPassword
+	}
+	if bcrypt.CompareHashAndPassword(accountHash, []byte(accountPassword)) != nil {
+		return "", "", 0, "", ErrAuthFailed
+	}
+
+	// Generate a fresh random device password.
+	var raw [32]byte
+	if _, err = rand.Read(raw[:]); err != nil {
+		return "", "", 0, "", err
+	}
+	devicePassword = hex.EncodeToString(raw[:])
+
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
+	if err != nil {
+		return "", "", 0, "", err
+	}
+
+	mailboxID, err := newMailboxID()
+	if err != nil {
+		return "", "", 0, "", err
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", "", 0, "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var maxDev int
+	tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) FROM devices WHERE account_id = $1`, accountID).Scan(&maxDev)
+	newDevID := uint32(maxDev + 1)
+
+	now := time.Now().UnixMilli()
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		accountID, newDevID, mailboxID, deviceHash, now); err != nil {
+		return "", "", 0, "", err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", "", 0, "", err
+	}
+	return accountID, username, newDevID, devicePassword, nil
 }
 
 // LookupAccountByEmail returns the accountID and username for the given email,

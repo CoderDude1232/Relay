@@ -43,14 +43,16 @@ public struct RelayAPIClient: Sendable {
     // MARK: - Accounts
 
     /// Creates an account + primary device; needs no credentials.
-    /// Pass a non-nil email to enable contact discovery via address book.
-    public func register(username: String, email: String?, password: String) async throws -> RelayCredentials {
+    /// Pass a non-nil email to enable contact discovery and account recovery.
+    /// Pass a non-nil accountPassword to enable recovery via POST /v1/accounts/recover.
+    public func register(username: String, email: String?, password: String, accountPassword: String? = nil) async throws -> RelayCredentials {
         struct Response: Decodable {
             let accountId: String
             let deviceId: UInt32
         }
         var body: [String: String] = ["username": username, "password": password]
         if let email, !email.isEmpty { body["email"] = email }
+        if let accountPassword, !accountPassword.isEmpty { body["accountPassword"] = accountPassword }
         let response: Response = try await request(
             "POST", "v1/accounts",
             body: body,
@@ -61,6 +63,28 @@ public struct RelayAPIClient: Sendable {
             deviceId: response.deviceId,
             password: password
         )
+    }
+
+    /// Recovers an account by verifying the user's recovery password against the email
+    /// on file and provisions a new device. Returns the new device credentials and username.
+    public func recoverAccount(email: String, accountPassword: String) async throws -> (credentials: RelayCredentials, username: String) {
+        struct Response: Decodable {
+            let accountId: String
+            let username: String
+            let deviceId: UInt32
+            let devicePassword: String
+        }
+        let response: Response = try await request(
+            "POST", "v1/accounts/recover",
+            body: ["email": email, "accountPassword": accountPassword],
+            authenticated: false
+        )
+        let creds = RelayCredentials(
+            accountId: response.accountId,
+            deviceId: response.deviceId,
+            password: response.devicePassword
+        )
+        return (creds, response.username)
     }
 
     public func lookupAccount(username: String) async throws -> String {

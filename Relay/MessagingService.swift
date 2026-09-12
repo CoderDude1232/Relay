@@ -713,16 +713,23 @@ final class MessagingService {
         distributeProfileUpdate()
     }
 
-    /// Push the updated profile to every known DM peer immediately after a
-    /// name/avatar change so the other device sees it without needing to
-    /// reopen the conversation.
+    /// Push the updated profile to every known peer (DM + group members) after a
+    /// name/avatar change so others see it without needing to reopen the conversation.
     private func distributeProfileUpdate() {
-        let peers = conversations
+        // DM peers
+        let dmPeers = conversations
             .filter { !$0.isGroup }
             .compactMap { $0.peerAccount.isEmpty ? nil : $0.peerAccount }
-        guard !peers.isEmpty else { return }
+        // Group members (flatten, deduplicate, exclude self)
+        let groupMembers: [String] = conversations
+            .filter { $0.isGroup }
+            .compactMap { try? storage.messages.group(id: $0.id) }
+            .flatMap { $0.members }
+            .filter { $0 != credentials.accountId }
+        let allPeers = Array(Set(dmPeers + groupMembers))
+        guard !allPeers.isEmpty else { return }
         Task {
-            for peer in peers {
+            for peer in allPeers {
                 await sendMyProfileIfNeeded(toPeer: peer)
             }
         }
@@ -1405,6 +1412,18 @@ final class MessagingService {
         insertSystemLine("You left", inGroup: gs.id)
     }
 
+    /// Sends our profile to any group member who hasn't received the current revision.
+    private func distributeProfileToGroupMembersIfNeeded(group: StoredGroup) async {
+        let rev = myProfileRevision
+        guard rev > 0 else { return }
+        let needsProfile = group.members.filter {
+            $0 != credentials.accountId && readKVInt("pfsent:\($0)") < rev
+        }
+        for member in needsProfile {
+            await sendMyProfileIfNeeded(toPeer: member)
+        }
+    }
+
     private func sendGroupMessage(
         _ text: String, in conversationId: String, group: StoredGroup,
         replyTo: QuotedMessage?, attachments pending: [PendingAttachment]
@@ -1415,6 +1434,7 @@ final class MessagingService {
         var messageInserted = false
         do {
             try await distributeSenderKeyIfNeeded(group: group)
+            await distributeProfileToGroupMembersIfNeeded(group: group)
             let (storedAttachments, pointers) = try await encryptAttachments(pending)
 
             try storage.messages.insertMessage(

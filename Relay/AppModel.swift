@@ -231,7 +231,7 @@ final class AppModel {
     /// If credentials already exist in the Keychain for this Supabase user they
     /// are reused (handles reinstall / new app launch). Otherwise a fresh relay
     /// account is registered with a cryptographically-random password.
-    func registerWithSupabase(serverURL: URL, email: String, supabaseUserId: String, username: String, displayName: String) async throws {
+    func registerWithSupabase(serverURL: URL, email: String, supabaseUserId: String, username: String, displayName: String, accountPassword: String? = nil) async throws {
         let password = Self.generateRandomPassword()
         // Resume if this device already has credentials for this Supabase user.
         if let data = try? keychain.loadSecret(for: Self.accountSecretName),
@@ -266,7 +266,7 @@ final class AppModel {
             return
         }
         do {
-            try await register(serverURL: serverURL, username: username, email: email, displayName: displayName, password: password, supabaseUserId: supabaseUserId)
+            try await register(serverURL: serverURL, username: username, email: email, displayName: displayName, password: password, accountPassword: accountPassword, supabaseUserId: supabaseUserId)
         } catch let e as SetupError {
             throw e
         } catch {
@@ -323,12 +323,12 @@ final class AppModel {
 
     /// Registers a fresh account, publishes its first keys, and persists
     /// the credentials in the Keychain.
-    func register(serverURL: URL, username: String, email: String? = nil, displayName: String, password: String, supabaseUserId: String? = nil) async throws {
+    func register(serverURL: URL, username: String, email: String? = nil, displayName: String, password: String, accountPassword: String? = nil, supabaseUserId: String? = nil) async throws {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
 
         let credentials: RelayCredentials
         do {
-            credentials = try await api.register(username: username, email: email, password: password)
+            credentials = try await api.register(username: username, email: email, password: password, accountPassword: accountPassword)
         } catch {
             throw SetupError(step: "Create relay account (\(serverURL.host ?? serverURL.absoluteString))", underlying: error)
         }
@@ -361,6 +361,56 @@ final class AppModel {
         Task {
             try? await service.publishInitialKeys()
         }
+    }
+
+    /// Recovers access to an existing account by verifying the user's email +
+    /// account recovery password against the server, then provisions a new device.
+    func recoverAccount(serverURL: URL, email: String, accountPassword: String) async throws {
+        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
+        let (credentials, username): (RelayCredentials, String)
+        do {
+            (credentials, username) = try await api.recoverAccount(email: email, accountPassword: accountPassword)
+        } catch RelayAPIError.http(status: 404, _) {
+            struct RecoverError: LocalizedError {
+                var errorDescription: String? { "No account found with that email address." }
+            }
+            throw RecoverError()
+        } catch RelayAPIError.http(status: 422, _) {
+            struct RecoverError: LocalizedError {
+                var errorDescription: String? { "This account was created with Apple or Google sign-in and does not have a recovery password. Use device linking instead." }
+            }
+            throw RecoverError()
+        } catch RelayAPIError.http(status: 401, _) {
+            struct RecoverError: LocalizedError {
+                var errorDescription: String? { "Incorrect recovery password." }
+            }
+            throw RecoverError()
+        } catch {
+            throw SetupError(step: "Account recovery", underlying: error)
+        }
+
+        let service: MessagingService
+        do {
+            service = try await makeService(credentials: credentials, serverURL: serverURL, username: username)
+        } catch {
+            throw SetupError(step: "Open local storage", underlying: error)
+        }
+
+        let saved = SavedAccount(
+            accountId: credentials.accountId,
+            deviceId: credentials.deviceId,
+            password: credentials.password,
+            serverURL: serverURL,
+            username: username,
+            email: email,
+            supabaseUserId: nil
+        )
+        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        service.start()
+        phase = .ready(service)
+        uploadPushTokenIfReady()
+        publishDeviceAuthorizationKeyIfReady()
+        Task { try? await service.publishInitialKeys() }
     }
 
     /// Links this device by claiming a short-lived token from a scanned QR code.

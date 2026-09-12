@@ -21,11 +21,11 @@ struct OnboardingView: View {
 
     @Environment(AppModel.self) private var model
 
-    enum Step { case welcome, auth, setup }
+    enum Step { case welcome, auth, setup, recovery }
 
     @State private var step: Step = .welcome
-    @State private var isSignUp = true
     @State private var supabaseSession: SupabaseSession?
+    @State private var supabasePassword = ""  // threaded from AuthView for account recovery setup
     @State private var displayName = ""
     @State private var username = ""
     @State private var registrationError: String?
@@ -44,12 +44,10 @@ struct OnboardingView: View {
             case .welcome:
                 WelcomeView(
                     onSignUp: {
-                        isSignUp = true
                         withAnimation(.spring(duration: 0.5)) { step = .auth }
                     },
                     onSignIn: {
-                        isSignUp = false
-                        withAnimation(.spring(duration: 0.5)) { step = .auth }
+                        withAnimation(.spring(duration: 0.5)) { step = .recovery }
                     },
                     onOAuthSession: { session in
                         handleOAuth(session: session)
@@ -63,13 +61,10 @@ struct OnboardingView: View {
                     removal: .move(edge: .leading).combined(with: .opacity)
                 ))
             case .auth:
-                AuthView(isSignUp: isSignUp, onComplete: { session in
+                AuthView(onComplete: { session, password in
                     supabaseSession = session
-                    if isSignUp {
-                        withAnimation(.spring(duration: 0.5)) { step = .setup }
-                    } else {
-                        try await finish(session: session)
-                    }
+                    supabasePassword = password
+                    withAnimation(.spring(duration: 0.5)) { step = .setup }
                 }, onBack: {
                     withAnimation(.spring(duration: 0.5)) { step = .welcome }
                 })
@@ -84,12 +79,22 @@ struct OnboardingView: View {
                     checkAvailability: { u in await model.checkUsernameAvailable(u) },
                     onComplete: {
                         guard let session = supabaseSession else { return }
-                        try await finish(session: session)
+                        try await finish(session: session, password: supabasePassword)
                     }
                 )
                 .transition(.asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
                     removal: .opacity
+                ))
+            case .recovery:
+                RecoveryView(onComplete: {
+                    // recoverAccount sets phase = .ready; onboarding auto-dismisses.
+                }, onBack: {
+                    withAnimation(.spring(duration: 0.5)) { step = .welcome }
+                })
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
                 ))
             }
             } // end else isAutoRestoring
@@ -117,7 +122,7 @@ struct OnboardingView: View {
                     session = stored
                 }
                 supabaseSession = session
-                try await finish(session: session)
+                try await finish(session: session, password: "")
             } catch {
                 registrationError = error.localizedDescription
                 isAutoRestoring = false
@@ -149,7 +154,6 @@ struct OnboardingView: View {
         supabaseSession = session
         let isNew = !model.hasExistingRelayAccount(forUserId: session.userId)
         if isNew {
-            isSignUp = true
             if displayName.isEmpty {
                 let prefix = session.email.components(separatedBy: "@").first ?? ""
                 if !prefix.isEmpty {
@@ -160,7 +164,7 @@ struct OnboardingView: View {
         } else {
             Task {
                 do {
-                    try await finish(session: session)
+                    try await finish(session: session, password: "")
                 } catch {
                     registrationError = error.localizedDescription
                 }
@@ -168,9 +172,7 @@ struct OnboardingView: View {
         }
     }
 
-    private func finish(session: SupabaseSession) async throws {
-        // For OAuth users with no display name / username set yet, fall back to
-        // the userId so the relay account has a stable, non-empty identifier.
+    private func finish(session: SupabaseSession, password: String = "") async throws {
         let name = displayName.trimmingCharacters(in: .whitespaces).isEmpty
             ? (session.email.isEmpty ? session.userId : session.email)
             : displayName
@@ -182,7 +184,8 @@ struct OnboardingView: View {
             email: session.email,
             supabaseUserId: session.userId,
             username: handle,
-            displayName: name
+            displayName: name,
+            accountPassword: password.isEmpty ? nil : password
         )
     }
 }
@@ -225,8 +228,8 @@ private struct BackgroundGradient: View {
 // MARK: - Welcome / feature slides
 
 private struct WelcomeView: View {
-    let onSignUp: () -> Void
-    let onSignIn: () -> Void
+    let onSignUp: () -> Void   // → email sign-up (AuthView)
+    let onSignIn: () -> Void   // → account recovery (RecoveryView)
     let onOAuthSession: (SupabaseSession) -> Void
     let onLinkDevice: () -> Void
 
@@ -517,8 +520,7 @@ private struct FeatureCard: View {
 // MARK: - Auth screen
 
 private struct AuthView: View {
-    let isSignUp: Bool
-    let onComplete: (SupabaseSession) async throws -> Void
+    let onComplete: (SupabaseSession, String) async throws -> Void
     let onBack: () -> Void
 
     @State private var email = ""
@@ -531,15 +533,13 @@ private struct AuthView: View {
     enum Field: Hashable { case email, password, confirm }
 
     private var canSubmit: Bool {
-        guard !isLoading, !email.isEmpty, password.count >= (isSignUp ? 8 : 6) else { return false }
-        if isSignUp { return password == confirmPassword }
-        return true
+        guard !isLoading, !email.isEmpty, password.count >= 8 else { return false }
+        return password == confirmPassword
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Back + header
                 HStack {
                     Button(action: onBack) {
                         Image(systemName: "chevron.left")
@@ -554,39 +554,33 @@ private struct AuthView: View {
                 .padding(.top, 16)
 
                 VStack(spacing: 6) {
-                    Text(isSignUp ? "Create account" : "Welcome back")
+                    Text("Create account")
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                    Text(isSignUp ? "Private messaging starts here." : "Good to see you again.")
+                    Text("Private messaging starts here.")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.6))
                 }
                 .padding(.top, 32)
                 .padding(.bottom, 36)
 
-                // Form card
                 VStack(spacing: 0) {
                     AuthField(icon: "envelope", placeholder: "Email address",
                               text: $email, focused: $focused, field: .email,
                               contentType: .emailAddress, keyboard: .emailAddress)
                     Divider().background(.white.opacity(0.12))
-
-                    AuthField(icon: "lock", placeholder: isSignUp ? "Password (min 8 chars)" : "Password",
+                    AuthField(icon: "lock", placeholder: "Password (min 8 chars)",
                               text: $password, focused: $focused, field: .password,
-                              contentType: isSignUp ? .newPassword : .password, secure: true)
-
-                    if isSignUp {
-                        Divider().background(.white.opacity(0.12))
-                        AuthField(icon: "lock.fill", placeholder: "Confirm password",
-                                  text: $confirmPassword, focused: $focused, field: .confirm,
-                                  contentType: .newPassword, secure: true)
-                    }
+                              contentType: .newPassword, secure: true)
+                    Divider().background(.white.opacity(0.12))
+                    AuthField(icon: "lock.fill", placeholder: "Confirm password",
+                              text: $confirmPassword, focused: $focused, field: .confirm,
+                              contentType: .newPassword, secure: true)
                 }
                 .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
                 .padding(.horizontal, 24)
 
-                // Password mismatch hint
-                if isSignUp && !confirmPassword.isEmpty && password != confirmPassword {
+                if !confirmPassword.isEmpty && password != confirmPassword {
                     Label("Passwords don't match", systemImage: "exclamationmark.circle.fill")
                         .font(.footnote)
                         .foregroundStyle(Color.red)
@@ -595,7 +589,6 @@ private struct AuthView: View {
                         .padding(.top, 8)
                 }
 
-                // Error
                 if let errorMessage {
                     Label(errorMessage, systemImage: "xmark.circle.fill")
                         .font(.footnote)
@@ -607,13 +600,12 @@ private struct AuthView: View {
                         .padding(.top, 12)
                 }
 
-                // Submit
                 Button(action: submit) {
                     ZStack {
                         if isLoading {
                             ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
                         } else {
-                            Text(isSignUp ? "Create account" : "Sign in")
+                            Text("Create account")
                                 .font(.headline)
                                 .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
                         }
@@ -629,15 +621,12 @@ private struct AuthView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
 
-                // Legal (sign-up only)
-                if isSignUp {
-                    Text("By continuing you agree to our Terms & Privacy Policy.")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.35))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 40)
-                        .padding(.top, 16)
-                }
+                Text("By continuing you agree to our Terms & Privacy Policy.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.35))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                    .padding(.top, 16)
 
                 Spacer().frame(height: 40)
             }
@@ -651,13 +640,159 @@ private struct AuthView: View {
         focused = nil
         Task {
             do {
-                if isSignUp {
-                    let session = try await SupabaseAuth.shared.signUp(email: email, password: password)
-                    try await onComplete(session)
-                } else {
-                    let session = try await SupabaseAuth.shared.signIn(email: email, password: password)
-                    try await onComplete(session)
+                let session = try await SupabaseAuth.shared.signUp(email: email, password: password)
+                try await onComplete(session, password)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+}
+
+// MARK: - Recovery screen (sign in by email + account password)
+
+private struct RecoveryView: View {
+    let onComplete: () -> Void
+    let onBack: () -> Void
+
+    @Environment(AppModel.self) private var model
+
+    @State private var email = ""
+    @State private var password = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @FocusState private var focused: RecoveryField?
+
+    enum RecoveryField: Hashable { case email, password }
+
+    private var canSubmit: Bool {
+        !isLoading && !email.isEmpty && password.count >= 6
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: onBack) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: .circle)
+                    }
+                    Spacer()
                 }
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+
+                VStack(spacing: 6) {
+                    Text("Sign in")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Recover access with your email and password.")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+                .padding(.top, 32)
+                .padding(.bottom, 36)
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "envelope")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .frame(width: 24)
+                        TextField("Email address", text: $email)
+                            .focused($focused, equals: .email)
+                            .textContentType(.emailAddress)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .foregroundStyle(.white)
+                            .tint(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+
+                    Divider().background(.white.opacity(0.12))
+
+                    HStack(spacing: 12) {
+                        Image(systemName: "lock")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .frame(width: 24)
+                        SecureField("Password", text: $password)
+                            .focused($focused, equals: .password)
+                            .textContentType(.password)
+                            .foregroundStyle(.white)
+                            .tint(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+                }
+                .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+                .padding(.horizontal, 24)
+
+                if let errorMessage {
+                    Label(errorMessage, systemImage: "xmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(Color.red.opacity(0.9))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.12), in: .rect(cornerRadius: 10, style: .continuous))
+                        .padding(.horizontal, 24)
+                        .padding(.top, 12)
+                }
+
+                Button(action: submit) {
+                    ZStack {
+                        if isLoading {
+                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        } else {
+                            Text("Sign in")
+                                .font(.headline)
+                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        canSubmit ? Color.white : Color.white.opacity(0.3),
+                        in: .rect(cornerRadius: 16, style: .continuous)
+                    )
+                }
+                .disabled(!canSubmit)
+                .padding(.horizontal, 24)
+                .padding(.top, 20)
+
+                Text("Only works if you created your account with email sign-up.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.35))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+                    .padding(.top, 16)
+
+                Spacer().frame(height: 40)
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    private func submit() {
+        errorMessage = nil
+        isLoading = true
+        focused = nil
+        Task {
+            do {
+                try await model.recoverAccount(
+                    serverURL: RelayConfig.serverURL,
+                    email: email.lowercased().trimmingCharacters(in: .whitespaces),
+                    accountPassword: password
+                )
+                onComplete()
             } catch {
                 errorMessage = error.localizedDescription
             }
