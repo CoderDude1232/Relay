@@ -63,7 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/keys", s.auth(s.handleSetKeys))
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
-	mux.HandleFunc("GET /v1/accounts/by-username/{username}", s.auth(s.handleLookupUsername))
+	mux.HandleFunc("GET /v1/accounts/by-username/{username}", s.handleLookupUsername)
 	mux.HandleFunc("GET /v1/accounts/by-email/{email}", s.auth(s.handleLookupEmail))
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
@@ -532,8 +532,12 @@ func (s *Server) handleCallOffer(w http.ResponseWriter, r *http.Request, dev *st
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleLookupUsername(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !lookupLimiter.allow(dev.AccountID) {
+// handleLookupUsername is intentionally unauthenticated so clients can check
+// username availability during sign-up before they have credentials.
+// Rate-limited by source IP to prevent bulk enumeration.
+func (s *Server) handleLookupUsername(w http.ResponseWriter, r *http.Request) {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !lookupLimiter.allow("uname:" + ip) {
 		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
 		return
 	}

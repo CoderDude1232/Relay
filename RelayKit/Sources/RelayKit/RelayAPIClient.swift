@@ -90,7 +90,8 @@ public struct RelayAPIClient: Sendable {
     public func lookupAccount(username: String) async throws -> String {
         struct Response: Decodable { let accountId: String }
         let response: Response = try await request(
-            "GET", "v1/accounts/by-username/\(username)", body: nil as [String: String]?
+            "GET", "v1/accounts/by-username/\(username)", body: nil as [String: String]?,
+            authenticated: false
         )
         return response.accountId
     }

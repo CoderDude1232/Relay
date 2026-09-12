@@ -329,6 +329,12 @@ final class AppModel {
         let credentials: RelayCredentials
         do {
             credentials = try await api.register(username: username, email: email, password: password, accountPassword: accountPassword)
+        } catch RelayAPIError.http(status: 409, _) {
+            struct TakenError: LocalizedError {
+                let name: String
+                var errorDescription: String? { "@\(name) is already taken. Choose a different username." }
+            }
+            throw TakenError(name: username)
         } catch {
             throw SetupError(step: "Create relay account (\(serverURL.host ?? serverURL.absoluteString))", underlying: error)
         }
