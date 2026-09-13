@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -104,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
+	mux.HandleFunc("POST /v1/messages/sealed", s.handleSealedSend) // unauthenticated by design
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
@@ -330,6 +332,76 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 		return "", "", errors.New("supabase returned no user id")
 	}
 	return body.ID, body.Email, nil
+}
+
+// handleSealedSend delivers a sealed-sender message. It is UNAUTHENTICATED by
+// design — the relay must not learn who sent the message. The sender proves it's
+// allowed to reach the destination by presenting the recipient's access key
+// (obtained with the prekey bundle); the server verifies it in constant time
+// without learning the sender's identity. The delivered envelope carries no
+// sender fields; the recipient recovers the sender by decrypting the sealed blob.
+func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !sealedSendIPLimiter.allow(ip) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
+	var req struct {
+		MailboxID       string `json:"mailboxId"`
+		Type            int32  `json:"type"`
+		Content         string `json:"content"`   // base64 sealed blob
+		AccessKey       string `json:"accessKey"` // base64, recipient's access key
+		Ephemeral       bool   `json:"ephemeral"`
+		ClientTimestamp int64  `json:"clientTimestamp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MailboxID == "" {
+		httpError(w, http.StatusBadRequest, "mailboxId and content required")
+		return
+	}
+	content, err := base64.StdEncoding.DecodeString(req.Content)
+	if err != nil || len(content) == 0 {
+		httpError(w, http.StatusBadRequest, "invalid content")
+		return
+	}
+	token, err := base64.StdEncoding.DecodeString(req.AccessKey)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid access key")
+		return
+	}
+	if !sealedSendMailboxLimiter.allow(req.MailboxID) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
+	// Resolve the mailbox and verify the access key. Any failure returns the same
+	// 403 so the endpoint doesn't reveal whether a mailbox exists.
+	dest, err := s.store.DeviceByMailbox(req.MailboxID)
+	if err != nil {
+		httpError(w, http.StatusForbidden, "delivery rejected")
+		return
+	}
+	stored, err := s.store.AccessKey(dest.AccountID)
+	if err != nil || len(stored) == 0 || subtle.ConstantTimeCompare(stored, token) != 1 {
+		httpError(w, http.StatusForbidden, "delivery rejected")
+		return
+	}
+
+	env := &relaypb.Envelope{
+		Id: newEnvelopeID(),
+		// SenderAccount / SenderDevice intentionally left empty: the relay does
+		// not know who sent a sealed message. The recipient recovers the sender
+		// from the sealed blob.
+		Type:            relaypb.CiphertextType(req.Type),
+		Content:         content,
+		ClientTimestamp: req.ClientTimestamp,
+		ServerTimestamp: time.Now().UnixMilli(),
+		Ephemeral:       req.Ephemeral,
+	}
+	if err := s.hub.Deliver(dest.AccountID, dest.DeviceID, env); err != nil {
+		slog.Error("sealed send: deliver failed", "err", privlog.Error(err))
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"serverTimestamp": env.ServerTimestamp})
 }
 
 // handleSetAccessKey stores this account's sealed-sender access key (32 bytes).
@@ -1461,6 +1533,8 @@ func (s *Server) PruneStaleLimiterKeys() {
 		emailLookupLimiter,
 		usernameLookupLimiter,
 		keyUploadLimiter,
+		sealedSendIPLimiter,
+		sealedSendMailboxLimiter,
 	} {
 		now := time.Now()
 		l.mu.Lock()
@@ -1522,6 +1596,11 @@ var emailLookupLimiter = newSlidingWindowLimiter(3000, time.Hour)
 // usernameLookupLimiter: unauthenticated username-availability checks per IP per hour.
 // Debounced in the client, but generous enough for normal sign-up typing.
 var usernameLookupLimiter = newSlidingWindowLimiter(600, time.Hour)
+
+// Sealed-sender delivery is unauthenticated, so rate-limit per source IP and per
+// destination mailbox to bound abuse on top of the access-key check.
+var sealedSendIPLimiter = newSlidingWindowLimiter(600, time.Minute)
+var sealedSendMailboxLimiter = newSlidingWindowLimiter(120, time.Minute)
 
 // 100 key uploads per account per hour.
 var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)

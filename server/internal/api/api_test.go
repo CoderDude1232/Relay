@@ -554,3 +554,61 @@ func TestContactInviteSingleUse(t *testing.T) {
 	env.doJSON("POST", "/v1/contact-invites/claim", bob.authUser(), bob.password,
 		map[string]string{"token": "deadbeef"}, http.StatusNotFound, nil)
 }
+
+// TestSealedSendDelivery verifies the unauthenticated sealed-send endpoint: it
+// requires the recipient's access key, and the delivered envelope carries no
+// sender fields (the relay doesn't learn who sent it).
+func TestSealedSendDelivery(t *testing.T) {
+	env := newTestEnv(t)
+	alice := env.register("alice-sealed", "password-alice")
+	bob := env.register("bob-sealed", "password-bob")
+	bob.uploadKeys(2)
+
+	accessKey := bytes.Repeat([]byte{0x11}, 32)
+	env.doJSON("PUT", "/v1/accounts/me/access-key", bob.authUser(), bob.password,
+		map[string]string{"accessKey": base64.StdEncoding.EncodeToString(accessKey)},
+		http.StatusNoContent, nil)
+
+	// Alice fetches Bob's bundle → obtains his mailbox and access key.
+	var keys struct {
+		Devices []struct {
+			MailboxID string `json:"mailboxId"`
+		} `json:"devices"`
+		AccessKey string `json:"accessKey"`
+	}
+	env.doJSON("GET", "/v1/keys/"+bob.accountID, alice.authUser(), alice.password, nil, http.StatusOK, &keys)
+	if len(keys.Devices) == 0 || keys.Devices[0].MailboxID == "" {
+		t.Fatalf("no mailbox returned")
+	}
+	if keys.AccessKey != base64.StdEncoding.EncodeToString(accessKey) {
+		t.Fatalf("bundle access key mismatch: %q", keys.AccessKey)
+	}
+	mailbox := keys.Devices[0].MailboxID
+	content := []byte("sealed-ciphertext-blob")
+
+	// Wrong access key → rejected.
+	env.doJSON("POST", "/v1/messages/sealed", "", "", map[string]any{
+		"mailboxId": mailbox, "type": 2,
+		"content":   base64.StdEncoding.EncodeToString(content),
+		"accessKey": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x22}, 32)),
+	}, http.StatusForbidden, nil)
+
+	// Correct access key → accepted (queued while Bob is offline).
+	env.doJSON("POST", "/v1/messages/sealed", "", "", map[string]any{
+		"mailboxId": mailbox, "type": 2,
+		"content":   base64.StdEncoding.EncodeToString(content),
+		"accessKey": base64.StdEncoding.EncodeToString(accessKey),
+	}, http.StatusOK, nil)
+
+	// Bob drains the queue; the envelope must carry no sender.
+	w := bob.connectWS()
+	if len(w.queued) != 1 {
+		t.Fatalf("expected 1 queued envelope, got %d", len(w.queued))
+	}
+	if w.queued[0].SenderAccount != "" || w.queued[0].SenderDevice != 0 {
+		t.Fatalf("sealed envelope leaked sender: %q/%d", w.queued[0].SenderAccount, w.queued[0].SenderDevice)
+	}
+	if string(w.queued[0].Content) != string(content) {
+		t.Fatalf("content mismatch")
+	}
+}
