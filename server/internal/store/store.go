@@ -1669,6 +1669,21 @@ func (s *Store) PendingNukeForAccount(accountID string) (*NukeRecord, error) {
 	return &rec, nil
 }
 
+// IdentityKey returns a device's stored identity public key (libsignal-serialized,
+// 33 bytes), or ErrNotFound if the device/key doesn't exist. Used to mint
+// sealed-sender certificates binding the account to its identity key.
+func (s *Store) IdentityKey(accountID string, deviceID uint32) ([]byte, error) {
+	var key []byte
+	err := s.db.QueryRow(context.Background(),
+		`SELECT identity_key FROM devices WHERE account_id = $1 AND device_id = $2`,
+		accountID, deviceID,
+	).Scan(&key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return key, err
+}
+
 // DeleteNukesForAccount removes all pending nuke commands for an account. Used to
 // clear a stale nuke that is older than the delivery window (it would be rejected
 // by the client and otherwise re-delivers on every reconnect, wedging the account

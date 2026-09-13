@@ -2,7 +2,11 @@ package sealedsender
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 
 	"filippo.io/edwards25519"
 	"golang.org/x/crypto/curve25519"
@@ -35,6 +39,32 @@ func GenerateKeyPair() (KeyPair, error) {
 		return KeyPair{}, err
 	}
 	return KeyPair{Private: priv, Public: append([]byte{djbType}, pub...)}, nil
+}
+
+// LoadOrCreateTrustRoot reads a hex-encoded 32-byte Curve25519 trust-root private
+// key from path, generating and persisting one (0600) if the file is absent. The
+// trust root signs the server certificate; clients embed its 33-byte Public to
+// validate the sealed-sender certificate chain, so it must stay stable.
+func LoadOrCreateTrustRoot(path string) (KeyPair, error) {
+	if data, err := os.ReadFile(path); err == nil {
+		raw, err := hex.DecodeString(strings.TrimSpace(string(data)))
+		if err != nil || len(raw) != 32 {
+			return KeyPair{}, fmt.Errorf("sealedsender: trust-root key file must be 32-byte hex")
+		}
+		pub, err := curve25519.X25519(raw, curve25519.Basepoint)
+		if err != nil {
+			return KeyPair{}, err
+		}
+		return KeyPair{Private: raw, Public: append([]byte{djbType}, pub...)}, nil
+	}
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		return KeyPair{}, err
+	}
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(kp.Private)), 0o600); err != nil {
+		return KeyPair{}, err
+	}
+	return kp, nil
 }
 
 // edwardsPublic derives the Edwards public point (A = a·B) for a clamped private

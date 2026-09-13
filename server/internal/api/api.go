@@ -28,6 +28,7 @@ import (
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/privlog"
+	"github.com/relayapp/relay-server/internal/sealedsender"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -46,6 +47,17 @@ type Server struct {
 	supabaseURL         string
 	supabaseAnonKey     string
 	verifySupabaseToken func(ctx context.Context, accessToken string) (userID, email string, err error)
+
+	// Sealed-sender certificate issuance. When set, GET /v1/certificate/delivery
+	// mints a libsignal-compatible sender certificate for the authenticated device.
+	sealed *sealedIssuer
+}
+
+// sealedIssuer holds the server certificate (signed by the trust root) and its
+// private key, used to mint per-device sender certificates.
+type sealedIssuer struct {
+	serverCert    []byte
+	serverCertKey []byte
 }
 
 func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret string) *Server {
@@ -69,11 +81,28 @@ func (s *Server) SetSupabaseAuth(projectURL, anonKey string) {
 	s.supabaseAnonKey = anonKey
 }
 
+// SetSealedSender enables sealed-sender certificate issuance. It generates a
+// server certificate signed by the given trust root; clients embed the trust
+// root's public key to validate the certs issued by GET /v1/certificate/delivery.
+func (s *Server) SetSealedSender(trustRoot sealedsender.KeyPair) error {
+	serverKey, err := sealedsender.GenerateKeyPair()
+	if err != nil {
+		return err
+	}
+	serverCert, err := sealedsender.MintServerCertificate(trustRoot.Private, 1, serverKey.Public)
+	if err != nil {
+		return err
+	}
+	s.sealed = &sealedIssuer{serverCert: serverCert, serverCertKey: serverKey.Private}
+	return nil
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/accounts", s.handleCreateAccount)
 	mux.HandleFunc("POST /v1/accounts/oauth", s.handleOAuthAccount)
 	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
+	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
@@ -300,6 +329,34 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 		return "", "", errors.New("supabase returned no user id")
 	}
 	return body.ID, body.Email, nil
+}
+
+// handleDeliveryCertificate mints a sealed-sender certificate for the
+// authenticated device, binding its account id, device id, and stored identity
+// key with a 7-day expiry. The client uses it to send sealed-sender messages.
+func (s *Server) handleDeliveryCertificate(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.sealed == nil {
+		httpError(w, http.StatusServiceUnavailable, "sealed sender not configured")
+		return
+	}
+	identityKey, err := s.store.IdentityKey(dev.AccountID, dev.DeviceID)
+	if err != nil || len(identityKey) == 0 {
+		httpError(w, http.StatusConflict, "device has not published an identity key")
+		return
+	}
+	expiresAt := time.Now().Add(7 * 24 * time.Hour).UnixMilli()
+	cert, err := sealedsender.MintSenderCertificate(
+		s.sealed.serverCert, s.sealed.serverCertKey,
+		dev.AccountID, dev.DeviceID, identityKey, uint64(expiresAt),
+	)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"certificate": base64.StdEncoding.EncodeToString(cert),
+		"expiresAt":   expiresAt,
+	})
 }
 
 // handleCreateContactInvite mints a single-use contact invite token for the

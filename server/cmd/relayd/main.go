@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/privlog"
+	"github.com/relayapp/relay-server/internal/sealedsender"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -62,6 +64,7 @@ func main() {
 	turnSecret := flag.String("turn-secret", "", "shared HMAC-SHA1 secret for coturn REST API credential generation")
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
 	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
+	sealedKey := flag.String("sealed-sender-trust-key", "", "path to the sealed-sender trust-root private key (hex, 32 bytes); generated if absent, enables GET /v1/certificate/delivery")
 	flag.Parse()
 
 	if (*tlsCert == "") != (*tlsKey == "") {
@@ -99,6 +102,20 @@ func main() {
 	if *supabaseURL != "" {
 		apiServer.SetSupabaseAuth(*supabaseURL, *supabaseAnonKey)
 		slog.Info("supabase social login enabled", "url", *supabaseURL)
+	}
+	if *sealedKey != "" {
+		trustRoot, err := sealedsender.LoadOrCreateTrustRoot(*sealedKey)
+		if err != nil {
+			slog.Error("failed to load sealed-sender trust root", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		if err := apiServer.SetSealedSender(trustRoot); err != nil {
+			slog.Error("failed to init sealed sender", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		// The client must embed this trust-root public key to validate certs.
+		slog.Info("sealed sender enabled",
+			"trustRootPublicBase64", base64.StdEncoding.EncodeToString(trustRoot.Public))
 	}
 	apiHandler := apiServer.Handler()
 	go runRateLimiterGC(apiServer)
