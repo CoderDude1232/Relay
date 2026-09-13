@@ -207,6 +207,43 @@ public struct RelayAPIClient: Sendable {
         return (data, r.expiresAt)
     }
 
+    /// Delivers a sealed-sender message to one recipient device via the
+    /// **unauthenticated** delivery endpoint — no Authorization header, so the
+    /// relay never learns who sent it. `content` is the opaque sealed blob from
+    /// `CryptoEngine.sealedEncrypt`; `accessKey` is the recipient's 32-byte
+    /// access key (from their prekey bundle). Returns the server timestamp.
+    public func sendSealed(
+        mailboxId: String,
+        type: MessageKind,
+        content: Data,
+        accessKey: Data,
+        ephemeral: Bool,
+        clientTimestamp: Int64
+    ) async throws -> Int64 {
+        struct Req: Encodable {
+            let mailboxId: String
+            let type: Int
+            let content: String
+            let accessKey: String
+            let ephemeral: Bool
+            let clientTimestamp: Int64
+        }
+        struct Response: Decodable { let serverTimestamp: Int64 }
+        let r: Response = try await request(
+            "POST", "v1/messages/sealed",
+            body: Req(
+                mailboxId: mailboxId,
+                type: Int(type.wireType.rawValue),
+                content: content.base64EncodedString(),
+                accessKey: accessKey.base64EncodedString(),
+                ephemeral: ephemeral,
+                clientTimestamp: clientTimestamp
+            ),
+            authenticated: false
+        )
+        return r.serverTimestamp
+    }
+
     /// An account's live connection state and last-seen time (ms since epoch).
     public func presence(account: String) async throws -> Presence {
         let response: Presence = try await request(
@@ -364,11 +401,22 @@ public struct RelayAPIClient: Sendable {
     /// Fetches prekey bundles for every device of the account (consuming
     /// one-time prekeys server-side).
     public func fetchPreKeyBundles(account: String) async throws -> [PeerPreKeyBundle] {
-        struct Response: Decodable { let devices: [BundleDTO] }
+        try await fetchPreKeyBundlesWithAccessKey(account: account).bundles
+    }
+
+    /// Like `fetchPreKeyBundles`, but also returns the account's sealed-sender
+    /// access key (when it has published one) so the caller can address the
+    /// recipient on the unauthenticated delivery path without a second round-trip.
+    public func fetchPreKeyBundlesWithAccessKey(
+        account: String
+    ) async throws -> (bundles: [PeerPreKeyBundle], accessKey: Data?) {
+        struct Response: Decodable { let devices: [BundleDTO]; let accessKey: String? }
         let response: Response = try await request(
             "GET", "v1/keys/\(account)", body: nil as [String: String]?
         )
-        return try response.devices.map { try $0.model() }
+        let bundles = try response.devices.map { try $0.model() }
+        let accessKey = response.accessKey.flatMap { Data(base64Encoded: $0) }
+        return (bundles, accessKey)
     }
 
     // MARK: - Groups (server-stored roster)

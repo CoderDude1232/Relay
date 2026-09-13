@@ -236,16 +236,34 @@ public struct ProcessedEnvelope: Sendable {
 // @unchecked Sendable: SQLCipher runs in serialized threading mode (thread-safe),
 // and libsignal's session state is advanced serially via the single-envelope
 // processing guarantee at the call site.
+public enum EnvelopeProcessorError: Error, Sendable {
+    /// A sealed-sender envelope arrived but no trust root is configured to
+    /// validate the sender certificate.
+    case sealedSenderUnavailable
+    /// The plaintext claimed a sender that doesn't match the sealed-sender
+    /// certificate — a spoof attempt.
+    case senderSpoofed
+}
+
 public struct EnvelopeProcessor: @unchecked Sendable {
     private let storage: SecureStore
     private let engine: CryptoEngine
     private let ownAccountId: String
+    /// 33-byte serialized public key of the sealed-sender trust root. Required
+    /// to decrypt sealed messages (empty envelope sender); nil disables them.
+    private let sealedSenderTrustRoot: Data?
     private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "envelope")
 
-    public init(storage: SecureStore, engine: CryptoEngine, ownAccountId: String = "") {
+    public init(
+        storage: SecureStore,
+        engine: CryptoEngine,
+        ownAccountId: String = "",
+        sealedSenderTrustRoot: Data? = nil
+    ) {
         self.storage = storage
         self.engine = engine
         self.ownAccountId = ownAccountId
+        self.sealedSenderTrustRoot = sealedSenderTrustRoot
     }
 
     public func process(_ envelope: IncomingEnvelope) throws -> ProcessedEnvelope {
@@ -253,14 +271,46 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .duplicate, peerAccount: envelope.senderAccount)
         }
 
-        let sender = try ProtocolAddress(name: envelope.senderAccount, deviceId: envelope.senderDevice)
-        let plaintext = try engine.decrypt(envelope.message, from: sender)
+        // An empty envelope sender marks a sealed-sender message: the relay
+        // stripped the sender, so we recover it cryptographically from the
+        // sealed blob's certificate instead of trusting a server-stamped field.
+        let sender: ProtocolAddress
+        let plaintext: Data
+        if envelope.senderAccount.isEmpty {
+            guard let trustRoot = sealedSenderTrustRoot else {
+                throw EnvelopeProcessorError.sealedSenderUnavailable
+            }
+            // Validate the certificate at the time the relay accepted the
+            // message (its cert was valid then, even if delivery was delayed).
+            let validationTime: UInt64 = envelope.serverTimestamp > 0
+                ? UInt64(envelope.serverTimestamp)
+                : UInt64(Date().timeIntervalSince1970 * 1000)
+            let result = try engine.sealedDecrypt(
+                envelope.message.data,
+                trustRoot: trustRoot,
+                timestampMs: validationTime
+            )
+            sender = try ProtocolAddress(name: result.senderAccountId, deviceId: result.senderDeviceId)
+            plaintext = result.plaintext
+        } else {
+            sender = try ProtocolAddress(name: envelope.senderAccount, deviceId: envelope.senderDevice)
+            plaintext = try engine.decrypt(envelope.message, from: sender)
+        }
         let content = try Relay_Content_Content(serializedBytes: plaintext)
         let groupId = content.groupID.isEmpty ? nil : content.groupID
 
-        // Sealed sender: prefer the E2E-attested sender identity over the
-        // server-stamped envelope fields (server could be compelled to lie).
-        let attestedAccount = content.senderAccountID.isEmpty ? envelope.senderAccount : content.senderAccountID
+        // For sealed messages the certificate-recovered identity is authoritative;
+        // if the plaintext also names a sender, it must agree (else it's a spoof).
+        if envelope.senderAccount.isEmpty,
+           !content.senderAccountID.isEmpty,
+           content.senderAccountID != sender.name {
+            throw EnvelopeProcessorError.senderSpoofed
+        }
+
+        // Prefer the E2E-attested sender identity over the server-stamped
+        // envelope field (server could be compelled to lie). For sealed
+        // messages `sender.name` is the cert-recovered account.
+        let attestedAccount = content.senderAccountID.isEmpty ? sender.name : content.senderAccountID
 
         // Sync message: sent by own account to own other devices carrying a copy
         // of a message we sent from another device.

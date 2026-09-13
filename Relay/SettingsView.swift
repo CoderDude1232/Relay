@@ -359,10 +359,25 @@ struct PrivacySettingsView: View {
                         }
                     }
                 }
+
+                Toggle(isOn: Binding(
+                    get: { service.sealedSenderEnabled },
+                    set: { service.sealedSenderEnabled = $0 }
+                )) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "eye.slash.fill", color: .purple)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Sealed Sender")
+                            Text("Send messages without revealing your identity to the relay server")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             } header: {
                 Text("Messaging")
             } footer: {
-                Text("Changes apply to all conversations. Send Delay adds up to 5 seconds before each message leaves your device.")
+                Text("Changes apply to all conversations. Send Delay adds up to 5 seconds before each message leaves your device. Sealed Sender hides who a message is from — the relay only sees the recipient.")
             }
 
             Section {

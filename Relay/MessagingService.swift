@@ -110,6 +110,14 @@ final class MessagingService {
     private var pathMonitor: NWPathMonitor?
     private(set) var isOnWifi: Bool = true
 
+    // MARK: Sealed sender
+    /// This device's cached sealed-sender delivery certificate and its expiry
+    /// (ms). Refreshed a day before it lapses.
+    private var cachedSenderCert: (data: Data, expiresAt: Int64)?
+    /// Per-account sealed-sender access keys, captured when we fetch prekey
+    /// bundles. Needed to address a recipient on the unauthenticated path.
+    private var peerAccessKeys: [String: Data] = [:]
+
     init(credentials: RelayCredentials, serverURL: URL, username: String?, storage: SecureStore, keychain: KeychainSecureStore, session: URLSession) throws {
         self.credentials = credentials
         self.serverURL = serverURL
@@ -121,7 +129,12 @@ final class MessagingService {
             accountId: credentials.accountId,
             deviceId: credentials.deviceId
         )
-        self.processor = EnvelopeProcessor(storage: storage, engine: engine, ownAccountId: credentials.accountId)
+        self.processor = EnvelopeProcessor(
+            storage: storage,
+            engine: engine,
+            ownAccountId: credentials.accountId,
+            sealedSenderTrustRoot: RelayConfig.sealedSenderTrustRoot
+        )
         self.api = RelayAPIClient(baseURL: serverURL, credentials: credentials, session: session)
         self.allocator = KVPreKeyIdAllocator(database: storage.database)
         loadMuteExpiries()
@@ -1954,6 +1967,16 @@ final class MessagingService {
             try requireAcknowledgedIdentity(forPeer: account)
         }
         let payloadPlaintext = ephemeral ? plaintext : try ContentPadding.pad(plaintext)
+        // Sealed sender: route through the unauthenticated delivery path so the
+        // relay never learns the sender. Receiving handles both formats, so this
+        // is safe to flip on independently per device.
+        if sealedSenderEnabled {
+            try await sendContentSealed(
+                payloadPlaintext, toPeer: account,
+                clientTimestamp: clientTimestamp, ephemeral: ephemeral
+            )
+            return
+        }
         var devices = try await knownMailboxDevices(ofPeer: account)
         // Track all device IDs addressed in round 1 so the retry doesn't re-send to
         // devices that already received the message. The server always reports ALL
@@ -2003,6 +2026,52 @@ final class MessagingService {
         }
     }
 
+    /// Sends `plaintext` to every known device of the peer as sealed-sender
+    /// messages over the unauthenticated REST endpoint. Unlike the WebSocket
+    /// path there's no server-side device-mismatch verdict, so we rely on the
+    /// locally-known device list (kept current by `DeviceListChanged` and the
+    /// periodic bundle refresh) and re-establish sessions on demand.
+    private func sendContentSealed(
+        _ plaintext: Data,
+        toPeer account: String,
+        clientTimestamp: Int64,
+        ephemeral: Bool
+    ) async throws {
+        let certificate = try await senderCertificate()
+        var devices = try await knownMailboxDevices(ofPeer: account)
+        var accessKey = peerAccessKeys[account]
+        // If we don't yet have the peer's access key (or any device sessions),
+        // refresh bundles once — that populates both.
+        if accessKey == nil {
+            try await refreshSessions(withPeer: account)
+            devices = try await knownMailboxDevices(ofPeer: account)
+            accessKey = peerAccessKeys[account]
+        }
+        guard let accessKey else {
+            // The peer hasn't published a sealed-sender access key; the caller
+            // can't reach them privately. Surface as a send failure.
+            throw RelayAPIError.http(status: 403, message: "recipient has not enabled sealed sender")
+        }
+
+        for device in devices {
+            guard let mailboxId = device.mailboxId, !mailboxId.isEmpty else { continue }
+            let address = try ProtocolAddress(name: account, deviceId: device.id)
+            // sealedEncrypt needs an established session; refresh if missing.
+            if !(try engine.hasSession(with: address)) {
+                try await refreshSessions(withPeer: account)
+            }
+            let sealed = try engine.sealedEncrypt(plaintext, for: address, senderCertificate: certificate)
+            _ = try await api.sendSealed(
+                mailboxId: mailboxId,
+                type: .message,
+                content: sealed,
+                accessKey: accessKey,
+                ephemeral: ephemeral,
+                clientTimestamp: clientTimestamp
+            )
+        }
+    }
+
     private func buildMailboxPayloads(
         _ plaintext: Data,
         forPeer account: String,
@@ -2027,7 +2096,13 @@ final class MessagingService {
     /// Fetches fresh prekey bundles for the peer and (re)establishes
     /// sessions for every device, recording the device list.
     private func refreshSessions(withPeer account: String) async throws {
-        let bundles = try await api.fetchPreKeyBundles(account: account)
+        let fetched = try await api.fetchPreKeyBundlesWithAccessKey(account: account)
+        let bundles = fetched.bundles
+        // Cache the peer's sealed-sender access key so we can address them on the
+        // unauthenticated delivery path without another round-trip.
+        if let accessKey = fetched.accessKey {
+            peerAccessKeys[account] = accessKey
+        }
         var devices: [PeerDevice] = []
         var firstSeenIdentity = false
         for bundle in bundles {
@@ -2308,6 +2383,28 @@ final class MessagingService {
     var sendJitterEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "relay.sendJitter") }
         set { UserDefaults.standard.set(newValue, forKey: "relay.sendJitter") }
+    }
+
+    /// Opt-in sealed sender: when enabled, outbound messages are sent via the
+    /// unauthenticated `/v1/messages/sealed` endpoint so the relay can't see who
+    /// sent them (the sender identity is carried inside the E2E-encrypted blob,
+    /// attested by a relay-minted certificate). Receiving handles both formats
+    /// regardless of this flag, so it's safe to toggle at any time.
+    var sealedSenderEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "relay.sealedSender") }
+        set { UserDefaults.standard.set(newValue, forKey: "relay.sealedSender") }
+    }
+
+    /// Returns this device's sealed-sender certificate, fetching (and caching) a
+    /// fresh one from the relay when absent or within a day of expiry.
+    private func senderCertificate() async throws -> Data {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        if let cert = cachedSenderCert, cert.expiresAt - nowMs > 86_400_000 {
+            return cert.data
+        }
+        let fetched = try await api.deliveryCertificate()
+        cachedSenderCert = (fetched.certificate, fetched.expiresAt)
+        return fetched.certificate
     }
 
     /// Awaits a random delay (up to ~5s) before an outbound message is sent,
