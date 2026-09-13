@@ -60,6 +60,8 @@ func main() {
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
 	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")
 	turnSecret := flag.String("turn-secret", "", "shared HMAC-SHA1 secret for coturn REST API credential generation")
+	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
+	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
 	flag.Parse()
 
 	if (*tlsCert == "") != (*tlsKey == "") {
@@ -94,6 +96,10 @@ func main() {
 	}
 
 	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)
+	if *supabaseURL != "" {
+		apiServer.SetSupabaseAuth(*supabaseURL, *supabaseAnonKey)
+		slog.Info("supabase social login enabled", "url", *supabaseURL)
+	}
 	apiHandler := apiServer.Handler()
 	go runRateLimiterGC(apiServer)
 

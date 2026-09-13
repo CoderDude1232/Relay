@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -28,6 +29,7 @@ import (
 type testEnv struct {
 	t   *testing.T
 	srv *httptest.Server
+	api *Server
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -45,9 +47,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(New(st, hub.New(st), blobs, "", "").Handler())
+	apiServer := New(st, hub.New(st), blobs, "", "")
+	srv := httptest.NewServer(apiServer.Handler())
 	t.Cleanup(srv.Close)
-	return &testEnv{t: t, srv: srv}
+	return &testEnv{t: t, srv: srv, api: apiServer}
 }
 
 type client struct {
@@ -423,8 +426,8 @@ func TestGroupLifecycle(t *testing.T) {
 
 	// Add Carol → revision bumps, distribution id unchanged (no rotation on add).
 	var afterAdd struct {
-		DistributionID string `json:"distributionId"`
-		Revision       int64  `json:"revision"`
+		DistributionID string   `json:"distributionId"`
+		Revision       int64    `json:"revision"`
 		Members        []string `json:"members"`
 	}
 	env.doJSON("POST", "/v1/groups/"+g.ID+"/members", alice.authUser(), alice.password,
@@ -444,4 +447,110 @@ func TestGroupLifecycle(t *testing.T) {
 	if len(afterRemove.Members) != 2 || afterRemove.Revision != 3 || afterRemove.DistributionID == g.DistributionID {
 		t.Fatalf("remove did not rotate distribution id: %+v", afterRemove)
 	}
+}
+
+// TestOAuthAccountProvisioning covers the social-login flow: first sign-in
+// creates the account, a later sign-in from a "new device" (no local creds)
+// recovers the same account instead of colliding on the email, and an existing
+// password-created account is adopted by email and back-filled with the
+// Supabase user id.
+func TestOAuthAccountProvisioning(t *testing.T) {
+	env := newTestEnv(t)
+	// Stub Supabase verification: the token is "userID|email".
+	env.api.SetSupabaseAuth("https://stub.supabase.co", "anon")
+	env.api.verifySupabaseToken = func(_ context.Context, token string) (string, string, error) {
+		id, email, ok := strings.Cut(token, "|")
+		if !ok || id == "" {
+			return "", "", fmt.Errorf("bad stub token")
+		}
+		return id, email, nil
+	}
+
+	type oauthResp struct {
+		AccountID string `json:"accountId"`
+		DeviceID  uint32 `json:"deviceId"`
+		Username  string `json:"username"`
+		Created   bool   `json:"created"`
+	}
+
+	// Missing username on first sign-in → 404 (client should prompt).
+	env.doJSON("POST", "/v1/accounts/oauth", "", "",
+		map[string]string{"accessToken": "u1|a@x.com", "password": "device-pw-123"},
+		http.StatusNotFound, nil)
+
+	// First sign-in with a username → creates the account (201).
+	var first oauthResp
+	env.doJSON("POST", "/v1/accounts/oauth", "", "",
+		map[string]string{"accessToken": "u1|a@x.com", "username": "alice", "password": "device-pw-123"},
+		http.StatusCreated, &first)
+	if !first.Created || first.Username != "alice" || first.DeviceID != 1 {
+		t.Fatalf("first sign-in: %+v", first)
+	}
+
+	// Second sign-in from a fresh device (no username) → recovers same account,
+	// provisions a new device, does NOT collide on email.
+	var second oauthResp
+	env.doJSON("POST", "/v1/accounts/oauth", "", "",
+		map[string]string{"accessToken": "u1|a@x.com", "password": "device-pw-456"},
+		http.StatusOK, &second)
+	if second.Created || second.AccountID != first.AccountID || second.DeviceID != 2 {
+		t.Fatalf("second sign-in did not recover account: %+v (first=%+v)", second, first)
+	}
+
+	// An account created the old way (password path, same email, different user
+	// id) is adopted by email and back-filled with the Supabase user id.
+	env.doJSON("POST", "/v1/accounts", "", "",
+		map[string]string{"username": "bob", "password": "bob-pw-1234", "email": "b@x.com"},
+		http.StatusCreated, nil)
+	var adopt oauthResp
+	env.doJSON("POST", "/v1/accounts/oauth", "", "",
+		map[string]string{"accessToken": "u2|b@x.com", "password": "device-pw-789"},
+		http.StatusOK, &adopt)
+	if adopt.Created || adopt.Username != "bob" || adopt.DeviceID != 2 {
+		t.Fatalf("email adoption failed: %+v", adopt)
+	}
+	// A subsequent sign-in now matches by Supabase user id directly.
+	var again oauthResp
+	env.doJSON("POST", "/v1/accounts/oauth", "", "",
+		map[string]string{"accessToken": "u2|b@x.com", "password": "device-pw-999"},
+		http.StatusOK, &again)
+	if again.AccountID != adopt.AccountID || again.DeviceID != 3 {
+		t.Fatalf("id match after backfill failed: %+v", again)
+	}
+}
+
+// TestContactInviteSingleUse verifies a contact invite resolves exactly once:
+// the first claim returns the inviter, a second claim is rejected.
+func TestContactInviteSingleUse(t *testing.T) {
+	env := newTestEnv(t)
+	alice := env.register("alice-invite", "password-alice")
+	bob := env.register("bob-invite", "password-bob")
+
+	var created struct {
+		Token     string `json:"token"`
+		ExpiresAt int64  `json:"expiresAt"`
+	}
+	env.doJSON("POST", "/v1/contact-invites", alice.authUser(), alice.password, nil, http.StatusCreated, &created)
+	if created.Token == "" || created.ExpiresAt <= time.Now().UnixMilli() {
+		t.Fatalf("bad invite: %+v", created)
+	}
+
+	// First claim → resolves to alice.
+	var claim struct {
+		AccountID string `json:"accountId"`
+		Username  string `json:"username"`
+	}
+	env.doJSON("POST", "/v1/contact-invites/claim", bob.authUser(), bob.password,
+		map[string]string{"token": created.Token}, http.StatusOK, &claim)
+	if claim.AccountID != alice.accountID || claim.Username != "alice-invite" {
+		t.Fatalf("first claim wrong: %+v", claim)
+	}
+
+	// Second claim of the same token → rejected (single-use).
+	env.doJSON("POST", "/v1/contact-invites/claim", bob.authUser(), bob.password,
+		map[string]string{"token": created.Token}, http.StatusNotFound, nil)
+
+	// Unknown token → rejected.
+	env.doJSON("POST", "/v1/contact-invites/claim", bob.authUser(), bob.password,
+		map[string]string{"token": "deadbeef"}, http.StatusNotFound, nil)
 }

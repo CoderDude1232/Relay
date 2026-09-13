@@ -81,6 +81,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	// channel and cause the nuke frame to be silently dropped).
 	if pending, err := s.store.PendingNukeForAccount(dev.AccountID); err != nil {
 		slog.Error("ws: pending nuke check failed", "err", privlog.Error(err))
+	} else if pending != nil && nukeIsStale(pending.CreationTimeMs) {
+		// The nuke is older than the client's freshness window, so the client
+		// would reject it. Delivering (and closing) it on every reconnect would
+		// wedge the account permanently offline. Purge it and connect normally.
+		if err := s.store.DeleteNukesForAccount(dev.AccountID); err != nil {
+			slog.Error("ws: stale nuke purge failed", "err", privlog.Error(err))
+		}
 	} else if pending != nil {
 		nukeFrame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Nuke{
 			Nuke: &relaypb.NukeCommand{
@@ -239,6 +246,13 @@ func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *rel
 		}
 	}
 	return resp
+}
+
+// nukeIsStale reports whether a stored nuke command is older than the client's
+// 5-minute freshness window. Such a nuke would be rejected on delivery, so the
+// server purges it instead of delivering (and closing) on every reconnect.
+func nukeIsStale(creationTimeMs int64) bool {
+	return time.Now().UnixMilli()-creationTimeMs > 5*60*1000
 }
 
 func newEnvelopeID() string {

@@ -25,6 +25,8 @@ var (
 	ErrUsernameTaken             = errors.New("store: username already taken")
 	ErrAccountNotFound           = errors.New("store: account not found")
 	ErrNoRecoveryPassword        = errors.New("store: account has no recovery password configured")
+	ErrUsernameRequired          = errors.New("store: username required to create account")
+	ErrContactInviteInvalid      = errors.New("store: contact invite invalid, expired, or already used")
 	ErrAuthFailed                = errors.New("store: authentication failed")
 	ErrNotMember                 = errors.New("store: not a group member")
 	ErrNotAdmin                  = errors.New("store: not a group admin")
@@ -226,6 +228,20 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts (email) WHERE email IS NOT NULL AND email <> ''`,
 		// Account recovery: store a user-chosen password hash separate from per-device passwords.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_password_hash BYTEA`,
+		// Social login: tie an account to its Supabase user id so a returning
+		// OAuth user (who has no password) can be signed back in via a verified
+		// Supabase token instead of a fresh, colliding registration.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS supabase_user_id TEXT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_supabase_user_id ON accounts (supabase_user_id) WHERE supabase_user_id IS NOT NULL AND supabase_user_id <> ''`,
+		// One-time contact invite links: a token that resolves to the creator's
+		// account exactly once, then can't be reused.
+		`CREATE TABLE IF NOT EXISTS contact_invites (
+    token       TEXT PRIMARY KEY,
+    account_id  TEXT NOT NULL,
+    expires_at  BIGINT NOT NULL,
+    used_at     BIGINT NOT NULL DEFAULT 0
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_contact_invites_expires ON contact_invites (expires_at)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -406,6 +422,164 @@ func (s *Store) RecoverAccount(email, accountPassword string) (accountID, userna
 		return "", "", 0, "", err
 	}
 	return accountID, username, newDevID, devicePassword, nil
+}
+
+// ProvisionOAuthAccount signs a Supabase-authenticated user into their relay
+// account, creating it on first use, and provisions a fresh device. The caller
+// MUST have already verified the Supabase access token, so supabaseUserID and
+// email are authoritative — this is what lets a passwordless OAuth user recover
+// on any device.
+//
+// Resolution order: match by supabase_user_id, then by email (back-filling the
+// supabase_user_id so future logins match directly). If no account exists yet,
+// one is created — requestedUsername must be non-empty in that case, otherwise
+// ErrUsernameRequired is returned so the client can prompt for a username.
+// accountPassword, if non-empty, is stored as a recovery hash on account
+// creation only.
+//
+// A new device is always provisioned with the client-chosen devicePassword and
+// its (accountID, deviceID, mailboxID) returned. created reports whether a new
+// account was made.
+func (s *Store) ProvisionOAuthAccount(supabaseUserID, email, requestedUsername, devicePassword, accountPassword string) (accountID, username string, deviceID uint32, mailboxID string, created bool, err error) {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", "", 0, "", false, err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Find an existing account by Supabase user id, then by email.
+	err = tx.QueryRow(ctx,
+		`SELECT id, username FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
+	).Scan(&accountID, &username)
+	if errors.Is(err, pgx.ErrNoRows) && email != "" {
+		err = tx.QueryRow(ctx,
+			`SELECT id, username FROM accounts WHERE email = $1`, email,
+		).Scan(&accountID, &username)
+		if err == nil {
+			// Back-fill the Supabase user id so future logins match by id even
+			// if the email later changes.
+			if _, e := tx.Exec(ctx,
+				`UPDATE accounts SET supabase_user_id = $1 WHERE id = $2`,
+				supabaseUserID, accountID); e != nil {
+				return "", "", 0, "", false, e
+			}
+		}
+	}
+
+	switch {
+	case err == nil:
+		// Existing account — provision another device below.
+	case errors.Is(err, pgx.ErrNoRows):
+		// 2. No account yet — create one. A username is required.
+		if requestedUsername == "" {
+			return "", "", 0, "", false, ErrUsernameRequired
+		}
+		accountID = newUUID()
+		username = requestedUsername
+		var emailVal any
+		if email != "" {
+			emailVal = email
+		}
+		var accountHash []byte
+		if accountPassword != "" {
+			accountHash, err = bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
+			if err != nil {
+				return "", "", 0, "", false, err
+			}
+		}
+		now := time.Now().UnixMilli()
+		if _, e := tx.Exec(ctx,
+			`INSERT INTO accounts (id, username, email, supabase_user_id, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+			accountID, username, emailVal, supabaseUserID, accountHash, now); e != nil {
+			if isUniqueViolation(e) {
+				return "", "", 0, "", false, ErrUsernameTaken
+			}
+			return "", "", 0, "", false, e
+		}
+		created = true
+	default:
+		return "", "", 0, "", false, err
+	}
+
+	// 3. Provision a fresh device on the account (device 1 for a new account).
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
+	if err != nil {
+		return "", "", 0, "", false, err
+	}
+	mailboxID, err = newMailboxID()
+	if err != nil {
+		return "", "", 0, "", false, err
+	}
+	var maxDev int
+	tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) FROM devices WHERE account_id = $1`, accountID).Scan(&maxDev)
+	deviceID = uint32(maxDev + 1)
+	now := time.Now().UnixMilli()
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		accountID, deviceID, mailboxID, deviceHash, now); err != nil {
+		return "", "", 0, "", false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", "", 0, "", false, err
+	}
+	return accountID, username, deviceID, mailboxID, created, nil
+}
+
+// CreateContactInvite mints a single-use contact invite token for the account,
+// valid for 7 days. The token resolves to the account exactly once via
+// ClaimContactInvite.
+func (s *Store) CreateContactInvite(accountID string) (token string, expiresAt int64, err error) {
+	var raw [16]byte
+	if _, err = rand.Read(raw[:]); err != nil {
+		return "", 0, err
+	}
+	token = hex.EncodeToString(raw[:])
+	expiresAt = time.Now().Add(7 * 24 * time.Hour).UnixMilli()
+	if _, err = s.db.Exec(context.Background(),
+		`INSERT INTO contact_invites (token, account_id, expires_at, used_at) VALUES ($1, $2, $3, 0)`,
+		token, accountID, expiresAt); err != nil {
+		return "", 0, err
+	}
+	return token, expiresAt, nil
+}
+
+// ClaimContactInvite consumes a contact invite token, returning the inviter's
+// account id and username. Marks the token used in the same transaction so it
+// can never be redeemed twice. Returns ErrContactInviteInvalid if the token is
+// unknown, expired, or already used.
+func (s *Store) ClaimContactInvite(token string) (accountID, username string, err error) {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var expiresAt, usedAt int64
+	err = tx.QueryRow(ctx,
+		`SELECT account_id, expires_at, used_at FROM contact_invites WHERE token = $1`, token,
+	).Scan(&accountID, &expiresAt, &usedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", ErrContactInviteInvalid
+	}
+	if err != nil {
+		return "", "", err
+	}
+	now := time.Now().UnixMilli()
+	if usedAt != 0 || now > expiresAt {
+		return "", "", ErrContactInviteInvalid
+	}
+	if _, err = tx.Exec(ctx, `UPDATE contact_invites SET used_at = $1 WHERE token = $2`, now, token); err != nil {
+		return "", "", err
+	}
+	if err = tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1`, accountID).Scan(&username); err != nil {
+		return "", "", err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", "", err
+	}
+	return accountID, username, nil
 }
 
 // LookupAccountByEmail returns the accountID and username for the given email,
@@ -736,7 +910,6 @@ func (s *Store) SetAPNSToken(accountID string, deviceID uint32, token string) er
 		token, accountID, deviceID)
 	return err
 }
-
 
 // APNSToken returns the device's APNs token, or "" if not registered.
 func (s *Store) APNSToken(accountID string, deviceID uint32) (string, error) {
@@ -1494,4 +1667,14 @@ func (s *Store) PendingNukeForAccount(accountID string) (*NukeRecord, error) {
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// DeleteNukesForAccount removes all pending nuke commands for an account. Used to
+// clear a stale nuke that is older than the delivery window (it would be rejected
+// by the client and otherwise re-delivers on every reconnect, wedging the account
+// offline).
+func (s *Store) DeleteNukesForAccount(accountID string) error {
+	_, err := s.db.Exec(context.Background(),
+		`DELETE FROM nuke_commands WHERE account_id = $1`, accountID)
+	return err
 }

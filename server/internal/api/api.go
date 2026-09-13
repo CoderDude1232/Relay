@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hmac"
@@ -13,6 +14,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -35,6 +37,15 @@ type Server struct {
 	blobs      *blob.Store
 	turnURLs   []string // empty = TURN not configured
 	turnSecret string
+
+	// Supabase social-login verification. When supabaseURL is set, the OAuth
+	// account endpoint verifies a user's Supabase access token by asking
+	// Supabase who it belongs to (server-to-server GET /auth/v1/user), then
+	// trusts the returned id/email. verifySupabaseToken is a field so tests can
+	// stub it without hitting the network.
+	supabaseURL         string
+	supabaseAnonKey     string
+	verifySupabaseToken func(ctx context.Context, accessToken string) (userID, email string, err error)
 }
 
 func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret string) *Server {
@@ -44,13 +55,27 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 			urls = append(urls, u)
 		}
 	}
-	return &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret}
+	s := &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret}
+	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
+	return s
+}
+
+// SetSupabaseAuth enables the social-login account endpoint by pointing the
+// server at a Supabase project. projectURL is the base (e.g.
+// https://xxxx.supabase.co); anonKey is the project's anon API key, required as
+// the apikey header on GoTrue calls.
+func (s *Server) SetSupabaseAuth(projectURL, anonKey string) {
+	s.supabaseURL = strings.TrimRight(projectURL, "/")
+	s.supabaseAnonKey = anonKey
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/accounts", s.handleCreateAccount)
+	mux.HandleFunc("POST /v1/accounts/oauth", s.handleOAuthAccount)
 	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
+	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
+	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
 	mux.HandleFunc("POST /v1/devices/link-invitations", s.auth(s.handleCreateDeviceLinkInvitation))
 	mux.HandleFunc("POST /v1/devices/link-claims", s.handleClaimDeviceLink)
@@ -169,6 +194,147 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"accountId": accountID, "deviceId": deviceID, "mailboxId": mailboxID})
 }
 
+// handleOAuthAccount signs a Supabase-authenticated user into their relay
+// account, creating it on first use, and provisions a fresh device. The request
+// carries the user's Supabase access token, which the server verifies directly
+// with Supabase; the returned id/email are authoritative. This lets a
+// passwordless social-login user recover their account on any device instead of
+// colliding with their own email on a fresh registration.
+func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !accountCreationLimiter.allow("oauth:" + ip) {
+		httpError(w, http.StatusTooManyRequests, "registration rate limit exceeded; try again later")
+		return
+	}
+	if s.supabaseURL == "" {
+		httpError(w, http.StatusServiceUnavailable, "social login not configured")
+		return
+	}
+	var req struct {
+		AccessToken     string `json:"accessToken"`
+		Username        string `json:"username"`
+		Password        string `json:"password"`
+		AccountPassword string `json:"accountPassword"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AccessToken == "" ||
+		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
+		httpError(w, http.StatusBadRequest, "accessToken and password (8–1024 chars) required")
+		return
+	}
+	if req.Username != "" && !validUsername.MatchString(req.Username) {
+		httpError(w, http.StatusBadRequest, "username must be 1–64 alphanumeric/._- characters")
+		return
+	}
+	if req.AccountPassword != "" && (len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes) {
+		httpError(w, http.StatusBadRequest, "accountPassword must be 8–1024 chars")
+		return
+	}
+
+	userID, email, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
+	if err != nil {
+		httpError(w, http.StatusUnauthorized, "invalid or expired social login token")
+		return
+	}
+
+	accountID, username, deviceID, mailboxID, created, err := s.store.ProvisionOAuthAccount(
+		userID, email, req.Username, req.Password, req.AccountPassword)
+	if errors.Is(err, store.ErrUsernameRequired) {
+		// No account exists yet for this user and no username was supplied.
+		// Signal the client to prompt for one and retry.
+		httpError(w, http.StatusNotFound, "username required")
+		return
+	}
+	if errors.Is(err, store.ErrUsernameTaken) {
+		httpError(w, http.StatusConflict, "username already taken")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{
+		"accountId": accountID,
+		"deviceId":  deviceID,
+		"username":  username,
+		"mailboxId": mailboxID,
+		"created":   created,
+	})
+}
+
+// verifySupabaseTokenHTTP asks Supabase who an access token belongs to via a
+// server-to-server GET /auth/v1/user. Returns the authoritative user id and
+// email if the token is valid.
+func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string) (userID, email string, err error) {
+	if s.supabaseURL == "" {
+		return "", "", errors.New("supabase auth not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.supabaseURL+"/auth/v1/user", nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("apikey", s.supabaseAnonKey)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("supabase user lookup failed: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", "", err
+	}
+	if body.ID == "" {
+		return "", "", errors.New("supabase returned no user id")
+	}
+	return body.ID, body.Email, nil
+}
+
+// handleCreateContactInvite mints a single-use contact invite token for the
+// authenticated account.
+func (s *Server) handleCreateContactInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	token, expiresAt, err := s.store.CreateContactInvite(dev.AccountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "expiresAt": expiresAt})
+}
+
+// handleClaimContactInvite consumes a contact invite token, returning the
+// inviter's account id and username. Single-use: a second claim returns 404.
+func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+		httpError(w, http.StatusBadRequest, "token required")
+		return
+	}
+	accountID, username, err := s.store.ClaimContactInvite(req.Token)
+	if errors.Is(err, store.ErrContactInviteInvalid) {
+		httpError(w, http.StatusNotFound, "invite is invalid, expired, or already used")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"accountId": accountID, "username": username})
+}
+
 func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 	// Rate-limit recovery attempts (same bucket as account creation per IP).
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
@@ -240,8 +406,8 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 
 func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
-		Password string               `json:"password"`
-		Auth     deviceMutationAuth   `json:"auth"`
+		Password string             `json:"password"`
+		Auth     deviceMutationAuth `json:"auth"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "password (8–1024 chars) required")

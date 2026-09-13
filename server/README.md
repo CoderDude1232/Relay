@@ -66,6 +66,9 @@ All endpoints except account creation use HTTP Basic auth with username
 | Method & path | Auth | Purpose |
 |---|---|---|
 | `POST /v1/accounts` | none | Create account + primary device. Body `{username, password}` → `201 {accountId, deviceId}` |
+| `POST /v1/accounts/oauth` | none (Supabase token) | Sign in (or create) a social-login account and provision a fresh device. Body `{accessToken, password, username?, accountPassword?}`. The relay verifies `accessToken` with Supabase (`GET /auth/v1/user`) and resolves the account by Supabase user id, then email (back-filling the id). Returns `201 {accountId, deviceId, username, mailboxId, created:true}` on create, `200 {…, created:false}` on recover. `404` when no account exists yet and no `username` was supplied (client should prompt), `409` if the chosen username is taken, `503` if Supabase auth isn't configured on the server. Requires the `-supabase-url` / `-supabase-anon-key` flags. |
+| `POST /v1/contact-invites` | basic | Mint a single-use contact invite token → `201 {token, expiresAt}` (7-day expiry). Share as `https://relaymsg.app/c/<token>`. |
+| `POST /v1/contact-invites/claim` | basic | Redeem a contact invite. Body `{token}` → `200 {accountId, username}`; `404` if invalid, expired, or already used. Marked used atomically so it resolves exactly once. |
 | `POST /v1/devices` | basic | Register an additional device. Body `{password}` → `201 {accountId, deviceId}` |
 | `PUT /v1/devices/apns` | basic | Store this device's APNs token. Body `{token}` → `204` |
 | `PUT /v1/keys` | basic | Upload `{registrationId, identityKey, signedPreKey{keyId, publicKey, signature}, kyberPreKey{keyId, publicKey, signature}, oneTimePreKeys[{keyId, publicKey}]}` → `204`. Identity, signed prekey and (last-resort) Kyber prekey replace; one-time prekeys append. PQXDH requires the Kyber prekey. |
