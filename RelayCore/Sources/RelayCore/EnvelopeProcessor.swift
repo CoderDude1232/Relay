@@ -266,7 +266,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         self.sealedSenderTrustRoot = sealedSenderTrustRoot
     }
 
-    public func process(_ envelope: IncomingEnvelope) throws -> ProcessedEnvelope {
+    /// - Parameter blockedAccounts: accounts whose messages should be dropped.
+    ///   For sealed-sender messages the sender is only known after decryption,
+    ///   so blocking is enforced here (post-decrypt) rather than at the wire.
+    public func process(
+        _ envelope: IncomingEnvelope,
+        blockedAccounts: Set<String> = []
+    ) throws -> ProcessedEnvelope {
         guard try storage.messages.claimEnvelope(id: envelope.id) else {
             return ProcessedEnvelope(outcome: .duplicate, peerAccount: envelope.senderAccount)
         }
@@ -311,6 +317,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         // envelope field (server could be compelled to lie). For sealed
         // messages `sender.name` is the cert-recovered account.
         let attestedAccount = content.senderAccountID.isEmpty ? sender.name : content.senderAccountID
+
+        // Now that we know who really sent this (post-decrypt), drop it if the
+        // sender is blocked. Sealed messages can't be filtered any earlier since
+        // the wire envelope carries no sender.
+        if blockedAccounts.contains(attestedAccount) {
+            return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+        }
 
         // Sync message: sent by own account to own other devices carrying a copy
         // of a message we sent from another device.

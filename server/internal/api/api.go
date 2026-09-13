@@ -105,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
+	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))
 	mux.HandleFunc("POST /v1/messages/sealed", s.handleSealedSend) // unauthenticated by design
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
@@ -425,6 +426,19 @@ func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRotateMailbox assigns the authenticated device a fresh mailbox id and
+// returns it. Clients call this periodically so the relay can't track a
+// long-lived routing identifier; peers pick up the new id on their next bundle
+// fetch, and sealed sends to the stale id fail-and-retry.
+func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	mailboxID, err := s.store.RotateMailbox(dev.AccountID, dev.DeviceID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mailboxId": mailboxID})
 }
 
 // handleDeliveryCertificate mints a sealed-sender certificate for the

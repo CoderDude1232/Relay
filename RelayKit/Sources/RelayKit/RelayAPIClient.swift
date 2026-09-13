@@ -194,6 +194,17 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
+    /// Rotates this device's opaque mailbox id and returns the new one. Peers
+    /// pick it up on their next bundle fetch; sends to the old id fail-and-retry.
+    @discardableResult
+    public func rotateMailbox() async throws -> String {
+        struct Response: Decodable { let mailboxId: String }
+        let r: Response = try await request(
+            "POST", "v1/devices/me/mailbox/rotate", body: nil as [String: String]?
+        )
+        return r.mailboxId
+    }
+
     /// Fetches a sealed-sender delivery certificate for this device (binds the
     /// account/device to its identity key, 7-day expiry). Clients cache it and
     /// refresh before `expiresAt`. Throws `RelayAPIError.http(503,…)` if the relay

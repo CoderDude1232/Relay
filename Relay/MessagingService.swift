@@ -359,6 +359,7 @@ final class MessagingService {
                     } catch {
                         log.warning("prekey replenishment failed: \(PrivacyRedactor.error(error))")
                     }
+                    await rotateMailboxIfNeeded()
                     await ensureNoteToSelf()
                 case .envelope(let envelope):
                     await handleEnvelope(envelope)
@@ -399,8 +400,9 @@ final class MessagingService {
             // before delivering the next envelope, so ratchet state advances
             // one message at a time even though the work runs on a bg thread.
             let proc = processor
+            let blocked = blockedAccounts
             let result = try await Task.detached(priority: .userInitiated) {
-                try proc.process(envelope)
+                try proc.process(envelope, blockedAccounts: blocked)
             }.value
 
             if let timestamp = result.sideEffects.deliveryReceiptTimestamp {
@@ -1465,7 +1467,11 @@ final class MessagingService {
         guard let distributionId = UUID(uuidString: group.distributionId) else { return }
         var messageInserted = false
         do {
-            try await distributeSenderKeyIfNeeded(group: group)
+            // Sealed groups fan out as pairwise sealed messages (below), which
+            // don't use sender keys — so skip SKDM distribution entirely.
+            if !sealedSenderEnabled {
+                try await distributeSenderKeyIfNeeded(group: group)
+            }
             await distributeProfileToGroupMembersIfNeeded(group: group)
             let (storedAttachments, pointers) = try await encryptAttachments(pending)
 
@@ -1497,10 +1503,24 @@ final class MessagingService {
             // Opt-in cover-traffic delay before the wire send (message already
             // shows locally as "sending").
             await applySendJitter()
-            // Encrypt once with our sender key, fan the same ciphertext out.
-            let sealed = try engine.groupEncrypt(try ContentPadding.pad(content.serializedData()), distributionId: distributionId)
-            for member in group.members where member != credentials.accountId {
-                try await sendEncrypted(sealed, toPeer: member, clientTimestamp: timestamp)
+            if sealedSenderEnabled {
+                // Sealed groups: fan out as individual pairwise sealed messages.
+                // The group id inside the encrypted content still routes each copy
+                // to the group conversation on the recipient, but the relay learns
+                // neither the sender nor that these deliveries form one group send.
+                // (Sender-key broadcast can't be per-recipient sealed without
+                // multi-recipient sealing; pairwise is simpler and fully private —
+                // fine for the small groups Relay targets.)
+                let payload = try content.serializedData()
+                for member in group.members where member != credentials.accountId {
+                    try await sendContent(payload, toPeer: member, clientTimestamp: timestamp)
+                }
+            } else {
+                // Encrypt once with our sender key, fan the same ciphertext out.
+                let sealed = try engine.groupEncrypt(try ContentPadding.pad(content.serializedData()), distributionId: distributionId)
+                for member in group.members where member != credentials.accountId {
+                    try await sendEncrypted(sealed, toPeer: member, clientTimestamp: timestamp)
+                }
             }
             try storage.messages.updateStatus(messageId: localId, status: .sent)
         } catch {
@@ -2038,21 +2058,52 @@ final class MessagingService {
         ephemeral: Bool
     ) async throws {
         let certificate = try await senderCertificate()
-        var devices = try await knownMailboxDevices(ofPeer: account)
-        var accessKey = peerAccessKeys[account]
-        // If we don't yet have the peer's access key (or any device sessions),
-        // refresh bundles once — that populates both.
-        if accessKey == nil {
+        // Ensure we have the peer's access key (and sessions) before addressing them.
+        if peerAccessKeys[account] == nil {
             try await refreshSessions(withPeer: account)
-            devices = try await knownMailboxDevices(ofPeer: account)
-            accessKey = peerAccessKeys[account]
         }
-        guard let accessKey else {
-            // The peer hasn't published a sealed-sender access key; the caller
-            // can't reach them privately. Surface as a send failure.
+        guard peerAccessKeys[account] != nil else {
+            // The peer hasn't published a sealed-sender access key; we can't
+            // reach them privately. Surface as a send failure.
             throw RelayAPIError.http(status: 403, message: "recipient has not enabled sealed sender")
         }
 
+        // First pass to all known devices. A 403 usually means the recipient
+        // rotated their mailbox or access key, so refresh once and retry only the
+        // devices that failed (retrying all would duplicate already-delivered copies).
+        let devices = try await knownMailboxDevices(ofPeer: account)
+        var failed = try await sealedSendPass(
+            plaintext, toPeer: account, devices: devices, certificate: certificate,
+            clientTimestamp: clientTimestamp, ephemeral: ephemeral
+        )
+        guard !failed.isEmpty else { return }
+
+        try await refreshSessions(withPeer: account)
+        let refreshedDevices = try await knownMailboxDevices(ofPeer: account)
+        let failedIds = Set(failed.map { $0.id })
+        let retryDevices = refreshedDevices.filter { failedIds.contains($0.id) }
+        failed = try await sealedSendPass(
+            plaintext, toPeer: account, devices: retryDevices, certificate: certificate,
+            clientTimestamp: clientTimestamp, ephemeral: ephemeral
+        )
+        if !failed.isEmpty {
+            throw RelayAPIError.http(status: 403, message: "sealed delivery rejected")
+        }
+    }
+
+    /// Sends `plaintext` sealed to each device; returns the devices that got a
+    /// retryable 403 (stale mailbox / access key). Any other error throws.
+    private func sealedSendPass(
+        _ plaintext: Data,
+        toPeer account: String,
+        devices: [PeerDevice],
+        certificate: Data,
+        clientTimestamp: Int64,
+        ephemeral: Bool
+    ) async throws -> [PeerDevice] {
+        // Read the access key fresh each pass so a refresh between passes takes effect.
+        guard let accessKey = peerAccessKeys[account] else { return devices }
+        var failed: [PeerDevice] = []
         for device in devices {
             guard let mailboxId = device.mailboxId, !mailboxId.isEmpty else { continue }
             let address = try ProtocolAddress(name: account, deviceId: device.id)
@@ -2061,15 +2112,20 @@ final class MessagingService {
                 try await refreshSessions(withPeer: account)
             }
             let sealed = try engine.sealedEncrypt(plaintext, for: address, senderCertificate: certificate)
-            _ = try await api.sendSealed(
-                mailboxId: mailboxId,
-                type: .message,
-                content: sealed,
-                accessKey: accessKey,
-                ephemeral: ephemeral,
-                clientTimestamp: clientTimestamp
-            )
+            do {
+                _ = try await api.sendSealed(
+                    mailboxId: mailboxId,
+                    type: .message,
+                    content: sealed,
+                    accessKey: accessKey,
+                    ephemeral: ephemeral,
+                    clientTimestamp: clientTimestamp
+                )
+            } catch let RelayAPIError.http(status, _) where status == 403 {
+                failed.append(device)
+            }
         }
+        return failed
     }
 
     private func buildMailboxPayloads(
@@ -2393,6 +2449,24 @@ final class MessagingService {
     var sealedSenderEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: "relay.sealedSender") }
         set { UserDefaults.standard.set(newValue, forKey: "relay.sealedSender") }
+    }
+
+    /// Rotates this device's mailbox id at most once a day so the relay can't
+    /// track a long-lived routing identifier. Gated on sealed sender: the sealed
+    /// path auto-retries on the resulting stale-mailbox 403, whereas the plain
+    /// WebSocket path has no such recovery, so we only rotate in private mode.
+    private func rotateMailboxIfNeeded() async {
+        guard sealedSenderEnabled else { return }
+        let key = "relay.lastMailboxRotation"
+        let now = Date().timeIntervalSince1970
+        let last = UserDefaults.standard.double(forKey: key)
+        guard now - last > 86_400 else { return }
+        do {
+            _ = try await api.rotateMailbox()
+            UserDefaults.standard.set(now, forKey: key)
+        } catch {
+            log.warning("mailbox rotation failed: \(PrivacyRedactor.error(error))")
+        }
     }
 
     /// Returns this device's sealed-sender certificate, fetching (and caching) a

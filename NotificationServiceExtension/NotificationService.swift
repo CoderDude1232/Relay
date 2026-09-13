@@ -154,7 +154,14 @@ class NotificationService: UNNotificationServiceExtension {
             let engine = try? storage.makeCryptoEngine(accountId: account.accountId, deviceId: account.deviceId)
         else { return nil }
 
-        let processor = EnvelopeProcessor(storage: storage, engine: engine)
+        // Pass the trust root so sealed-sender pushes (empty envelope sender)
+        // decrypt here too, and ownAccountId so self-sync copies resolve.
+        let processor = EnvelopeProcessor(
+            storage: storage,
+            engine: engine,
+            ownAccountId: account.accountId,
+            sealedSenderTrustRoot: RelaySealedSender.trustRoot
+        )
         guard let result = try? processor.process(envelope) else { return nil }
 
         // Call signalling: HANGUP means the caller gave up before we answered

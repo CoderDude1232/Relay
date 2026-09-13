@@ -612,3 +612,52 @@ func TestSealedSendDelivery(t *testing.T) {
 		t.Fatalf("content mismatch")
 	}
 }
+
+func TestMailboxRotation(t *testing.T) {
+	env := newTestEnv(t)
+	bob := env.register("bob-rotate", "password-bob")
+	bob.uploadKeys(2)
+
+	accessKey := bytes.Repeat([]byte{0x11}, 32)
+	env.doJSON("PUT", "/v1/accounts/me/access-key", bob.authUser(), bob.password,
+		map[string]string{"accessKey": base64.StdEncoding.EncodeToString(accessKey)},
+		http.StatusNoContent, nil)
+
+	mailboxOf := func() string {
+		var keys struct {
+			Devices []struct {
+				MailboxID string `json:"mailboxId"`
+			} `json:"devices"`
+		}
+		env.doJSON("GET", "/v1/keys/"+bob.accountID, bob.authUser(), bob.password, nil, http.StatusOK, &keys)
+		if len(keys.Devices) == 0 {
+			t.Fatalf("no devices returned")
+		}
+		return keys.Devices[0].MailboxID
+	}
+
+	oldMailbox := mailboxOf()
+
+	// Rotate → a new, different mailbox id.
+	var rot struct {
+		MailboxID string `json:"mailboxId"`
+	}
+	env.doJSON("POST", "/v1/devices/me/mailbox/rotate", bob.authUser(), bob.password, nil, http.StatusOK, &rot)
+	if rot.MailboxID == "" || rot.MailboxID == oldMailbox {
+		t.Fatalf("rotation did not produce a new mailbox: old=%q new=%q", oldMailbox, rot.MailboxID)
+	}
+	if got := mailboxOf(); got != rot.MailboxID {
+		t.Fatalf("bundle still reports old mailbox: %q, want %q", got, rot.MailboxID)
+	}
+
+	send := func(mailbox string, want int) {
+		env.doJSON("POST", "/v1/messages/sealed", "", "", map[string]any{
+			"mailboxId": mailbox, "type": 2,
+			"content":   base64.StdEncoding.EncodeToString([]byte("blob")),
+			"accessKey": base64.StdEncoding.EncodeToString(accessKey),
+		}, want, nil)
+	}
+	// The stale mailbox no longer routes; the new one does.
+	send(oldMailbox, http.StatusForbidden)
+	send(rot.MailboxID, http.StatusOK)
+}

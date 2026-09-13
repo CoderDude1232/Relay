@@ -908,6 +908,29 @@ func (s *Store) DeviceByMailbox(mailboxID string) (*Device, error) {
 	return &d, nil
 }
 
+// RotateMailbox assigns a fresh opaque mailbox id to the device and returns it.
+// Peers pick up the new id on their next prekey-bundle fetch; sealed sends to
+// the old id fail (the sender re-fetches the bundle and retries). Rotating
+// periodically breaks any long-lived routing identifier the relay could use to
+// correlate a mailbox with a device over time. The message queue is keyed by
+// (account, device), not mailbox, so queued deliveries are unaffected.
+func (s *Store) RotateMailbox(accountID string, deviceID uint32) (string, error) {
+	mailboxID, err := newMailboxID()
+	if err != nil {
+		return "", err
+	}
+	ct, err := s.db.Exec(context.Background(),
+		`UPDATE devices SET mailbox_id = $1 WHERE account_id = $2 AND device_id = $3`,
+		mailboxID, accountID, deviceID)
+	if err != nil {
+		return "", err
+	}
+	if ct.RowsAffected() == 0 {
+		return "", ErrNotFound
+	}
+	return mailboxID, nil
+}
+
 func (s *Store) SetAPNSToken(accountID string, deviceID uint32, token string) error {
 	ctx := context.Background()
 	_, err := s.db.Exec(ctx, `UPDATE devices SET apns_token = $1 WHERE account_id = $2 AND device_id = $3`,
