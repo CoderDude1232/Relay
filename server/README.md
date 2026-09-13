@@ -78,7 +78,9 @@ All endpoints except account creation use HTTP Basic auth with username
 | `PUT /v1/keys` | basic | Upload `{registrationId, identityKey, signedPreKey{keyId, publicKey, signature}, kyberPreKey{keyId, publicKey, signature}, oneTimePreKeys[{keyId, publicKey}]}` → `204`. Identity, signed prekey and (last-resort) Kyber prekey replace; one-time prekeys append. PQXDH requires the Kyber prekey. |
 | `GET /v1/keys/count` | basic | Remaining one-time prekeys for this device → `{count}`. Clients replenish below ~20. |
 | `GET /v1/keys/{account}?device=N` | basic | Fetch prekey bundles (all devices when `?device` omitted), each with identity key, signed prekey and Kyber prekey. Consumes one one-time prekey per device; `oneTimePreKey` is `null` when the pool is exhausted (degraded PQXDH via signed prekeys only). |
-| `GET /v1/accounts/by-username/{username}` | basic | Resolve username → `{accountId}` |
+| `POST /v1/directory/oprf` | basic | Blinded discovery, step 1. Body `{blinded:[base64 ristretto255 element,…]}` (1–1024) → `{evaluated:[base64,…]}` where each is `k·B`. The relay evaluates the OPRF under its secret key without learning the identifiers being queried. Requires `-oprf-key`; `503` if unset. Rate-limited per account. |
+| `POST /v1/directory/resolve` | basic | Blinded discovery, step 2. Body `{tokens:[base64,…]}` (the OPRF outputs the client derives after unblinding) → `{results:[{token, accountId, username},…]}`. Unmatched tokens are omitted, so non-registered contacts stay private. Rate-limited per account. |
+| `GET /v1/accounts/by-username/{username}` | basic | Resolve username → `{accountId}`. **Legacy/plaintext** — kept for compatibility; new clients use blinded discovery. |
 | `GET /v1/accounts/{account}` | basic | Resolve account id → `{username}` |
 | `GET /v1/presence/{account}` | basic | Connection state → `{online, lastSeen}`. `online` = any device has a live WebSocket; `lastSeen` is ms since epoch of the last connect/disconnect (0 if never). |
 | `POST /v1/attachments` | basic | Allocate an attachment id → `201 {id}` |

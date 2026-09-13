@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -19,9 +20,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/gtank/ristretto255"
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/store"
 	"google.golang.org/protobuf/proto"
 )
@@ -660,4 +663,78 @@ func TestMailboxRotation(t *testing.T) {
 	// The stale mailbox no longer routes; the new one does.
 	send(oldMailbox, http.StatusForbidden)
 	send(rot.MailboxID, http.StatusOK)
+}
+
+func TestBlindedDirectory(t *testing.T) {
+	env := newTestEnv(t)
+	key, err := oprf.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.api.SetOPRF(key); err != nil {
+		t.Fatal(err)
+	}
+
+	alice := env.register("alice-dir", "password-alice")
+	env.register("bob-dir", "password-bob")
+
+	// Simulate the client's oblivious lookup of "bob-dir": blind H1(x), have the
+	// server evaluate under k, unblind, derive the token — the server never sees x.
+	id := []byte(oprf.Normalize("bob-dir"))
+	h := sha512.New()
+	h.Write([]byte("Relay-OPRF-v1-h2g"))
+	h.Write(id)
+	hx := ristretto255.NewElement().FromUniformBytes(h.Sum(nil))
+	var rb [64]byte
+	rand.Read(rb[:])
+	r := ristretto255.NewScalar().FromUniformBytes(rb[:])
+	blinded := ristretto255.NewElement().ScalarMult(r, hx).Encode(nil)
+
+	var evalResp struct {
+		Evaluated []string `json:"evaluated"`
+	}
+	env.doJSON("POST", "/v1/directory/oprf", alice.authUser(), alice.password,
+		map[string]any{"blinded": []string{base64.StdEncoding.EncodeToString(blinded)}},
+		http.StatusOK, &evalResp)
+	if len(evalResp.Evaluated) != 1 {
+		t.Fatalf("expected 1 evaluated element, got %d", len(evalResp.Evaluated))
+	}
+	eBytes, _ := base64.StdEncoding.DecodeString(evalResp.Evaluated[0])
+	e := ristretto255.NewElement()
+	if err := e.Decode(eBytes); err != nil {
+		t.Fatalf("decode evaluated: %v", err)
+	}
+	n := ristretto255.NewElement().ScalarMult(ristretto255.NewScalar().Invert(r), e)
+	th := sha256.New()
+	th.Write([]byte("Relay-OPRF-v1-token"))
+	th.Write(id)
+	th.Write(n.Encode(nil))
+	token := th.Sum(nil)
+
+	var resResp struct {
+		Results []struct {
+			Token     string `json:"token"`
+			AccountID string `json:"accountId"`
+			Username  string `json:"username"`
+		} `json:"results"`
+	}
+	env.doJSON("POST", "/v1/directory/resolve", alice.authUser(), alice.password,
+		map[string]any{"tokens": []string{base64.StdEncoding.EncodeToString(token)}},
+		http.StatusOK, &resResp)
+	if len(resResp.Results) != 1 || resResp.Results[0].Username != "bob-dir" {
+		t.Fatalf("expected to resolve bob-dir, got %+v", resResp.Results)
+	}
+
+	// An unknown token resolves to nothing — non-registered contacts stay private.
+	junk := make([]byte, 32)
+	rand.Read(junk)
+	var empty struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	env.doJSON("POST", "/v1/directory/resolve", alice.authUser(), alice.password,
+		map[string]any{"tokens": []string{base64.StdEncoding.EncodeToString(junk)}},
+		http.StatusOK, &empty)
+	if len(empty.Results) != 0 {
+		t.Fatalf("unknown token should not resolve, got %d results", len(empty.Results))
+	}
 }

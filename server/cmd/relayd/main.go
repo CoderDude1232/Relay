@@ -21,6 +21,7 @@ import (
 	"github.com/relayapp/relay-server/internal/apns"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
 	"github.com/relayapp/relay-server/internal/store"
@@ -65,6 +66,7 @@ func main() {
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
 	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
 	sealedKey := flag.String("sealed-sender-trust-key", "", "path to the sealed-sender trust-root private key (hex, 32 bytes); generated if absent, enables GET /v1/certificate/delivery")
+	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
 	flag.Parse()
 
 	if (*tlsCert == "") != (*tlsKey == "") {
@@ -116,6 +118,18 @@ func main() {
 		// The client must embed this trust-root public key to validate certs.
 		slog.Info("sealed sender enabled",
 			"trustRootPublicBase64", base64.StdEncoding.EncodeToString(trustRoot.Public))
+	}
+	if *oprfKey != "" {
+		key, err := oprf.LoadOrCreateKey(*oprfKey)
+		if err != nil {
+			slog.Error("failed to load OPRF key", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		if err := apiServer.SetOPRF(key); err != nil {
+			slog.Error("failed to init blinded discovery", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		slog.Info("blinded discovery enabled")
 	}
 	apiHandler := apiServer.Handler()
 	go runRateLimiterGC(apiServer)

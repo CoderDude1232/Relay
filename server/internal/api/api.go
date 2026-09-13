@@ -28,6 +28,7 @@ import (
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
 	"github.com/relayapp/relay-server/internal/store"
@@ -52,6 +53,10 @@ type Server struct {
 	// Sealed-sender certificate issuance. When set, GET /v1/certificate/delivery
 	// mints a libsignal-compatible sender certificate for the authenticated device.
 	sealed *sealedIssuer
+
+	// Blinded discovery. When set, the directory endpoints evaluate the OPRF and
+	// resolve tokens; the server (re)builds the directory index under this key.
+	oprf *oprf.Key
 }
 
 // sealedIssuer holds the server certificate (signed by the trust root) and its
@@ -98,6 +103,54 @@ func (s *Server) SetSealedSender(trustRoot sealedsender.KeyPair) error {
 	return nil
 }
 
+// SetOPRF enables blinded discovery under the given OPRF key and rebuilds the
+// directory index from the current accounts (so existing users are discoverable
+// and any drift is corrected on restart).
+func (s *Server) SetOPRF(key *oprf.Key) error {
+	s.oprf = key
+	accounts, err := s.store.AllAccountsForDirectory()
+	if err != nil {
+		return err
+	}
+	entries := make([]store.DirectoryEntry, 0, len(accounts))
+	for _, a := range accounts {
+		entries = append(entries, s.directoryEntries(a)...)
+	}
+	return s.store.ReplaceDirectory(entries)
+}
+
+// directoryEntries computes the OPRF token rows for an account's username/email.
+func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry {
+	var entries []store.DirectoryEntry
+	if a.Username != "" {
+		entries = append(entries, store.DirectoryEntry{
+			Token: s.oprf.Token(a.Username), AccountID: a.AccountID, Kind: store.DirectoryKindUsername,
+		})
+	}
+	if a.Email != "" {
+		entries = append(entries, store.DirectoryEntry{
+			Token: s.oprf.Token(a.Email), AccountID: a.AccountID, Kind: store.DirectoryKindEmail,
+		})
+	}
+	return entries
+}
+
+// reindexAccount refreshes one account's directory rows after its username/email
+// changes. Best-effort: discovery lag is preferable to failing the mutation.
+func (s *Server) reindexAccount(accountID string) {
+	if s.oprf == nil {
+		return
+	}
+	info, err := s.store.AccountForDirectory(accountID)
+	if err != nil {
+		slog.Error("directory reindex: lookup failed", "err", privlog.Error(err))
+		return
+	}
+	if err := s.store.SetDirectoryForAccount(accountID, s.directoryEntries(info)); err != nil {
+		slog.Error("directory reindex: write failed", "err", privlog.Error(err))
+	}
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/accounts", s.handleCreateAccount)
@@ -106,6 +159,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))
+	mux.HandleFunc("POST /v1/directory/oprf", s.auth(s.handleDirectoryOPRF))
+	mux.HandleFunc("POST /v1/directory/resolve", s.auth(s.handleDirectoryResolve))
 	mux.HandleFunc("POST /v1/messages/sealed", s.handleSealedSend) // unauthenticated by design
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
@@ -224,6 +279,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	if len(devices) > 0 {
 		mailboxID = devices[0].MailboxID
 	}
+	s.reindexAccount(accountID) // make the new user discoverable immediately
 	writeJSON(w, http.StatusCreated, map[string]any{"accountId": accountID, "deviceId": deviceID, "mailboxId": mailboxID})
 }
 
@@ -289,6 +345,9 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
+	}
+	if created {
+		s.reindexAccount(accountID) // index the new social-login user for discovery
 	}
 	writeJSON(w, status, map[string]any{
 		"accountId": accountID,
@@ -441,6 +500,100 @@ func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev
 	writeJSON(w, http.StatusOK, map[string]any{"mailboxId": mailboxID})
 }
 
+// handleDirectoryOPRF evaluates the OPRF over a batch of client-blinded elements
+// (returns E = k·B for each). The server learns nothing about the identifiers
+// the client is querying — only opaque curve points cross the wire.
+func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.oprf == nil {
+		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
+		return
+	}
+	if !directoryLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "discovery rate limit exceeded; try again later")
+		return
+	}
+	var req struct {
+		Blinded []string `json:"blinded"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.Blinded) == 0 || len(req.Blinded) > 1024 {
+		httpError(w, http.StatusBadRequest, "blinded must contain 1..1024 elements")
+		return
+	}
+	out := make([]string, 0, len(req.Blinded))
+	for _, b := range req.Blinded {
+		raw, err := base64.StdEncoding.DecodeString(b)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid blinded element")
+			return
+		}
+		eval, err := s.oprf.Evaluate(raw)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid blinded element")
+			return
+		}
+		out = append(out, base64.StdEncoding.EncodeToString(eval))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"evaluated": out})
+}
+
+// handleDirectoryResolve returns the account (and current username) for each
+// token that matches the directory index. Tokens are OPRF outputs the client
+// derived after the oblivious evaluation; unmatched tokens yield no result, so
+// non-registered contacts stay private.
+func (s *Server) handleDirectoryResolve(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.oprf == nil {
+		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
+		return
+	}
+	if !directoryLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "discovery rate limit exceeded; try again later")
+		return
+	}
+	var req struct {
+		Tokens []string `json:"tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.Tokens) == 0 || len(req.Tokens) > 1024 {
+		httpError(w, http.StatusBadRequest, "tokens must contain 1..1024 elements")
+		return
+	}
+	tokens := make([][]byte, 0, len(req.Tokens))
+	for _, t := range req.Tokens {
+		raw, err := base64.StdEncoding.DecodeString(t)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "invalid token")
+			return
+		}
+		tokens = append(tokens, raw)
+	}
+	matches, err := s.store.ResolveDirectory(tokens)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	type result struct {
+		Token     string `json:"token"`
+		AccountID string `json:"accountId"`
+		Username  string `json:"username"`
+	}
+	results := make([]result, 0, len(matches))
+	for _, m := range matches {
+		results = append(results, result{
+			Token:     base64.StdEncoding.EncodeToString(m.Token),
+			AccountID: m.AccountID,
+			Username:  m.Username,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
 // handleDeliveryCertificate mints a sealed-sender certificate for the
 // authenticated device, binding its account id, device id, and stored identity
 // key with a 7-day expiry. The client uses it to send sealed-sender messages.
@@ -568,6 +721,7 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 		internalError(w, err)
 		return
 	}
+	s.reindexAccount(dev.AccountID) // update the blinded directory for the new username
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1549,6 +1703,7 @@ func (s *Server) PruneStaleLimiterKeys() {
 		keyUploadLimiter,
 		sealedSendIPLimiter,
 		sealedSendMailboxLimiter,
+		directoryLimiter,
 	} {
 		now := time.Now()
 		l.mu.Lock()
@@ -1615,6 +1770,12 @@ var usernameLookupLimiter = newSlidingWindowLimiter(600, time.Hour)
 // destination mailbox to bound abuse on top of the access-key check.
 var sealedSendIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 var sealedSendMailboxLimiter = newSlidingWindowLimiter(120, time.Minute)
+
+// directoryLimiter: blinded-discovery requests (OPRF eval + resolve) per account
+// per hour. Batched (up to 1024 identifiers per request), so a full address-book
+// sync is a couple of calls; generous enough for that without enabling the OPRF
+// oracle to be hammered for offline enumeration.
+var directoryLimiter = newSlidingWindowLimiter(200, time.Hour)
 
 // 100 key uploads per account per hour.
 var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)

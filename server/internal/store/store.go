@@ -246,6 +246,17 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// unauthenticated delivery path; the server verifies it matches the
 		// destination account without learning who sent the message.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS access_key BYTEA`,
+		// Blinded discovery: OPRF token → account index. `token` is
+		// H2(x, H1(x)^k) for a normalized username/email x; the server can build
+		// it from its own users but a client can only match (not enumerate) via
+		// the oblivious protocol. kind: 0 = username, 1 = email.
+		`CREATE TABLE IF NOT EXISTS directory (
+    token      BYTEA NOT NULL,
+    account_id TEXT NOT NULL,
+    kind       SMALLINT NOT NULL,
+    PRIMARY KEY (token)
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_directory_account ON directory (account_id)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -1715,6 +1726,138 @@ func (s *Store) AccessKey(accountID string) ([]byte, error) {
 		return nil, ErrAccountNotFound
 	}
 	return key, err
+}
+
+// Directory kinds.
+const (
+	DirectoryKindUsername int16 = 0
+	DirectoryKindEmail    int16 = 1
+)
+
+// DirectoryEntry is one OPRF token → account row for the blinded directory index.
+type DirectoryEntry struct {
+	Token     []byte
+	AccountID string
+	Kind      int16
+}
+
+// DirectoryMatch is a resolved directory hit returned to a querying client.
+type DirectoryMatch struct {
+	Token     []byte
+	AccountID string
+	Username  string
+}
+
+// AccountDirInfo is the identifier material the API layer needs to compute an
+// account's directory tokens.
+type AccountDirInfo struct {
+	AccountID string
+	Username  string
+	Email     string
+}
+
+// AllAccountsForDirectory returns every account's username/email so the API can
+// (re)build the full directory index at startup.
+func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
+	rows, err := s.db.Query(context.Background(),
+		`SELECT id, COALESCE(username, ''), COALESCE(email, '') FROM accounts`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AccountDirInfo
+	for rows.Next() {
+		var a AccountDirInfo
+		if err := rows.Scan(&a.AccountID, &a.Username, &a.Email); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AccountForDirectory returns one account's identifier material for live reindex.
+func (s *Store) AccountForDirectory(accountID string) (AccountDirInfo, error) {
+	var a AccountDirInfo
+	err := s.db.QueryRow(context.Background(),
+		`SELECT id, COALESCE(username, ''), COALESCE(email, '') FROM accounts WHERE id = $1`,
+		accountID,
+	).Scan(&a.AccountID, &a.Username, &a.Email)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return a, ErrAccountNotFound
+	}
+	return a, err
+}
+
+// ReplaceDirectory rebuilds the entire directory index from scratch (startup).
+func (s *Store) ReplaceDirectory(entries []DirectoryEntry) error {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `TRUNCATE directory`); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO directory (token, account_id, kind) VALUES ($1, $2, $3)
+             ON CONFLICT (token) DO UPDATE SET account_id = EXCLUDED.account_id, kind = EXCLUDED.kind`,
+			e.Token, e.AccountID, e.Kind); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// SetDirectoryForAccount replaces one account's directory rows (live reindex on
+// account creation or username change).
+func (s *Store) SetDirectoryForAccount(accountID string, entries []DirectoryEntry) error {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM directory WHERE account_id = $1`, accountID); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO directory (token, account_id, kind) VALUES ($1, $2, $3)
+             ON CONFLICT (token) DO UPDATE SET account_id = EXCLUDED.account_id, kind = EXCLUDED.kind`,
+			e.Token, e.AccountID, e.Kind); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// ResolveDirectory returns the account (and current username) for each token
+// that matches a directory entry. Unmatched tokens are simply absent.
+func (s *Store) ResolveDirectory(tokens [][]byte) ([]DirectoryMatch, error) {
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(context.Background(),
+		`SELECT d.token, d.account_id, COALESCE(a.username, '')
+         FROM directory d JOIN accounts a ON a.id = d.account_id
+         WHERE d.token = ANY($1)`,
+		tokens)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DirectoryMatch
+	for rows.Next() {
+		var m DirectoryMatch
+		if err := rows.Scan(&m.Token, &m.AccountID, &m.Username); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // IdentityKey returns a device's stored identity public key (libsignal-serialized,
