@@ -242,6 +242,10 @@ CREATE TABLE IF NOT EXISTS group_invites (
     used_at     BIGINT NOT NULL DEFAULT 0
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_contact_invites_expires ON contact_invites (expires_at)`,
+		// Sealed sender: per-account access key. Senders present it on the
+		// unauthenticated delivery path; the server verifies it matches the
+		// destination account without learning who sent the message.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS access_key BYTEA`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -1667,6 +1671,27 @@ func (s *Store) PendingNukeForAccount(accountID string) (*NukeRecord, error) {
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// SetAccessKey stores an account's sealed-sender access key (32 bytes). Senders
+// present this key on the unauthenticated delivery path; the server checks it
+// matches without learning the sender. Rotating it revokes anyone holding the old key.
+func (s *Store) SetAccessKey(accountID string, key []byte) error {
+	_, err := s.db.Exec(context.Background(),
+		`UPDATE accounts SET access_key = $1 WHERE id = $2`, key, accountID)
+	return err
+}
+
+// AccessKey returns an account's sealed-sender access key, or nil if unset.
+func (s *Store) AccessKey(accountID string) ([]byte, error) {
+	var key []byte
+	err := s.db.QueryRow(context.Background(),
+		`SELECT access_key FROM accounts WHERE id = $1`, accountID,
+	).Scan(&key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAccountNotFound
+	}
+	return key, err
 }
 
 // IdentityKey returns a device's stored identity public key (libsignal-serialized,

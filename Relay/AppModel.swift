@@ -29,6 +29,7 @@ final class AppModel {
 
     static let appGroupId = RelayStore.appGroupId
     private static let accountSecretName = "relay-account"
+    private static let accessKeySecretName = "relay-access-key"
 
     private(set) var phase: Phase = .loading
     /// Set by onOpenURL when the user opens a relay://add/<username> link.
@@ -86,6 +87,7 @@ final class AppModel {
             phase = .ready(service)
             uploadPushTokenIfReady()
             publishDeviceAuthorizationKeyIfReady()
+            publishAccessKeyIfReady()
         } catch {
             phase = .failed("Could not unlock local storage: \(error)")
         }
@@ -198,6 +200,7 @@ final class AppModel {
             phase = .ready(service)
             uploadPushTokenIfReady()
             publishDeviceAuthorizationKeyIfReady()
+            publishAccessKeyIfReady()
             return nil
         } catch {
             return "Couldn't switch server: \(error.localizedDescription)"
@@ -226,6 +229,27 @@ final class AppModel {
             } catch {
                 // Stage 3B will require this key for signed device-list changes.
             }
+        }
+    }
+
+    /// Ensures this account has a sealed-sender access key (32 random bytes,
+    /// persisted in the Keychain, generated once) and uploads it to the relay.
+    /// Idempotent — safe to call on every launch. Senders obtain this key with
+    /// the prekey bundle and present it on the unauthenticated delivery path.
+    private func publishAccessKeyIfReady() {
+        guard case .ready(let service) = phase else { return }
+        let keychain = self.keychain
+        Task {
+            let key: Data
+            if let existing = try? keychain.loadSecret(for: Self.accessKeySecretName), existing.count == 32 {
+                key = existing
+            } else {
+                var bytes = [UInt8](repeating: 0, count: 32)
+                _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+                key = Data(bytes)
+                try? keychain.storeSecret(key, for: Self.accessKeySecretName)
+            }
+            try? await service.apiClient.setAccessKey(key)
         }
     }
 
@@ -275,6 +299,7 @@ final class AppModel {
                 phase = .ready(service)
                 uploadPushTokenIfReady()
                 publishDeviceAuthorizationKeyIfReady()
+                publishAccessKeyIfReady()
             } catch {
                 throw SetupError(step: "Restore saved session", underlying: error)
             }
@@ -319,6 +344,7 @@ final class AppModel {
             phase = .ready(service)
             uploadPushTokenIfReady()
             publishDeviceAuthorizationKeyIfReady()
+            publishAccessKeyIfReady()
             // Publish initial prekeys in the background so the UI is responsive
             // immediately. Retried automatically by PreKeyMaintainer on connect.
             Task {
@@ -414,6 +440,7 @@ final class AppModel {
         phase = .ready(service)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
         // Publish initial prekeys in the background so the UI is responsive
         // immediately after registration. Key publication is retried automatically
         // by PreKeyMaintainer whenever the socket connects.
@@ -469,6 +496,7 @@ final class AppModel {
         phase = .ready(service)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
         Task { try? await service.publishInitialKeys() }
     }
 
@@ -517,6 +545,7 @@ final class AppModel {
         phase = .ready(service)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
         Task { try? await service.publishInitialKeys() }
     }
 

@@ -185,6 +185,15 @@ public struct RelayAPIClient: Sendable {
         return (r.accountId, r.username)
     }
 
+    /// Uploads this account's sealed-sender access key (32 bytes). Senders present
+    /// it on the unauthenticated delivery path; rotating it revokes old senders.
+    public func setAccessKey(_ key: Data) async throws {
+        try await requestExpectingNoContent(
+            "PUT", "v1/accounts/me/access-key",
+            body: ["accessKey": key.base64EncodedString()]
+        )
+    }
+
     /// Fetches a sealed-sender delivery certificate for this device (binds the
     /// account/device to its identity key, 7-day expiry). Clients cache it and
     /// refresh before `expiresAt`. Throws `RelayAPIError.http(503,…)` if the relay

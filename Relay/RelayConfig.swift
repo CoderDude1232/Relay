@@ -13,7 +13,7 @@ enum RelayConfig {
     /// (`trustRootPublicBase64`) when `-sealed-sender-trust-key` is set — paste
     /// that value here before enabling sealed-sender send/receive (Stage 1c).
     /// Empty until then; nothing validates against it yet.
-    static let sealedSenderTrustRootBase64 = ""
+    static let sealedSenderTrustRootBase64 = "BUMHKPU9XPCdwHCVF8Eea8RxKLhbxq6BhpvYgBTo4IFU"
 
     static var sealedSenderTrustRoot: Data? {
         sealedSenderTrustRootBase64.isEmpty ? nil : Data(base64Encoded: sealedSenderTrustRootBase64)

@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/accounts/oauth", s.handleOAuthAccount)
 	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
+	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
@@ -329,6 +330,29 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 		return "", "", errors.New("supabase returned no user id")
 	}
 	return body.ID, body.Email, nil
+}
+
+// handleSetAccessKey stores this account's sealed-sender access key (32 bytes).
+// The client uploads it once (and on rotation); senders present it on the
+// unauthenticated delivery path.
+func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		AccessKey string `json:"accessKey"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	key, err := base64.StdEncoding.DecodeString(req.AccessKey)
+	if err != nil || len(key) != 32 {
+		httpError(w, http.StatusBadRequest, "accessKey must be 32 bytes (base64)")
+		return
+	}
+	if err := s.store.SetAccessKey(dev.AccountID, key); err != nil {
+		internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleDeliveryCertificate mints a sealed-sender certificate for the
@@ -1195,9 +1219,13 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		KyberPreKey    jsonSignedPreKey   `json:"kyberPreKey"`
 		OneTimePreKey  *jsonOneTimePreKey `json:"oneTimePreKey"`
 	}
+	// Include the account's sealed-sender access key so a sender who establishes
+	// a session (fetches the bundle) can then send sealed to this account.
+	accessKey, _ := s.store.AccessKey(account)
 	out := struct {
-		Devices []jsonBundle `json:"devices"`
-	}{Devices: make([]jsonBundle, 0, len(bundles))}
+		Devices   []jsonBundle `json:"devices"`
+		AccessKey b64          `json:"accessKey,omitempty"`
+	}{Devices: make([]jsonBundle, 0, len(bundles)), AccessKey: b64(accessKey)}
 	for _, b := range bundles {
 		jb := jsonBundle{
 			DeviceID:       b.DeviceID,
