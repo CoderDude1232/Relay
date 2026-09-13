@@ -732,7 +732,7 @@ private struct NewChatSheet: View {
             for (i, entry) in entries.enumerated() {
                 group.addTask {
                     for email in entry.emails {
-                        if (try? await service.apiClient.lookupAccount(username: email)) != nil {
+                        if (try? await service.resolveAccount(username: email)) != nil {
                             return (i, .onRelay(email: email))
                         }
                     }
@@ -963,7 +963,7 @@ private struct UsernameSearchSheet: View {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
             do {
-                let accountId = try await service.apiClient.lookupAccount(username: q)
+                let accountId = try await service.resolveAccount(username: q)
                 guard !Task.isCancelled else { return }
                 lookupState = .found(accountId: accountId, username: q)
             } catch RelayAPIError.http(status: 404, _) {

@@ -134,39 +134,23 @@ struct ContactSyncView: View {
         var seen = Set<String>()
         let deduped = entries.filter { seen.insert($0.email).inserted }
 
-        // Look up each email on the server. Fire requests concurrently but
-        // cap concurrency to 10 so we don't hammer the rate limiter.
+        // Privately match the whole address book against the directory in one
+        // blinded pass: the relay never sees the plaintext emails, and contacts
+        // who aren't on Relay reveal nothing.
         let existingAccountIds = Set(service.conversations.map { $0.peerAccount })
         var found: [ContactMatch] = []
+        let entryByEmail = Dictionary(deduped.map { ($0.email, $0) }, uniquingKeysWith: { a, _ in a })
 
-        await withTaskGroup(of: ContactMatch?.self) { group in
-            var inFlight = 0
-            var iterator = deduped.makeIterator()
-
-            func enqueue() {
-                while inFlight < 10, let entry = iterator.next() {
-                    inFlight += 1
-                    let e = entry
-                    group.addTask {
-                        guard let (accountId, username) = try? await service.apiClient.lookupAccount(byEmail: e.email)
-                        else { return nil }
-                        return ContactMatch(
-                            id: accountId,
-                            contactName: e.name,
-                            username: username,
-                            avatarData: e.avatar,
-                            hasConversation: existingAccountIds.contains(accountId)
-                        )
-                    }
-                }
-            }
-
-            enqueue()
-            for await result in group {
-                inFlight -= 1
-                if let match = result { found.append(match) }
-                enqueue()
-            }
+        let discovered = (try? await service.discoverContacts(emails: deduped.map { $0.email })) ?? []
+        for match in discovered {
+            let entry = entryByEmail[match.email]
+            found.append(ContactMatch(
+                id: match.accountId,
+                contactName: entry?.name ?? match.username,
+                username: match.username,
+                avatarData: entry?.avatar,
+                hasConversation: existingAccountIds.contains(match.accountId)
+            ))
         }
 
         // Sort: existing conversations first, then alphabetically.

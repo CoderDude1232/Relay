@@ -466,12 +466,72 @@ final class MessagingService {
         }
     }
 
+    // MARK: - Blinded discovery
+
+    /// Resolves a username to its account id without revealing the username to the
+    /// relay: blind → server OPRF eval → unblind → token → resolve. Throws
+    /// `RelayAPIError.http(404,…)` when no such user exists.
+    func resolveAccount(username: String) async throws -> String {
+        guard let blinded = BlindedDiscovery.blind(username) else {
+            throw RelayAPIError.malformedResponse
+        }
+        let evaluated = try await api.directoryEvaluate(blinded: [blinded.element])
+        guard let ev = evaluated.first,
+              let token = BlindedDiscovery.token(for: blinded, evaluated: ev) else {
+            throw RelayAPIError.malformedResponse
+        }
+        guard let match = try await api.directoryResolve(tokens: [token]).first else {
+            throw RelayAPIError.http(status: 404, message: "no such user")
+        }
+        return match.accountId
+    }
+
+    /// Privately matches a batch of address-book emails against the directory.
+    /// The relay learns which registered users you know but never sees the
+    /// plaintext of any email (registered or not). Returns one entry per match.
+    func discoverContacts(emails: [String]) async throws -> [(email: String, accountId: String, username: String)] {
+        let unique = Array(Set(emails))
+        var blindeds: [BlindedDiscovery.Blinded] = []
+        var emailForBlind: [String] = []
+        for email in unique {
+            guard let b = BlindedDiscovery.blind(email) else { continue }
+            blindeds.append(b)
+            emailForBlind.append(email)
+        }
+        guard !blindeds.isEmpty else { return [] }
+
+        var results: [(email: String, accountId: String, username: String)] = []
+        let chunkSize = 1024 // server batch cap
+        var start = 0
+        while start < blindeds.count {
+            let end = min(start + chunkSize, blindeds.count)
+            let chunkBlinds = Array(blindeds[start..<end])
+            let chunkEmails = Array(emailForBlind[start..<end])
+            let evaluated = try await api.directoryEvaluate(blinded: chunkBlinds.map { $0.element })
+            guard evaluated.count == chunkBlinds.count else { throw RelayAPIError.malformedResponse }
+            var tokenToEmail: [Data: String] = [:]
+            var tokens: [Data] = []
+            for (i, b) in chunkBlinds.enumerated() {
+                guard let token = BlindedDiscovery.token(for: b, evaluated: evaluated[i]) else { continue }
+                tokenToEmail[token] = chunkEmails[i]
+                tokens.append(token)
+            }
+            for m in try await api.directoryResolve(tokens: tokens) {
+                if let email = tokenToEmail[m.token] {
+                    results.append((email: email, accountId: m.accountId, username: m.username))
+                }
+            }
+            start = end
+        }
+        return results
+    }
+
     // MARK: - Sending
 
     /// Starts (or reopens) a conversation with a username; resolves it to
-    /// an account id via the relay.
+    /// an account id via blinded discovery.
     func startConversation(username: String) async throws -> String {
-        let account = try await api.lookupAccount(username: username)
+        let account = try await resolveAccount(username: username)
         let id = try storage.messages.conversation(withPeer: account, username: username)
         refreshConversations()
         return id
@@ -1101,7 +1161,7 @@ final class MessagingService {
     func createGroup(name: String, memberUsernames: [String]) async throws -> String {
         var members: [String] = []
         for username in memberUsernames {
-            let account = try await api.lookupAccount(username: username)
+            let account = try await resolveAccount(username: username)
             members.append(account)
             try? await refreshSessions(withPeer: account) // need pairwise sessions for SKDM/control
         }
@@ -1118,7 +1178,7 @@ final class MessagingService {
     }
 
     func addGroupMember(username: String, toGroup groupId: String) async throws {
-        let account = try await api.lookupAccount(username: username)
+        let account = try await resolveAccount(username: username)
         try? await refreshSessions(withPeer: account)
         let gs = try await api.addGroupMember(groupId: groupId, account: account)
         try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)

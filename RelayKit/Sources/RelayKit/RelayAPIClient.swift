@@ -9,6 +9,19 @@
 import CryptoCore
 import Foundation
 
+/// One resolved blinded-directory hit.
+public struct DirectoryMatch: Sendable, Equatable {
+    public let token: Data
+    public let accountId: String
+    public let username: String
+
+    public init(token: Data, accountId: String, username: String) {
+        self.token = token
+        self.accountId = accountId
+        self.username = username
+    }
+}
+
 public enum RelayAPIError: Error, LocalizedError {
     case http(status: Int, message: String)
     case malformedResponse
@@ -140,6 +153,35 @@ public struct RelayAPIClient: Sendable {
             authenticated: false
         )
         return response.accountId
+    }
+
+    /// Blinded discovery, step 1: sends client-blinded ristretto elements and
+    /// returns the server's OPRF evaluations (k·B). The relay never sees the
+    /// underlying identifiers.
+    public func directoryEvaluate(blinded: [Data]) async throws -> [Data] {
+        struct Req: Encodable { let blinded: [String] }
+        struct Response: Decodable { let evaluated: [String] }
+        let r: Response = try await request(
+            "POST", "v1/directory/oprf",
+            body: Req(blinded: blinded.map { $0.base64EncodedString() })
+        )
+        return r.evaluated.compactMap { Data(base64Encoded: $0) }
+    }
+
+    /// Blinded discovery, step 2: resolves derived OPRF tokens to accounts.
+    /// Unmatched tokens are simply absent from the result (non-users stay private).
+    public func directoryResolve(tokens: [Data]) async throws -> [DirectoryMatch] {
+        struct Req: Encodable { let tokens: [String] }
+        struct ResultDTO: Decodable { let token: String; let accountId: String; let username: String }
+        struct Response: Decodable { let results: [ResultDTO] }
+        let r: Response = try await request(
+            "POST", "v1/directory/resolve",
+            body: Req(tokens: tokens.map { $0.base64EncodedString() })
+        )
+        return r.results.compactMap { dto in
+            guard let token = Data(base64Encoded: dto.token) else { return nil }
+            return DirectoryMatch(token: token, accountId: dto.accountId, username: dto.username)
+        }
     }
 
     /// Looks up an account by email address. Returns (accountId, username) or throws if not found.

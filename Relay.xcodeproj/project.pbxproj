@@ -12,6 +12,7 @@
 		EC3C5122300C4AAF00D20386 /* SecureStorage in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5121300C4AAF00D20386 /* SecureStorage */; };
 		EC3C5125300C4AC600D20386 /* CryptoCore in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5124300C4AC600D20386 /* CryptoCore */; };
 		EC3C5128300C4ADE00D20386 /* RelayKit in Frameworks */ = {isa = PBXBuildFile; productRef = EC3C5127300C4ADE00D20386 /* RelayKit */; };
+		EC42F1B93056CF3400A150CE /* Sodium in Frameworks */ = {isa = PBXBuildFile; productRef = EC42F1B83056CF3400A150CE /* Sodium */; };
 		EC47B64130428F60009C986A /* RelayShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC47B63730428F60009C986A /* RelayShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		EC47B6513042CECE009C986A /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B6503042CECE009C986A /* WidgetKit.framework */; };
 		EC47B6533042CECE009C986A /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B6523042CECE009C986A /* SwiftUI.framework */; };
@@ -235,6 +236,7 @@
 				ECFD00A7302F3B6400F3E5E4 /* WebRTC in Frameworks */,
 				EC3C5128300C4ADE00D20386 /* RelayKit in Frameworks */,
 				EC3C5122300C4AAF00D20386 /* SecureStorage in Frameworks */,
+				EC42F1B93056CF3400A150CE /* Sodium in Frameworks */,
 				ECA1AD4B3018F09C001EF64A /* RelayCore in Frameworks */,
 				EC3C5125300C4AC600D20386 /* CryptoCore in Frameworks */,
 			);
@@ -370,6 +372,7 @@
 				EC3C5127300C4ADE00D20386 /* RelayKit */,
 				ECA1AD4A3018F09C001EF64A /* RelayCore */,
 				ECFD00A6302F3B6400F3E5E4 /* WebRTC */,
+				EC42F1B83056CF3400A150CE /* Sodium */,
 			);
 			productName = Relay;
 			productReference = EC3C50E9300B766C00D20386 /* Relay.app */;
@@ -557,6 +560,7 @@
 				EC3C5126300C4ADE00D20386 /* XCLocalSwiftPackageReference "RelayKit" */,
 				ECA1AD493018F09C001EF64A /* XCLocalSwiftPackageReference "RelayCore" */,
 				ECFD00A5302F3B6400F3E5E4 /* XCRemoteSwiftPackageReference "WebRTC" */,
+				EC42F1B73056CF3400A150CE /* XCRemoteSwiftPackageReference "swift-sodium" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EC3C50EA300B766C00D20386 /* Products */;
@@ -1410,6 +1414,14 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		EC42F1B73056CF3400A150CE /* XCRemoteSwiftPackageReference "swift-sodium" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/jedisct1/swift-sodium";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.11.0;
+			};
+		};
 		ECFD00A5302F3B6400F3E5E4 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/stasel/WebRTC";
@@ -1436,6 +1448,11 @@
 		EC3C5127300C4ADE00D20386 /* RelayKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = RelayKit;
+		};
+		EC42F1B83056CF3400A150CE /* Sodium */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EC42F1B73056CF3400A150CE /* XCRemoteSwiftPackageReference "swift-sodium" */;
+			productName = Sodium;
 		};
 		ECA1AD4A3018F09C001EF64A /* RelayCore */ = {
 			isa = XCSwiftPackageProductDependency;
