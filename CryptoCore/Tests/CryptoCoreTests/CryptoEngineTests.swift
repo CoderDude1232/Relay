@@ -73,6 +73,43 @@ struct CryptoEngineTests {
         }
     }
 
+    @Test func sealedSenderRoundTrip() throws {
+        let aliceId = "11111111-1111-1111-1111-111111111111"
+        let bobId = "22222222-2222-2222-2222-222222222222"
+        let alice = try CryptoEngine.makeEphemeral(accountId: aliceId, deviceId: 1)
+        let bob = try CryptoEngine.makeEphemeral(accountId: bobId, deviceId: 1)
+        let bobAddress = bob.localAddress
+
+        // Alice establishes a session to Bob.
+        let bobKeys = try bob.generatePreKeyPublication(
+            signedPreKeyId: 1, kyberPreKeyId: 1, oneTimePreKeyIds: 1..<11
+        )
+        try alice.processPeerBundle(fetchBundle(from: bobKeys, deviceId: 1), from: bobAddress)
+
+        // Mint Alice's sealed-sender certificate (what the relay does server-side).
+        let trustRoot = PrivateKey.generate()
+        let serverKey = PrivateKey.generate()
+        let serverCert = try ServerCertificate(keyId: 1, publicKey: serverKey.publicKey, trustRoot: trustRoot)
+        let aliceCert = try SenderCertificate(
+            sender: SealedSenderAddress(e164: nil, uuidString: aliceId, deviceId: 1),
+            publicKey: PublicKey(alice.identityKey()),
+            expiration: 2_000_000_000_000,
+            signerCertificate: serverCert,
+            signerKey: serverKey
+        )
+
+        // Alice sends sealed; Bob unwraps, validates against the trust root, and
+        // recovers the sender from the certificate.
+        let secret = Data("sealed hello".utf8)
+        let sealed = try alice.sealedEncrypt(secret, for: bobAddress, senderCertificate: aliceCert.serialize())
+        let result = try bob.sealedDecrypt(
+            sealed, trustRoot: trustRoot.publicKey.serialize(), timestampMs: 1_700_000_000_000
+        )
+        #expect(result.plaintext == secret)
+        #expect(result.senderAccountId == aliceId)
+        #expect(result.senderDeviceId == 1)
+    }
+
     @Test func outOfOrderDelivery() throws {
         let (alice, bob, aliceAddress, bobAddress) = try makePeers()
         let bobKeys = try bob.generatePreKeyPublication(

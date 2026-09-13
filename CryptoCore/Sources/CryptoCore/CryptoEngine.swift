@@ -241,6 +241,121 @@ public final class CryptoEngine {
         }
     }
 
+    // MARK: - Sealed sender
+
+    /// The result of decrypting a sealed-sender message: the recovered sender
+    /// identity (from the validated certificate) and the inner plaintext.
+    public struct SealedSenderDecryptResult: Sendable {
+        public let senderAccountId: String
+        public let senderDeviceId: UInt32
+        public let plaintext: Data
+    }
+
+    public enum SealedSenderError: Error, Equatable {
+        /// The sender certificate failed validation against the trust root or is expired.
+        case invalidCertificate
+        /// The wrapped message used a ciphertext type the engine can't decrypt.
+        case unsupportedMessageType
+    }
+
+    /// Encrypts `plaintext` for `address` as a sealed-sender message: the normal
+    /// Double Ratchet (or sender-key) ciphertext wrapped in an outer layer
+    /// encrypted to the recipient's identity key, carrying `senderCertificate`.
+    /// The relay sees only an opaque blob addressed to the recipient — not the
+    /// sender. `senderCertificate` is the serialized cert from the relay's
+    /// GET /v1/certificate/delivery; `groupId` is empty for 1:1.
+    public func sealedEncrypt(
+        _ plaintext: Data,
+        for address: ProtocolAddress,
+        senderCertificate: Data,
+        groupId: Data = Data()
+    ) throws -> Data {
+        let cert = try SenderCertificate(senderCertificate)
+        let ciphertext = try signalEncrypt(
+            message: plaintext,
+            for: address,
+            localAddress: localAddress,
+            sessionStore: store,
+            identityStore: store,
+            context: context
+        )
+        let content = try UnidentifiedSenderMessageContent(
+            ciphertext,
+            from: cert,
+            contentHint: .default,
+            groupId: groupId
+        )
+        return try LibSignalClient.sealedSenderEncrypt(
+            content,
+            for: address,
+            identityStore: store,
+            context: context
+        )
+    }
+
+    /// Decrypts a sealed-sender blob: unwraps the outer layer with our identity
+    /// key, validates the sender certificate against `trustRoot` (33-byte
+    /// serialized public key) at `timestampMs`, then decrypts the inner message
+    /// from the recovered sender. Throws `SealedSenderError.invalidCertificate`
+    /// if the certificate doesn't validate.
+    public func sealedDecrypt(
+        _ sealed: Data,
+        trustRoot: Data,
+        timestampMs: UInt64
+    ) throws -> SealedSenderDecryptResult {
+        let usmc = try UnidentifiedSenderMessageContent(
+            message: sealed,
+            identityStore: store,
+            context: context
+        )
+        let cert = usmc.senderCertificate
+        let root = try PublicKey(trustRoot)
+        guard cert.validate(trustRoot: root, time: timestampMs) else {
+            throw SealedSenderError.invalidCertificate
+        }
+        let sender = cert.sender
+        let senderAddress = try ProtocolAddress(name: sender.uuidString, deviceId: sender.deviceId)
+
+        let plaintext: Data
+        switch usmc.messageType {
+        case .preKey:
+            plaintext = try signalDecryptPreKey(
+                message: PreKeySignalMessage(bytes: usmc.contents),
+                from: senderAddress,
+                localAddress: localAddress,
+                sessionStore: store,
+                identityStore: store,
+                preKeyStore: store,
+                signedPreKeyStore: store,
+                kyberPreKeyStore: store,
+                context: context
+            )
+        case .senderKey:
+            plaintext = try LibSignalClient.groupDecrypt(
+                usmc.contents,
+                from: senderAddress,
+                store: store,
+                context: context
+            )
+        case .whisper:
+            plaintext = try signalDecrypt(
+                message: SignalMessage(bytes: usmc.contents),
+                from: senderAddress,
+                to: localAddress,
+                sessionStore: store,
+                identityStore: store,
+                context: context
+            )
+        default:
+            throw SealedSenderError.unsupportedMessageType
+        }
+        return SealedSenderDecryptResult(
+            senderAccountId: sender.uuidString,
+            senderDeviceId: sender.deviceId,
+            plaintext: plaintext
+        )
+    }
+
     // MARK: - Groups (sender keys)
 
     /// Creates (or loads) this device's sender key for `distributionId` and

@@ -185,6 +185,19 @@ public struct RelayAPIClient: Sendable {
         return (r.accountId, r.username)
     }
 
+    /// Fetches a sealed-sender delivery certificate for this device (binds the
+    /// account/device to its identity key, 7-day expiry). Clients cache it and
+    /// refresh before `expiresAt`. Throws `RelayAPIError.http(503,…)` if the relay
+    /// hasn't enabled sealed sender.
+    public func deliveryCertificate() async throws -> (certificate: Data, expiresAt: Int64) {
+        struct Response: Decodable { let certificate: String; let expiresAt: Int64 }
+        let r: Response = try await request("GET", "v1/certificate/delivery", body: nil as [String: String]?)
+        guard let data = Data(base64Encoded: r.certificate) else {
+            throw RelayAPIError.malformedResponse
+        }
+        return (data, r.expiresAt)
+    }
+
     /// An account's live connection state and last-seen time (ms since epoch).
     public func presence(account: String) async throws -> Presence {
         let response: Presence = try await request(
