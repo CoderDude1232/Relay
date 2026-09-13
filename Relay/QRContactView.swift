@@ -41,6 +41,8 @@ private struct QRPreset: Identifiable, Equatable, Sendable {
 
 struct MyQRCodeView: View {
     let username: String
+    /// Optional generator for a one-time, single-use contact invite link.
+    var createInviteLink: (() async throws -> URL)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var preset    = QRPreset.all[0]
@@ -48,92 +50,37 @@ struct MyQRCodeView: View {
     @State private var shareCard: UIImage?
     @State private var showingShare = false
     @State private var nfcAlert: String? = nil
+    @State private var inviteLink: URL?
+    @State private var showingInviteShare = false
+    @State private var generatingInvite = false
+    @State private var inviteError: String?
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                Spacer()
+            ZStack(alignment: .top) {
+                // The shareable card, near the top of the screen.
+                cardView
+                    .frame(maxWidth: 340)
+                    .padding(.top, 24)
+                    .animation(.easeInOut(duration: 0.2), value: preset.id)
 
-                // Gradient card — no shadow
-                VStack(spacing: 16) {
-                    // QR code on white rounded background
-                    Group {
-                        if let image = qrImage {
-                            Image(uiImage: image)
-                                .interpolation(.none)
-                                .resizable()
-                                .scaledToFit()
-                                .accessibilityLabel("QR code for \(username)")
-                        } else {
-                            ProgressView()
-                                .tint(.secondary)
-                                .frame(maxWidth: .infinity, minHeight: 200)
-                                .accessibilityLabel("Generating QR code")
-                        }
-                    }
-                    .padding(16)
-                    .background(.white, in: .rect(cornerRadius: 14, style: .continuous))
+                // Controls pinned to the bottom. The colour picker and the NFC /
+                // one-time-link buttons are hosted in a secure canvas so they are
+                // omitted from screenshots — a screenshot captures only the card.
+                VStack(spacing: 14) {
+                    Spacer()
 
-                    // Username sits below the QR, inside the card
-                    Text("@\(username)")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .padding(.bottom, 2)
-                }
-                .padding(20)
-                .background(
-                    LinearGradient(
-                        colors: [preset.topColor, preset.botColor],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    in: .rect(cornerRadius: 28, style: .continuous)
-                )
-                .frame(maxWidth: 300)
-                .animation(.easeInOut(duration: 0.2), value: preset.id)
+                    presetPicker
+                        .hiddenInScreenshots()
 
-                // Preset picker
-                HStack(spacing: 10) {
-                    ForEach(QRPreset.all) { p in
-                        Button { preset = p } label: {
-                            Circle()
-                                .fill(LinearGradient(
-                                    colors: [p.topColor, p.botColor],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ))
-                                .frame(width: 34, height: 34)
-                                .overlay {
-                                    if p == preset {
-                                        Circle().strokeBorder(.white, lineWidth: 2.5)
-                                    }
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(p.id)
-                    }
-                }
-
-                VStack(spacing: 10) {
                     Text("relaymsg.app/add/\(username)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
 
-                    if NFCContactManager.isAvailable {
-                        Button {
-                            NFCContactManager.shared.startWriting(username: username) { success in
-                                nfcAlert = success
-                                    ? "Contact link written! Anyone can tap this tag to add you on Relay."
-                                    : "Could not write to tag. Make sure it is writable and try again."
-                            }
-                        } label: {
-                            Label("Write to NFC Tag", systemImage: "wave.3.right")
-                        }
-                        .buttonStyle(.bordered)
-                    }
+                    actionButtons
+                        .hiddenInScreenshots()
                 }
-
-                Spacer()
+                .padding(.bottom, 10)
             }
             .padding(.horizontal, 32)
             .navigationTitle("My QR Code")
@@ -166,6 +113,121 @@ struct MyQRCodeView: View {
                 Button("OK") { nfcAlert = nil }
             } message: {
                 Text(nfcAlert ?? "")
+            }
+            .sheet(isPresented: $showingInviteShare) {
+                if let inviteLink {
+                    ActivitySheet(items: [inviteLink])
+                        .presentationDetents([.medium])
+                }
+            }
+            .alert("Invite Link", isPresented: Binding(
+                get: { inviteError != nil },
+                set: { if !$0 { inviteError = nil } }
+            )) {
+                Button("OK") { inviteError = nil }
+            } message: {
+                Text(inviteError ?? "")
+            }
+        }
+    }
+
+    // The gradient card (QR + username) — the only thing meant to survive a
+    // screenshot.
+    private var cardView: some View {
+        VStack(spacing: 18) {
+            Group {
+                if let image = qrImage {
+                    Image(uiImage: image)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .accessibilityLabel("QR code for \(username)")
+                } else {
+                    ProgressView()
+                        .tint(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                        .accessibilityLabel("Generating QR code")
+                }
+            }
+            .padding(18)
+            .background(.white, in: .rect(cornerRadius: 16, style: .continuous))
+
+            Text("@\(username)")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.bottom, 2)
+        }
+        .padding(24)
+        .background(
+            LinearGradient(
+                colors: [preset.topColor, preset.botColor],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: .rect(cornerRadius: 32, style: .continuous)
+        )
+    }
+
+    private var presetPicker: some View {
+        HStack(spacing: 10) {
+            ForEach(QRPreset.all) { p in
+                Button { preset = p } label: {
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: [p.topColor, p.botColor],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                        .frame(width: 34, height: 34)
+                        .overlay {
+                            if p == preset {
+                                Circle().strokeBorder(.white, lineWidth: 2.5)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(p.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        VStack(spacing: 10) {
+            if NFCContactManager.isAvailable {
+                Button {
+                    NFCContactManager.shared.startWriting(username: username) { success in
+                        nfcAlert = success
+                            ? "Contact link written! Anyone can tap this tag to add you on Relay."
+                            : "Could not write to tag. Make sure it is writable and try again."
+                    }
+                } label: {
+                    Label("Write to NFC Tag", systemImage: "wave.3.right")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if let createInviteLink {
+                Button {
+                    generatingInvite = true
+                    Task {
+                        defer { generatingInvite = false }
+                        do {
+                            inviteLink = try await createInviteLink()
+                            showingInviteShare = true
+                        } catch {
+                            inviteError = "Could not create a one-time link. Try again."
+                        }
+                    }
+                } label: {
+                    if generatingInvite {
+                        ProgressView()
+                    } else {
+                        Label("Create One-Time Invite Link", systemImage: "link.badge.plus")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(generatingInvite)
             }
         }
     }
@@ -286,6 +348,85 @@ nonisolated private func renderShareCard(
 }
 
 // MARK: - UIActivityViewController wrapper
+
+// MARK: - Screenshot-hidden container
+
+extension View {
+    /// Hosts the view inside a UITextField's secure-entry canvas: it renders
+    /// normally on screen and stays interactive, but iOS omits that layer from
+    /// screenshots and screen recordings. Used to keep editing chrome out of a
+    /// shared screenshot of the QR card.
+    func hiddenInScreenshots() -> some View {
+        ScreenshotHiddenContainer { self }
+    }
+}
+
+private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
+    var content: Content
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    func makeCoordinator() -> Coordinator { Coordinator(rootView: content) }
+
+    func makeUIView(context: Context) -> UIView {
+        let coord = context.coordinator
+        let field = coord.secureField
+        field.isSecureTextEntry = true
+        field.isUserInteractionEnabled = true
+
+        let wrapper = UIView()
+        wrapper.backgroundColor = .clear
+
+        let host = coord.hosting.view!
+        host.backgroundColor = .clear
+        host.translatesAutoresizingMaskIntoConstraints = false
+
+        // The secure canvas is the text field's first subview; reparent it into
+        // our wrapper and host the SwiftUI content inside it. If the private view
+        // isn't available, fall back to showing the content normally.
+        let container: UIView = field.subviews.first ?? wrapper
+        if container !== wrapper {
+            container.subviews.forEach { $0.removeFromSuperview() }
+            container.isUserInteractionEnabled = true
+            container.translatesAutoresizingMaskIntoConstraints = false
+            wrapper.addSubview(container)
+            NSLayoutConstraint.activate([
+                container.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+                container.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+                container.topAnchor.constraint(equalTo: wrapper.topAnchor),
+                container.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+            ])
+        }
+        container.addSubview(host)
+        NSLayoutConstraint.activate([
+            host.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            host.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            host.topAnchor.constraint(equalTo: container.topAnchor),
+            host.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        return wrapper
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.hosting.rootView = content
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 320
+        return context.coordinator.hosting.sizeThatFits(
+            in: CGSize(width: width, height: .greatestFiniteMagnitude)
+        )
+    }
+
+    final class Coordinator {
+        let secureField = UITextField()
+        let hosting: UIHostingController<Content>
+        init(rootView: Content) {
+            hosting = UIHostingController(rootView: rootView)
+            hosting.view.backgroundColor = .clear
+        }
+    }
+}
 
 private struct ActivitySheet: UIViewControllerRepresentable {
     let items: [Any]

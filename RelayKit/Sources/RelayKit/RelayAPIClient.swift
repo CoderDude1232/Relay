@@ -23,6 +23,16 @@ public enum RelayAPIError: Error, LocalizedError {
     }
 }
 
+/// Result of a Supabase social-login provisioning call.
+public enum OAuthProvisionOutcome: Sendable {
+    /// The user is signed in: fresh device credentials, the account's username,
+    /// and whether the account was created by this call.
+    case signedIn(credentials: RelayCredentials, username: String, created: Bool)
+    /// No account exists yet for this user and no username was supplied — the
+    /// caller should prompt for one and retry.
+    case usernameRequired
+}
+
 /// An account's connection state: online now, or when last seen (ms epoch).
 public struct Presence: Decodable, Sendable, Equatable {
     public let online: Bool
@@ -87,6 +97,42 @@ public struct RelayAPIClient: Sendable {
         return (creds, response.username)
     }
 
+    /// Signs a Supabase-authenticated user into their relay account (creating it
+    /// on first use) and provisions a fresh device. The relay verifies the
+    /// Supabase access token directly with Supabase, so this works on any device
+    /// — the way back in for passwordless social-login accounts.
+    ///
+    /// `username` is required only when creating a brand-new account. If it is
+    /// nil and no account exists yet, the server replies 404 and this returns
+    /// `.usernameRequired` so the caller can prompt for one and retry.
+    /// `devicePassword` is the client-chosen password for the new device.
+    public func provisionOAuth(
+        accessToken: String, username: String?, devicePassword: String, accountPassword: String? = nil
+    ) async throws -> OAuthProvisionOutcome {
+        struct Response: Decodable {
+            let accountId: String
+            let deviceId: UInt32
+            let username: String
+            let created: Bool
+        }
+        var body: [String: String] = ["accessToken": accessToken, "password": devicePassword]
+        if let username, !username.isEmpty { body["username"] = username }
+        if let accountPassword, !accountPassword.isEmpty { body["accountPassword"] = accountPassword }
+        do {
+            let response: Response = try await request(
+                "POST", "v1/accounts/oauth", body: body, authenticated: false
+            )
+            let creds = RelayCredentials(
+                accountId: response.accountId,
+                deviceId: response.deviceId,
+                password: devicePassword
+            )
+            return .signedIn(credentials: creds, username: response.username, created: response.created)
+        } catch RelayAPIError.http(let status, _) where status == 404 {
+            return .usernameRequired
+        }
+    }
+
     public func lookupAccount(username: String) async throws -> String {
         struct Response: Decodable { let accountId: String }
         let response: Response = try await request(
@@ -120,6 +166,23 @@ public struct RelayAPIClient: Sendable {
             "GET", "v1/accounts/\(account)", body: nil as [String: String]?
         )
         return response.username
+    }
+
+    /// Mints a single-use contact invite token for the authenticated account.
+    /// Share it as a link; the first person to open it (and only them) resolves
+    /// to this account, then the token is spent.
+    public func createContactInvite() async throws -> (token: String, expiresAt: Int64) {
+        struct Response: Decodable { let token: String; let expiresAt: Int64 }
+        let r: Response = try await request("POST", "v1/contact-invites", body: nil as [String: String]?)
+        return (r.token, r.expiresAt)
+    }
+
+    /// Consumes a contact invite token, returning the inviter's account id and
+    /// username. Throws `RelayAPIError.http(404,…)` if invalid/expired/used.
+    public func claimContactInvite(token: String) async throws -> (accountId: String, username: String) {
+        struct Response: Decodable { let accountId: String; let username: String }
+        let r: Response = try await request("POST", "v1/contact-invites/claim", body: ["token": token])
+        return (r.accountId, r.username)
     }
 
     /// An account's live connection state and last-seen time (ms since epoch).

@@ -123,6 +123,11 @@ struct OnboardingView: View {
                 }
                 supabaseSession = session
                 try await finish(session: session, password: "")
+            } catch is AppModel.NeedsUsernameError {
+                // Session is valid but there's no relay account yet — send the
+                // user to pick a username.
+                isAutoRestoring = false
+                withAnimation(.spring(duration: 0.5)) { step = .setup }
             } catch {
                 registrationError = error.localizedDescription
                 isAutoRestoring = false
@@ -152,38 +157,36 @@ struct OnboardingView: View {
 
     private func handleOAuth(session: SupabaseSession) {
         supabaseSession = session
-        let isNew = !model.hasExistingRelayAccount(forUserId: session.userId)
-        if isNew {
-            if displayName.isEmpty {
-                let prefix = session.email.components(separatedBy: "@").first ?? ""
-                if !prefix.isEmpty {
-                    displayName = prefix.split(separator: ".").map { $0.capitalized }.joined(separator: " ")
+        Task {
+            do {
+                // Try to sign straight in. Returning users — even on a brand-new
+                // device with no local credentials — are recovered by the relay
+                // via their verified Supabase token, so no username is needed.
+                try await finish(session: session, password: "")
+            } catch is AppModel.NeedsUsernameError {
+                // Brand-new user — prefill a display name and prompt for a username.
+                if displayName.isEmpty {
+                    let prefix = session.email.components(separatedBy: "@").first ?? ""
+                    if !prefix.isEmpty {
+                        displayName = prefix.split(separator: ".").map { $0.capitalized }.joined(separator: " ")
+                    }
                 }
-            }
-            withAnimation(.spring(duration: 0.5)) { step = .setup }
-        } else {
-            Task {
-                do {
-                    try await finish(session: session, password: "")
-                } catch {
-                    registrationError = error.localizedDescription
-                }
+                withAnimation(.spring(duration: 0.5)) { step = .setup }
+            } catch {
+                registrationError = error.localizedDescription
             }
         }
     }
 
     private func finish(session: SupabaseSession, password: String = "") async throws {
-        let name = displayName.trimmingCharacters(in: .whitespaces).isEmpty
-            ? (session.email.isEmpty ? session.userId : session.email)
-            : displayName
-        let handle = username.isEmpty
-            ? (session.email.isEmpty ? session.userId : session.email)
-            : username
+        let name = displayName.trimmingCharacters(in: .whitespaces)
+        let handle = username.trimmingCharacters(in: .whitespaces)
         try await model.registerWithSupabase(
             serverURL: RelayConfig.serverURL,
+            accessToken: session.accessToken,
             email: session.email,
             supabaseUserId: session.userId,
-            username: handle,
+            username: handle.isEmpty ? nil : handle,
             displayName: name,
             accountPassword: password.isEmpty ? nil : password
         )
@@ -197,24 +200,22 @@ private struct BackgroundGradient: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.04, green: 0.04, blue: 0.18),
-                    Color(red: 0.06, green: 0.02, blue: 0.22),
-                    Color(red: 0.02, green: 0.08, blue: 0.20),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            // Near-black base with a soft magenta glow that matches the logo /
+            // accent, gently breathing.
+            Color(red: 0.03, green: 0.03, blue: 0.05)
+
+            RadialGradient(
+                colors: [Color(red: 0.965, green: 0.231, blue: 1.0).opacity(phase ? 0.30 : 0.18), .clear],
+                center: UnitPoint(x: 0.5, y: 0.28),
+                startRadius: 0,
+                endRadius: 520
             )
-            LinearGradient(
-                colors: [
-                    Color(red: 0.12, green: 0.04, blue: 0.30),
-                    Color(red: 0.04, green: 0.12, blue: 0.28),
-                ],
-                startPoint: phase ? .topTrailing : .bottomLeading,
-                endPoint: phase ? .bottomLeading : .topTrailing
+            RadialGradient(
+                colors: [Color(red: 0.776, green: 0.067, blue: 0.839).opacity(phase ? 0.18 : 0.10), .clear],
+                center: .bottomTrailing,
+                startRadius: 0,
+                endRadius: 460
             )
-            .opacity(phase ? 0.55 : 0.20)
         }
         .ignoresSafeArea()
         .onAppear {
@@ -247,11 +248,7 @@ private struct WelcomeView: View {
                 Image("RelayLogo")
                     .resizable()
                     .scaledToFit()
-                    .foregroundStyle(.white)
-                    .frame(width: 80, height: 80)
-                Text("Relay")
-                    .font(.system(size: 42, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .frame(width: 250)
                 Text("Private messaging,\nend-to-end encrypted.")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(.white.opacity(0.55))

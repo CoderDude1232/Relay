@@ -123,7 +123,9 @@ struct SettingsView: View {
                         }
                         .tint(.primary)
                         .sheet(isPresented: $showingQR) {
-                            MyQRCodeView(username: username)
+                            MyQRCodeView(username: username, createInviteLink: {
+                                try await service.createContactInviteLink()
+                            })
                         }
                     }
                 }
@@ -342,10 +344,25 @@ struct PrivacySettingsView: View {
                         }
                     }
                 }
+
+                Toggle(isOn: Binding(
+                    get: { service.sendJitterEnabled },
+                    set: { service.sendJitterEnabled = $0 }
+                )) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "timer", color: .indigo)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Send Delay")
+                            Text("Hold outgoing messages for a short random delay so send timing can't be correlated")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             } header: {
                 Text("Messaging")
             } footer: {
-                Text("Changes apply to all conversations.")
+                Text("Changes apply to all conversations. Send Delay adds up to 5 seconds before each message leaves your device.")
             }
 
             Section {

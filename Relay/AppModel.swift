@@ -35,6 +35,8 @@ final class AppModel {
     var pendingDeepLinkUsername: String?
     /// Set by onOpenURL when the user opens a relay://join/<token> invite link.
     var pendingGroupInviteToken: String?
+    /// Set by onOpenURL when the user opens a one-time relay://contact/<token> link.
+    var pendingContactInviteToken: String?
     /// Set by AppDelegate's UNUserNotificationCenterDelegate when the user taps a message banner.
     var pendingNotificationConversationId: String?
 
@@ -231,13 +233,26 @@ final class AppModel {
     /// If credentials already exist in the Keychain for this Supabase user they
     /// are reused (handles reinstall / new app launch). Otherwise a fresh relay
     /// account is registered with a cryptographically-random password.
-    func registerWithSupabase(serverURL: URL, email: String, supabaseUserId: String, username: String, displayName: String, accountPassword: String? = nil) async throws {
-        let password = Self.generateRandomPassword()
-        // Resume if this device already has credentials for this Supabase user.
+    /// Thrown when a Supabase user has no relay account yet and hasn't chosen a
+    /// username — onboarding catches this to show the username picker.
+    struct NeedsUsernameError: LocalizedError {
+        var errorDescription: String? { "Choose a username to finish setting up your account." }
+    }
+
+    /// Signs a Supabase-authenticated user into their relay account, creating it
+    /// on first use. The relay verifies the Supabase access token directly, so
+    /// this is the way back in for passwordless social-login accounts on any
+    /// device — no email collision, no password required. Pass `username` only
+    /// when the user has chosen one; when it is nil and no account exists yet,
+    /// this throws `NeedsUsernameError` so onboarding can prompt for one.
+    func registerWithSupabase(serverURL: URL, accessToken: String, email: String, supabaseUserId: String, username: String?, displayName: String, accountPassword: String? = nil) async throws {
+        // Fast path: this device already holds credentials for this Supabase
+        // user — resume without hitting the server (which would provision a new
+        // device on every call).
         if let data = try? keychain.loadSecret(for: Self.accountSecretName),
            let saved = try? JSONDecoder().decode(SavedAccount.self, from: data),
            saved.supabaseUserId == supabaseUserId
-             || saved.username == username
+             || (!email.isEmpty && saved.email == email)
              || saved.username == email {
             if case .ready = phase { return }
             do {
@@ -265,12 +280,50 @@ final class AppModel {
             }
             return
         }
+
+        let password = Self.generateRandomPassword()
+        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
+        let outcome: OAuthProvisionOutcome
         do {
-            try await register(serverURL: serverURL, username: username, email: email, displayName: displayName, password: password, accountPassword: accountPassword, supabaseUserId: supabaseUserId)
-        } catch let e as SetupError {
-            throw e
+            outcome = try await api.provisionOAuth(
+                accessToken: accessToken, username: username,
+                devicePassword: password, accountPassword: accountPassword
+            )
         } catch {
-            throw SetupError(step: "Relay registration", underlying: error)
+            throw SetupError(step: "Create relay account (\(serverURL.host ?? serverURL.absoluteString))", underlying: error)
+        }
+
+        switch outcome {
+        case .usernameRequired:
+            throw NeedsUsernameError()
+        case .signedIn(let credentials, let resolvedUsername, _):
+            let service: MessagingService
+            do {
+                service = try await makeService(credentials: credentials, serverURL: serverURL, username: resolvedUsername)
+            } catch {
+                throw SetupError(step: "Open local storage", underlying: error)
+            }
+            if !displayName.isEmpty { service.setMyDisplayName(displayName) }
+
+            let saved = SavedAccount(
+                accountId: credentials.accountId,
+                deviceId: credentials.deviceId,
+                password: password,
+                serverURL: serverURL,
+                username: resolvedUsername,
+                email: email,
+                supabaseUserId: supabaseUserId
+            )
+            try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+            service.start()
+            phase = .ready(service)
+            uploadPushTokenIfReady()
+            publishDeviceAuthorizationKeyIfReady()
+            // Publish initial prekeys in the background so the UI is responsive
+            // immediately. Retried automatically by PreKeyMaintainer on connect.
+            Task {
+                try? await service.publishInitialKeys()
+            }
         }
     }
 
