@@ -20,9 +20,9 @@
             {
               "idiom" : "square",
               "value" : {
-                "scale" : 0.73,
+                "scale" : 0.67,
                 "translation-in-points" : [
-                  0,
+                  7,
                   0
                 ]
               }
@@ -77,7 +77,7 @@
               "value" : {
                 "scale" : 1.2500000000000002,
                 "translation-in-points" : [
-                  2,
+                  9,
                   -39.859375
                 ]
               }
