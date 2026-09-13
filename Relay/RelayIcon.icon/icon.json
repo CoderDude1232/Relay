@@ -8,154 +8,47 @@
         {
           "fill-specializations" : [
             {
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,0.52551"
-              }
-            },
-            {
               "appearance" : "dark",
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
-              }
-            }
-          ],
-          "image-name" : "home-indicator.png",
-          "name" : "home-indicator",
-          "opacity-specializations" : [
-            {
-              "value" : 0.92
-            },
-            {
-              "appearance" : "dark",
-              "value" : 1
-            }
-          ],
-          "position" : {
-            "scale" : 1.22,
-            "translation-in-points" : [
-              139.5,
-              394.1640625
-            ]
-          }
-        },
-        {
-          "fill-specializations" : [
-            {
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,0.52551"
-              }
-            },
-            {
-              "appearance" : "dark",
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
-              }
-            }
-          ],
-          "image-name" : "home-indicator.png",
-          "name" : "home-indicator",
-          "opacity-specializations" : [
-            {
-              "value" : 0.92
-            },
-            {
-              "appearance" : "dark",
-              "value" : 1
-            }
-          ],
-          "position" : {
-            "scale" : 1.22,
-            "translation-in-points" : [
-              -139.5,
-              334.6640625
-            ]
-          }
-        },
-        {
-          "fill-specializations" : [
-            {
               "value" : {
                 "solid" : "srgb:0.85882,0.20392,0.94902,1.00000"
               }
+            }
+          ],
+          "image-name" : "Image 3.png",
+          "name" : "Image 3",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.73,
+                "translation-in-points" : [
+                  0,
+                  0
+                ]
+              }
             },
             {
-              "appearance" : "dark",
+              "idiom" : "watchOS",
               "value" : {
-                "solid" : "srgb:0.11765,0.11765,0.11765,1.00000"
+                "scale" : 0.6,
+                "translation-in-points" : [
+                  17,
+                  34.625
+                ]
               }
             }
-          ],
-          "image-name" : "dynamic-island-pill-path.png",
-          "name" : "dynamic-island-pill-path",
-          "opacity-specializations" : [
-            {
-              "value" : 0.21
-            },
-            {
-              "appearance" : "dark",
-              "value" : 0.8
-            }
-          ],
-          "position" : {
-            "scale" : 0.94,
-            "translation-in-points" : [
-              -140.5,
-              -365.59375
-            ]
-          }
+          ]
         },
         {
           "fill-specializations" : [
             {
               "value" : {
-                "solid" : "srgb:0.11765,0.11765,0.11765,1.00000"
+                "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
               }
             },
-            {
-              "appearance" : "dark",
-              "value" : {
-                "solid" : "srgb:0.10196,0.10196,0.10196,1.00000"
-              }
-            }
-          ],
-          "image-name" : "dynamic-island-pill-path.png",
-          "name" : "dynamic-island-pill-path",
-          "opacity-specializations" : [
-            {
-              "value" : 0.84
-            },
-            {
-              "appearance" : "dark",
-              "value" : 0.74
-            }
-          ],
-          "position" : {
-            "scale" : 0.94,
-            "translation-in-points" : [
-              141.5,
-              -305.59375
-            ]
-          }
-        }
-      ],
-      "shadow" : {
-        "kind" : "neutral",
-        "opacity" : 0.5
-      },
-      "translucency" : {
-        "enabled" : true,
-        "value" : 0.5
-      }
-    },
-    {
-      "layers" : [
-        {
-          "fill-specializations" : [
             {
               "appearance" : "tinted",
-              "value" : {
-                "solid" : "display-p3:0.00000,0.00000,0.00000,1.00000"
-              }
+              "value" : "automatic"
             }
           ],
           "image-name" : "download-2.svg",
@@ -169,13 +62,27 @@
               "value" : 1
             }
           ],
-          "position" : {
-            "scale" : 1.08,
-            "translation-in-points" : [
-              7,
-              11.6953125
-            ]
-          }
+          "position-specializations" : [
+            {
+              "value" : {
+                "scale" : 1.08,
+                "translation-in-points" : [
+                  14.1099999999999,
+                  0
+                ]
+              }
+            },
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 1.2500000000000002,
+                "translation-in-points" : [
+                  2,
+                  -39.859375
+                ]
+              }
+            }
+          ]
         },
         {
           "hidden" : true,
@@ -201,97 +108,15 @@
     },
     {
       "layers" : [
-        {
-          "fill-specializations" : [
-            {
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,0.84706"
-              }
-            },
-            {
-              "appearance" : "dark",
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,0.84706"
-              }
-            },
-            {
-              "appearance" : "tinted",
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,0.80624"
-              }
-            }
-          ],
-          "image-name" : "download.svg",
-          "name" : "download",
-          "opacity-specializations" : [
-            {
-              "value" : 0.92
-            },
-            {
-              "appearance" : "dark",
-              "value" : 0.82
-            },
-            {
-              "appearance" : "tinted",
-              "value" : 0.41
-            }
-          ],
-          "position" : {
-            "scale" : 0.89,
-            "translation-in-points" : [
-              139.5,
-              34.5
-            ]
-          }
-        },
-        {
-          "fill-specializations" : [
-            {
-              "value" : {
-                "solid" : "srgb:0.11765,0.11765,0.11765,0.88765"
-              }
-            },
-            {
-              "appearance" : "dark",
-              "value" : {
-                "solid" : "srgb:0.85882,0.20392,0.94902,1.00000"
-              }
-            },
-            {
-              "appearance" : "tinted",
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,0.07843"
-              }
-            }
-          ],
-          "image-name" : "download.svg",
-          "name" : "download",
-          "opacity-specializations" : [
-            {
-              "appearance" : "dark",
-              "value" : 0.93
-            },
-            {
-              "appearance" : "tinted",
-              "value" : 1
-            }
-          ],
-          "position" : {
-            "scale" : 0.89,
-            "translation-in-points" : [
-              -139.5,
-              -24.5
-            ]
-          }
-        }
+
       ],
       "shadow" : {
         "kind" : "neutral",
-        "opacity" : 0.6
+        "opacity" : 0.5
       },
       "translucency" : {
         "enabled" : true,
-        "value" : 0.2
+        "value" : 0.5
       }
     }
   ],
