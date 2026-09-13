@@ -58,6 +58,11 @@ struct RelayApp: App {
                         let token = url.pathComponents.dropFirst().first ?? ""
                         guard !token.isEmpty else { return }
                         model.pendingGroupInviteToken = token
+                    } else if url.host == "contact" {
+                        // relay://contact/<token> — one-time contact invite
+                        let token = url.pathComponents.dropFirst().first ?? ""
+                        guard !token.isEmpty else { return }
+                        model.pendingContactInviteToken = token
                     } else if url.host == "conversation" {
                         // relay://conversation/<conversationId> — widget tap deeplink
                         let convId = url.pathComponents.dropFirst().first ?? ""
@@ -90,15 +95,21 @@ struct RelayApp: App {
                     }
                 }
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
-                    // Universal Link: https://relaymsg.app/add/<username>
+                    // Universal Links:
+                    //   https://relaymsg.app/add/<username>   (permanent username link)
+                    //   https://relaymsg.app/c/<token>        (one-time contact invite)
                     guard let url = activity.webpageURL,
                           url.host == "relaymsg.app",
-                          url.pathComponents.count >= 3,
-                          url.pathComponents[1] == "add"
+                          url.pathComponents.count >= 3
                     else { return }
-                    let username = url.pathComponents[2]
-                    guard !username.isEmpty else { return }
-                    model.pendingDeepLinkUsername = username
+                    let kind = url.pathComponents[1]
+                    let value = url.pathComponents[2]
+                    guard !value.isEmpty else { return }
+                    if kind == "add" {
+                        model.pendingDeepLinkUsername = value
+                    } else if kind == "c" {
+                        model.pendingContactInviteToken = value
+                    }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {

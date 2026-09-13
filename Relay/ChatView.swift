@@ -1647,231 +1647,138 @@ private struct MessageRow: View {
     let onToggleSelection: () -> Void
     let onBeginSelection: () -> Void
 
-    @State private var dragOffset: CGFloat = 0
-    @State private var hasTriggeredReplyHaptic = false
-    @State private var showingQuickReactions = false
+    @Environment(ChatAppearance.self) private var appearance
     @State private var confirmDelete = false
 
+    private var bubble: some View {
+        MessageBubble(
+            message: message, position: position, peerName: peerName,
+            service: service, conversationId: conversationId, isGroup: isGroup,
+            isCurrentSearchMatch: isCurrentSearchMatch, onInfo: onInfo
+        )
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
-            if isSelectionMode {
+        content
+            .padding(.vertical, isSelected ? 2 : 0)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                        .padding(.horizontal, -4)
+                        .transition(.opacity)
+                }
+            }
+            .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    service.deleteMessage(message.id, in: conversationId)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if isSelectionMode {
+            HStack(spacing: 8) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 21, weight: .semibold))
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
                     .frame(width: 34, height: 34)
                     .glassCompat(in: .circle)
                     .transition(.opacity)
+                bubble
+                    .contentShape(.rect)
+                    .onTapGesture { onToggleSelection() }
             }
-            MessageBubble(
-                message: message,
-                position: position,
-                peerName: peerName,
-                service: service,
-                conversationId: conversationId,
-                isGroup: isGroup,
-                isCurrentSearchMatch: isCurrentSearchMatch,
-                onInfo: onInfo
-            )
-        }
-        .padding(.vertical, isSelected ? 2 : 0)
-        .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
-                    .padding(.horizontal, -4)
-                    .transition(.opacity)
-            }
-        }
-        .offset(x: dragOffset)
-        .background(alignment: message.isOutgoing ? .trailing : .leading) {
-            let progress = Double(min(1.0, abs(dragOffset) / 55.0))
-            Image(systemName: "arrowshape.turn.up.left.fill")
-                .foregroundStyle(.tint)
-                .opacity(progress)
-                .scaleEffect(0.4 + 0.6 * progress)
-                .rotationEffect(.degrees(-30 + 30 * progress))
-                .padding(.horizontal, 24)
-        }
-        .overlay(alignment: message.isOutgoing ? .topTrailing : .topLeading) {
-            if showingQuickReactions {
-                quickMessageOverlay
-                    .offset(y: -92)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                    .zIndex(5)
-            }
-        }
-        .contentShape(.rect)
-        .onTapGesture {
-            if showingQuickReactions {
-                withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = false }
-            } else if isSelectionMode {
-                onToggleSelection()
-            }
-        }
-        .onTapGesture(count: 2) {
-            guard !isSelectionMode else { return }
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            service.toggleReaction("❤️", on: message)
-        }
-        .onLongPressGesture(minimumDuration: 0.24) {
-            guard !isSelectionMode, !message.isDeleted else { return }
-            UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-            withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = true }
-        }
-        .gesture(replyDrag, including: isSelectionMode ? .subviews : .all)
-        .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                service.deleteMessage(message.id, in: conversationId)
-            }
-        }
-    }
+        } else if message.isDeleted {
+            bubble
+        } else {
+            // Real UIKit context menu (native platter + lifted preview) plus an
+            // interactive reaction bar in sync via the interaction's willDisplay/
+            // willEnd callbacks. The row does the left/right alignment so the
+            // menu's source view is just the bubble — the menu lands on the
+            // message's side, not centered. Double-tap and swipe-to-reply live in
+            // the UIKit layer so they don't fight the interaction.
+            HStack(alignment: .bottom, spacing: 8) {
+                if message.isOutgoing {
+                    Spacer(minLength: 56)
+                } else if position.closesGroup {
+                    AvatarView(name: rowAvatarName, size: 28, imageData: rowAvatarData)
+                } else {
+                    Color.clear.frame(width: 28, height: 1)
+                }
 
-    private var quickMessageOverlay: some View {
-        VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 8) {
-            quickReactionBar
-            quickActionTray
-        }
-        .frame(maxWidth: 330, alignment: message.isOutgoing ? .trailing : .leading)
-    }
-
-    private var quickReactionBar: some View {
-        HStack(spacing: 2) {
-            ForEach(quickReactions, id: \.self) { emoji in
-                Button {
-                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-                    service.toggleReaction(emoji, on: message)
-                    withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = false }
-                } label: {
-                    Text(emoji)
-                        .font(.system(size: 24))
-                        .frame(width: 38, height: 38)
-                        .background(
-                            message.reactions.first(where: \.isOutgoing)?.emoji == emoji
-                                ? AnyShapeStyle(Color.accentColor.opacity(0.24))
-                                : AnyShapeStyle(Color.clear),
-                            in: .circle
+                NativeMenuBubble(
+                    bubble: AnyView(
+                        MessageBubble(
+                            message: message, position: position, peerName: peerName,
+                            service: service, conversationId: conversationId, isGroup: isGroup,
+                            isCurrentSearchMatch: isCurrentSearchMatch, onInfo: onInfo,
+                            embedsAlignment: false
                         )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .glassCompat(in: .capsule)
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
-    }
+                        .environment(appearance)
+                    ),
+                    isOutgoing: message.isOutgoing,
+                    reactions: quickReactions,
+                    currentReaction: message.reactions.first(where: \.isOutgoing)?.emoji,
+                    actions: menuActions,
+                    onReact: { emoji in
+                        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                        service.toggleReaction(emoji, on: message)
+                    },
+                    onDoubleTap: {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        service.toggleReaction("❤️", on: message)
+                    },
+                    onReply: onReply
+                )
 
-    private var quickActionTray: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                quickActionButton("arrowshape.turn.up.left", label: "Reply") { onReply() }
-                quickActionButton("checkmark.circle", label: "Select") { onBeginSelection() }
-                if message.isOutgoing && message.attachments.isEmpty {
-                    quickActionButton("pencil", label: "Edit") { onEdit() }
-                }
-                if !message.body.isEmpty {
-                    quickActionButton("doc.on.doc", label: "Copy") { UIPasteboard.general.string = message.body }
-                    quickActionButton("arrowshape.turn.up.right", label: "Forward") { onForward() }
-                }
-                quickActionButton(message.isStarred ? "star.slash" : "star", label: message.isStarred ? "Unstar" : "Star") {
-                    service.starMessage(message.id, starred: !message.isStarred, in: conversationId)
-                }
-                quickActionButton(message.isPinned ? "pin.slash" : "pin", label: message.isPinned ? "Unpin" : "Pin") {
-                    service.pinMessage(message.id, pinned: !message.isPinned, in: conversationId)
-                    onUpdatePin()
-                }
-                quickActionButton("info.circle", label: "Info") { onInfo() }
-                if service.canUnsend(message) {
-                    quickActionButton("arrow.uturn.backward", label: "Unsend", role: .destructive) { service.unsend(message) }
-                }
-                quickActionButton("trash", label: "Delete", role: .destructive) {
-                    confirmDelete = true
-                }
-            }
-            .padding(.horizontal, 9)
-        }
-        .frame(maxWidth: 330)
-        .padding(.vertical, 7)
-        .glassCompat(in: .capsule)
-        .shadow(color: .black.opacity(0.14), radius: 10, y: 5)
-    }
-
-    private func quickActionButton(
-        _ systemName: String,
-        label: String,
-        role: ButtonRole? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(role: role) {
-            withAnimation(.easeOut(duration: 0.12)) { showingQuickReactions = false }
-            action()
-        } label: {
-            Image(systemName: systemName)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(role == .destructive ? Color.red : Color.primary)
-                .frame(width: 34, height: 34)
-                .contentShape(.circle)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-    }
-
-    @ViewBuilder
-    private var menuItems: some View {
-        if !message.isDeleted {
-            Section {
-                Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
-                Button("Select", systemImage: "checkmark.circle") { onBeginSelection() }
-                if message.isOutgoing && message.attachments.isEmpty {
-                    Button("Edit", systemImage: "pencil") { onEdit() }
-                }
-                if !message.body.isEmpty {
-                    Button("Copy", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = message.body
-                    }
-                    Button("Forward", systemImage: "arrowshape.turn.up.right") { onForward() }
-                }
-            }
-            Section {
-                Button(message.isStarred ? "Unstar" : "Star",
-                       systemImage: message.isStarred ? "star.slash" : "star") {
-                    service.starMessage(message.id, starred: !message.isStarred, in: conversationId)
-                }
-                Button(message.isPinned ? "Unpin" : "Pin",
-                       systemImage: message.isPinned ? "pin.slash" : "pin") {
-                    service.pinMessage(message.id, pinned: !message.isPinned, in: conversationId)
-                    onUpdatePin()
-                }
-                Button("Info", systemImage: "info.circle") { onInfo() }
-            }
-        }
-        Section {
-            if service.canUnsend(message) {
-                Button("Unsend for Everyone", systemImage: "arrow.uturn.backward", role: .destructive) {
-                    service.unsend(message)
-                }
-            }
-            Button("Delete", systemImage: "trash", role: .destructive) {
-                confirmDelete = true
+                if !message.isOutgoing { Spacer(minLength: 56) }
             }
         }
     }
 
-    private var replyDrag: some Gesture {
-        DragGesture(minimumDistance: 18)
-            .onChanged { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                dragOffset = max(-70, min(70, value.translation.width * 0.5))
-                if !hasTriggeredReplyHaptic && abs(value.translation.width) > 52 {
-                    hasTriggeredReplyHaptic = true
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                }
-            }
-            .onEnded { value in
-                if abs(value.translation.width) > 52 { onReply() }
-                hasTriggeredReplyHaptic = false
-                withAnimation(.snappy) { dragOffset = 0 }
-            }
+    // Avatar shown beside incoming bubbles (the hosted core no longer includes it).
+    private var rowSenderAccount: String? {
+        if isGroup { return message.senderAccount }
+        return service.conversations.first { $0.id == conversationId }?.peerAccount
+    }
+    private var rowAvatarName: String {
+        isGroup ? service.displayName(forAccount: message.senderAccount ?? "") : peerName
+    }
+    private var rowAvatarData: Data? {
+        rowSenderAccount.flatMap { service.peerAvatarData(forAccount: $0) }
+    }
+
+    /// The action-menu contents (reactions are the separate bar, not in here).
+    private var menuActions: [MessageActionSpec] {
+        var items: [MessageActionSpec] = []
+        items.append(.init(label: "Reply", icon: "arrowshape.turn.up.left") { onReply() })
+        if message.isOutgoing && message.attachments.isEmpty {
+            items.append(.init(label: "Edit", icon: "pencil") { onEdit() })
+        }
+        if !message.body.isEmpty {
+            items.append(.init(label: "Copy", icon: "doc.on.doc") { UIPasteboard.general.string = message.body })
+            items.append(.init(label: "Forward", icon: "arrowshape.turn.up.right") { onForward() })
+        }
+        items.append(.init(label: message.isStarred ? "Unstar" : "Star",
+                           icon: message.isStarred ? "star.slash" : "star") {
+            service.starMessage(message.id, starred: !message.isStarred, in: conversationId)
+        })
+        items.append(.init(label: message.isPinned ? "Unpin" : "Pin",
+                           icon: message.isPinned ? "pin.slash" : "pin") {
+            service.pinMessage(message.id, pinned: !message.isPinned, in: conversationId)
+            onUpdatePin()
+        })
+        items.append(.init(label: "Info", icon: "info.circle") { onInfo() })
+        items.append(.init(label: "Select", icon: "checkmark.circle") { onBeginSelection() })
+        if service.canUnsend(message) {
+            items.append(.init(label: "Unsend for Everyone", icon: "arrow.uturn.backward", role: .destructive) {
+                service.unsend(message)
+            })
+        }
+        items.append(.init(label: "Delete", icon: "trash", role: .destructive) { confirmDelete = true })
+        return items
     }
 }
 
@@ -1886,6 +1793,11 @@ private struct MessageBubble: View {
     let isGroup: Bool
     var isCurrentSearchMatch = false
     var onInfo: () -> Void = {}
+    /// When false, renders only the bubble core (no leading/trailing spacers or
+    /// avatar). Used when the row handles alignment itself so the context-menu
+    /// source view is just the bubble — the native menu then lands on the
+    /// message's side rather than centered.
+    var embedsAlignment: Bool = true
 
     @Environment(ChatAppearance.self) private var appearance
     @State private var reactionDetailEmoji: String?
@@ -1919,37 +1831,25 @@ private struct MessageBubble: View {
     private var isViewOnce: Bool { message.body.hasPrefix("~once~") }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            if message.isOutgoing {
-                Spacer(minLength: 56)
-            } else {
-                // Avatar only on the last bubble of a run, like iMessage.
-                if position.closesGroup {
-                    AvatarView(name: avatarName, size: 28, imageData: avatarData)
-                } else {
-                    Color.clear.frame(width: 28, height: 1)
-                }
-            }
-
-            VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 3) {
-                if showsSenderLabel {
-                    Text(service.displayName(forAccount: message.senderAccount ?? ""))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tint)
-                        .padding(.leading, 4)
-                }
-                bubbleContent
-                    .overlay(alignment: message.isOutgoing ? .bottomLeading : .bottomTrailing) {
-                        if !message.reactions.isEmpty {
-                            ReactionBadges(chips: reactionChips, onTap: { reactionDetailEmoji = $0 })
-                                .offset(x: message.isOutgoing ? -6 : 6, y: 14)
-                        }
+        Group {
+            if embedsAlignment {
+                HStack(alignment: .bottom, spacing: 8) {
+                    if message.isOutgoing {
+                        Spacer(minLength: 56)
+                    } else if position.closesGroup {
+                        // Avatar only on the last bubble of a run, like iMessage.
+                        AvatarView(name: avatarName, size: 28, imageData: avatarData)
+                    } else {
+                        Color.clear.frame(width: 28, height: 1)
                     }
-                    .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
 
+                    coreColumn
+
+                    if !message.isOutgoing { Spacer(minLength: 56) }
+                }
+            } else {
+                coreColumn
             }
-
-            if !message.isOutgoing { Spacer(minLength: 56) }
         }
         .background {
             if isCurrentSearchMatch {
@@ -1974,6 +1874,27 @@ private struct MessageBubble: View {
                 service: service
             )
             .presentationDetents([.fraction(0.4)])
+        }
+    }
+
+    /// The bubble column (optional sender label + bubble + reaction badges),
+    /// without any leading/trailing alignment spacers.
+    private var coreColumn: some View {
+        VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 3) {
+            if showsSenderLabel {
+                Text(service.displayName(forAccount: message.senderAccount ?? ""))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tint)
+                    .padding(.leading, 4)
+            }
+            bubbleContent
+                .overlay(alignment: message.isOutgoing ? .bottomLeading : .bottomTrailing) {
+                    if !message.reactions.isEmpty {
+                        ReactionBadges(chips: reactionChips, onTap: { reactionDetailEmoji = $0 })
+                            .offset(x: message.isOutgoing ? -6 : 6, y: 14)
+                    }
+                }
+                .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
         }
     }
 
@@ -2030,7 +1951,6 @@ private struct MessageBubble: View {
                     HStack(alignment: .lastTextBaseline, spacing: 7) {
                         Text(formattedBody(displayBody))
                             .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
                         metadataRow
                     }
                     if message.editedAt != nil {
@@ -2122,7 +2042,15 @@ private struct MessageBubble: View {
         )
     }
 
+    /// Parsed-body cache. Markdown parsing is expensive and `body` re-runs on
+    /// every scroll/redraw, so we memoize per (username, text). Bounded to avoid
+    /// unbounded growth. Confined to the main actor (all rendering is).
+    private static var formattedBodyCache: [String: AttributedString] = [:]
+
     private func formattedBody(_ text: String) -> AttributedString {
+        let cacheKey = "\(service.username ?? "")\u{1}\(text)"
+        if let cached = Self.formattedBodyCache[cacheKey] { return cached }
+
         var base = (try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
@@ -2140,6 +2068,8 @@ private struct MessageBubble: View {
                 searchIdx = found.upperBound
             }
         }
+        if Self.formattedBodyCache.count > 800 { Self.formattedBodyCache.removeAll() }
+        Self.formattedBodyCache[cacheKey] = base
         return base
     }
 
@@ -2192,6 +2122,224 @@ private struct MessageBubble: View {
         case .received:
             EmptyView()
         }
+    }
+}
+
+// MARK: - Long-press menu (reaction bar + action menu, iMessage-style)
+
+private struct MessageActionSpec: Identifiable {
+    let id = UUID()
+    let label: String
+    let icon: String
+    var role: ButtonRole? = nil
+    let action: () -> Void
+}
+
+private struct NativeMenuBubble: UIViewRepresentable {
+    let bubble: AnyView
+    let isOutgoing: Bool
+    let reactions: [String]
+    let currentReaction: String?
+    let actions: [MessageActionSpec]
+    let onReact: (String) -> Void
+    let onDoubleTap: () -> Void
+    let onReply: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let coord = context.coordinator
+        let container = UIView()
+        container.backgroundColor = .clear
+
+        let host = coord.host
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: container.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+
+        host.view.addInteraction(UIContextMenuInteraction(delegate: coord))
+
+        let double = UITapGestureRecognizer(target: coord, action: #selector(Coordinator.handleDoubleTap))
+        double.numberOfTapsRequired = 2
+        host.view.addGestureRecognizer(double)
+
+        let pan = UIPanGestureRecognizer(target: coord, action: #selector(Coordinator.handlePan(_:)))
+        pan.delegate = coord
+        host.view.addGestureRecognizer(pan)
+
+        coord.sourceView = host.view
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.host.rootView = bubble
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 320
+        return context.coordinator.host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
+    }
+
+    final class Coordinator: NSObject, UIContextMenuInteractionDelegate, UIGestureRecognizerDelegate {
+        var parent: NativeMenuBubble
+        let host: UIHostingController<AnyView>
+        weak var sourceView: UIView?
+        private let reactionBar = ReactionBarWindowController()
+
+        init(_ parent: NativeMenuBubble) {
+            self.parent = parent
+            self.host = UIHostingController(rootView: parent.bubble)
+            self.host.view.backgroundColor = .clear
+            super.init()
+        }
+
+        @objc func handleDoubleTap() { parent.onDoubleTap() }
+
+        @objc func handlePan(_ g: UIPanGestureRecognizer) {
+            guard let v = sourceView else { return }
+            let tx = g.translation(in: v).x
+            switch g.state {
+            case .changed:
+                v.transform = CGAffineTransform(translationX: max(-70, min(70, tx * 0.5)), y: 0)
+            case .ended, .cancelled, .failed:
+                if abs(tx) > 60 { parent.onReply() }
+                UIView.animate(withDuration: 0.25) { v.transform = .identity }
+            default:
+                break
+            }
+        }
+
+        // Claim the pan only for mostly-horizontal drags so vertical scrolling wins.
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            guard let pan = g as? UIPanGestureRecognizer, let v = sourceView else { return true }
+            let t = pan.translation(in: v)
+            return abs(t.x) > abs(t.y)
+        }
+        func gestureRecognizer(_ g: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+        // MARK: UIContextMenuInteractionDelegate
+
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                    configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+            UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+                guard let self else { return nil }
+                let children = self.parent.actions.map { spec in
+                    UIAction(title: spec.label,
+                             image: UIImage(systemName: spec.icon),
+                             attributes: spec.role == .destructive ? .destructive : []) { _ in
+                        spec.action()
+                    }
+                }
+                return UIMenu(title: "", children: children)
+            }
+        }
+
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                    willDisplayMenuFor configuration: UIContextMenuConfiguration,
+                                    animator: (any UIContextMenuInteractionAnimating)?) {
+            guard let source = sourceView else { return }
+            reactionBar.show(
+                from: source, isOutgoing: parent.isOutgoing,
+                reactions: parent.reactions, current: parent.currentReaction
+            ) { [weak self] emoji in
+                self?.parent.onReact(emoji)
+                self?.reactionBar.hide()
+            }
+        }
+
+        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                                    willEndFor configuration: UIContextMenuConfiguration,
+                                    animator: (any UIContextMenuInteractionAnimating)?) {
+            reactionBar.hide()
+        }
+    }
+}
+
+/// The interactive reaction bar shown as a small overlay window above the message
+/// while the native context menu is open. Sized to its content so taps outside it
+/// pass through to the menu (which then dismisses, triggering willEnd → hide).
+private final class ReactionBarWindowController {
+    private var window: UIWindow?
+    private var hosting: UIHostingController<ReactionBarView>?
+
+    func show(from source: UIView, isOutgoing: Bool, reactions: [String],
+              current: String?, onReact: @escaping (String) -> Void) {
+        guard window == nil, let scene = source.window?.windowScene else { return }
+
+        let hc = UIHostingController(rootView: ReactionBarView(reactions: reactions, current: current, onReact: onReact))
+        hc.view.backgroundColor = .clear
+        let size = hc.sizeThatFits(in: CGSize(width: 500, height: 80))
+
+        let src = source.convert(source.bounds, to: nil)
+        let screen = scene.screen.bounds
+        var x = isOutgoing ? src.maxX - size.width : src.minX
+        x = max(12, min(x, screen.width - size.width - 12))
+        var y = src.minY - size.height - 12
+        if y < 60 { y = src.maxY + 12 }  // no room above → place below
+
+        let w = UIWindow(windowScene: scene)
+        w.windowLevel = .alert + 1
+        w.backgroundColor = .clear
+        let root = UIViewController()
+        root.view.backgroundColor = .clear
+        hc.view.frame = CGRect(origin: .zero, size: size)
+        root.view.addSubview(hc.view)
+        w.rootViewController = root
+        w.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+        w.isHidden = false
+
+        hc.view.alpha = 0
+        hc.view.transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
+        UIView.animate(withDuration: 0.2, delay: 0.03, options: [.curveEaseOut]) {
+            hc.view.alpha = 1
+            hc.view.transform = .identity
+        }
+
+        window = w
+        hosting = hc
+    }
+
+    func hide() {
+        window?.isHidden = true
+        window = nil
+        hosting = nil
+    }
+}
+
+private struct ReactionBarView: View {
+    let reactions: [String]
+    let current: String?
+    let onReact: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(reactions, id: \.self) { emoji in
+                Button { onReact(emoji) } label: {
+                    Text(emoji)
+                        .font(.system(size: 30))
+                        .frame(width: 44, height: 44)
+                        .background(
+                            current == emoji
+                                ? AnyShapeStyle(Color.accentColor.opacity(0.28))
+                                : AnyShapeStyle(Color.clear),
+                            in: .circle
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glassCompat(in: .capsule)
+        .shadow(color: .black.opacity(0.2), radius: 14, y: 8)
     }
 }
 

@@ -153,7 +153,6 @@ final class CallManager: NSObject {
     private var pendingOffer: Relay_Content_CallMessage?
     private var ringTask: Task<Void, Never>?
 
-    static let stun = RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])
     nonisolated private static let broadcastAppGroupId = "group.com.morgandaly.RelayMessenger"
     nonisolated private static let broadcastFrameFilename = "RelayBroadcastFrame.jpg"
     private let log = Logger(subsystem: "com.morgandaly.RelayMessenger", category: "CallManager")
@@ -886,7 +885,9 @@ final class CallManager: NSObject {
     }
 
     /// Returns fresh ICE servers: dynamic TURN credentials from the server (cached up to TTL),
-    /// falling back to static STUN when TURN is not configured or the fetch fails.
+    /// falling back to any bundle-configured relay ICE servers. No third-party STUN is
+    /// ever used — if none of Relay's own servers are available, calls rely on host/relay
+    /// candidates only, so a caller's IP is never disclosed to an outside provider.
     private func freshIceServers() async -> [RTCIceServer] {
         // Return cached credentials if still valid (with a 60s safety margin).
         if let cached = cachedTurnCredentials, cached.expiresAt > Date().addingTimeInterval(60) {
@@ -900,7 +901,7 @@ final class CallManager: NSObject {
                     return iceServers(from: creds)
                 }
             } catch {
-                log.warning("TURN credential fetch failed, falling back to STUN: \(PrivacyRedactor.error(error))")
+                log.warning("TURN credential fetch failed, falling back to relay/host candidates: \(PrivacyRedactor.error(error))")
             }
         }
         return Self.staticIceServers()
@@ -922,7 +923,7 @@ final class CallManager: NSObject {
     private static func staticIceServers() -> [RTCIceServer] {
         guard let urls = Bundle.main.object(forInfoDictionaryKey: "RelayICEServerURLs") as? [String],
               !urls.isEmpty
-        else { return [Self.stun] }
+        else { return [] }
         let username = Bundle.main.object(forInfoDictionaryKey: "RelayTURNUsername") as? String
         let credential = Bundle.main.object(forInfoDictionaryKey: "RelayTURNCredential") as? String
         let turnURLs = urls.filter { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") }
@@ -934,7 +935,7 @@ final class CallManager: NSObject {
         if !stunURLs.isEmpty {
             servers.append(RTCIceServer(urlStrings: stunURLs))
         }
-        return servers.isEmpty ? [Self.stun] : servers
+        return servers
     }
 
     private func addLocalMedia(to pc: RTCPeerConnection, kind: CallKind) {

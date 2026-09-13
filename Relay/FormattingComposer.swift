@@ -44,6 +44,18 @@ struct FormattingTextEditor: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
+    /// Wrap text at the width SwiftUI proposes and cap the height at `maxLines`.
+    /// Without this, a non-scrolling UITextView reports its single-line intrinsic
+    /// width, so long text overflowed horizontally instead of wrapping.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView tv: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0, width < .greatestFiniteMagnitude else { return nil }
+        let lineHeight = tv.font?.lineHeight ?? 20
+        let maxH = lineHeight * CGFloat(maxLines)
+            + tv.textContainerInset.top + tv.textContainerInset.bottom
+        let fit = tv.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: width, height: min(fit.height, maxH))
+    }
+
     func makeUIView(context ctx: Context) -> UITextView {
         let tv = UITextView()
         tv.delegate = ctx.coordinator

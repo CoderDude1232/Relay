@@ -143,6 +143,22 @@ final class MessagingService {
     /// Exposes the REST client so PushKitDelegate can register the VoIP token.
     var apiClient: RelayAPIClient { api }
 
+    /// Redeems a one-time contact invite token, returning the inviter's username
+    /// so the caller can open a conversation. Throws if the token is spent/expired.
+    func claimContactInvite(token: String) async throws -> String {
+        let (_, username) = try await api.claimContactInvite(token: token)
+        return username
+    }
+
+    /// Mints a one-time contact invite token and returns a shareable https link.
+    func createContactInviteLink() async throws -> URL {
+        let (token, _) = try await api.createContactInvite()
+        guard let url = URL(string: "https://relaymsg.app/c/\(token)") else {
+            throw RelayAPIError.malformedResponse
+        }
+        return url
+    }
+
     /// Registers this device's APNs token with the relay so it can wake us
     /// for offline messages. Best-effort — messaging works without it.
     func uploadPushToken(_ token: String) async {
@@ -548,6 +564,9 @@ final class MessagingService {
             content.senderDeviceID = credentials.deviceId
             let disappearSecs = conversations.first(where: { $0.id == conversationId })?.disappearingSeconds ?? 0
             if disappearSecs > 0 { content.expiresAfterMs = disappearSecs * 1000 }
+            // Opt-in cover-traffic delay: the message already shows locally as
+            // "sending"; hold the wire transmission for a short random interval.
+            await applySendJitter()
             try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp)
             try storage.messages.updateStatus(messageId: localId, status: .sent)
             donateInteraction(peerAccount: peer, conversationId: conversationId)
@@ -1462,6 +1481,9 @@ final class MessagingService {
             let disappearSecs = conversations.first(where: { $0.id == conversationId })?.disappearingSeconds ?? 0
             if disappearSecs > 0 { content.expiresAfterMs = disappearSecs * 1000 }
 
+            // Opt-in cover-traffic delay before the wire send (message already
+            // shows locally as "sending").
+            await applySendJitter()
             // Encrypt once with our sender key, fan the same ciphertext out.
             let sealed = try engine.groupEncrypt(try ContentPadding.pad(content.serializedData()), distributionId: distributionId)
             for member in group.members where member != credentials.accountId {
@@ -2280,6 +2302,22 @@ final class MessagingService {
         set { UserDefaults.standard.set(newValue, forKey: "relay.hideLastSeen") }
     }
 
+    /// Opt-in cover-traffic timing: when enabled, outbound messages are held for
+    /// a short random delay before transmission so the relay (and any network
+    /// observer) can't correlate your send with the exact moment you hit send.
+    var sendJitterEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "relay.sendJitter") }
+        set { UserDefaults.standard.set(newValue, forKey: "relay.sendJitter") }
+    }
+
+    /// Awaits a random delay (up to ~5s) before an outbound message is sent,
+    /// but only when send jitter is enabled. No-op otherwise.
+    private func applySendJitter() async {
+        guard sendJitterEnabled else { return }
+        let delayMs = UInt64.random(in: 500...5000)
+        try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+    }
+
     func starMessage(_ messageId: String, starred: Bool, in conversationId: String) {
         do {
             try storage.messages.setMessageStarred(id: messageId, starred: starred)
@@ -2958,21 +2996,28 @@ final class MessagingService {
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result { try messageStore.conversations() }
             let unread = (try? result.get())?.reduce(0) { $0 + $1.unreadCount } ?? 0
-            await MainActor.run { [weak self] in
-                guard let self, self.conversationsRefreshVersion == version else { return }
+            // Build lightweight Spotlight inputs on the main actor (cheap lookups
+            // + cached avatar bytes), then index off-main so the image decode
+            // doesn't hitch the UI.
+            let indexItems: [SpotlightIndexer.IndexItem] = await MainActor.run { [weak self] in
+                guard let self, self.conversationsRefreshVersion == version else { return [] }
                 self.conversationsRefreshScheduled = false
-                if case .success(let convs) = result {
-                    self.conversations = convs
-                    self.updateShareConversationList()
-                    SpotlightIndexer.index(
-                        conversations: convs,
-                        displayName: { self.displayName(forAccount: $0) },
-                        avatarData: { self.peerAvatarData(forAccount: $0) }
-                    )
-                }
                 // If the DB query threw, leave conversations unchanged so
                 // synchronously-injected entries (e.g. Note to Self) stay visible.
+                guard case .success(let convs) = result else { return [] }
+                self.conversations = convs
+                self.updateShareConversationList()
+                return convs.map { conv in
+                    let account = conv.groupId ?? conv.peerAccount
+                    let name = conv.groupId.map { self.displayName(forAccount: $0) }
+                        ?? self.displayName(forAccount: conv.peerAccount)
+                    return SpotlightIndexer.IndexItem(
+                        id: conv.id, name: name,
+                        avatarData: self.peerAvatarData(forAccount: account)
+                    )
+                }
             }
+            if !indexItems.isEmpty { SpotlightIndexer.index(indexItems) }
             try? await UNUserNotificationCenter.current().setBadgeCount(unread)
             ShareBridge.writeUnreadCount(unread)
         }

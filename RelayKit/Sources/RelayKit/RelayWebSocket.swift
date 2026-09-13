@@ -70,7 +70,11 @@ public actor RelayWebSocket {
         }
         let url = wsBaseURL.appending(path: "v1/ws")
         var request = URLRequest(url: url)
-        request.assumesHTTP3Capable = true
+        // NOTE: Do NOT set assumesHTTP3Capable here. URLSessionWebSocketTask runs
+        // over TCP (RFC 6455); with this flag, iOS on a physical device attempts
+        // the WebSocket over HTTP/3/QUIC, which the server doesn't support for
+        // WebSockets — the connection stalls and the socket is RST ("Socket is
+        // not connected", POSIX 57). Plain TCP is correct for the WS handshake.
         request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
         log.info("connecting to websocket endpoint")
 

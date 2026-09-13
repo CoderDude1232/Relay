@@ -266,6 +266,19 @@ struct MainTabView: View {
                 }
             }
         }
+        .onChange(of: model.pendingContactInviteToken) { _, token in
+            guard let token else { return }
+            model.pendingContactInviteToken = nil
+            Task {
+                do {
+                    let username = try await service.claimContactInvite(token: token)
+                    _ = try await service.startConversation(username: username)
+                    selectedTab = 0
+                } catch {
+                    deepLinkError = "This invite link is invalid or has already been used."
+                }
+            }
+        }
         .onChange(of: model.pendingGroupInviteToken) { _, token in
             guard let token else { return }
             model.pendingGroupInviteToken = nil
