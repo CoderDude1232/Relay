@@ -613,7 +613,7 @@ struct ChatView: View {
                             exp: Int64((Date().timeIntervalSince1970 + duration) * 1000),
                             stop: false
                         )
-                        await service.sendMessage(payload.encode(), in: conversationId)
+                        await service.sendLiveLocation(payload.encode(), in: conversationId)
                     }
                 }
             }
@@ -3031,22 +3031,42 @@ private struct LocationBubble: View {
     let payload: LocationPayload
     let isOutgoing: Bool
 
+    @State private var position: MapCameraPosition
+
+    init(payload: LocationPayload, isOutgoing: Bool) {
+        self.payload = payload
+        self.isOutgoing = isOutgoing
+        _position = State(initialValue: .region(MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: payload.lat, longitude: payload.lng),
+            span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+        )))
+    }
+
     private var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: payload.lat, longitude: payload.lng)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Map(initialPosition: .region(MKCoordinateRegion(
+    private func recenter() {
+        withAnimation(.easeInOut(duration: 0.5)) {
+            position = .region(MKCoordinateRegion(
                 center: coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
-            ))) {
+            ))
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Map(position: $position) {
                 Marker("", coordinate: coordinate)
                     .tint(.red)
             }
             .frame(height: 150)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .disabled(true)
+            // Recenter as a live share moves.
+            .onChange(of: payload.lat) { _, _ in recenter() }
+            .onChange(of: payload.lng) { _, _ in recenter() }
 
             HStack(spacing: 4) {
                 Image(systemName: payload.stop || payload.isExpired ? "location.slash.fill" : "location.fill")

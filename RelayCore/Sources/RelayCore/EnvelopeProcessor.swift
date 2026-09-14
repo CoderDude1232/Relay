@@ -261,6 +261,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     private let sealedSenderTrustRoot: Data?
     private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "envelope")
 
+    /// Body prefix marking a live-location update (mirrors the app's
+    /// `locationPrefix`). These collapse into a single moving bubble per sharer.
+    static let liveLocationPrefix = "__relay_loc__"
+
     public init(
         storage: SecureStore,
         engine: CryptoEngine,
@@ -348,6 +352,25 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         switch content.body {
         case .text(let text):
             let conversationId = try chatConversation()
+            // Live location: collapse every update from one sharer into a single
+            // moving bubble (keyed by conversation + sender) instead of inserting
+            // a fresh bubble each tick. Notify only when the share first appears.
+            if text.body.hasPrefix(Self.liveLocationPrefix) {
+                let locId = "liveloc:\(conversationId):\(attestedAccount)"
+                let wasInsert = (try? storage.messages.upsertLiveLocation(
+                    id: locId, conversationId: conversationId, isOutgoing: false,
+                    body: text.body, timestamp: text.timestamp,
+                    senderAccount: groupId == nil ? nil : attestedAccount
+                )) ?? false
+                return ProcessedEnvelope(
+                    outcome: .applied,
+                    peerAccount: attestedAccount,
+                    conversationId: conversationId,
+                    notification: wasInsert
+                        ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: "📍 Shared live location")
+                        : nil
+                )
+            }
             let quote: QuotedMessage? = text.hasQuote
                 ? QuotedMessage(targetTimestamp: text.quote.targetTimestamp, author: text.quote.author, text: text.quote.text)
                 : nil

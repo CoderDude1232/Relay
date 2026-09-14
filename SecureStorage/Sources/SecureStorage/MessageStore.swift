@@ -760,6 +760,51 @@ public final class MessageStore: @unchecked Sendable {
         return inserted
     }
 
+    /// Inserts or updates a single "live location" message in place, keyed by a
+    /// stable id (one row per sharer per conversation) so a moving share updates
+    /// one bubble instead of spamming a new one on every tick. Returns true if a
+    /// new row was created (vs. an in-place update). Never expires mid-share.
+    @discardableResult
+    public func upsertLiveLocation(
+        id: String,
+        conversationId: String,
+        isOutgoing: Bool,
+        body: String,
+        timestamp: Int64,
+        senderAccount: String? = nil
+    ) throws -> Bool {
+        let status = (isOutgoing ? MessageStatus.sent : MessageStatus.received).rawValue
+        let wasInsert: Bool = try db.transaction {
+            let exists = try !db.query("SELECT 1 FROM messages WHERE id = ?", [.text(id)]).isEmpty
+            if exists {
+                try db.run(
+                    "UPDATE messages SET body = ?, timestamp = ?, status = ? WHERE id = ?",
+                    [.text(body), .integer(timestamp), .text(status), .text(id)]
+                )
+            } else {
+                try db.run(
+                    """
+                    INSERT INTO messages
+                        (id, conversation_id, is_outgoing, body, timestamp, status, created_at, sender_account, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    [
+                        .text(id), .text(conversationId), .integer(isOutgoing ? 1 : 0),
+                        .text(body), .integer(timestamp), .text(status),
+                        .integer(Int64(Date().timeIntervalSince1970 * 1000)),
+                        senderAccount.map { .text($0) } ?? .null,
+                    ]
+                )
+            }
+            try db.run(
+                "UPDATE conversations SET last_message_at = MAX(COALESCE(last_message_at, 0), ?) WHERE id = ?",
+                [.integer(timestamp), .text(conversationId)]
+            )
+            return !exists
+        }
+        return wasInsert
+    }
+
     private func disappearingSeconds(conversationId: String) throws -> Int64 {
         try db.query(
             "SELECT disappearing_seconds FROM conversations WHERE id = ?", [.text(conversationId)]

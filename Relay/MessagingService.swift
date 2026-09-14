@@ -573,6 +573,41 @@ final class MessagingService {
         return id
     }
 
+    /// Sends a live-location update. Unlike `sendMessage`, this collapses into a
+    /// single moving bubble (one row per sharer per conversation) instead of a
+    /// new message every tick — both locally and, via the same stable key, on the
+    /// recipient (see EnvelopeProcessor's live-location handling).
+    func sendLiveLocation(_ body: String, in conversationId: String) async {
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let locId = "liveloc:\(conversationId):\(credentials.accountId)"
+        try? storage.messages.upsertLiveLocation(
+            id: locId, conversationId: conversationId, isOutgoing: true,
+            body: body, timestamp: timestamp, senderAccount: credentials.accountId
+        )
+        refreshConversations()
+        refreshActiveMessages(ifShowing: conversationId)
+
+        var content = Relay_Content_Content()
+        content.text.body = body
+        content.text.timestamp = timestamp
+        content.senderAccountID = credentials.accountId
+        content.senderDeviceID = credentials.deviceId
+        do {
+            if let group = group(for: conversationId) {
+                content.groupID = group.id
+                let data = try content.serializedData()
+                for member in group.members where member != credentials.accountId {
+                    try? await sendContent(data, toPeer: member, clientTimestamp: timestamp)
+                }
+            } else if let peer = try? peerAccount(for: conversationId),
+                      peer != noteToSelfAccount, !isBlocked(peer) {
+                try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp)
+            }
+        } catch {
+            log.warning("live location send failed: \(PrivacyRedactor.error(error))")
+        }
+    }
+
     func sendMessage(
         _ text: String,
         in conversationId: String,
