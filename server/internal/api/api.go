@@ -197,6 +197,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/groups/{id}/announce", s.auth(s.handleSetAnnounceOnly))
 	mux.HandleFunc("POST /v1/groups/{id}/invite", s.auth(s.handleCreateGroupInvite))
 	mux.HandleFunc("POST /v1/groups/join", s.auth(s.handleJoinGroupByInvite))
+	mux.HandleFunc("POST /v1/group-invites", s.auth(s.handleCreateEncryptedGroupInvite))
+	mux.HandleFunc("POST /v1/group-invites/claim", s.auth(s.handleClaimEncryptedGroupInvite))
 	mux.HandleFunc("GET /v1/ws", s.auth(s.handleWebSocket))
 	return stripVisitorIPHeaders(limitRequestBody(mux))
 }
@@ -1309,6 +1311,60 @@ func (s *Server) handleRenameGroup(w http.ResponseWriter, r *http.Request, dev *
 		return
 	}
 	writeGroup(w, http.StatusOK, g)
+}
+
+// handleCreateEncryptedGroupInvite stores an opaque encrypted invite blob and
+// returns a token. The relay never learns the group id, name, or roster — the
+// blob is decryptable only with the key carried in the invite URL fragment.
+func (s *Server) handleCreateEncryptedGroupInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if !groupCreateLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many invites; try again later")
+		return
+	}
+	var req struct {
+		Blob string `json:"blob"` // base64 ciphertext
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	blob, err := base64.StdEncoding.DecodeString(req.Blob)
+	if err != nil || len(blob) == 0 || len(blob) > 64*1024 {
+		httpError(w, http.StatusBadRequest, "blob must be 1..65536 bytes (base64)")
+		return
+	}
+	token, expiresAt, err := s.store.CreateEncryptedGroupInvite(blob)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "expiresAt": expiresAt})
+}
+
+// handleClaimEncryptedGroupInvite returns the opaque blob for a token so the
+// redeemer can decrypt it client-side with the fragment key. Multi-use until expiry.
+func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if !groupJoinLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many join attempts; try again later")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+		httpError(w, http.StatusBadRequest, "token required")
+		return
+	}
+	blob, err := s.store.ClaimEncryptedGroupInvite(req.Token)
+	if errors.Is(err, store.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "invite not found or expired")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"blob": base64.StdEncoding.EncodeToString(blob)})
 }
 
 func (s *Server) handleCreateGroupInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {

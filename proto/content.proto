@@ -96,6 +96,12 @@ message GroupUpdate {
   // rotates this to a fresh id, forcing new sender keys the removed member can't
   // read. Empty on metadata-only actions (recipients keep their current id).
   string distribution_id = 11;
+  // Group invite capability. Carried on normal updates so every member stores
+  // it, and echoed by a link-joiner in their self-add so members can verify the
+  // joiner actually held a valid invite link (they never learn the joiner is an
+  // admin). Rotating it revokes outstanding links. Empty when the group has no
+  // active invite link.
+  bytes invite_key = 12;
 }
 
 message TextMessage {

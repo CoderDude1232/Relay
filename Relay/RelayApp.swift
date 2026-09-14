@@ -54,10 +54,11 @@ struct RelayApp: App {
                         guard !username.isEmpty else { return }
                         model.pendingDeepLinkUsername = username
                     } else if url.host == "join" {
-                        // relay://join/<token>
+                        // relay://join/<token>#<fragment-key>
                         let token = url.pathComponents.dropFirst().first ?? ""
                         guard !token.isEmpty else { return }
-                        model.pendingGroupInviteToken = token
+                        let frag = url.fragment ?? ""
+                        model.pendingGroupInviteToken = frag.isEmpty ? token : "\(token)#\(frag)"
                     } else if url.host == "contact" {
                         // relay://contact/<token> — one-time contact invite
                         let token = url.pathComponents.dropFirst().first ?? ""
@@ -109,6 +110,10 @@ struct RelayApp: App {
                         model.pendingDeepLinkUsername = value
                     } else if kind == "c" {
                         model.pendingContactInviteToken = value
+                    } else if kind == "g" {
+                        // https://relaymsg.app/g/<token>#<fragment-key> — encrypted group invite
+                        let frag = url.fragment ?? ""
+                        model.pendingGroupInviteToken = frag.isEmpty ? value : "\(value)#\(frag)"
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in

@@ -653,8 +653,14 @@ type GroupUpdate struct {
 	// rotates this to a fresh id, forcing new sender keys the removed member can't
 	// read. Empty on metadata-only actions (recipients keep their current id).
 	DistributionId string `protobuf:"bytes,11,opt,name=distribution_id,json=distributionId,proto3" json:"distribution_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Group invite capability. Carried on normal updates so every member stores
+	// it, and echoed by a link-joiner in their self-add so members can verify the
+	// joiner actually held a valid invite link (they never learn the joiner is an
+	// admin). Rotating it revokes outstanding links. Empty when the group has no
+	// active invite link.
+	InviteKey     []byte `protobuf:"bytes,12,opt,name=invite_key,json=inviteKey,proto3" json:"invite_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GroupUpdate) Reset() {
@@ -762,6 +768,13 @@ func (x *GroupUpdate) GetDistributionId() string {
 		return x.DistributionId
 	}
 	return ""
+}
+
+func (x *GroupUpdate) GetInviteKey() []byte {
+	if x != nil {
+		return x.InviteKey
+	}
+	return nil
 }
 
 type TextMessage struct {
@@ -1648,7 +1661,7 @@ const file_content_proto_rawDesc = "" +
 	"\x04body\"T\n" +
 	"\x15SenderKeyDistribution\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12'\n" +
-	"\x0fdistribution_id\x18\x02 \x01(\tR\x0edistributionId\"\xb3\x04\n" +
+	"\x0fdistribution_id\x18\x02 \x01(\tR\x0edistributionId\"\xd2\x04\n" +
 	"\vGroupUpdate\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x03R\brevision\x129\n" +
 	"\x06action\x18\x02 \x01(\x0e2!.relay.content.GroupUpdate.ActionR\x06action\x12\x14\n" +
@@ -1661,7 +1674,9 @@ const file_content_proto_rawDesc = "" +
 	"\x06admins\x18\t \x03(\tR\x06admins\x12#\n" +
 	"\rannounce_only\x18\n" +
 	" \x01(\bR\fannounceOnly\x12'\n" +
-	"\x0fdistribution_id\x18\v \x01(\tR\x0edistributionId\"\xae\x01\n" +
+	"\x0fdistribution_id\x18\v \x01(\tR\x0edistributionId\x12\x1d\n" +
+	"\n" +
+	"invite_key\x18\f \x01(\fR\tinviteKey\"\xae\x01\n" +
 	"\x06Action\x12\x16\n" +
 	"\x12ACTION_UNSPECIFIED\x10\x00\x12\n" +
 	"\n" +

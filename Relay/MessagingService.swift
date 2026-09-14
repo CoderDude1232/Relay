@@ -45,6 +45,30 @@ enum GroupError: LocalizedError {
     }
 }
 
+/// The plaintext an encrypted group-invite blob decrypts to. Everything the
+/// joiner needs to bootstrap the group locally and prove they held the link.
+private struct GroupInvitePayload: Codable {
+    let groupId: String
+    let name: String
+    let members: [String]
+    let distributionId: String
+    let inviteKey: Data
+}
+
+extension Data {
+    func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+    init?(base64URLEncoded s: String) {
+        var b = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while b.count % 4 != 0 { b += "=" }
+        self.init(base64Encoded: b)
+    }
+}
+
 @Observable
 final class MessagingService {
     enum ConnectionState: Equatable {
@@ -1299,9 +1323,31 @@ final class MessagingService {
         }
     }
 
+    /// Mints an encrypted invite link. The relay stores only opaque ciphertext;
+    /// the decrypt key rides the URL fragment, and the embedded invite capability
+    /// lets members verify a joiner actually held the link.
     func createGroupInviteLink(groupId: String) async throws -> String {
-        let resp = try await api.createGroupInvite(groupId: groupId)
-        return resp.url
+        guard let group = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(group)
+        // Establish the invite capability if this is the group's first link, and
+        // push it to members (silently) so they can verify joins.
+        if groupInviteKey(groupId) == nil {
+            var key = Data(count: 32)
+            key.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+            setGroupInviteKey(groupId, key)
+            var announce = Relay_Content_GroupUpdate()
+            announce.action = .unspecified // silent: carries only the invite key
+            await sendGroupUpdateCustom(announce, group: group)
+        }
+        guard let inviteKey = groupInviteKey(groupId) else { throw GroupError.notFound }
+        let payload = GroupInvitePayload(
+            groupId: groupId, name: group.name, members: group.members,
+            distributionId: group.distributionId, inviteKey: inviteKey
+        )
+        let sealed = try AttachmentCipher.seal(try JSONEncoder().encode(payload))
+        let (token, _) = try await api.createEncryptedGroupInvite(blob: sealed.ciphertext)
+        let fragment = (sealed.key + sealed.digest).base64URLEncodedString()
+        return "https://relaymsg.app/g/\(token)#\(fragment)"
     }
 
     // MARK: - Device linking
@@ -1537,16 +1583,41 @@ final class MessagingService {
         )
     }
 
-    func joinGroupByInvite(token: String) async throws -> String {
-        let gs = try await api.joinGroupByInvite(token: token)
-        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
-        refreshConversations()
-        if let stored = try storage.messages.group(id: gs.id) {
-            try? await distributeSenderKeyIfNeeded(group: stored)
+    /// Redeems an encrypted invite: fetches the opaque blob, decrypts it with the
+    /// fragment key, bootstraps the group locally, then announces our join to the
+    /// members — echoing the invite capability so our (non-admin) self-add is
+    /// accepted. `fragment` is the base64url key‖digest from the link's `#...`.
+    func joinGroupByInvite(token: String, fragment: String) async throws -> String {
+        guard let keyDigest = Data(base64URLEncoded: fragment), keyDigest.count == 64 else {
+            throw RelayAPIError.malformedResponse
         }
-        insertSystemLine("You joined via invite link", inGroup: gs.id)
-        await resolveUsernames(gs.members)
-        return try storage.messages.groupConversationId(groupId: gs.id) ?? ""
+        let blob = try await api.claimEncryptedGroupInvite(token: token)
+        let json = try AttachmentCipher.open(
+            blob, key: Data(keyDigest.prefix(32)), digest: Data(keyDigest.suffix(32))
+        )
+        let payload = try JSONDecoder().decode(GroupInvitePayload.self, from: json)
+
+        var members = payload.members
+        if !members.contains(credentials.accountId) { members.append(credentials.accountId) }
+        setGroupInviteKey(payload.groupId, payload.inviteKey)
+        try storage.messages.upsertGroup(
+            id: payload.groupId, name: payload.name, distributionId: payload.distributionId,
+            revision: 1, members: members, admins: []
+        )
+        refreshConversations()
+        for member in payload.members where member != credentials.accountId {
+            try? await refreshSessions(withPeer: member)
+        }
+        if let stored = try storage.messages.group(id: payload.groupId) {
+            try? await distributeSenderKeyIfNeeded(group: stored)
+            var join = Relay_Content_GroupUpdate()
+            join.action = .add
+            join.target = credentials.accountId
+            await sendGroupUpdateCustom(join, group: stored) // carries the echoed invite key
+        }
+        insertSystemLine("You joined via invite link", inGroup: payload.groupId)
+        await resolveUsernames(members)
+        return try storage.messages.groupConversationId(groupId: payload.groupId) ?? ""
     }
 
     func leaveGroup(_ groupId: String) async throws {
@@ -1708,6 +1779,7 @@ final class MessagingService {
         u.members = group.members
         u.admins = group.admins
         u.distributionID = group.distributionId
+        if let inviteKey = groupInviteKey(group.id) { u.inviteKey = inviteKey }
         var content = Relay_Content_Content()
         content.groupUpdate = u
         content.groupID = group.id
@@ -1780,14 +1852,27 @@ final class MessagingService {
         // 2. Authorization. On first contact (no local state) we bootstrap by
         //    trusting the authenticated actor who is adding us. Otherwise only an
         //    admin may change group state; any member may remove themselves
-        //    (leave). Legacy groups with an empty admin list are treated as open.
+        //    (leave); and a link-joiner may add *themselves* if they echo the
+        //    group's current invite capability. Legacy groups with an empty admin
+        //    list are treated as open.
         let isBootstrap = (existing == nil)
         let actorIsAdmin = existing.map { $0.admins.isEmpty || $0.admins.contains(actor) } ?? true
         let isSelfDeparture = (info.action == .leave || info.action == .remove) && info.target == actor
-        guard isBootstrap || actorIsAdmin || isSelfDeparture else {
+        let isValidSelfJoin = info.action == .add && info.target == actor
+            && !info.inviteKey.isEmpty && groupInviteKey(info.groupId) == info.inviteKey
+        guard isBootstrap || actorIsAdmin || isSelfDeparture || isValidSelfJoin else {
             log.warning("group update: \(String(describing: info.action)) from non-admin; dropping")
             return
         }
+
+        // Persist/refresh the invite capability from authorized senders so we can
+        // verify future link joins. Never from an unauthorized self-join echo.
+        if !info.inviteKey.isEmpty, isBootstrap || actorIsAdmin {
+            setGroupInviteKey(info.groupId, info.inviteKey)
+        }
+        // A silent capability broadcast (unspecified action) carries only the
+        // invite key — nothing else to apply.
+        if info.action == .unknown { return }
 
         // 3. We were removed by an admin — drop the group from our local roster so
         //    we stop sending to it.
@@ -1842,28 +1927,41 @@ final class MessagingService {
             break
         }
 
-        // 5. Roster actions (create/add/remove/leave/rename). Prefer the actor's
-        //    full member list (they're an authorized admin or the creator, so it's
-        //    trusted and self-heals any missed update); fall back to applying the
-        //    delta when only a target is provided.
-        var newMembers = info.members.isEmpty ? (existing?.members ?? []) : info.members
-        if info.members.isEmpty {
-            switch info.action {
-            case .add where !info.target.isEmpty:
-                if !newMembers.contains(info.target) { newMembers.append(info.target) }
-            case .remove, .leave:
-                newMembers.removeAll { $0 == info.target }
-            default:
-                break
+        // 5. Roster actions (create/add/remove/leave/rename).
+        let newMembers: [String]
+        let newAdmins: [String]
+        let newName: String
+        let distributionId: String
+        if isValidSelfJoin && !isBootstrap && !actorIsAdmin, let existing {
+            // A link-joiner: only ever ADD themselves. Never let a non-admin's
+            // message overwrite the roster, admins, name, or epoch.
+            newMembers = existing.members.contains(actor) ? existing.members : existing.members + [actor]
+            newAdmins = existing.admins
+            newName = existing.name
+            distributionId = existing.distributionId
+        } else {
+            // Authorized admin / creator / bootstrap: trust the full lists (self-
+            // healing), falling back to the delta when only a target is provided.
+            var members = info.members.isEmpty ? (existing?.members ?? []) : info.members
+            if info.members.isEmpty {
+                switch info.action {
+                case .add where !info.target.isEmpty:
+                    if !members.contains(info.target) { members.append(info.target) }
+                case .remove, .leave:
+                    members.removeAll { $0 == info.target }
+                default:
+                    break
+                }
             }
+            newMembers = members
+            newAdmins = info.admins.isEmpty ? (existing?.admins ?? [actor]) : info.admins
+            newName = info.name.isEmpty ? (existing?.name ?? "") : info.name
+            // Adopt a rotated epoch (e.g. after a removal) so our next send uses a
+            // fresh sender key the removed member can't read.
+            distributionId = !info.distributionId.isEmpty
+                ? info.distributionId
+                : (existing?.distributionId ?? UUID().uuidString)
         }
-        let newAdmins = info.admins.isEmpty ? (existing?.admins ?? [actor]) : info.admins
-        let newName = info.name.isEmpty ? (existing?.name ?? "") : info.name
-        // Adopt a rotated epoch (e.g. after a removal) so our next send uses a
-        // fresh sender key the removed member can't read.
-        let distributionId = !info.distributionId.isEmpty
-            ? info.distributionId
-            : (existing?.distributionId ?? UUID().uuidString)
         do {
             try storage.messages.upsertGroup(
                 id: info.groupId, name: newName, distributionId: distributionId,
@@ -2079,6 +2177,21 @@ final class MessagingService {
         guard let data = try? JSONEncoder().encode(value) else { return }
         try? storage.database.run(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(data)]
+        )
+    }
+
+    /// The group's invite capability (used to authorize link-based self-joins),
+    /// stored in the encrypted kv table rather than a schema column.
+    private func groupInviteKey(_ groupId: String) -> Data? {
+        try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text("ginvkey:\(groupId)")]
+        ).first?.first?.data
+    }
+
+    private func setGroupInviteKey(_ groupId: String, _ key: Data) {
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+            [.text("ginvkey:\(groupId)"), .blob(key)]
         )
     }
 

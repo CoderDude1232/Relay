@@ -257,6 +257,16 @@ CREATE TABLE IF NOT EXISTS group_invites (
     PRIMARY KEY (token)
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_directory_account ON directory (account_id)`,
+		// Encrypted group invites: the relay stores an opaque ciphertext blob
+		// keyed by a token; the decrypt key travels in the invite URL fragment,
+		// so the server never learns the group id, name, or roster. Replaces the
+		// plaintext group_invites/groups tables for client-authoritative groups.
+		`CREATE TABLE IF NOT EXISTS encrypted_group_invites (
+    token      TEXT PRIMARY KEY,
+    blob       BYTEA NOT NULL,
+    expires_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_encrypted_group_invites_expires ON encrypted_group_invites (expires_at)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -1446,6 +1456,31 @@ func (s *Store) SetGroupAvatar(groupID, requester, avatarID string) (*Group, err
 }
 
 const groupInviteTTL = 7 * 24 * time.Hour
+
+// CreateEncryptedGroupInvite stores an opaque encrypted invite blob under a
+// fresh token (7-day expiry) and returns both. The relay never learns what the
+// blob decrypts to — the group id, name, and roster stay client-side.
+func (s *Store) CreateEncryptedGroupInvite(blob []byte) (token string, expiresAt int64, err error) {
+	token = newUUID()
+	expiresAt = time.Now().Add(groupInviteTTL).UnixMilli()
+	_, err = s.db.Exec(context.Background(),
+		`INSERT INTO encrypted_group_invites (token, blob, expires_at) VALUES ($1, $2, $3)`,
+		token, blob, expiresAt)
+	return token, expiresAt, err
+}
+
+// ClaimEncryptedGroupInvite returns the invite blob for a (non-expired) token.
+// Multi-use until expiry; the relay can't tell who redeemed it or for what.
+func (s *Store) ClaimEncryptedGroupInvite(token string) ([]byte, error) {
+	var blob []byte
+	err := s.db.QueryRow(context.Background(),
+		`SELECT blob FROM encrypted_group_invites WHERE token = $1 AND expires_at > $2`,
+		token, time.Now().UnixMilli()).Scan(&blob)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return blob, err
+}
 
 // CreateGroupInvite generates a single-use invite token for `groupID`.
 // The creator's account ID is intentionally not stored to avoid metadata retention.

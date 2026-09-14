@@ -83,12 +83,14 @@ public struct GroupUpdateInfo: Sendable {
     public let revision: Int64
     /// The group's sender-key epoch after this change (empty = unchanged).
     public let distributionId: String
+    /// Group invite capability (empty = none/unchanged).
+    public let inviteKey: Data
 
     public init(
         groupId: String, action: GroupAction, actor: String, target: String, name: String,
         description: String = "", avatarId: String = "", avatarKey: Data = Data(), avatarDigest: Data = Data(),
         members: [String] = [], admins: [String] = [], announceOnly: Bool = false, revision: Int64 = 0,
-        distributionId: String = ""
+        distributionId: String = "", inviteKey: Data = Data()
     ) {
         self.groupId = groupId
         self.action = action
@@ -104,6 +106,7 @@ public struct GroupUpdateInfo: Sendable {
         self.announceOnly = announceOnly
         self.revision = revision
         self.distributionId = distributionId
+        self.inviteKey = inviteKey
     }
 }
 
@@ -465,7 +468,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 admins: update.admins,
                 announceOnly: update.announceOnly,
                 revision: update.revision,
-                distributionId: update.distributionID
+                distributionId: update.distributionID,
+                inviteKey: update.inviteKey
             )
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, groupUpdate: info)
 

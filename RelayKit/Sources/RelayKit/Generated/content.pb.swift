@@ -273,6 +273,9 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
   /// The group's current sender-key epoch (empty = unchanged).
   public var distributionID: String = String()
 
+  /// Group invite capability (empty = no active link).
+  public var inviteKey: Data = Data()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum Action: SwiftProtobuf.Enum, Swift.CaseIterable {
@@ -1150,6 +1153,7 @@ nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftPro
       case 9: try { try decoder.decodeRepeatedStringField(value: &self.admins) }()
       case 10: try { try decoder.decodeSingularBoolField(value: &self.announceOnly) }()
       case 11: try { try decoder.decodeSingularStringField(value: &self.distributionID) }()
+      case 12: try { try decoder.decodeSingularBytesField(value: &self.inviteKey) }()
       default: break
       }
     }
@@ -1193,6 +1197,9 @@ nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftPro
     if !self.distributionID.isEmpty {
       try visitor.visitSingularStringField(value: self.distributionID, fieldNumber: 11)
     }
+    if !self.inviteKey.isEmpty {
+      try visitor.visitSingularBytesField(value: self.inviteKey, fieldNumber: 12)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1208,6 +1215,7 @@ nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftPro
     if lhs.admins != rhs.admins {return false}
     if lhs.announceOnly != rhs.announceOnly {return false}
     if lhs.distributionID != rhs.distributionID {return false}
+    if lhs.inviteKey != rhs.inviteKey {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

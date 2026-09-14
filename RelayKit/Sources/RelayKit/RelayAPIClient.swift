@@ -510,6 +510,27 @@ public struct RelayAPIClient: Sendable {
         try await request("POST", "v1/groups/join", body: TokenRequest(token: token))
     }
 
+    /// Uploads an opaque encrypted group-invite blob, returning the token + expiry.
+    /// The relay only stores ciphertext; the decrypt key rides the URL fragment.
+    public func createEncryptedGroupInvite(blob: Data) async throws -> (token: String, expiresAt: Int64) {
+        struct Req: Encodable { let blob: String }
+        struct Response: Decodable { let token: String; let expiresAt: Int64 }
+        let r: Response = try await request(
+            "POST", "v1/group-invites", body: Req(blob: blob.base64EncodedString())
+        )
+        return (r.token, r.expiresAt)
+    }
+
+    /// Fetches the opaque encrypted blob for an invite token (to decrypt client-side).
+    public func claimEncryptedGroupInvite(token: String) async throws -> Data {
+        struct Response: Decodable { let blob: String }
+        let r: Response = try await request(
+            "POST", "v1/group-invites/claim", body: TokenRequest(token: token)
+        )
+        guard let blob = Data(base64Encoded: r.blob) else { throw RelayAPIError.malformedResponse }
+        return blob
+    }
+
     public func promoteGroupAdmin(groupId: String, account: String) async throws -> GroupState {
         try await request("POST", "v1/groups/\(groupId)/admins/\(account)", body: nil as String?)
     }

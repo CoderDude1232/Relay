@@ -279,12 +279,15 @@ struct MainTabView: View {
                 }
             }
         }
-        .onChange(of: model.pendingGroupInviteToken) { _, token in
-            guard let token else { return }
+        .onChange(of: model.pendingGroupInviteToken) { _, raw in
+            guard let raw else { return }
             model.pendingGroupInviteToken = nil
+            let parts = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            let token = String(parts[0])
+            let fragment = parts.count > 1 ? String(parts[1]) : ""
             Task {
                 do {
-                    let conversationId = try await service.joinGroupByInvite(token: token)
+                    let conversationId = try await service.joinGroupByInvite(token: token, fragment: fragment)
                     model.pendingNotificationConversationId = conversationId
                     selectedTab = 0
                 } catch {
