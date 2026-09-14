@@ -35,6 +35,25 @@ public struct PreKeyMaintainer: Sendable {
         try await upload(api: api, engine: engine, allocator: allocator)
     }
 
+    /// Re-publishes the identity, signed prekey and Kyber prekey (no one-time
+    /// keys), replacing whatever the server currently holds. Run on launch so the
+    /// server can never serve a signed prekey this device lacks the private for —
+    /// which happens after the local key store is wiped (app reinstall) while the
+    /// server keeps the old published bundle, breaking new inbound sessions.
+    public func republishSignedPreKey(
+        api: RelayAPIClient,
+        engine: CryptoEngine,
+        allocator: any PreKeyIdAllocating
+    ) async throws {
+        let ids = try allocator.allocateIds(count: 2)
+        let publication = try engine.generatePreKeyPublication(
+            signedPreKeyId: ids.lowerBound,
+            kyberPreKeyId: ids.lowerBound + 1,
+            oneTimePreKeyIds: ids.upperBound..<ids.upperBound // empty: append nothing
+        )
+        try await api.uploadKeys(publication)
+    }
+
     /// Checks the pool and replenishes when it's below threshold.
     /// Returns true when an upload happened.
     @discardableResult

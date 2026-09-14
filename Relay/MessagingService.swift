@@ -223,6 +223,11 @@ final class MessagingService {
         try await maintainer.publishInitialKeys(api: api, engine: engine, allocator: allocator)
     }
 
+    /// Runs once per launch: re-publishes a fresh signed prekey so the relay's
+    /// bundle always matches this device's local key store (heals a desync left
+    /// by a reinstall that wiped local keys while the server kept the old ones).
+    private var didRepublishKeysThisLaunch = false
+
     /// Sends a call signalling message over the E2EE channel.
     /// OFFER and HANGUP must survive offline delivery; ANSWER/ICE/BUSY/RINGING
     /// are live control traffic and must not generate normal APNs alerts.
@@ -390,6 +395,14 @@ final class MessagingService {
                     backoffSeconds = 1.0
                     // One batch refresh after draining all queued messages.
                     refreshConversations()
+                    if !didRepublishKeysThisLaunch {
+                        didRepublishKeysThisLaunch = true
+                        do {
+                            try await maintainer.republishSignedPreKey(api: api, engine: engine, allocator: allocator)
+                        } catch {
+                            log.warning("signed prekey republish failed: \(PrivacyRedactor.error(error))")
+                        }
+                    }
                     do {
                         try await maintainer.replenishIfNeeded(api: api, engine: engine, allocator: allocator)
                     } catch {
