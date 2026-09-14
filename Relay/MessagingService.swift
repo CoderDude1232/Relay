@@ -33,6 +33,18 @@ enum MessagingError: LocalizedError {
     }
 }
 
+enum GroupError: LocalizedError {
+    case notFound
+    case notAdmin
+
+    var errorDescription: String? {
+        switch self {
+        case .notFound: return "That group no longer exists on this device."
+        case .notAdmin: return "Only group admins can make this change."
+        }
+    }
+}
+
 @Observable
 final class MessagingService {
     enum ConnectionState: Equatable {
@@ -1158,32 +1170,54 @@ final class MessagingService {
 
     /// Creates a group (server holds the roster), sets up our sender key,
     /// and notifies members to sync. Returns the local conversation id.
+    /// Local authorization: only admins may change group state. Legacy groups
+    /// with no recorded admins are treated as open (every member authorized).
+    private func requireGroupAdmin(_ group: StoredGroup) throws {
+        guard group.admins.isEmpty || group.admins.contains(credentials.accountId) else {
+            throw GroupError.notAdmin
+        }
+    }
+
+    /// Creates a group entirely client-side: the id and sender-key epoch are
+    /// generated locally and the roster is distributed E2E. The relay never
+    /// learns the group exists, its name, or its membership.
     func createGroup(name: String, memberUsernames: [String]) async throws -> String {
-        var members: [String] = []
+        var members: [String] = [credentials.accountId]
         for username in memberUsernames {
             let account = try await resolveAccount(username: username)
-            members.append(account)
+            if !members.contains(account) { members.append(account) }
             try? await refreshSessions(withPeer: account) // need pairwise sessions for SKDM/control
         }
-        let gs = try await api.createGroup(name: name, members: members)
-        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        let groupId = UUID().uuidString
+        let distributionId = UUID().uuidString
+        try storage.messages.upsertGroup(
+            id: groupId, name: name, distributionId: distributionId, revision: 1,
+            members: members, admins: [credentials.accountId]
+        )
         refreshConversations()
-        if let stored = try storage.messages.group(id: gs.id) {
+        if let stored = try storage.messages.group(id: groupId) {
             try? await distributeSenderKeyIfNeeded(group: stored)
             await sendGroupUpdate(.create, group: stored, target: "")
         }
-        insertSystemLine("You created \"\(name)\"", inGroup: gs.id)
-        await resolveUsernames(gs.members)
-        return try storage.messages.groupConversationId(groupId: gs.id) ?? ""
+        insertSystemLine("You created \"\(name)\"", inGroup: groupId)
+        await resolveUsernames(members)
+        return try storage.messages.groupConversationId(groupId: groupId) ?? ""
     }
 
     func addGroupMember(username: String, toGroup groupId: String) async throws {
         let account = try await resolveAccount(username: username)
         try? await refreshSessions(withPeer: account)
-        let gs = try await api.addGroupMember(groupId: groupId, account: account)
-        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
+        var members = existing.members
+        if !members.contains(account) { members.append(account) }
+        try storage.messages.upsertGroup(
+            id: groupId, name: existing.name, distributionId: existing.distributionId,
+            revision: existing.revision + 1, members: members, admins: existing.admins,
+            isAnnounceOnly: existing.isAnnounceOnly
+        )
         refreshConversations()
-        if let stored = try storage.messages.group(id: gs.id) {
+        if let stored = try storage.messages.group(id: groupId) {
             try? await distributeSenderKeyIfNeeded(group: stored) // reaches the new member
             await sendGroupUpdate(.add, group: stored, target: account)
         }
@@ -1191,10 +1225,20 @@ final class MessagingService {
     }
 
     func removeGroupMember(_ account: String, fromGroup groupId: String) async throws {
-        let gs = try await api.removeGroupMember(groupId: groupId, account: account) // server rotates distributionId
-        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
+        let members = existing.members.filter { $0 != account }
+        // Rotate the sender-key epoch so the removed member can't read future
+        // messages (was server-driven; now client-driven). A fresh distribution
+        // id makes every remaining member mint a new sender key on next send.
+        let newDistributionId = UUID().uuidString
+        try storage.messages.upsertGroup(
+            id: groupId, name: existing.name, distributionId: newDistributionId,
+            revision: existing.revision + 1, members: members,
+            admins: existing.admins.filter { $0 != account }, isAnnounceOnly: existing.isAnnounceOnly
+        )
         refreshConversations()
-        if let stored = try storage.messages.group(id: gs.id) {
+        if let stored = try storage.messages.group(id: groupId) {
             try? await distributeSenderKeyIfNeeded(group: stored) // fresh epoch → redistribute to remaining
             await sendGroupUpdate(.remove, group: stored, target: account)
         }
@@ -1202,10 +1246,15 @@ final class MessagingService {
     }
 
     func renameGroup(groupId: String, name: String) async throws {
-        let gs = try await api.renameGroup(groupId: groupId, name: name)
-        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
+        try storage.messages.upsertGroup(
+            id: groupId, name: name, distributionId: existing.distributionId,
+            revision: existing.revision + 1, members: existing.members,
+            admins: existing.admins, isAnnounceOnly: existing.isAnnounceOnly
+        )
         refreshConversations()
-        if let stored = try storage.messages.group(id: gs.id) {
+        if let stored = try storage.messages.group(id: groupId) {
             var update = Relay_Content_GroupUpdate()
             update.action = .rename
             update.name = name
@@ -1215,11 +1264,11 @@ final class MessagingService {
     }
 
     func setGroupDescription(_ description: String, groupId: String) async throws {
-        let gs = try await api.setGroupDescription(groupId: groupId, description: description)
-        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
         try storage.messages.setGroupDescription(id: groupId, description: description)
         refreshConversations()
-        if let stored = try storage.messages.group(id: gs.id) {
+        if let stored = try storage.messages.group(id: groupId) {
             var update = Relay_Content_GroupUpdate()
             update.action = .describe
             update.description_p = description
@@ -1229,9 +1278,12 @@ final class MessagingService {
     }
 
     func setGroupAvatar(_ data: Data, groupId: String) async throws {
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
+        // The avatar bytes ride the same encrypted-attachment path as media, so
+        // the relay only ever stores opaque ciphertext.
         let sealed = try AttachmentCipher.seal(data)
         let blobId = try await api.uploadAttachment(sealed.ciphertext)
-        _ = try await api.setGroupAvatarId(groupId: groupId, avatarId: blobId)
         try storage.messages.setGroupAvatar(id: groupId, avatarData: data)
         refreshConversations()
         if let stored = try storage.messages.group(id: groupId) {
@@ -1498,12 +1550,24 @@ final class MessagingService {
     }
 
     func leaveGroup(_ groupId: String) async throws {
-        let gs = try await api.removeGroupMember(groupId: groupId, account: credentials.accountId)
-        let remaining = StoredGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
-        await sendGroupUpdate(.leave, group: remaining, target: credentials.accountId)
-        try storage.messages.upsertGroup(id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision, members: gs.members)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        // Announce our departure to the remaining members over E2E (any member may
+        // leave), then drop the group locally.
+        let remaining = existing.members.filter { $0 != credentials.accountId }
+        let announce = StoredGroup(
+            id: existing.id, name: existing.name, distributionId: existing.distributionId,
+            revision: existing.revision + 1, members: existing.members,
+            admins: existing.admins, isAnnounceOnly: existing.isAnnounceOnly
+        )
+        await sendGroupUpdate(.leave, group: announce, target: credentials.accountId)
+        try storage.messages.upsertGroup(
+            id: groupId, name: existing.name, distributionId: existing.distributionId,
+            revision: existing.revision + 1, members: remaining,
+            admins: existing.admins.filter { $0 != credentials.accountId },
+            isAnnounceOnly: existing.isAnnounceOnly
+        )
         refreshConversations()
-        insertSystemLine("You left", inGroup: gs.id)
+        insertSystemLine("You left", inGroup: groupId)
     }
 
     /// Sends our profile to any group member who hasn't received the current revision.
@@ -1638,9 +1702,12 @@ final class MessagingService {
         u.actor = credentials.accountId
         u.name = group.name
         u.revision = group.revision
-        // Include full member list so recipients can update their local roster
-        // without a server round-trip (client-managed groups).
+        // Include the full roster, admin list, and current sender-key epoch so
+        // recipients keep their local group state in sync without any server
+        // round-trip (fully client-managed groups).
         u.members = group.members
+        u.admins = group.admins
+        u.distributionID = group.distributionId
         var content = Relay_Content_Content()
         content.groupUpdate = u
         content.groupID = group.id
@@ -1792,7 +1859,11 @@ final class MessagingService {
         }
         let newAdmins = info.admins.isEmpty ? (existing?.admins ?? [actor]) : info.admins
         let newName = info.name.isEmpty ? (existing?.name ?? "") : info.name
-        let distributionId = existing?.distributionId ?? UUID().uuidString
+        // Adopt a rotated epoch (e.g. after a removal) so our next send uses a
+        // fresh sender key the removed member can't read.
+        let distributionId = !info.distributionId.isEmpty
+            ? info.distributionId
+            : (existing?.distributionId ?? UUID().uuidString)
         do {
             try storage.messages.upsertGroup(
                 id: info.groupId, name: newName, distributionId: distributionId,
@@ -1805,6 +1876,12 @@ final class MessagingService {
             }
             await resolveUsernames(newMembers)
             if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
+            // Non-sealed groups use sender keys: give any newly-added members our
+            // key, and mint a fresh one after an epoch rotation (removal).
+            if !sealedSenderEnabled, newMembers.contains(credentials.accountId),
+               let stored = try? storage.messages.group(id: info.groupId) {
+                try? await distributeSenderKeyIfNeeded(group: stored)
+            }
         } catch {
             log.warning("group update failed: \(PrivacyRedactor.error(error))")
         }
@@ -1832,33 +1909,38 @@ final class MessagingService {
     // MARK: - Admin management
 
     func promoteAdmin(in groupId: String, account: String) async throws {
-        let g = try await api.promoteGroupAdmin(groupId: groupId, account: account)
-        try storage.messages.setGroupAdmins(id: groupId, admins: g.admins)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
+        let admins = existing.admins.contains(account) ? existing.admins : existing.admins + [account]
+        try storage.messages.setGroupAdmins(id: groupId, admins: admins)
         guard let grp = try? storage.messages.group(id: groupId) else { return }
         var update = Relay_Content_GroupUpdate()
         update.action = .promoteAdmin
         update.target = account
-        update.admins = g.admins
+        update.admins = admins
         await sendGroupUpdateCustom(update, group: grp)
         insertSystemLine("\(displayName(forAccount: credentials.accountId)) made \(displayName(forAccount: account)) an admin", inGroup: groupId)
         refreshConversations()
     }
 
     func demoteAdmin(in groupId: String, account: String) async throws {
-        let g = try await api.demoteGroupAdmin(groupId: groupId, account: account)
-        try storage.messages.setGroupAdmins(id: groupId, admins: g.admins)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
+        let admins = existing.admins.filter { $0 != account }
+        try storage.messages.setGroupAdmins(id: groupId, admins: admins)
         guard let grp = try? storage.messages.group(id: groupId) else { return }
         var update = Relay_Content_GroupUpdate()
         update.action = .demoteAdmin
         update.target = account
-        update.admins = g.admins
+        update.admins = admins
         await sendGroupUpdateCustom(update, group: grp)
         insertSystemLine("\(displayName(forAccount: credentials.accountId)) removed \(displayName(forAccount: account)) as admin", inGroup: groupId)
         refreshConversations()
     }
 
     func setAnnounceOnly(_ enabled: Bool, in groupId: String) async throws {
-        _ = try await api.setGroupAnnounceOnly(groupId: groupId, announceOnly: enabled)
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
         try storage.messages.setGroupAnnounceOnly(id: groupId, isAnnounceOnly: enabled)
         guard let grp = try? storage.messages.group(id: groupId) else { return }
         var update = Relay_Content_GroupUpdate()

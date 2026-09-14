@@ -91,6 +91,11 @@ message GroupUpdate {
   repeated string admins = 9;
   // New announce-only state (SET_ANNOUNCE_ONLY action).
   bool announce_only = 10;
+  // The group's current sender-key epoch. Carried E2E (was server-managed) so
+  // clients agree on it without a server round-trip. On member REMOVE the actor
+  // rotates this to a fresh id, forcing new sender keys the removed member can't
+  // read. Empty on metadata-only actions (recipients keep their current id).
+  string distribution_id = 11;
 }
 
 message TextMessage {

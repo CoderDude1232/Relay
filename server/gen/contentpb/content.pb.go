@@ -40,21 +40,27 @@ const (
 	GroupUpdate_REMOVE             GroupUpdate_Action = 3
 	GroupUpdate_LEAVE              GroupUpdate_Action = 4
 	GroupUpdate_RENAME             GroupUpdate_Action = 5
-	GroupUpdate_DESCRIBE           GroupUpdate_Action = 6 // group description changed
-	GroupUpdate_AVATAR             GroupUpdate_Action = 7 // group avatar changed
+	GroupUpdate_DESCRIBE           GroupUpdate_Action = 6  // group description changed
+	GroupUpdate_AVATAR             GroupUpdate_Action = 7  // group avatar changed
+	GroupUpdate_PROMOTE_ADMIN      GroupUpdate_Action = 8  // target was promoted to admin
+	GroupUpdate_DEMOTE_ADMIN       GroupUpdate_Action = 9  // target was demoted from admin
+	GroupUpdate_SET_ANNOUNCE_ONLY  GroupUpdate_Action = 10 // announce_only toggled
 )
 
 // Enum value maps for GroupUpdate_Action.
 var (
 	GroupUpdate_Action_name = map[int32]string{
-		0: "ACTION_UNSPECIFIED",
-		1: "CREATE",
-		2: "ADD",
-		3: "REMOVE",
-		4: "LEAVE",
-		5: "RENAME",
-		6: "DESCRIBE",
-		7: "AVATAR",
+		0:  "ACTION_UNSPECIFIED",
+		1:  "CREATE",
+		2:  "ADD",
+		3:  "REMOVE",
+		4:  "LEAVE",
+		5:  "RENAME",
+		6:  "DESCRIBE",
+		7:  "AVATAR",
+		8:  "PROMOTE_ADMIN",
+		9:  "DEMOTE_ADMIN",
+		10: "SET_ANNOUNCE_ONLY",
 	}
 	GroupUpdate_Action_value = map[string]int32{
 		"ACTION_UNSPECIFIED": 0,
@@ -65,6 +71,9 @@ var (
 		"RENAME":             5,
 		"DESCRIBE":           6,
 		"AVATAR":             7,
+		"PROMOTE_ADMIN":      8,
+		"DEMOTE_ADMIN":       9,
+		"SET_ANNOUNCE_ONLY":  10,
 	}
 )
 
@@ -147,12 +156,15 @@ func (ReceiptMessage_Type) EnumDescriptor() ([]byte, []int) {
 type CallMessage_Type int32
 
 const (
-	CallMessage_OFFER   CallMessage_Type = 0
-	CallMessage_ANSWER  CallMessage_Type = 1
-	CallMessage_ICE     CallMessage_Type = 2
-	CallMessage_HANGUP  CallMessage_Type = 3
-	CallMessage_BUSY    CallMessage_Type = 4
-	CallMessage_RINGING CallMessage_Type = 5
+	CallMessage_OFFER       CallMessage_Type = 0
+	CallMessage_ANSWER      CallMessage_Type = 1
+	CallMessage_ICE         CallMessage_Type = 2
+	CallMessage_HANGUP      CallMessage_Type = 3
+	CallMessage_BUSY        CallMessage_Type = 4
+	CallMessage_RINGING     CallMessage_Type = 5
+	CallMessage_GROUP_RING  CallMessage_Type = 6 // initiator → all members: "join this group call"
+	CallMessage_GROUP_JOIN  CallMessage_Type = 7 // member → all: "I joined; initiate mesh SDP with me"
+	CallMessage_GROUP_LEAVE CallMessage_Type = 8 // member → all: "I left the call"
 )
 
 // Enum value maps for CallMessage_Type.
@@ -164,14 +176,20 @@ var (
 		3: "HANGUP",
 		4: "BUSY",
 		5: "RINGING",
+		6: "GROUP_RING",
+		7: "GROUP_JOIN",
+		8: "GROUP_LEAVE",
 	}
 	CallMessage_Type_value = map[string]int32{
-		"OFFER":   0,
-		"ANSWER":  1,
-		"ICE":     2,
-		"HANGUP":  3,
-		"BUSY":    4,
-		"RINGING": 5,
+		"OFFER":       0,
+		"ANSWER":      1,
+		"ICE":         2,
+		"HANGUP":      3,
+		"BUSY":        4,
+		"RINGING":     5,
+		"GROUP_RING":  6,
+		"GROUP_JOIN":  7,
+		"GROUP_LEAVE": 8,
 	}
 )
 
@@ -248,7 +266,7 @@ func (x TypingMessage_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TypingMessage_Action.Descriptor instead.
 func (TypingMessage_Action) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{12, 0}
+	return file_content_proto_rawDescGZIP(), []int{14, 0}
 }
 
 type Content struct {
@@ -265,6 +283,8 @@ type Content struct {
 	//	*Content_Profile
 	//	*Content_Call
 	//	*Content_Edit
+	//	*Content_Poll
+	//	*Content_PollVote
 	Body isContent_Body `protobuf_oneof:"body"`
 	// Set when this content belongs to a group; empty for 1:1. Group messages
 	// are encrypted with the sender's sender key (senderKey ciphertext);
@@ -272,7 +292,21 @@ type Content struct {
 	GroupId string `protobuf:"bytes,8,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
 	// Random bytes added before E2EE encryption so the relay observes fewer exact
 	// plaintext-size differences. Clients ignore this field after decrypting.
-	Padding       []byte `protobuf:"bytes,12,opt,name=padding,proto3" json:"padding,omitempty"`
+	Padding []byte `protobuf:"bytes,12,opt,name=padding,proto3" json:"padding,omitempty"`
+	// Sealed sender: sender's own account id and device id, encrypted inside the
+	// Content so the relay's stored envelope can omit them without breaking decryption.
+	// Clients MUST set these on every outgoing message. Recipients prefer these over
+	// the Envelope's (server-stamped) sender fields.
+	SenderAccountId string `protobuf:"bytes,13,opt,name=sender_account_id,json=senderAccountId,proto3" json:"sender_account_id,omitempty"`
+	SenderDeviceId  uint32 `protobuf:"varint,14,opt,name=sender_device_id,json=senderDeviceId,proto3" json:"sender_device_id,omitempty"`
+	// Disappearing-messages timer the sender had set for this conversation when the
+	// message was composed, in milliseconds. 0 means no timer / no change. Recipients
+	// sync their local timer to this value so both sides stay in lockstep.
+	ExpiresAfterMs int64 `protobuf:"varint,15,opt,name=expires_after_ms,json=expiresAfterMs,proto3" json:"expires_after_ms,omitempty"`
+	// Set only on sync copies sent to the sender's own other devices. Contains the
+	// peer account id of the original recipient so the linked device can store the
+	// message in the correct conversation as an outgoing message.
+	SyncRecipient string `protobuf:"bytes,16,opt,name=sync_recipient,json=syncRecipient,proto3" json:"sync_recipient,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -404,6 +438,24 @@ func (x *Content) GetEdit() *EditMessage {
 	return nil
 }
 
+func (x *Content) GetPoll() *PollMessage {
+	if x != nil {
+		if x, ok := x.Body.(*Content_Poll); ok {
+			return x.Poll
+		}
+	}
+	return nil
+}
+
+func (x *Content) GetPollVote() *PollVote {
+	if x != nil {
+		if x, ok := x.Body.(*Content_PollVote); ok {
+			return x.PollVote
+		}
+	}
+	return nil
+}
+
 func (x *Content) GetGroupId() string {
 	if x != nil {
 		return x.GroupId
@@ -416,6 +468,34 @@ func (x *Content) GetPadding() []byte {
 		return x.Padding
 	}
 	return nil
+}
+
+func (x *Content) GetSenderAccountId() string {
+	if x != nil {
+		return x.SenderAccountId
+	}
+	return ""
+}
+
+func (x *Content) GetSenderDeviceId() uint32 {
+	if x != nil {
+		return x.SenderDeviceId
+	}
+	return 0
+}
+
+func (x *Content) GetExpiresAfterMs() int64 {
+	if x != nil {
+		return x.ExpiresAfterMs
+	}
+	return 0
+}
+
+func (x *Content) GetSyncRecipient() string {
+	if x != nil {
+		return x.SyncRecipient
+	}
+	return ""
 }
 
 type isContent_Body interface {
@@ -462,6 +542,14 @@ type Content_Edit struct {
 	Edit *EditMessage `protobuf:"bytes,11,opt,name=edit,proto3,oneof"`
 }
 
+type Content_Poll struct {
+	Poll *PollMessage `protobuf:"bytes,17,opt,name=poll,proto3,oneof"`
+}
+
+type Content_PollVote struct {
+	PollVote *PollVote `protobuf:"bytes,18,opt,name=poll_vote,json=pollVote,proto3,oneof"`
+}
+
 func (*Content_Text) isContent_Body() {}
 
 func (*Content_Receipt) isContent_Body() {}
@@ -481,6 +569,10 @@ func (*Content_Profile) isContent_Body() {}
 func (*Content_Call) isContent_Body() {}
 
 func (*Content_Edit) isContent_Body() {}
+
+func (*Content_Poll) isContent_Body() {}
+
+func (*Content_PollVote) isContent_Body() {}
 
 // Carries a libsignal Sender Key Distribution Message so a member can
 // decrypt this sender's group messages. Sent 1:1 (pairwise-encrypted) to
@@ -541,16 +633,28 @@ func (x *SenderKeyDistribution) GetDistributionId() string {
 // re-sync the authoritative roster from the relay. `revision` lets clients
 // drop stale updates; the rest drives a human-readable system line.
 type GroupUpdate struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Revision      int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
-	Action        GroupUpdate_Action     `protobuf:"varint,2,opt,name=action,proto3,enum=relay.content.GroupUpdate_Action" json:"action,omitempty"`
-	Actor         string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`             // account id that made the change
-	Target        string                 `protobuf:"bytes,4,opt,name=target,proto3" json:"target,omitempty"`           // affected member (add/remove)
-	Name          string                 `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`               // group name (create/rename)
-	Description   string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"` // group description (describe)
-	Avatar        *AttachmentPointer     `protobuf:"bytes,7,opt,name=avatar,proto3" json:"avatar,omitempty"`           // group avatar blob pointer (avatar action)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Revision    int64                  `protobuf:"varint,1,opt,name=revision,proto3" json:"revision,omitempty"`
+	Action      GroupUpdate_Action     `protobuf:"varint,2,opt,name=action,proto3,enum=relay.content.GroupUpdate_Action" json:"action,omitempty"`
+	Actor       string                 `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`             // account id that made the change
+	Target      string                 `protobuf:"bytes,4,opt,name=target,proto3" json:"target,omitempty"`           // affected member (add/remove/promote/demote)
+	Name        string                 `protobuf:"bytes,5,opt,name=name,proto3" json:"name,omitempty"`               // group name (create/rename)
+	Description string                 `protobuf:"bytes,6,opt,name=description,proto3" json:"description,omitempty"` // group description (describe)
+	Avatar      *AttachmentPointer     `protobuf:"bytes,7,opt,name=avatar,proto3" json:"avatar,omitempty"`           // group avatar blob pointer (avatar action)
+	// Full member list after this change. Included by the sender on CREATE, ADD,
+	// REMOVE, and LEAVE so recipients can update their local roster.
+	Members []string `protobuf:"bytes,8,rep,name=members,proto3" json:"members,omitempty"`
+	// Full admin list after this change (promote/demote actions).
+	Admins []string `protobuf:"bytes,9,rep,name=admins,proto3" json:"admins,omitempty"`
+	// New announce-only state (SET_ANNOUNCE_ONLY action).
+	AnnounceOnly bool `protobuf:"varint,10,opt,name=announce_only,json=announceOnly,proto3" json:"announce_only,omitempty"`
+	// The group's current sender-key epoch. Carried E2E (was server-managed) so
+	// clients agree on it without a server round-trip. On member REMOVE the actor
+	// rotates this to a fresh id, forcing new sender keys the removed member can't
+	// read. Empty on metadata-only actions (recipients keep their current id).
+	DistributionId string `protobuf:"bytes,11,opt,name=distribution_id,json=distributionId,proto3" json:"distribution_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GroupUpdate) Reset() {
@@ -630,6 +734,34 @@ func (x *GroupUpdate) GetAvatar() *AttachmentPointer {
 		return x.Avatar
 	}
 	return nil
+}
+
+func (x *GroupUpdate) GetMembers() []string {
+	if x != nil {
+		return x.Members
+	}
+	return nil
+}
+
+func (x *GroupUpdate) GetAdmins() []string {
+	if x != nil {
+		return x.Admins
+	}
+	return nil
+}
+
+func (x *GroupUpdate) GetAnnounceOnly() bool {
+	if x != nil {
+		return x.AnnounceOnly
+	}
+	return false
+}
+
+func (x *GroupUpdate) GetDistributionId() string {
+	if x != nil {
+		return x.DistributionId
+	}
+	return ""
 }
 
 type TextMessage struct {
@@ -1141,12 +1273,18 @@ func (x *ReceiptMessage) GetMessageTimestamps() []int64 {
 // Call signalling — all types use the same message; the type field selects
 // the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
 // offline devices. ANSWER, ICE, RINGING, and BUSY are sent ephemeral.
+// GROUP_RING is non-ephemeral (must wake offline devices). GROUP_JOIN and
+// GROUP_LEAVE are ephemeral.
 type CallMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          CallMessage_Type       `protobuf:"varint,1,opt,name=type,proto3,enum=relay.content.CallMessage_Type" json:"type,omitempty"`
-	CallId        string                 `protobuf:"bytes,2,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"` // stable UUID for the entire call session
-	Sdp           string                 `protobuf:"bytes,3,opt,name=sdp,proto3" json:"sdp,omitempty"`                     // SDP blob for OFFER / ANSWER
-	Ice           string                 `protobuf:"bytes,4,opt,name=ice,proto3" json:"ice,omitempty"`                     // JSON-encoded RTCIceCandidate for ICE
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Type   CallMessage_Type       `protobuf:"varint,1,opt,name=type,proto3,enum=relay.content.CallMessage_Type" json:"type,omitempty"`
+	CallId string                 `protobuf:"bytes,2,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"` // stable UUID for the entire call session
+	Sdp    string                 `protobuf:"bytes,3,opt,name=sdp,proto3" json:"sdp,omitempty"`                     // SDP blob for OFFER / ANSWER
+	Ice    string                 `protobuf:"bytes,4,opt,name=ice,proto3" json:"ice,omitempty"`                     // JSON-encoded RTCIceCandidate for ICE
+	// Group call fields — empty for 1:1 calls.
+	GroupId       string   `protobuf:"bytes,5,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`                   // conversation group ID for group calls
+	TargetAccount string   `protobuf:"bytes,6,opt,name=target_account,json=targetAccount,proto3" json:"target_account,omitempty"` // mesh OFFER/ANSWER/ICE: which peer this is for
+	Participants  []string `protobuf:"bytes,7,rep,name=participants,proto3" json:"participants,omitempty"`                        // GROUP_RING: full participant list
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1209,6 +1347,27 @@ func (x *CallMessage) GetIce() string {
 	return ""
 }
 
+func (x *CallMessage) GetGroupId() string {
+	if x != nil {
+		return x.GroupId
+	}
+	return ""
+}
+
+func (x *CallMessage) GetTargetAccount() string {
+	if x != nil {
+		return x.TargetAccount
+	}
+	return ""
+}
+
+func (x *CallMessage) GetParticipants() []string {
+	if x != nil {
+		return x.Participants
+	}
+	return nil
+}
+
 // Edits a previously sent message in-place. Only the original author may edit;
 // the recipient locates the target by (conversation, target_timestamp) and
 // replaces its body. Attachments are not editable.
@@ -1266,6 +1425,148 @@ func (x *EditMessage) GetNewBody() string {
 	return ""
 }
 
+// A poll sent in a conversation. Recipients cast votes via PollVote messages;
+// vote tallies are aggregated client-side from received votes.
+type PollMessage struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Question string                 `protobuf:"bytes,1,opt,name=question,proto3" json:"question,omitempty"`
+	Options  []string               `protobuf:"bytes,2,rep,name=options,proto3" json:"options,omitempty"`
+	// When true, voters may select multiple options.
+	MultiSelect bool `protobuf:"varint,3,opt,name=multi_select,json=multiSelect,proto3" json:"multi_select,omitempty"`
+	// Sender's clock; used as the stable poll id that PollVote messages reference.
+	Timestamp     int64 `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PollMessage) Reset() {
+	*x = PollMessage{}
+	mi := &file_content_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PollMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PollMessage) ProtoMessage() {}
+
+func (x *PollMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PollMessage.ProtoReflect.Descriptor instead.
+func (*PollMessage) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *PollMessage) GetQuestion() string {
+	if x != nil {
+		return x.Question
+	}
+	return ""
+}
+
+func (x *PollMessage) GetOptions() []string {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *PollMessage) GetMultiSelect() bool {
+	if x != nil {
+		return x.MultiSelect
+	}
+	return false
+}
+
+func (x *PollMessage) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+// A vote cast on a PollMessage identified by (poll_author, poll_timestamp).
+// Sending a new vote for the same poll replaces the previous selection.
+type PollVote struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	PollAuthor      string                 `protobuf:"bytes,1,opt,name=poll_author,json=pollAuthor,proto3" json:"poll_author,omitempty"`                        // account id of the poll creator
+	PollTimestamp   int64                  `protobuf:"varint,2,opt,name=poll_timestamp,json=pollTimestamp,proto3" json:"poll_timestamp,omitempty"`              // timestamp field from the PollMessage
+	SelectedOptions []uint32               `protobuf:"varint,3,rep,packed,name=selected_options,json=selectedOptions,proto3" json:"selected_options,omitempty"` // zero-based option indices
+	Timestamp       int64                  `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                           // sender's clock for ordering
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *PollVote) Reset() {
+	*x = PollVote{}
+	mi := &file_content_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PollVote) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PollVote) ProtoMessage() {}
+
+func (x *PollVote) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PollVote.ProtoReflect.Descriptor instead.
+func (*PollVote) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *PollVote) GetPollAuthor() string {
+	if x != nil {
+		return x.PollAuthor
+	}
+	return ""
+}
+
+func (x *PollVote) GetPollTimestamp() int64 {
+	if x != nil {
+		return x.PollTimestamp
+	}
+	return 0
+}
+
+func (x *PollVote) GetSelectedOptions() []uint32 {
+	if x != nil {
+		return x.SelectedOptions
+	}
+	return nil
+}
+
+func (x *PollVote) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 // Sent with Envelope.ephemeral = true; never queued for offline devices.
 type TypingMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1277,7 +1578,7 @@ type TypingMessage struct {
 
 func (x *TypingMessage) Reset() {
 	*x = TypingMessage{}
-	mi := &file_content_proto_msgTypes[12]
+	mi := &file_content_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1289,7 +1590,7 @@ func (x *TypingMessage) String() string {
 func (*TypingMessage) ProtoMessage() {}
 
 func (x *TypingMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[12]
+	mi := &file_content_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1302,7 +1603,7 @@ func (x *TypingMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TypingMessage.ProtoReflect.Descriptor instead.
 func (*TypingMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{12}
+	return file_content_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TypingMessage) GetAction() TypingMessage_Action {
@@ -1323,7 +1624,7 @@ var File_content_proto protoreflect.FileDescriptor
 
 const file_content_proto_rawDesc = "" +
 	"\n" +
-	"\rcontent.proto\x12\rrelay.content\"\xa0\x05\n" +
+	"\rcontent.proto\x12\rrelay.content\"\xb1\a\n" +
 	"\aContent\x120\n" +
 	"\x04text\x18\x01 \x01(\v2\x1a.relay.content.TextMessageH\x00R\x04text\x129\n" +
 	"\areceipt\x18\x02 \x01(\v2\x1d.relay.content.ReceiptMessageH\x00R\areceipt\x126\n" +
@@ -1335,13 +1636,19 @@ const file_content_proto_rawDesc = "" +
 	"\aprofile\x18\t \x01(\v2\x1c.relay.content.ProfileUpdateH\x00R\aprofile\x120\n" +
 	"\x04call\x18\n" +
 	" \x01(\v2\x1a.relay.content.CallMessageH\x00R\x04call\x120\n" +
-	"\x04edit\x18\v \x01(\v2\x1a.relay.content.EditMessageH\x00R\x04edit\x12\x19\n" +
+	"\x04edit\x18\v \x01(\v2\x1a.relay.content.EditMessageH\x00R\x04edit\x120\n" +
+	"\x04poll\x18\x11 \x01(\v2\x1a.relay.content.PollMessageH\x00R\x04poll\x126\n" +
+	"\tpoll_vote\x18\x12 \x01(\v2\x17.relay.content.PollVoteH\x00R\bpollVote\x12\x19\n" +
 	"\bgroup_id\x18\b \x01(\tR\agroupId\x12\x18\n" +
-	"\apadding\x18\f \x01(\fR\apaddingB\x06\n" +
+	"\apadding\x18\f \x01(\fR\apadding\x12*\n" +
+	"\x11sender_account_id\x18\r \x01(\tR\x0fsenderAccountId\x12(\n" +
+	"\x10sender_device_id\x18\x0e \x01(\rR\x0esenderDeviceId\x12(\n" +
+	"\x10expires_after_ms\x18\x0f \x01(\x03R\x0eexpiresAfterMs\x12%\n" +
+	"\x0esync_recipient\x18\x10 \x01(\tR\rsyncRecipientB\x06\n" +
 	"\x04body\"T\n" +
 	"\x15SenderKeyDistribution\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12'\n" +
-	"\x0fdistribution_id\x18\x02 \x01(\tR\x0edistributionId\"\xf6\x02\n" +
+	"\x0fdistribution_id\x18\x02 \x01(\tR\x0edistributionId\"\xb3\x04\n" +
 	"\vGroupUpdate\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x03R\brevision\x129\n" +
 	"\x06action\x18\x02 \x01(\x0e2!.relay.content.GroupUpdate.ActionR\x06action\x12\x14\n" +
@@ -1349,7 +1656,12 @@ const file_content_proto_rawDesc = "" +
 	"\x06target\x18\x04 \x01(\tR\x06target\x12\x12\n" +
 	"\x04name\x18\x05 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x06 \x01(\tR\vdescription\x128\n" +
-	"\x06avatar\x18\a \x01(\v2 .relay.content.AttachmentPointerR\x06avatar\"r\n" +
+	"\x06avatar\x18\a \x01(\v2 .relay.content.AttachmentPointerR\x06avatar\x12\x18\n" +
+	"\amembers\x18\b \x03(\tR\amembers\x12\x16\n" +
+	"\x06admins\x18\t \x03(\tR\x06admins\x12#\n" +
+	"\rannounce_only\x18\n" +
+	" \x01(\bR\fannounceOnly\x12'\n" +
+	"\x0fdistribution_id\x18\v \x01(\tR\x0edistributionId\"\xae\x01\n" +
 	"\x06Action\x12\x16\n" +
 	"\x12ACTION_UNSPECIFIED\x10\x00\x12\n" +
 	"\n" +
@@ -1362,7 +1674,11 @@ const file_content_proto_rawDesc = "" +
 	"\x06RENAME\x10\x05\x12\f\n" +
 	"\bDESCRIBE\x10\x06\x12\n" +
 	"\n" +
-	"\x06AVATAR\x10\a\"\xaf\x01\n" +
+	"\x06AVATAR\x10\a\x12\x11\n" +
+	"\rPROMOTE_ADMIN\x10\b\x12\x10\n" +
+	"\fDEMOTE_ADMIN\x10\t\x12\x15\n" +
+	"\x11SET_ANNOUNCE_ONLY\x10\n" +
+	"\"\xaf\x01\n" +
 	"\vTextMessage\x12\x12\n" +
 	"\x04body\x18\x01 \x01(\tR\x04body\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x12*\n" +
@@ -1400,12 +1716,15 @@ const file_content_proto_rawDesc = "" +
 	"\x04Type\x12\x14\n" +
 	"\x10TYPE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rTYPE_DELIVERY\x10\x01\x12\r\n" +
-	"\tTYPE_READ\x10\x02\"\xca\x01\n" +
+	"\tTYPE_READ\x10\x02\"\xe1\x02\n" +
 	"\vCallMessage\x123\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x1f.relay.content.CallMessage.TypeR\x04type\x12\x17\n" +
 	"\acall_id\x18\x02 \x01(\tR\x06callId\x12\x10\n" +
 	"\x03sdp\x18\x03 \x01(\tR\x03sdp\x12\x10\n" +
-	"\x03ice\x18\x04 \x01(\tR\x03ice\"I\n" +
+	"\x03ice\x18\x04 \x01(\tR\x03ice\x12\x19\n" +
+	"\bgroup_id\x18\x05 \x01(\tR\agroupId\x12%\n" +
+	"\x0etarget_account\x18\x06 \x01(\tR\rtargetAccount\x12\"\n" +
+	"\fparticipants\x18\a \x03(\tR\fparticipants\"z\n" +
 	"\x04Type\x12\t\n" +
 	"\x05OFFER\x10\x00\x12\n" +
 	"\n" +
@@ -1414,10 +1733,26 @@ const file_content_proto_rawDesc = "" +
 	"\n" +
 	"\x06HANGUP\x10\x03\x12\b\n" +
 	"\x04BUSY\x10\x04\x12\v\n" +
-	"\aRINGING\x10\x05\"S\n" +
+	"\aRINGING\x10\x05\x12\x0e\n" +
+	"\n" +
+	"GROUP_RING\x10\x06\x12\x0e\n" +
+	"\n" +
+	"GROUP_JOIN\x10\a\x12\x0f\n" +
+	"\vGROUP_LEAVE\x10\b\"S\n" +
 	"\vEditMessage\x12)\n" +
 	"\x10target_timestamp\x18\x01 \x01(\x03R\x0ftargetTimestamp\x12\x19\n" +
-	"\bnew_body\x18\x02 \x01(\tR\anewBody\"\xb4\x01\n" +
+	"\bnew_body\x18\x02 \x01(\tR\anewBody\"\x84\x01\n" +
+	"\vPollMessage\x12\x1a\n" +
+	"\bquestion\x18\x01 \x01(\tR\bquestion\x12\x18\n" +
+	"\aoptions\x18\x02 \x03(\tR\aoptions\x12!\n" +
+	"\fmulti_select\x18\x03 \x01(\bR\vmultiSelect\x12\x1c\n" +
+	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\"\x9b\x01\n" +
+	"\bPollVote\x12\x1f\n" +
+	"\vpoll_author\x18\x01 \x01(\tR\n" +
+	"pollAuthor\x12%\n" +
+	"\x0epoll_timestamp\x18\x02 \x01(\x03R\rpollTimestamp\x12)\n" +
+	"\x10selected_options\x18\x03 \x03(\rR\x0fselectedOptions\x12\x1c\n" +
+	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\"\xb4\x01\n" +
 	"\rTypingMessage\x12;\n" +
 	"\x06action\x18\x01 \x01(\x0e2#.relay.content.TypingMessage.ActionR\x06action\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"H\n" +
@@ -1439,7 +1774,7 @@ func file_content_proto_rawDescGZIP() []byte {
 }
 
 var file_content_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_content_proto_goTypes = []any{
 	(GroupUpdate_Action)(0),       // 0: relay.content.GroupUpdate.Action
 	(ReceiptMessage_Type)(0),      // 1: relay.content.ReceiptMessage.Type
@@ -1457,12 +1792,14 @@ var file_content_proto_goTypes = []any{
 	(*ReceiptMessage)(nil),        // 13: relay.content.ReceiptMessage
 	(*CallMessage)(nil),           // 14: relay.content.CallMessage
 	(*EditMessage)(nil),           // 15: relay.content.EditMessage
-	(*TypingMessage)(nil),         // 16: relay.content.TypingMessage
+	(*PollMessage)(nil),           // 16: relay.content.PollMessage
+	(*PollVote)(nil),              // 17: relay.content.PollVote
+	(*TypingMessage)(nil),         // 18: relay.content.TypingMessage
 }
 var file_content_proto_depIdxs = []int32{
 	7,  // 0: relay.content.Content.text:type_name -> relay.content.TextMessage
 	13, // 1: relay.content.Content.receipt:type_name -> relay.content.ReceiptMessage
-	16, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
+	18, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
 	12, // 3: relay.content.Content.reaction:type_name -> relay.content.ReactionMessage
 	5,  // 4: relay.content.Content.sender_key_distribution:type_name -> relay.content.SenderKeyDistribution
 	6,  // 5: relay.content.Content.group_update:type_name -> relay.content.GroupUpdate
@@ -1470,19 +1807,21 @@ var file_content_proto_depIdxs = []int32{
 	9,  // 7: relay.content.Content.profile:type_name -> relay.content.ProfileUpdate
 	14, // 8: relay.content.Content.call:type_name -> relay.content.CallMessage
 	15, // 9: relay.content.Content.edit:type_name -> relay.content.EditMessage
-	0,  // 10: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
-	8,  // 11: relay.content.GroupUpdate.avatar:type_name -> relay.content.AttachmentPointer
-	10, // 12: relay.content.TextMessage.quote:type_name -> relay.content.Quote
-	8,  // 13: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
-	8,  // 14: relay.content.ProfileUpdate.avatar:type_name -> relay.content.AttachmentPointer
-	1,  // 15: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
-	2,  // 16: relay.content.CallMessage.type:type_name -> relay.content.CallMessage.Type
-	3,  // 17: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	16, // 10: relay.content.Content.poll:type_name -> relay.content.PollMessage
+	17, // 11: relay.content.Content.poll_vote:type_name -> relay.content.PollVote
+	0,  // 12: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
+	8,  // 13: relay.content.GroupUpdate.avatar:type_name -> relay.content.AttachmentPointer
+	10, // 14: relay.content.TextMessage.quote:type_name -> relay.content.Quote
+	8,  // 15: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
+	8,  // 16: relay.content.ProfileUpdate.avatar:type_name -> relay.content.AttachmentPointer
+	1,  // 17: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
+	2,  // 18: relay.content.CallMessage.type:type_name -> relay.content.CallMessage.Type
+	3,  // 19: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_content_proto_init() }
@@ -1501,6 +1840,8 @@ func file_content_proto_init() {
 		(*Content_Profile)(nil),
 		(*Content_Call)(nil),
 		(*Content_Edit)(nil),
+		(*Content_Poll)(nil),
+		(*Content_PollVote)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1508,7 +1849,7 @@ func file_content_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_content_proto_rawDesc), len(file_content_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
