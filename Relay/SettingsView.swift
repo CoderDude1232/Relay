@@ -162,7 +162,7 @@ struct SettingsView: View {
                         SettingsNavRow(systemName: "internaldrive.fill", color: .orange, title: "Storage")
                     }
                     NavigationLink(destination: BackupView(service: service)) {
-                        SettingsNavRow(systemName: "arrow.clockwise.icloud.fill", color: .indigo, title: "Backup & Export")
+                        SettingsNavRow(systemName: "arrow.clockwise.icloud.fill", color: .indigo, title: "Backup & Restore")
                     }
                     NavigationLink(destination: ContactSyncView(service: service)) {
                         SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .cyan, title: "Contact Syncing")

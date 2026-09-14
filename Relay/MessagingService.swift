@@ -1491,6 +1491,103 @@ final class MessagingService {
         refreshConversations()
     }
 
+    // MARK: - Encrypted backup payload (for iCloud recovery)
+
+    /// A full, portable snapshot of local chat state. Encrypted by
+    /// CloudBackupManager before it ever leaves the device.
+    struct BackupSnapshot: Codable {
+        struct Message: Codable {
+            let id: String
+            let body: String
+            let timestamp: Int64
+            let isOutgoing: Bool
+            let status: String
+            let senderAccount: String?
+            let replyTimestamp: Int64?
+            let replyAuthor: String?
+            let replyText: String?
+        }
+        struct Conversation: Codable {
+            let peerAccount: String
+            let username: String?
+            let groupId: String?
+            let messages: [Message]
+        }
+        struct Group: Codable {
+            let id: String
+            let name: String
+            let distributionId: String
+            let revision: Int64
+            let members: [String]
+            let admins: [String]
+            let isAnnounceOnly: Bool
+        }
+        var version: Int = 1
+        var conversations: [Conversation]
+        var groups: [Group]
+    }
+
+    /// Serializes all conversations, messages, and group state into a snapshot.
+    func exportBackupSnapshot() -> BackupSnapshot {
+        var convs: [BackupSnapshot.Conversation] = []
+        var groups: [BackupSnapshot.Group] = []
+        for conv in (try? storage.messages.conversations()) ?? [] {
+            let msgs = ((try? storage.messages.messages(in: conv.id, limit: 100_000)) ?? []).map { m in
+                BackupSnapshot.Message(
+                    id: m.id, body: m.body, timestamp: m.timestamp,
+                    isOutgoing: m.isOutgoing, status: m.status.rawValue, senderAccount: m.senderAccount,
+                    replyTimestamp: m.replyTo?.targetTimestamp,
+                    replyAuthor: m.replyTo?.author, replyText: m.replyTo?.text
+                )
+            }
+            convs.append(BackupSnapshot.Conversation(
+                peerAccount: conv.peerAccount, username: conv.peerUsername,
+                groupId: conv.groupId, messages: msgs
+            ))
+            if let gid = conv.groupId, let g = try? storage.messages.group(id: gid) {
+                groups.append(BackupSnapshot.Group(
+                    id: g.id, name: g.name, distributionId: g.distributionId, revision: g.revision,
+                    members: g.members, admins: g.admins, isAnnounceOnly: g.isAnnounceOnly
+                ))
+            }
+        }
+        return BackupSnapshot(conversations: convs, groups: groups)
+    }
+
+    /// Imports a decrypted snapshot into local storage (idempotent — existing
+    /// message ids are skipped). Used when restoring on a fresh device.
+    func importBackupSnapshot(_ snapshot: BackupSnapshot) {
+        for g in snapshot.groups {
+            try? storage.messages.upsertGroup(
+                id: g.id, name: g.name, distributionId: g.distributionId, revision: g.revision,
+                members: g.members, admins: g.admins, isAnnounceOnly: g.isAnnounceOnly
+            )
+        }
+        for c in snapshot.conversations {
+            let convId: String
+            if let gid = c.groupId {
+                convId = (try? storage.messages.groupConversationId(groupId: gid))
+                    ?? (try? storage.messages.conversation(withPeer: gid, username: c.username)) ?? ""
+            } else {
+                convId = (try? storage.messages.conversation(withPeer: c.peerAccount, username: c.username)) ?? ""
+            }
+            guard !convId.isEmpty else { continue }
+            for m in c.messages {
+                let replyTo = m.replyTimestamp.map {
+                    QuotedMessage(targetTimestamp: $0, author: m.replyAuthor ?? "", text: m.replyText ?? "")
+                }
+                _ = try? storage.messages.insertMessage(
+                    id: m.id, conversationId: convId, isOutgoing: m.isOutgoing,
+                    body: m.body, timestamp: m.timestamp,
+                    status: MessageStatus(rawValue: m.status) ?? .received,
+                    replyTo: replyTo, senderAccount: m.senderAccount
+                )
+            }
+            try? storage.messages.markConversationRead(convId)
+        }
+        refreshConversations()
+    }
+
     /// Creates empty conversation stubs for a list of peers — used by the linked
     /// device after scanning a QR that included conversation sync data.
     func importConversationStubs(_ peers: [(account: String, username: String?)]) {
