@@ -2584,6 +2584,13 @@ final class MessagingService {
         var devices: [PeerDevice] = []
         var firstSeenIdentity = false
         for bundle in bundles {
+            // Never build a Signal session with our own device: when refreshing our
+            // OWN account (for linked-device sync), the server returns this device's
+            // bundle too, and processPreKeyBundle rejects a session to self — which
+            // would abort the whole refresh and silently break sync to other devices.
+            if account == credentials.accountId && bundle.deviceId == credentials.deviceId {
+                continue
+            }
             let address = try ProtocolAddress(name: account, deviceId: bundle.deviceId)
             try guardIdentityReplacement(bundle.identityKey, peer: account, address: address)
             let hadIdentity = try storage.signalStore.identity(for: address, context: NullContext()) != nil
