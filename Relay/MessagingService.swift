@@ -453,7 +453,7 @@ final class MessagingService {
                 refreshActiveMessages(ifShowing: conversationId)
             }
             if let groupUpdate = result.groupUpdate {
-                await handleGroupUpdate(groupUpdate)
+                await handleGroupUpdate(groupUpdate, authenticatedSender: result.peerAccount)
             }
             if let profile = result.profile {
                 await applyPeerProfile(profile)
@@ -1694,19 +1694,60 @@ final class MessagingService {
 
     /// Updates the local group roster from the E2E GroupUpdate message.
     /// No server round-trip needed: the sender includes the full member list.
-    private func handleGroupUpdate(_ info: GroupUpdateInfo) async {
-        if info.action == .remove, info.target == credentials.accountId { return }
+    /// Applies an incoming group change. `authenticatedSender` is the identity the
+    /// messaging layer already verified sent this (sealed-sender certificate or
+    /// ratchet), which we use as the source of truth for authorization — the
+    /// encryption already proves who sent it, so no extra signature is needed.
+    private func handleGroupUpdate(_ info: GroupUpdateInfo, authenticatedSender: String?) async {
+        let existing = try? storage.messages.group(id: info.groupId)
 
-        // Description/avatar carry their payload in the message itself.
-        if info.action == .describe {
+        // 1. The claimed `actor` must match who actually sent the (encrypted)
+        //    message. A mismatch means a forged actor field — drop it.
+        if let sender = authenticatedSender, !sender.isEmpty, !info.actor.isEmpty, info.actor != sender {
+            log.warning("group update: actor != authenticated sender; dropping")
+            return
+        }
+        let actor = (authenticatedSender.flatMap { $0.isEmpty ? nil : $0 }) ?? info.actor
+        guard !actor.isEmpty else { return }
+
+        // 2. Authorization. On first contact (no local state) we bootstrap by
+        //    trusting the authenticated actor who is adding us. Otherwise only an
+        //    admin may change group state; any member may remove themselves
+        //    (leave). Legacy groups with an empty admin list are treated as open.
+        let isBootstrap = (existing == nil)
+        let actorIsAdmin = existing.map { $0.admins.isEmpty || $0.admins.contains(actor) } ?? true
+        let isSelfDeparture = (info.action == .leave || info.action == .remove) && info.target == actor
+        guard isBootstrap || actorIsAdmin || isSelfDeparture else {
+            log.warning("group update: \(String(describing: info.action)) from non-admin; dropping")
+            return
+        }
+
+        // 3. We were removed by an admin — drop the group from our local roster so
+        //    we stop sending to it.
+        if info.action == .remove, info.target == credentials.accountId, let existing {
+            do {
+                try storage.messages.upsertGroup(
+                    id: info.groupId, name: existing.name, distributionId: existing.distributionId,
+                    revision: max(info.revision, existing.revision),
+                    members: existing.members.filter { $0 != credentials.accountId },
+                    admins: existing.admins
+                )
+                refreshConversations()
+                if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
+            } catch { log.warning("group remove(self) failed: \(PrivacyRedactor.error(error))") }
+            return
+        }
+
+        // 4. Metadata-only actions carry their payload directly.
+        switch info.action {
+        case .describe:
             do {
                 try storage.messages.setGroupDescription(id: info.groupId, description: info.description)
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
             } catch { log.warning("group description update failed: \(PrivacyRedactor.error(error))") }
             return
-        }
-        if info.action == .avatar, !info.avatarId.isEmpty {
+        case .avatar where !info.avatarId.isEmpty:
             Task {
                 do {
                     let ciphertext = try await api.downloadAttachment(id: info.avatarId)
@@ -1716,65 +1757,56 @@ final class MessagingService {
                 } catch { log.warning("group avatar download failed: \(PrivacyRedactor.error(error))") }
             }
             return
-        }
-
-        // Admin and announce-only updates carry their payload directly.
-        if info.action == .promoteAdmin || info.action == .demoteAdmin {
+        case .promoteAdmin, .demoteAdmin:
             do {
                 try storage.messages.setGroupAdmins(id: info.groupId, admins: info.admins)
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
             } catch { log.warning("group admin update failed: \(PrivacyRedactor.error(error))") }
             return
-        }
-        if info.action == .setAnnounceOnly {
+        case .setAnnounceOnly:
             do {
                 try storage.messages.setGroupAnnounceOnly(id: info.groupId, isAnnounceOnly: info.announceOnly)
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
             } catch { log.warning("group announce-only update failed: \(PrivacyRedactor.error(error))") }
             return
+        default:
+            break
         }
 
-        // Use the E2E member list when present; fall back to server fetch for
-        // legacy messages (sent by older clients without the members field).
-        if !info.members.isEmpty {
-            do {
-                let existing = try? storage.messages.group(id: info.groupId)
-                let distributionId = existing?.distributionId ?? UUID().uuidString
-                try storage.messages.upsertGroup(
-                    id: info.groupId, name: info.name.isEmpty ? (existing?.name ?? "") : info.name,
-                    distributionId: distributionId, revision: info.revision,
-                    members: info.members,
-                    admins: info.admins.isEmpty ? (existing?.admins ?? []) : info.admins
-                )
-                refreshConversations()
-                if let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {
-                    refreshActiveMessages(ifShowing: convoId)
-                }
-                await resolveUsernames(info.members)
-                if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
-            } catch {
-                log.warning("group update failed: \(PrivacyRedactor.error(error))")
+        // 5. Roster actions (create/add/remove/leave/rename). Prefer the actor's
+        //    full member list (they're an authorized admin or the creator, so it's
+        //    trusted and self-heals any missed update); fall back to applying the
+        //    delta when only a target is provided.
+        var newMembers = info.members.isEmpty ? (existing?.members ?? []) : info.members
+        if info.members.isEmpty {
+            switch info.action {
+            case .add where !info.target.isEmpty:
+                if !newMembers.contains(info.target) { newMembers.append(info.target) }
+            case .remove, .leave:
+                newMembers.removeAll { $0 == info.target }
+            default:
+                break
             }
-            return
         }
-
-        // Legacy fallback: member list not in E2E message — ask server.
+        let newAdmins = info.admins.isEmpty ? (existing?.admins ?? [actor]) : info.admins
+        let newName = info.name.isEmpty ? (existing?.name ?? "") : info.name
+        let distributionId = existing?.distributionId ?? UUID().uuidString
         do {
-            let gs = try await api.fetchGroup(id: info.groupId)
             try storage.messages.upsertGroup(
-                id: gs.id, name: gs.name, distributionId: gs.distributionId, revision: gs.revision,
-                members: gs.members, admins: gs.admins, isAnnounceOnly: gs.announceOnly
+                id: info.groupId, name: newName, distributionId: distributionId,
+                revision: max(info.revision, existing?.revision ?? 0),
+                members: newMembers, admins: newAdmins
             )
             refreshConversations()
-            if let convoId = try storage.messages.groupConversationId(groupId: gs.id) {
+            if let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {
                 refreshActiveMessages(ifShowing: convoId)
             }
-            await resolveUsernames(gs.members)
+            await resolveUsernames(newMembers)
             if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
         } catch {
-            log.warning("group sync failed: \(PrivacyRedactor.error(error))")
+            log.warning("group update failed: \(PrivacyRedactor.error(error))")
         }
     }
 
