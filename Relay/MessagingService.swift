@@ -1753,6 +1753,9 @@ final class MessagingService {
                 }
             }
             try storage.messages.updateStatus(messageId: localId, status: .sent)
+            // Mirror to our own other devices (the fan-out above excludes our
+            // account) so the group thread stays in sync across linked devices.
+            await sendSyncToOwnDevices(content: content, peer: group.id, timestamp: timestamp)
         } catch {
             log.error("group send failed: \(PrivacyRedactor.error(error))")
             if messageInserted {
@@ -3204,6 +3207,7 @@ final class MessagingService {
             } catch {
                 log.error("reaction send failed: \(PrivacyRedactor.error(error))")
             }
+            await sendSyncToOwnDevices(content: content, peer: peer, timestamp: content.reaction.timestamp)
         }
     }
 
@@ -3264,15 +3268,13 @@ final class MessagingService {
             var content = Relay_Content_Content()
             content.delete.targetTimestamp = message.timestamp
             content.delete.targetAuthor = credentials.accountId
+            let ts = Int64(Date().timeIntervalSince1970 * 1000)
             do {
-                try await sendContent(
-                    try content.serializedData(),
-                    toPeer: peer,
-                    clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000)
-                )
+                try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: ts)
             } catch {
                 log.error("unsend send failed: \(PrivacyRedactor.error(error))")
             }
+            await sendSyncToOwnDevices(content: content, peer: peer, timestamp: ts)
         }
     }
 
@@ -3303,6 +3305,7 @@ final class MessagingService {
             } catch {
                 log.error("edit message send failed: \(PrivacyRedactor.error(error))")
             }
+            await sendSyncToOwnDevices(content: content, peer: peer, timestamp: now)
         }
     }
 

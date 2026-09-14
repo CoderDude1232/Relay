@@ -429,14 +429,16 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         case .reaction(let reaction):
             let conversationId = try chatConversation()
+            // A sync copy is our own reaction echoed to our other device — store it
+            // as ours (isOutgoing) and never notify.
             try storage.messages.setReaction(
                 conversationId: conversationId, targetTimestamp: reaction.targetTimestamp,
-                author: attestedAccount, isOutgoing: false,
+                author: attestedAccount, isOutgoing: isSyncMessage,
                 emoji: reaction.emoji, remove: reaction.remove
             )
             return ProcessedEnvelope(
                 outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId,
-                notification: reaction.remove ? nil
+                notification: (reaction.remove || isSyncMessage) ? nil
                     : NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: "Reacted \(reaction.emoji)")
             )
 
