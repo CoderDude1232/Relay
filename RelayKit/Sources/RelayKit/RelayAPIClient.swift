@@ -472,43 +472,8 @@ public struct RelayAPIClient: Sendable {
         return (bundles, accessKey)
     }
 
-    // MARK: - Groups (server-stored roster)
-
-    public func createGroup(name: String, members: [String]) async throws -> GroupState {
-        try await request("POST", "v1/groups", body: CreateGroupRequest(name: name, members: members))
-    }
-
-    public func fetchGroup(id: String) async throws -> GroupState {
-        try await request("GET", "v1/groups/\(id)", body: nil as String?)
-    }
-
-    public func addGroupMember(groupId: String, account: String) async throws -> GroupState {
-        try await request("POST", "v1/groups/\(groupId)/members", body: AccountRequest(account: account))
-    }
-
-    public func removeGroupMember(groupId: String, account: String) async throws -> GroupState {
-        try await request("DELETE", "v1/groups/\(groupId)/members/\(account)", body: nil as String?)
-    }
-
-    public func renameGroup(groupId: String, name: String) async throws -> GroupState {
-        try await request("PUT", "v1/groups/\(groupId)", body: NameRequest(name: name))
-    }
-
-    public func setGroupDescription(groupId: String, description: String) async throws -> GroupState {
-        try await request("PUT", "v1/groups/\(groupId)", body: DescriptionRequest(description: description))
-    }
-
-    public func setGroupAvatarId(groupId: String, avatarId: String) async throws -> GroupState {
-        try await request("PUT", "v1/groups/\(groupId)", body: AvatarIdRequest(avatarId: avatarId))
-    }
-
-    public func createGroupInvite(groupId: String) async throws -> GroupInviteResponse {
-        try await request("POST", "v1/groups/\(groupId)/invite", body: nil as String?)
-    }
-
-    public func joinGroupByInvite(token: String) async throws -> GroupState {
-        try await request("POST", "v1/groups/join", body: TokenRequest(token: token))
-    }
+    // MARK: - Group invites (relay stores only opaque encrypted blobs; groups
+    // themselves are fully client-managed and E2E — no server roster/name/admins)
 
     /// Uploads an opaque encrypted group-invite blob, returning the token + expiry.
     /// The relay only stores ciphertext; the decrypt key rides the URL fragment.
@@ -529,19 +494,6 @@ public struct RelayAPIClient: Sendable {
         )
         guard let blob = Data(base64Encoded: r.blob) else { throw RelayAPIError.malformedResponse }
         return blob
-    }
-
-    public func promoteGroupAdmin(groupId: String, account: String) async throws -> GroupState {
-        try await request("POST", "v1/groups/\(groupId)/admins/\(account)", body: nil as String?)
-    }
-
-    public func demoteGroupAdmin(groupId: String, account: String) async throws -> GroupState {
-        try await request("DELETE", "v1/groups/\(groupId)/admins/\(account)", body: nil as String?)
-    }
-
-    public func setGroupAnnounceOnly(groupId: String, announceOnly: Bool) async throws -> GroupState {
-        struct Req: Encodable { let announceOnly: Bool }
-        return try await request("PUT", "v1/groups/\(groupId)/announce", body: Req(announceOnly: announceOnly))
     }
 
     // MARK: - Attachments (opaque encrypted blobs)
@@ -615,40 +567,6 @@ public struct RelayAPIClient: Sendable {
 // MARK: - Groups
 
 /// A group's roster + state as returned by the relay.
-public struct GroupState: Decodable, Sendable, Equatable {
-    public let id: String
-    public let name: String
-    public let description: String
-    public let avatarId: String
-    public let distributionId: String
-    public let revision: Int64
-    public let members: [String]
-    public let admins: [String]
-    public let announceOnly: Bool
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        name = try c.decode(String.self, forKey: .name)
-        description = (try? c.decode(String.self, forKey: .description)) ?? ""
-        avatarId = (try? c.decode(String.self, forKey: .avatarId)) ?? ""
-        distributionId = try c.decode(String.self, forKey: .distributionId)
-        revision = try c.decode(Int64.self, forKey: .revision)
-        members = try c.decode([String].self, forKey: .members)
-        admins = (try? c.decode([String].self, forKey: .admins)) ?? []
-        announceOnly = (try? c.decode(Bool.self, forKey: .announceOnly)) ?? false
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id, name, description, avatarId, distributionId, revision, members, admins, announceOnly
-    }
-}
-
-public struct GroupInviteResponse: Decodable, Sendable {
-    public let token: String
-    public let url: String
-}
-
 /// Time-limited TURN credentials in coturn REST API format.
 public struct TurnCredentials: Decodable, Sendable {
     public let urls: [String]
@@ -706,27 +624,6 @@ private struct DeviceMutationRequest: Encodable {
 private struct DeviceLinkClaimRequest: Encodable {
     let linkToken: String
     let verificationCode: String
-}
-
-private struct CreateGroupRequest: Encodable {
-    let name: String
-    let members: [String]
-}
-
-private struct AccountRequest: Encodable {
-    let account: String
-}
-
-private struct NameRequest: Encodable {
-    let name: String
-}
-
-private struct DescriptionRequest: Encodable {
-    let description: String
-}
-
-private struct AvatarIdRequest: Encodable {
-    let avatarId: String
 }
 
 private struct TokenRequest: Encodable {
