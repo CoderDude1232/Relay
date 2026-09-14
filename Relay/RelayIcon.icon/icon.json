@@ -6,6 +6,25 @@
     {
       "layers" : [
         {
+          "fill" : {
+            "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
+          },
+          "image-name" : "be392b66265524e9536a5cfba15307a3.png",
+          "name" : "be392b66265524e9536a5cfba15307a3",
+          "position-specializations" : [
+            {
+              "idiom" : "square",
+              "value" : {
+                "scale" : 0.26999999999999996,
+                "translation-in-points" : [
+                  -67.35000000000002,
+                  -19.03125
+                ]
+              }
+            }
+          ]
+        },
+        {
           "fill-specializations" : [
             {
               "appearance" : "dark",
@@ -40,45 +59,28 @@
           ]
         },
         {
-          "fill-specializations" : [
-            {
-              "value" : {
-                "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
-              }
-            },
-            {
-              "appearance" : "tinted",
-              "value" : "automatic"
-            }
-          ],
-          "image-name" : "download-2.svg",
-          "name" : "download-2",
-          "opacity-specializations" : [
-            {
-              "value" : 1
-            },
-            {
-              "appearance" : "tinted",
-              "value" : 1
-            }
-          ],
+          "fill" : {
+            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
+          },
+          "image-name" : "image-3.png",
+          "name" : "image-3",
           "position-specializations" : [
             {
               "value" : {
-                "scale" : 1.08,
+                "scale" : 1,
                 "translation-in-points" : [
-                  14.1099999999999,
-                  0
+                  99.921875,
+                  -134.5
                 ]
               }
             },
             {
               "idiom" : "square",
               "value" : {
-                "scale" : 1.2500000000000002,
+                "scale" : 0.6,
                 "translation-in-points" : [
-                  9,
-                  -39.859375
+                  83.85000000000002,
+                  -106.73124999999999
                 ]
               }
             }

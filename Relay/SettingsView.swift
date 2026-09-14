@@ -314,178 +314,44 @@ struct PrivacySettingsView: View {
 
     var body: some View {
         List {
-            Section {
-                Toggle(isOn: Binding(
-                    get: { service.sendReadReceipts },
-                    set: { service.sendReadReceipts = $0 }
-                )) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "checkmark.circle.fill", color: .blue)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Read Receipts")
-                            Text("Let contacts see when you've read their messages")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Toggle(isOn: Binding(
-                    get: { service.hideLastSeen },
-                    set: { service.hideLastSeen = $0 }
-                )) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "eye.slash.fill", color: .gray)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Hide Last Seen")
-                            Text("Don't share when you were last active")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Toggle(isOn: Binding(
-                    get: { service.sendJitterEnabled },
-                    set: { service.sendJitterEnabled = $0 }
-                )) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "timer", color: .indigo)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Send Delay")
-                            Text("Hold outgoing messages for a short random delay so send timing can't be correlated")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Toggle(isOn: Binding(
-                    get: { service.sealedSenderEnabled },
-                    set: { service.sealedSenderEnabled = $0 }
-                )) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "eye.slash.fill", color: .purple)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Sealed Sender")
-                            Text("Send messages without revealing your identity to the relay server")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } header: {
-                Text("Messaging")
-            } footer: {
-                Text("Changes apply to all conversations. Send Delay adds up to 5 seconds before each message leaves your device. Sealed Sender hides who a message is from — the relay only sees the recipient.")
+            Section("Messaging") {
+                toggleRow("checkmark.circle.fill", .blue, "Read Receipts",
+                          get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 })
+                toggleRow("eye.slash.fill", .gray, "Hide Last Seen",
+                          get: { service.hideLastSeen }, set: { service.hideLastSeen = $0 })
+                toggleRow("timer", .indigo, "Send Delay",
+                          get: { service.sendJitterEnabled }, set: { service.sendJitterEnabled = $0 })
+                toggleRow("shield.lefthalf.filled", .purple, "Sealed Sender",
+                          get: { service.sealedSenderEnabled }, set: { service.sealedSenderEnabled = $0 })
             }
 
-            Section {
+            Section("Notifications") {
                 Picker(selection: $notificationPrivacy) {
-                    HStack {
-                        Image(systemName: "bell.badge.fill").foregroundStyle(.blue)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Name and Content")
-                            Text("Show sender and message preview").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.tag("full")
-
-                    HStack {
-                        Image(systemName: "bell.fill").foregroundStyle(.orange)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Name Only")
-                            Text("Show sender but hide message text").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.tag("nameOnly")
-
-                    HStack {
-                        Image(systemName: "bell.slash.fill").foregroundStyle(.red)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("No Name or Content")
-                            Text("Hide all notification details").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.tag("none")
+                    Text("Name and Content").tag("full")
+                    Text("Name Only").tag("nameOnly")
+                    Text("No Name or Content").tag("none")
                 } label: {
                     HStack(spacing: 14) {
                         SettingsIcon(systemName: "bell.badge.fill", color: .blue)
-                        Text("Notification Content")
+                        Text("Lock Screen Preview")
                     }
                 }
                 .pickerStyle(.navigationLink)
                 .onChange(of: notificationPrivacy) { _, value in
                     UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
                 }
-            } header: {
-                Text("Notifications")
-            } footer: {
-                Text("Controls what appears on your lock screen and in notification banners. Per-conversation \"Hide Previews\" also applies.")
             }
 
-            Section {
-                Toggle(isOn: $privateCallMode) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "shield.lefthalf.filled", color: .purple)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Private Call Mode")
-                            Text("Route all call media through TURN relay servers — hides your IP address from the other party")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .onChange(of: privateCallMode) { _, newValue in
-                    callManager.privateCallMode = newValue
-                }
-            } header: {
-                Text("Calls")
-            } footer: {
-                Text("Private Call Mode requires a configured TURN server and may slightly increase call latency. Has no effect if TURN is not set up on this relay.")
+            Section("Calls") {
+                toggleRow("phone.fill", .green, "Private Call Mode",
+                          get: { privateCallMode },
+                          set: { privateCallMode = $0; callManager.privateCallMode = $0 })
             }
 
-            Section {
-                PrivacyScopeRow(
-                    systemName: "lock.shield.fill",
-                    color: .green,
-                    title: "Encrypted Messages",
-                    detail: "Message content stays protected by Relay's end-to-end encryption."
-                )
-                PrivacyScopeRow(
-                    systemName: "network",
-                    color: .blue,
-                    title: "Network Metadata",
-                    detail: "Cloudflare and networks can still observe IP addresses, timing, and connection patterns."
-                )
-                PrivacyScopeRow(
-                    systemName: "trash.slash.fill",
-                    color: .red,
-                    title: "Deletion Limits",
-                    detail: "Remote deletion is best effort and cannot remove screenshots, exports, backups, or compromised devices."
-                )
-            } header: {
-                Text("Privacy Scope")
-            } footer: {
-                Text("Relay avoids logging message content, private keys, access tokens, routing tokens, request bodies, and precise message metadata where possible.")
-            }
-
-            Section {
-                Toggle(isOn: Binding(
-                    get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
-                    set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") }
-                )) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "wifi", color: .blue)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Wi-Fi Only Downloads")
-                            Text("Auto-download attachments only when connected to Wi-Fi")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            } header: {
-                Text("Media")
-            } footer: {
-                Text("When off, attachments auto-download on any connection.")
+            Section("Media") {
+                toggleRow("wifi", .blue, "Wi-Fi Only Downloads",
+                          get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
+                          set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") })
             }
 
             Section {
@@ -495,34 +361,23 @@ struct PrivacySettingsView: View {
                         Text("Data & Retention Policy")
                     }
                 }
-            } header: {
-                Text("Transparency")
             }
         }
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
     }
-}
 
-private struct PrivacyScopeRow: View {
-    let systemName: String
-    let color: Color
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            SettingsIcon(systemName: systemName, color: color)
-            VStack(alignment: .leading, spacing: 3) {
+    /// A compact single-line settings toggle: icon + title, no description.
+    private func toggleRow(
+        _ systemName: String, _ color: Color, _ title: String,
+        get: @escaping () -> Bool, set: @escaping (Bool) -> Void
+    ) -> some View {
+        Toggle(isOn: Binding(get: get, set: set)) {
+            HStack(spacing: 14) {
+                SettingsIcon(systemName: systemName, color: color)
                 Text(title)
-                    .foregroundStyle(.primary)
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, 2)
     }
 }
 
