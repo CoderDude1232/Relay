@@ -749,11 +749,21 @@ final class MessagingService {
             let allOwn = try await knownMailboxDevices(ofPeer: credentials.accountId)
             // Exclude this device — we already have the message stored locally.
             devices = allOwn.filter { $0.id != credentials.deviceId }
-        } catch { return }
-        guard !devices.isEmpty else { return }
-
-        guard let payloads = try? buildMailboxPayloads(padded, forPeer: credentials.accountId, devices: devices) else { return }
-        _ = try? await sendMailboxPayloads(payloads, clientTimestamp: timestamp)
+        } catch {
+            log.warning("self-sync: resolve own devices failed: \(PrivacyRedactor.error(error))")
+            return
+        }
+        guard !devices.isEmpty else {
+            log.debug("self-sync: no other own devices to sync to")
+            return
+        }
+        do {
+            let payloads = try buildMailboxPayloads(padded, forPeer: credentials.accountId, devices: devices)
+            let outcome = try await sendMailboxPayloads(payloads, clientTimestamp: timestamp)
+            log.debug("self-sync: sent to \(devices.count) own device(s), outcome \(String(describing: outcome))")
+        } catch {
+            log.warning("self-sync: send failed: \(PrivacyRedactor.error(error))")
+        }
     }
 
     // MARK: - Groups
