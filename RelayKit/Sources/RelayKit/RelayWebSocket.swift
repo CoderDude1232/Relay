@@ -39,6 +39,7 @@ public actor RelayWebSocket {
 
     private var task: URLSessionWebSocketTask?
     private var receiveLoop: Task<Void, Never>?
+    private var pingLoop: Task<Void, Never>?
     private var nextRequestId: UInt64 = 1
     private var pendingSends: [UInt64: CheckedContinuation<Relay_V1_SendResponse, any Error>] = [:]
 
@@ -87,6 +88,9 @@ public actor RelayWebSocket {
 
         receiveLoop = Task { [weak self] in
             await self?.runReceiveLoop(task)
+        }
+        pingLoop = Task { [weak self] in
+            await self?.runPingLoop(task)
         }
         return stream
     }
@@ -174,11 +178,35 @@ public actor RelayWebSocket {
         }
     }
 
+    /// Pings the server every 25s. Idle WebSockets otherwise get silently torn
+    /// down by the transport / Cloudflare (the "nw_read Operation timed out" you
+    /// see on a device that's only receiving), during which the server may deliver
+    /// to a half-open socket and the client only recovers on a slow reconnect.
+    /// Keeping the connection warm makes messages arrive live; a failed ping means
+    /// the socket is dead, so we tear it down to trigger an immediate reconnect
+    /// (which drains any queued envelopes).
+    private func runPingLoop(_ task: URLSessionWebSocketTask) async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(25))
+            guard !Task.isCancelled, self.task === task else { return }
+            let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                task.sendPing { error in cont.resume(returning: error == nil) }
+            }
+            if !ok {
+                log.warning("websocket ping failed; forcing reconnect")
+                task.cancel(with: .goingAway, reason: nil)
+                return
+            }
+        }
+    }
+
     private func failPendingSend(_ id: UInt64, error: any Error) {
         pendingSends.removeValue(forKey: id)?.resume(throwing: error)
     }
 
     private func handleDisconnect() {
+        pingLoop?.cancel()
+        pingLoop = nil
         for continuation in pendingSends.values {
             continuation.resume(throwing: RelayWebSocketError.connectionClosed)
         }
@@ -192,6 +220,8 @@ public actor RelayWebSocket {
     private func disconnectInternal() {
         receiveLoop?.cancel()
         receiveLoop = nil
+        pingLoop?.cancel()
+        pingLoop = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         if eventContinuation != nil {
