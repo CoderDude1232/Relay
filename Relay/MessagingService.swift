@@ -2432,10 +2432,13 @@ final class MessagingService {
             try requireAcknowledgedIdentity(forPeer: account)
         }
         let payloadPlaintext = ephemeral ? plaintext : try ContentPadding.pad(plaintext)
-        // Sealed sender: route through the unauthenticated delivery path so the
-        // relay never learns the sender. Receiving handles both formats, so this
-        // is safe to flip on independently per device.
-        if sealedSenderEnabled {
+        // Sealed sender (default on): route through the unauthenticated delivery
+        // path so the relay never learns the sender — but ONLY for recipients that
+        // support it (i.e. have published a sealed-sender access key). Recipients
+        // on older builds, or when the sealed endpoint isn't deployed, won't have
+        // one, so we fall back to the authenticated WebSocket path and can still
+        // message them. Deciding per-recipient up front avoids double-sends.
+        if sealedSenderEnabled, await recipientSupportsSealed(account) {
             try await sendContentSealed(
                 payloadPlaintext, toPeer: account,
                 clientTimestamp: clientTimestamp, ephemeral: ephemeral
@@ -2489,6 +2492,15 @@ final class MessagingService {
         guard case .ok = outcome else {
             throw RelayAPIError.http(status: 0, message: "send rejected: \(outcome)")
         }
+    }
+
+    /// Whether we can reach `account` via sealed sender — true once we know their
+    /// sealed-sender access key (published by new builds; returned in the prekey
+    /// bundle when the relay supports it). Fetches the bundle once if needed.
+    private func recipientSupportsSealed(_ account: String) async -> Bool {
+        if peerAccessKeys[account] != nil { return true }
+        try? await refreshSessions(withPeer: account)
+        return peerAccessKeys[account] != nil
     }
 
     /// Sends `plaintext` to every known device of the peer as sealed-sender
@@ -2899,7 +2911,8 @@ final class MessagingService {
     /// attested by a relay-minted certificate). Receiving handles both formats
     /// regardless of this flag, so it's safe to toggle at any time.
     var sealedSenderEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "relay.sealedSender") }
+        // Default ON: hide the sender from the relay unless the user opts out.
+        get { UserDefaults.standard.object(forKey: "relay.sealedSender") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "relay.sealedSender") }
     }
 

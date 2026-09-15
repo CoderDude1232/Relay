@@ -108,10 +108,19 @@ final class CallManager: NSObject {
     /// Returns fresh TURN credentials from the server; nil if TURN not configured.
     var onFetchTurnCredentials: (() async throws -> TurnCredentials?)?
 
-    /// When true, forces TURN-relay-only ICE policy so the peer never sees the device's real IP.
+    /// When true, forces TURN-relay-only ICE policy so the peer never sees the
+    /// device's real IP. Default ON; enforced only when a TURN server is actually
+    /// available (see `shouldForceRelay`) so calls still connect if TURN is down.
     var privateCallMode: Bool {
-        get { UserDefaults.standard.bool(forKey: "relay.privateCallMode") }
+        get { UserDefaults.standard.object(forKey: "relay.privateCallMode") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "relay.privateCallMode") }
+    }
+
+    /// Relay-only policy is safe only when we actually have a TURN server; with
+    /// `.relay` and no TURN, a call gathers no candidates and never connects.
+    private func shouldForceRelay(_ servers: [RTCIceServer]) -> Bool {
+        guard privateCallMode else { return false }
+        return servers.contains { $0.urlStrings.contains { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") } }
     }
 
     // Short-lived TURN credential cache (avoids a fetch on every peer-connection creation).
@@ -869,11 +878,12 @@ final class CallManager: NSObject {
 
     private func makePeerConnection() async -> RTCPeerConnection? {
         let config = RTCConfiguration()
-        config.iceServers = await freshIceServers()
+        let servers = await freshIceServers()
+        config.iceServers = servers
         config.sdpSemantics = .unifiedPlan
         config.continualGatheringPolicy = .gatherContinually
         config.iceCandidatePoolSize = 4
-        if privateCallMode {
+        if shouldForceRelay(servers) {
             config.iceTransportPolicy = .relay
         }
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -914,7 +924,11 @@ final class CallManager: NSObject {
         if !turnURLs.isEmpty {
             servers.append(RTCIceServer(urlStrings: turnURLs, username: creds.username, credential: creds.credential))
         }
-        if !stunURLs.isEmpty && !privateCallMode {
+        // Include (relay-operated) STUN: when private mode forces `.relay`, WebRTC
+        // ignores non-relay candidates anyway; when TURN is absent we DON'T force
+        // relay, so STUN is what lets the call connect. It's the relay's own STUN,
+        // not a third party, so it doesn't leak your IP to an outside provider.
+        if !stunURLs.isEmpty {
             servers.append(RTCIceServer(urlStrings: stunURLs))
         }
         return servers.isEmpty ? Self.staticIceServers() : servers
@@ -1469,11 +1483,12 @@ final class CallManager: NSObject {
         groupPeerDelegates[account] = delegate
 
         let config = RTCConfiguration()
-        config.iceServers = await freshIceServers()
+        let servers = await freshIceServers()
+        config.iceServers = servers
         config.sdpSemantics = .unifiedPlan
         config.continualGatheringPolicy = .gatherContinually
         config.iceCandidatePoolSize = 4
-        if privateCallMode { config.iceTransportPolicy = .relay }
+        if shouldForceRelay(servers) { config.iceTransportPolicy = .relay }
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         return factory.peerConnection(with: config, constraints: constraints, delegate: delegate)
     }

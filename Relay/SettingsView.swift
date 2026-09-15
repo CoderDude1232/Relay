@@ -309,7 +309,7 @@ struct SettingsView: View {
 struct PrivacySettingsView: View {
     let service: MessagingService
     @Environment(CallManager.self) private var callManager
-    @State private var privateCallMode = UserDefaults.standard.bool(forKey: "relay.privateCallMode")
+    @State private var privateCallMode = UserDefaults.standard.object(forKey: "relay.privateCallMode") as? Bool ?? true
     @State private var notificationPrivacy: String = UserDefaults(suiteName: AppModel.appGroupId)?.string(forKey: "relay.notificationPrivacy") ?? "full"
 
     var body: some View {
