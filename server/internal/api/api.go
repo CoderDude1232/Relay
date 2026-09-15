@@ -162,6 +162,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/directory/oprf", s.auth(s.handleDirectoryOPRF))
 	mux.HandleFunc("POST /v1/directory/resolve", s.auth(s.handleDirectoryResolve))
 	mux.HandleFunc("POST /v1/messages/sealed", s.handleSealedSend) // unauthenticated by design
+	mux.HandleFunc("GET /v1/queue", s.auth(s.handleFetchQueue))
+	mux.HandleFunc("POST /v1/messages/ack", s.auth(s.handleAckMessage))
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
@@ -454,6 +456,41 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"serverTimestamp": env.ServerTimestamp})
+}
+
+// handleFetchQueue returns this device's currently-queued envelopes over the
+// (HTTP/3-capable) REST plane. Used as a QUIC fallback for receiving when the
+// TCP WebSocket can't connect (congested networks / stadiums). Does not dequeue
+// — the client acks each envelope via POST /v1/messages/ack, preserving
+// at-least-once delivery. The WebSocket stays the primary live path.
+func (s *Server) handleFetchQueue(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	envs, err := s.store.QueuedEnvelopes(dev.AccountID, dev.DeviceID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	out := make([]string, 0, len(envs))
+	for _, e := range envs {
+		out = append(out, base64.StdEncoding.EncodeToString(e))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"envelopes": out})
+}
+
+// handleAckMessage removes a delivered envelope from this device's queue (the
+// REST equivalent of the WebSocket AckRequest).
+func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		EnvelopeID string `json:"envelopeId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EnvelopeID == "" {
+		httpError(w, http.StatusBadRequest, "envelopeId required")
+		return
+	}
+	if err := s.store.Dequeue(req.EnvelopeID, dev.AccountID, dev.DeviceID); err != nil {
+		internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleSetAccessKey stores this account's sealed-sender access key (32 bytes).

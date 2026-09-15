@@ -297,6 +297,23 @@ public struct RelayAPIClient: Sendable {
         return r.serverTimestamp
     }
 
+    /// Fetches this device's queued envelopes over the (HTTP/3) REST plane — a
+    /// QUIC fallback for receiving when the TCP WebSocket can't connect. Does not
+    /// dequeue; the caller acks each via `ackMessage`.
+    public func fetchQueue() async throws -> [IncomingEnvelope] {
+        struct Response: Decodable { let envelopes: [String] }
+        let r: Response = try await request("GET", "v1/queue", body: nil as [String: String]?)
+        return r.envelopes.compactMap {
+            Data(base64Encoded: $0).flatMap { IncomingEnvelope(serializedEnvelope: $0) }
+        }
+    }
+
+    /// Removes a delivered envelope from this device's queue (REST equivalent of
+    /// the WebSocket ack).
+    public func ackMessage(envelopeId: String) async throws {
+        try await requestExpectingNoContent("POST", "v1/messages/ack", body: ["envelopeId": envelopeId])
+    }
+
     /// An account's live connection state and last-seen time (ms since epoch).
     public func presence(account: String) async throws -> Presence {
         let response: Presence = try await request(

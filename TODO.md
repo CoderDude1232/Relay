@@ -1,6 +1,21 @@
 # Relay — TODO
 
-## Transport: move the live channel to QUIC (UDP)
+## Transport: QUIC status
+
+**Congested-network connectivity (stadiums) — addressed:**
+- **Send** already rides QUIC: with sealed sender default-on, outbound messages
+  go via `POST /v1/messages/sealed` over HTTP/3, not the WebSocket.
+- **Receive** now has a QUIC fallback: `runQueuePollLoop` polls `GET /v1/queue`
+  over HTTP/3 every 5s whenever the TCP WebSocket isn't connected, acking via
+  `POST /v1/messages/ack`. WebSocket stays the primary low-latency path; dedup by
+  envelope id makes overlap harmless. So messaging works even when TCP can't
+  connect — just at poll latency for receive.
+- REST control plane already races QUIC/HTTP-3 (`assumesHTTP3Capable`).
+
+**Remaining (optional, for live-latency receive over QUIC):** a raw-QUIC live
+channel so live receive isn't limited to the 5s poll when TCP is blocked.
+
+## (Optional) raw-QUIC live channel
 
 **Problem:** The real-time channel — all live message delivery — runs over **TCP**.
 It uses `URLSessionWebSocketTask` (`RelayKit/Sources/RelayKit/RelayWebSocket.swift`),

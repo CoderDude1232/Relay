@@ -120,6 +120,9 @@ final class MessagingService {
     private let allocator: KVPreKeyIdAllocator
     private var socket: RelayWebSocket?
     private var connectionTask: Task<Void, Never>?
+    /// Polls the queue over HTTP/3 REST when the live WebSocket can't connect
+    /// (congested networks). QUIC fallback for receiving; WS stays primary.
+    private var pollTask: Task<Void, Never>?
     private var expireTask: Task<Void, Never>?
     private var typingResetTasks: [String: Task<Void, Never>] = [:]
     private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "messaging")
@@ -321,6 +324,7 @@ final class MessagingService {
     func start() {
         guard connectionTask == nil else { return }
         connectionTask = Task { await runConnectionLoop() }
+        pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
         startPathMonitor()
         expireTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -347,6 +351,8 @@ final class MessagingService {
     func stop() {
         connectionTask?.cancel()
         connectionTask = nil
+        pollTask?.cancel()
+        pollTask = nil
         pathMonitor?.cancel()
         pathMonitor = nil
         expireTask?.cancel()
@@ -433,13 +439,38 @@ final class MessagingService {
 
     // MARK: - Incoming pipeline
 
+    /// Periodically pulls queued envelopes over HTTP/3 REST while the live
+    /// WebSocket isn't connected (e.g. a congested stadium network where TCP
+    /// can't establish). The WebSocket stays the primary, low-latency path;
+    /// dedup by envelope id makes any overlap harmless.
+    private func runQueuePollLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            guard connectionState != .connected else { continue }
+            guard let envelopes = try? await api.fetchQueue() else { continue }
+            for envelope in envelopes {
+                await handleEnvelope(envelope)
+            }
+        }
+    }
+
+    /// Acks a processed envelope over the WebSocket when it's live, else over
+    /// HTTP/3 REST (so poll-fetched envelopes are dequeued too).
+    private func ackEnvelope(_ id: String) async {
+        if connectionState == .connected, let socket {
+            try? await socket.ack(envelopeId: id)
+        } else {
+            try? await api.ackMessage(envelopeId: id)
+        }
+    }
+
     private func handleEnvelope(_ envelope: IncomingEnvelope) async {
         // Ack unconditionally once processing finishes: an envelope that
         // fails to decrypt would otherwise redeliver forever. Dedup and
         // ratchet state make retrying it pointless anyway.
         defer {
-            let socket = socket
-            Task { try? await socket?.ack(envelopeId: envelope.id) }
+            Task { await self.ackEnvelope(envelope.id) }
         }
         // Drop messages from blocked accounts (still ACK so the server removes them).
         guard !isBlocked(envelope.senderAccount) else { return }
