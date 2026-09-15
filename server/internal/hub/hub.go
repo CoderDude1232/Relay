@@ -193,9 +193,18 @@ func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) 
 		}
 		return
 	}
+	// Content-free wake by default: the device's NSE fetches + decrypts the
+	// envelope from the relay, so Apple never carries message data. A device may
+	// opt in to ciphertext-in-push (faster) via its push-content preference.
+	payload := []byte(nil)
+	if include, err := h.store.PushIncludeContent(accountID, deviceID); err != nil {
+		slog.Warn("apns: push-content lookup failed", "err", privlog.Error(err))
+	} else if include {
+		payload = envelope
+	}
 	slog.Info("apns: pushing to offline device")
 	go func() {
-		if err := h.pusher.Push(token, envelope); err != nil {
+		if err := h.pusher.Push(token, payload); err != nil {
 			slog.Warn("apns push failed", "err", privlog.Error(err))
 		} else {
 			slog.Info("apns push sent")

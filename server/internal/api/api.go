@@ -174,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/devices/auth-key", s.auth(s.handleSetDeviceAuthKey))
 	mux.HandleFunc("PUT /v1/devices/apns", s.auth(s.handleSetAPNSToken))
 	mux.HandleFunc("PUT /v1/devices/voip", s.auth(s.handleSetVoIPToken))
+	mux.HandleFunc("PUT /v1/devices/me/push-content", s.auth(s.handleSetPushContent))
 	mux.HandleFunc("POST /v1/call/{account}", s.auth(s.handleCallOffer))
 	mux.HandleFunc("PUT /v1/keys", s.auth(s.handleSetKeys))
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))
@@ -1025,6 +1026,24 @@ func (s *Server) handleSetVoIPToken(w http.ResponseWriter, r *http.Request, dev 
 		return
 	}
 	if err := s.store.SetVoIPToken(dev.AccountID, dev.DeviceID, req.Token); err != nil {
+		internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSetPushContent records this device's push-content preference: false
+// (default) = content-free wake, the NSE fetches the envelope; true = embed the
+// encrypted envelope in the APNs payload for a faster, slightly less private wake.
+func (s *Server) handleSetPushContent(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		IncludeContent bool `json:"includeContent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if err := s.store.SetPushIncludeContent(dev.AccountID, dev.DeviceID, req.IncludeContent); err != nil {
 		internalError(w, err)
 		return
 	}

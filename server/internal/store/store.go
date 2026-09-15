@@ -273,6 +273,11 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`DROP TABLE IF EXISTS group_invites`,
 		`DROP TABLE IF EXISTS group_members`,
 		`DROP TABLE IF EXISTS groups`,
+		// Push privacy: default is a content-free wake (the NSE fetches the
+		// encrypted envelope from the relay). A device may opt in to having the
+		// ciphertext included directly in the APNs payload (faster, slightly less
+		// private — Apple's servers carry the encrypted blob). Off by default.
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_include_content BOOLEAN NOT NULL DEFAULT FALSE`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -990,6 +995,31 @@ func (s *Store) SetVoIPToken(accountID string, deviceID uint32, token string) er
 	_, err := s.db.Exec(ctx, `UPDATE devices SET voip_token = $1 WHERE account_id = $2 AND device_id = $3`,
 		token, accountID, deviceID)
 	return err
+}
+
+// SetPushIncludeContent records whether this device wants the encrypted
+// envelope carried directly in its APNs payload (true) or a content-free wake
+// (false, the private default).
+func (s *Store) SetPushIncludeContent(accountID string, deviceID uint32, include bool) error {
+	ctx := context.Background()
+	_, err := s.db.Exec(ctx, `UPDATE devices SET push_include_content = $1 WHERE account_id = $2 AND device_id = $3`,
+		include, accountID, deviceID)
+	return err
+}
+
+// PushIncludeContent reports whether this device opted in to ciphertext-in-push.
+// Defaults to false (content-free wake) for unknown/unset devices.
+func (s *Store) PushIncludeContent(accountID string, deviceID uint32) (bool, error) {
+	ctx := context.Background()
+	var include bool
+	err := s.db.QueryRow(ctx,
+		`SELECT push_include_content FROM devices WHERE account_id = $1 AND device_id = $2`,
+		accountID, deviceID,
+	).Scan(&include)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return include, err
 }
 
 // SetDeviceAuthKey stores the public half of a device's platform-backed

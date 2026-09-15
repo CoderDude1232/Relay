@@ -69,20 +69,29 @@ func New(keyPath, keyID, teamID, topic string, production bool) (*Pusher, error)
 	}, nil
 }
 
-// Push sends an alert notification carrying the base64 envelope for the NSE
-// to decrypt. `deviceToken` is the hex APNs token the client registered.
+// Push sends a wake notification. By default it is CONTENT-FREE: `envelope` is
+// nil and the payload carries no message data at all. The push only tells the
+// device something is waiting; the Notification Service Extension then fetches
+// the encrypted envelope from the relay over its own connection and decrypts it
+// on-device, keeping message content off Apple's push infrastructure entirely.
+//
+// If the destination device opted in to ciphertext-in-push, the caller passes a
+// non-nil `envelope` and it is embedded (base64) so the NSE can decrypt straight
+// from the payload without a round-trip — faster, but Apple's servers then carry
+// the (still end-to-end-encrypted) blob.
 func (p *Pusher) Push(deviceToken string, envelope []byte) error {
-	payload, err := json.Marshal(map[string]any{
-		"aps": map[string]any{
-			// A placeholder the NSE replaces once it decrypts; mutable-content
-			// lets the extension run and rewrite the title/body.
-			"alert":           map[string]any{"body": "New message"},
-			"mutable-content": 1,
-			"sound":           "default",
-		},
-		// Custom key: the encrypted envelope (relay.v1.Envelope) for the NSE.
-		"e": base64.StdEncoding.EncodeToString(envelope),
-	})
+	aps := map[string]any{
+		// A placeholder the NSE replaces after it fetches + decrypts;
+		// mutable-content lets the extension run and rewrite the title/body.
+		"alert":           map[string]any{"body": "New message"},
+		"mutable-content": 1,
+		"sound":           "default",
+	}
+	body := map[string]any{"aps": aps}
+	if len(envelope) > 0 {
+		body["e"] = base64.StdEncoding.EncodeToString(envelope)
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
