@@ -815,6 +815,25 @@ func (s *Store) Authenticate(accountID string, deviceID uint32, password string)
 	return &Device{AccountID: accountID, DeviceID: deviceID, MailboxID: mailboxID, RegistrationID: regID, AuthPublicKey: authPublicKey}, nil
 }
 
+// DeviceByID returns the device row without checking a password. Used by
+// signature-based request auth, which proves possession of the device's auth
+// private key instead of presenting a reusable secret.
+func (s *Store) DeviceByID(accountID string, deviceID uint32) (*Device, error) {
+	ctx := context.Background()
+	var regID uint32
+	var mailboxID string
+	var authPublicKey []byte
+	err := s.db.QueryRow(ctx, `SELECT registration_id, COALESCE(mailbox_id, ''), auth_public_key FROM devices WHERE account_id = $1 AND device_id = $2`,
+		accountID, deviceID).Scan(&regID, &mailboxID, &authPublicKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAuthFailed
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Device{AccountID: accountID, DeviceID: deviceID, MailboxID: mailboxID, RegistrationID: regID, AuthPublicKey: authPublicKey}, nil
+}
+
 func (s *Store) DeviceListVersion(accountID string) (int64, error) {
 	ctx := context.Background()
 	var version int64

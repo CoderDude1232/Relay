@@ -58,8 +58,19 @@ Regenerate Go code after editing the protos:
 
 ## Authentication
 
-All endpoints except account creation use HTTP Basic auth with username
-`<accountId>.<deviceId>` and the device password.
+Authenticated endpoints accept either of two schemes:
+
+- **Signature (preferred)** — `Authorization: Relay-Sig <accountId>.<deviceId>:<base64 ECDSA-P256 sig>`
+  plus `X-Relay-Timestamp` (unix ms) and `X-Relay-Nonce` (base64). The signature is
+  ECDSA-P256 over SHA-256 of the canonical string `METHOD "\n" PATH "\n" TIMESTAMP "\n" NONCE`
+  using the device's auth key (the same keypair as nuke signatures; the private half never
+  leaves the device). Accepted iff the signature validates against the stored
+  `auth_public_key`, the timestamp is within ±5 min, and the nonce is unseen in that window.
+  Nothing replayable transits the wire. The body is not signed (TLS covers integrity).
+- **HTTP Basic (legacy/transition)** — username `<accountId>.<deviceId>`, password = the
+  device password. Being phased out; see `TODO.md`.
+
+Account creation is unauthenticated.
 
 ## Data at rest
 

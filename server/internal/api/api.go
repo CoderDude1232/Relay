@@ -214,6 +214,18 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Devic
 
 func (s *Server) auth(next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Preferred: signature auth (proves possession of the device's auth private
+		// key without sending a reusable secret). Falls through to Basic during the
+		// transition so existing clients keep working.
+		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
+			dev, err := s.authenticateSignature(r)
+			if err != nil {
+				httpError(w, http.StatusUnauthorized, "signature authentication failed")
+				return
+			}
+			next(w, r, dev)
+			return
+		}
 		user, pass, ok := r.BasicAuth()
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="relay"`)
