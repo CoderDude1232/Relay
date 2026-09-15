@@ -123,6 +123,11 @@ final class MessagingService {
     /// Polls the queue over HTTP/3 REST when the live WebSocket can't connect
     /// (congested networks). QUIC fallback for receiving; WS stays primary.
     private var pollTask: Task<Void, Never>?
+    /// Whether the live WebSocket is currently up and draining. Distinct from the
+    /// UI `connectionState`, which flips to `.connected` as soon as the server is
+    /// reachable over QUIC (so the "connecting" spinner clears on congested
+    /// networks even before/without the TCP socket). Gates the poll fallback.
+    private var socketLive = false
     private var expireTask: Task<Void, Never>?
     private var typingResetTasks: [String: Task<Void, Never>] = [:]
     private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "messaging")
@@ -376,11 +381,18 @@ final class MessagingService {
     private func runConnectionLoop() async {
         var backoffSeconds = 1.0
         while !Task.isCancelled {
-            connectionState = .connecting
-            isDrainingQueue = true
+            if connectionState != .connected { connectionState = .connecting }
+            socketLive = false
             do {
+                // QUIC preflight: this REST call races HTTP/3, so it succeeds on
+                // congested networks where the TCP WebSocket can't. Once it does,
+                // the app is usable (send over sealed/HTTP-3, receive via the poll
+                // loop) — so mark connected immediately instead of leaving the
+                // "connecting" spinner up until the socket finally connects.
                 _ = try await api.listDevices()
                 authenticationExpired = false
+                connectionState = .connected
+                isDrainingQueue = false
             } catch RelayAPIError.http(let status, _) where status == 401 {
                 log.warning("relay credentials expired; stopping reconnect loop")
                 authenticationExpired = true
@@ -390,12 +402,14 @@ final class MessagingService {
                 return
             } catch {
                 log.warning("relay auth/connectivity preflight failed: \(PrivacyRedactor.localizedError(error))")
+                connectionState = .connecting
             }
             let socket = RelayWebSocket(baseURL: serverURL, credentials: credentials, session: session)
             self.socket = socket
             for await event in await socket.connect() {
                 switch event {
                 case .queueDrained:
+                    socketLive = true
                     isDrainingQueue = false
                     connectionState = .connected
                     backoffSeconds = 1.0
@@ -429,8 +443,12 @@ final class MessagingService {
                 }
             }
             self.socket = nil
+            socketLive = false
             isDrainingQueue = false
-            connectionState = .disconnected
+            // Don't force `.disconnected` here: if the server is still reachable
+            // over QUIC we stay usable via the poll loop, and the next iteration's
+            // preflight re-confirms reachability (flipping to .connecting only if
+            // it actually fails).
             guard !Task.isCancelled else { return }
             try? await Task.sleep(for: .seconds(backoffSeconds))
             backoffSeconds = min(backoffSeconds * 2, 30)
@@ -447,7 +465,9 @@ final class MessagingService {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
-            guard connectionState != .connected else { continue }
+            // Poll whenever the live socket isn't actually delivering, regardless
+            // of the UI connection state (which may show "connected" via QUIC).
+            guard !socketLive else { continue }
             guard let envelopes = try? await api.fetchQueue() else { continue }
             for envelope in envelopes {
                 await handleEnvelope(envelope)
@@ -458,7 +478,7 @@ final class MessagingService {
     /// Acks a processed envelope over the WebSocket when it's live, else over
     /// HTTP/3 REST (so poll-fetched envelopes are dequeued too).
     private func ackEnvelope(_ id: String) async {
-        if connectionState == .connected, let socket {
+        if socketLive, let socket {
             try? await socket.ack(envelopeId: id)
         } else {
             try? await api.ackMessage(envelopeId: id)
