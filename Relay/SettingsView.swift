@@ -325,7 +325,7 @@ struct PrivacySettingsView: View {
                           get: { service.sealedSenderEnabled }, set: { service.sealedSenderEnabled = $0 })
             }
 
-            Section("Notifications") {
+            Section {
                 Picker(selection: $notificationPrivacy) {
                     Text("Name and Content").tag("full")
                     Text("Name Only").tag("nameOnly")
@@ -340,6 +340,14 @@ struct PrivacySettingsView: View {
                 .onChange(of: notificationPrivacy) { _, value in
                     UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
                 }
+
+                toggleRow("bolt.fill", .orange, "Include Message in Push",
+                          get: { service.pushIncludeContent },
+                          set: { service.pushIncludeContent = $0 })
+            } header: {
+                Text("Notifications")
+            } footer: {
+                Text("Off (default): pushes are a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it. On: the encrypted message rides in the push for faster alerts.")
             }
 
             Section("Calls") {

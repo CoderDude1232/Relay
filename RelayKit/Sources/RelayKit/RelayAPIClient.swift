@@ -330,6 +330,12 @@ public struct RelayAPIClient: Sendable {
         try await requestExpectingNoContent("PUT", "v1/devices/voip", body: ["token": token])
     }
 
+    /// Sets whether this device wants the encrypted envelope carried in its APNs
+    /// payload (`true`) or a content-free wake (`false`, the private default).
+    public func setPushIncludeContent(_ include: Bool) async throws {
+        try await requestExpectingNoContent("PUT", "v1/devices/me/push-content", body: ["includeContent": include])
+    }
+
     /// Fetches the ECDSA-P256 auth public key for a device in the same account.
     /// Used to independently verify nuke command signatures on the client.
     public func deviceAuthKey(deviceId: UInt32) async throws -> Data {

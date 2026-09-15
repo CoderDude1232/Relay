@@ -40,7 +40,28 @@ class NotificationService: UNNotificationServiceExtension {
             return
         }
 
-        switch decrypt(request) {
+        // Two modes:
+        //  • Content-free wake (default): the payload has no "e". Fetch the queued
+        //    envelope(s) from the relay, decrypt on-device, then present.
+        //  • Ciphertext-in-push (opt-in): the payload carries the encrypted
+        //    envelope in "e". Decrypt it directly — no round-trip.
+        Task { [weak self] in
+            let outcome: DecryptOutcome?
+            if let self, let embedded = self.decryptEmbedded(request) {
+                outcome = embedded
+            } else {
+                outcome = await self?.fetchAndDecrypt()
+            }
+            self?.present(outcome, into: content, contentHandler: contentHandler)
+        }
+    }
+
+    private func present(
+        _ outcome: DecryptOutcome?,
+        into content: UNMutableNotificationContent,
+        contentHandler: @escaping (UNNotificationContent) -> Void
+    ) {
+        switch outcome {
         case .show(let title, let body, let conversationId, let senderAccount):
             // Reveal sender + preview, and embed conversationId for tap-to-navigate.
             content.title = title
@@ -53,20 +74,15 @@ class NotificationService: UNNotificationServiceExtension {
                 content.threadIdentifier = conversationId
             }
             // Wrap in INSendMessageIntent so iOS shows the sender's avatar as the
-            // notification icon (large photo, small app-icon badge bottom-right)
-            // and elevates the notification through Focus modes.
+            // notification icon and elevates the notification through Focus modes.
             contentHandler(enriched(content: content,
                                     senderName: title,
                                     senderAccount: senderAccount,
                                     conversationId: conversationId))
-        case .suppress:
-            // Call signalling envelope — CallKit handles the UI via VoIP push.
-            // Suppress the banner so the user doesn't see a "New message" alert.
-            contentHandler(UNMutableNotificationContent())
-        case .none:
-            // Decryption failed. The most common cause is a race where the main app's
-            // WebSocket already consumed the same envelope (read receipts hit this path
-            // frequently). Suppress rather than surface a spurious "New message" banner.
+        case .suppress, .none:
+            // Call signalling (handled by VoIP push), a duplicate the app already
+            // drained, a control message, or nothing to fetch — suppress rather than
+            // surface a spurious "New message" banner.
             contentHandler(UNMutableNotificationContent())
         }
     }
@@ -140,7 +156,11 @@ class NotificationService: UNNotificationServiceExtension {
         case suppress   // Decrypted successfully but nothing to surface (call, etc.)
     }
 
-    private func decrypt(_ request: UNNotificationRequest) -> DecryptOutcome? {
+    // Opt-in ciphertext-in-push path: the encrypted envelope rode along in the
+    // APNs payload ("e"). Decrypt it directly — no network round-trip. Returns
+    // nil when the payload carries no envelope (the content-free default), so the
+    // caller falls back to fetching from the queue.
+    private func decryptEmbedded(_ request: UNNotificationRequest) -> DecryptOutcome? {
         guard
             let encoded = request.content.userInfo["e"] as? String,
             let data = Data(base64Encoded: encoded),
@@ -154,7 +174,39 @@ class NotificationService: UNNotificationServiceExtension {
             let engine = try? storage.makeCryptoEngine(accountId: account.accountId, deviceId: account.deviceId)
         else { return nil }
 
-        // Pass the trust root so sealed-sender pushes (empty envelope sender)
+        let processor = EnvelopeProcessor(
+            storage: storage,
+            engine: engine,
+            ownAccountId: account.accountId,
+            sealedSenderTrustRoot: RelaySealedSender.trustRoot
+        )
+        guard let result = try? processor.process(envelope) else { return .suppress }
+        return outcome(for: result, storage: storage, appGroupId: appGroupId)
+    }
+
+    // Contentless push: the APNs payload carries no message data — not even
+    // ciphertext. The push is only a wake. We fetch this device's queued
+    // envelope(s) from the relay over our own (HTTP/3-capable) connection,
+    // decrypt them on-device, store them, and ack each so the server dequeues.
+    private func fetchAndDecrypt() async -> DecryptOutcome? {
+        let appGroupId = RelayStore.appGroupId
+        guard
+            let storage = try? RelayStore.open(appGroupId: appGroupId),
+            let account = try? RelayStore.loadAccount(appGroupId: appGroupId),
+            let engine = try? storage.makeCryptoEngine(accountId: account.accountId, deviceId: account.deviceId)
+        else { return nil }
+
+        let api = RelayAPIClient(
+            baseURL: account.serverURL,
+            credentials: RelayCredentials(
+                accountId: account.accountId,
+                deviceId: account.deviceId,
+                password: account.password
+            )
+        )
+        guard let envelopes = try? await api.fetchQueue(), !envelopes.isEmpty else { return nil }
+
+        // Pass the trust root so sealed-sender envelopes (empty envelope sender)
         // decrypt here too, and ownAccountId so self-sync copies resolve.
         let processor = EnvelopeProcessor(
             storage: storage,
@@ -162,8 +214,29 @@ class NotificationService: UNNotificationServiceExtension {
             ownAccountId: account.accountId,
             sealedSenderTrustRoot: RelaySealedSender.trustRoot
         )
-        guard let result = try? processor.process(envelope) else { return nil }
 
+        var latest: DecryptOutcome?
+        for envelope in envelopes {
+            let result = try? processor.process(envelope)
+            // Ack either way: a message we stored, or a poison one we drop
+            // (matches the app's poison-message protection). Ephemeral envelopes
+            // never queue, so we won't see them here.
+            try? await api.ackMessage(envelopeId: envelope.id)
+            guard let result else { continue }
+            if let mapped = outcome(for: result, storage: storage, appGroupId: appGroupId) {
+                // Prefer a visible message over a suppress when the queue has several.
+                if case .show = mapped { latest = mapped }
+                else if latest == nil { latest = mapped }
+            }
+        }
+        return latest
+    }
+
+    private func outcome(
+        for result: ProcessedEnvelope,
+        storage: SecureStore,
+        appGroupId: String
+    ) -> DecryptOutcome? {
         // Call signalling: HANGUP means the caller gave up before we answered
         // — show a missed call banner. Everything else (OFFER, ICE, ANSWER…)
         // is handled by VoIP push + CallKit; suppress the regular APNs banner.

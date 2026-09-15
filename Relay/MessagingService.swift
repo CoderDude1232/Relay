@@ -2976,6 +2976,20 @@ final class MessagingService {
         set { UserDefaults.standard.set(newValue, forKey: "relay.sealedSender") }
     }
 
+    /// Opt-in ciphertext-in-push. Off by default: pushes are a content-free wake
+    /// and the device fetches + decrypts the envelope from the relay, so Apple's
+    /// push servers carry no message data at all. When enabled, the relay embeds
+    /// the (still end-to-end-encrypted) envelope in the APNs payload so alerts
+    /// arrive faster without a fetch round-trip. Persisted locally and mirrored to
+    /// the server, which decides per-device what to put in the push.
+    var pushIncludeContent: Bool {
+        get { UserDefaults.standard.bool(forKey: "relay.pushIncludeContent") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "relay.pushIncludeContent")
+            Task { try? await self.api.setPushIncludeContent(newValue) }
+        }
+    }
+
     /// Rotates this device's mailbox id at most once a day so the relay can't
     /// track a long-lived routing identifier. Gated on sealed sender: the sealed
     /// path auto-retries on the resulting stale-mailbox 403, whereas the plain
