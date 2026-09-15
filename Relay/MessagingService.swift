@@ -393,6 +393,9 @@ final class MessagingService {
                 authenticationExpired = false
                 connectionState = .connected
                 isDrainingQueue = false
+                // Warm the sealed-sender delivery cert so the first send doesn't
+                // pay for fetching it (cached ~7 days).
+                Task { _ = try? await self.senderCertificate() }
             } catch RelayAPIError.http(let status, _) where status == 401 {
                 log.warning("relay credentials expired; stopping reconnect loop")
                 authenticationExpired = true
@@ -2767,6 +2770,12 @@ final class MessagingService {
                 await resolveUsernames(group.members)
             } else if let peer = resolvedPeerAccount(for: conversationId) {
                 await resolveUsernames([peer])
+                // Pre-warm the sealed-send path while the user reads/types, so the
+                // first message is a single round-trip instead of chaining a cert
+                // fetch + bundle fetch + send (which is what makes the first send
+                // slow on bad networks).
+                if peerAccessKeys[peer] == nil { try? await refreshSessions(withPeer: peer) }
+                _ = try? await senderCertificate()
                 await sendMyProfileIfNeeded(toPeer: peer)
             }
         }
