@@ -127,12 +127,22 @@ func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry
 			Token: s.oprf.Token(a.Username), AccountID: a.AccountID, Kind: store.DirectoryKindUsername,
 		})
 	}
-	if a.Email != "" {
+	if len(a.EmailToken) > 0 {
 		entries = append(entries, store.DirectoryEntry{
-			Token: s.oprf.Token(a.Email), AccountID: a.AccountID, Kind: store.DirectoryKindEmail,
+			Token: a.EmailToken, AccountID: a.AccountID, Kind: store.DirectoryKindEmail,
 		})
 	}
 	return entries
+}
+
+// emailToken derives the OPRF-keyed token we store in place of a plaintext
+// email. Returns nil when there's no email or OPRF isn't configured (in which
+// case email-based features degrade rather than storing anything sensitive).
+func (s *Server) emailToken(email string) []byte {
+	if email == "" || s.oprf == nil {
+		return nil
+	}
+	return s.oprf.Token(email)
 }
 
 // reindexAccount refreshes one account's directory rows after its username/email
@@ -256,7 +266,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "accountPassword must be 8–1024 chars")
 		return
 	}
-	accountID, deviceID, err := s.store.CreateAccount(req.Username, req.Email, req.Password, req.AccountPassword)
+	accountID, deviceID, err := s.store.CreateAccount(req.Username, s.emailToken(req.Email), req.Password, req.AccountPassword)
 	if errors.Is(err, store.ErrUsernameTaken) {
 		httpError(w, http.StatusConflict, "username already taken")
 		return
@@ -321,7 +331,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accountID, username, deviceID, mailboxID, created, err := s.store.ProvisionOAuthAccount(
-		userID, email, req.Username, req.Password, req.AccountPassword)
+		userID, s.emailToken(email), req.Username, req.Password, req.AccountPassword)
 	if errors.Is(err, store.ErrUsernameRequired) {
 		// No account exists yet for this user and no username was supplied.
 		// Signal the client to prompt for one and retry.
@@ -700,7 +710,12 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "email and accountPassword required")
 		return
 	}
-	accountID, username, deviceID, devicePassword, err := s.store.RecoverAccount(req.Email, req.AccountPassword)
+	token := s.emailToken(req.Email)
+	if token == nil {
+		httpError(w, http.StatusServiceUnavailable, "email recovery unavailable")
+		return
+	}
+	accountID, username, deviceID, devicePassword, err := s.store.RecoverAccount(token, req.AccountPassword)
 	switch {
 	case errors.Is(err, store.ErrAccountNotFound):
 		httpError(w, http.StatusNotFound, "no account with that email")
@@ -1093,8 +1108,12 @@ func (s *Server) handleLookupEmail(w http.ResponseWriter, r *http.Request, dev *
 		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
 		return
 	}
-	email := r.PathValue("email")
-	accountID, username, err := s.store.LookupAccountByEmail(email)
+	token := s.emailToken(r.PathValue("email"))
+	if token == nil {
+		httpError(w, http.StatusServiceUnavailable, "email lookup unavailable")
+		return
+	}
+	accountID, username, err := s.store.LookupAccountByEmail(token)
 	if errors.Is(err, store.ErrAccountNotFound) {
 		httpError(w, http.StatusNotFound, "no such user")
 		return

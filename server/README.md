@@ -61,6 +61,17 @@ Regenerate Go code after editing the protos:
 All endpoints except account creation use HTTP Basic auth with username
 `<accountId>.<deviceId>` and the device password.
 
+## Data at rest
+
+The relay never stores a plaintext email address. When an email is supplied
+(registration, social login) it is kept only as its **OPRF-keyed token** — the
+same one-way, keyed hash used for blinded discovery. Email lookups (recovery,
+OAuth adoption, `by-email`) match on that token, so the email→account link
+exists only in keyed form and a database dump can't be reversed to addresses
+without the server's OPRF key. Source IPs are used transiently for
+rate-limiting and are never logged or persisted; presence/last-seen is kept in
+memory only.
+
 ## REST API (JSON; binary fields are standard base64)
 
 | Method & path | Auth | Purpose |

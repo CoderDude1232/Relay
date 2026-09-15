@@ -278,6 +278,18 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// ciphertext included directly in the APNs payload (faster, slightly less
 		// private — Apple's servers carry the encrypted blob). Off by default.
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_include_content BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Email privacy: never store the email in plaintext. We keep only the
+		// OPRF-keyed token (the same keyed hash used for blinded discovery), which
+		// is a one-way, non-enumerable-without-the-key value. All email lookups
+		// (recovery, OAuth adoption, by-email) match on this token instead. The
+		// email→account link therefore exists only in keyed form, at rest.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_token BYTEA`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email_token ON accounts (email_token) WHERE email_token IS NOT NULL`,
+		// Backfill from the directory (already holds oprf.Token(email) per account)
+		// so existing accounts keep working, then drop the plaintext column.
+		`UPDATE accounts a SET email_token = d.token FROM directory d WHERE d.account_id = a.id AND d.kind = 1 AND a.email_token IS NULL`,
+		`DROP INDEX IF EXISTS idx_accounts_email`,
+		`ALTER TABLE accounts DROP COLUMN IF EXISTS email`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -351,9 +363,11 @@ type DeviceLinkClaim struct {
 }
 
 // CreateAccount registers a new account and its primary device (device 1).
-// email and accountPassword are optional; pass "" to omit.
-// accountPassword, if set, is stored as a bcrypt hash for account recovery.
-func (s *Store) CreateAccount(username, email, devicePassword, accountPassword string) (accountID string, deviceID uint32, err error) {
+// emailToken (the OPRF-keyed hash of the user's email) and accountPassword are
+// optional; pass nil/"" to omit. The plaintext email is never stored — only the
+// keyed token, used for equality lookups. accountPassword, if set, is stored as
+// a bcrypt hash for account recovery.
+func (s *Store) CreateAccount(username string, emailToken []byte, devicePassword, accountPassword string) (accountID string, deviceID uint32, err error) {
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
 		return "", 0, err
@@ -380,11 +394,11 @@ func (s *Store) CreateAccount(username, email, devicePassword, accountPassword s
 	defer tx.Rollback(ctx)
 
 	var emailVal any
-	if email != "" {
-		emailVal = email
+	if len(emailToken) > 0 {
+		emailVal = emailToken
 	}
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, username, email, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		`INSERT INTO accounts (id, username, email_token, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
 		accountID, username, emailVal, accountHash, now); err != nil {
 		if isUniqueViolation(err) {
 			return "", 0, ErrUsernameTaken
@@ -401,12 +415,12 @@ func (s *Store) CreateAccount(username, email, devicePassword, accountPassword s
 // RecoverAccount verifies an account-level password by email and provisions a
 // new device, returning fresh device credentials. Does NOT bump device_list_version
 // so existing signed device-list assertions remain valid.
-func (s *Store) RecoverAccount(email, accountPassword string) (accountID, username string, deviceID uint32, devicePassword string, err error) {
+func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (accountID, username string, deviceID uint32, devicePassword string, err error) {
 	ctx := context.Background()
 
 	var accountHash []byte
 	err = s.db.QueryRow(ctx,
-		`SELECT id, username, account_password_hash FROM accounts WHERE email = $1`, email,
+		`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
 	).Scan(&accountID, &username, &accountHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", 0, "", ErrAccountNotFound
@@ -476,7 +490,7 @@ func (s *Store) RecoverAccount(email, accountPassword string) (accountID, userna
 // A new device is always provisioned with the client-chosen devicePassword and
 // its (accountID, deviceID, mailboxID) returned. created reports whether a new
 // account was made.
-func (s *Store) ProvisionOAuthAccount(supabaseUserID, email, requestedUsername, devicePassword, accountPassword string) (accountID, username string, deviceID uint32, mailboxID string, created bool, err error) {
+func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string) (accountID, username string, deviceID uint32, mailboxID string, created bool, err error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -488,9 +502,9 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID, email, requestedUsername, 
 	err = tx.QueryRow(ctx,
 		`SELECT id, username FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
 	).Scan(&accountID, &username)
-	if errors.Is(err, pgx.ErrNoRows) && email != "" {
+	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
 		err = tx.QueryRow(ctx,
-			`SELECT id, username FROM accounts WHERE email = $1`, email,
+			`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
 		).Scan(&accountID, &username)
 		if err == nil {
 			// Back-fill the Supabase user id so future logins match by id even
@@ -514,8 +528,8 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID, email, requestedUsername, 
 		accountID = newUUID()
 		username = requestedUsername
 		var emailVal any
-		if email != "" {
-			emailVal = email
+		if len(emailToken) > 0 {
+			emailVal = emailToken
 		}
 		var accountHash []byte
 		if accountPassword != "" {
@@ -526,7 +540,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID, email, requestedUsername, 
 		}
 		now := time.Now().UnixMilli()
 		if _, e := tx.Exec(ctx,
-			`INSERT INTO accounts (id, username, email, supabase_user_id, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+			`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
 			accountID, username, emailVal, supabaseUserID, accountHash, now); e != nil {
 			if isUniqueViolation(e) {
 				return "", "", 0, "", false, ErrUsernameTaken
@@ -618,11 +632,11 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 	return accountID, username, nil
 }
 
-// LookupAccountByEmail returns the accountID and username for the given email,
-// or ErrAccountNotFound if no account has that email.
-func (s *Store) LookupAccountByEmail(email string) (accountID, username string, err error) {
+// LookupAccountByEmail returns the accountID and username for the account whose
+// email hashes to emailToken (the OPRF-keyed token), or ErrAccountNotFound.
+func (s *Store) LookupAccountByEmail(emailToken []byte) (accountID, username string, err error) {
 	err = s.db.QueryRow(context.Background(),
-		`SELECT id, username FROM accounts WHERE email = $1`, email,
+		`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
 	).Scan(&accountID, &username)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrAccountNotFound
@@ -1517,19 +1531,20 @@ type DirectoryMatch struct {
 	Username  string
 }
 
-// AccountDirInfo is the identifier material the API layer needs to compute an
-// account's directory tokens.
+// AccountDirInfo is the identifier material the API layer needs to (re)build an
+// account's directory tokens. The email is stored only as its keyed token, so we
+// surface that directly rather than a plaintext address.
 type AccountDirInfo struct {
-	AccountID string
-	Username  string
-	Email     string
+	AccountID  string
+	Username   string
+	EmailToken []byte
 }
 
-// AllAccountsForDirectory returns every account's username/email so the API can
-// (re)build the full directory index at startup.
+// AllAccountsForDirectory returns every account's username + email token so the
+// API can (re)build the full directory index at startup.
 func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	rows, err := s.db.Query(context.Background(),
-		`SELECT id, COALESCE(username, ''), COALESCE(email, '') FROM accounts`)
+		`SELECT id, COALESCE(username, ''), email_token FROM accounts`)
 	if err != nil {
 		return nil, err
 	}
@@ -1537,7 +1552,7 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	var out []AccountDirInfo
 	for rows.Next() {
 		var a AccountDirInfo
-		if err := rows.Scan(&a.AccountID, &a.Username, &a.Email); err != nil {
+		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -1549,9 +1564,9 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 func (s *Store) AccountForDirectory(accountID string) (AccountDirInfo, error) {
 	var a AccountDirInfo
 	err := s.db.QueryRow(context.Background(),
-		`SELECT id, COALESCE(username, ''), COALESCE(email, '') FROM accounts WHERE id = $1`,
+		`SELECT id, COALESCE(username, ''), email_token FROM accounts WHERE id = $1`,
 		accountID,
-	).Scan(&a.AccountID, &a.Username, &a.Email)
+	).Scan(&a.AccountID, &a.Username, &a.EmailToken)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrAccountNotFound
 	}
