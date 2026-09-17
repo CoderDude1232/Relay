@@ -13,3 +13,15 @@ server/relayd-new
 xcuserdata/
 *.xcuserstate
 DerivedData/
+
+# Android / Gradle build artifacts
+android/.gradle/
+android/build/
+android/**/build/
+android/local.properties
+android/.idea/
+android/captures/
+android/*.keystore
+android/app/google-services.json
+*.apk
+*.aab

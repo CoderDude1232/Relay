@@ -25,6 +25,13 @@ Staged plan with a **user check-in between stages** (don't build ahead):
 
 ## Repo layout
 
+This is a **monorepo** (see root `README.md`): `proto/` is the shared protocol
+source of truth; `server/` is the Go relay; the iOS app + Swift packages live at
+the repo root (Xcode synced-group constraint — do **not** relocate them); `android/`
+is the Android client (Kotlin, its own `android/CLAUDE.md`) and must interoperate
+with the same wire contract. Wire-affecting changes land in `proto/` +
+`server/README.md` and stay in sync across both clients.
+
 - `proto/relay.proto` — server-visible wire format (envelopes, WS frames).
   `proto/content.proto` — client-only plaintext structure (text/receipt/typing),
   encrypted before it ever hits the wire. Server never parses Content.
