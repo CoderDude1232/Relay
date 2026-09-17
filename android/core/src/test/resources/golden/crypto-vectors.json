@@ -1,0 +1,112 @@
+{
+  "_comment": "GENERATED FILE -- do not edit. Produced by android/tools/genvectors -kind=crypto. The OPRF section is transcribed from server/internal/oprf (Go's internal rule blocks importing it); the attachment section uses only the Go standard library.",
+  "attachment": {
+    "_comment": "AES-256-GCM. blob is nonce(12) || ciphertext || tag(16); digest is SHA-256 OF THE BLOB.",
+    "blob": "F9qu0VVyMC4kaqTBbkGyODoHOo1poxOlCdoI2hGtaNXRxNUPBAEdiiIthuQ1IRTYKiqeK6Z+tjWGkhaExIVY6w==",
+    "digest": "op3lbc8VnnTENdw1bcTHWY2AUmChI208fdvrv/ozmXA=",
+    "key": "n5gvvlXf/Bfcj49Xp4No4nLEDHbLBEyakMmkmQ+wQG4=",
+    "plaintext": "cmVsYXkgYXR0YWNobWVudCBpbnRlcm9wIOKckyBwYXlsb2Fk"
+  },
+  "oprf": {
+    "cases": [
+      {
+        "identifier": "alice",
+        "normalized": "alice",
+        "token": "eMQx3K4NPn2+2aIjgopG2AKUo/ygNbyEj3ul3c+zbNQ="
+      },
+      {
+        "identifier": "  Alice  ",
+        "normalized": "alice",
+        "token": "eMQx3K4NPn2+2aIjgopG2AKUo/ygNbyEj3ul3c+zbNQ="
+      },
+      {
+        "identifier": "BOB.SMITH_99",
+        "normalized": "bob.smith_99",
+        "token": "VnnI4Cnjxk+wr5vYZXlTMJtWohXEhhUxRMUEJhvf9wI="
+      },
+      {
+        "identifier": "user@example.com",
+        "normalized": "user@example.com",
+        "token": "bitI5EcXCkgtRjmpkPULFzCfNQ+BgFJsg0hYIwGYjUg="
+      },
+      {
+        "identifier": "ünïcödé",
+        "normalized": "ünïcödé",
+        "token": "Fl/02wKmme0j7RvtIRh3NkMO9C8b95C3L8IuNsRS6+A="
+      }
+    ],
+    "hashToGroupDomain": "Relay-OPRF-v1-h2g",
+    "keyScalar": "2xd3cIneXBnXnrGy9DzrUZFim2hxsjONX+FTCssq+w8=",
+    "tokenDomain": "Relay-OPRF-v1-token"
+  },
+  "padding": {
+    "buckets": [
+      256,
+      512,
+      1024,
+      4096
+    ],
+    "cases": [
+      {
+        "input": 0,
+        "target": 256
+      },
+      {
+        "input": 1,
+        "target": 256
+      },
+      {
+        "input": 255,
+        "target": 256
+      },
+      {
+        "input": 256,
+        "target": 512
+      },
+      {
+        "input": 257,
+        "target": 512
+      },
+      {
+        "input": 511,
+        "target": 512
+      },
+      {
+        "input": 512,
+        "target": 1024
+      },
+      {
+        "input": 1023,
+        "target": 1024
+      },
+      {
+        "input": 1024,
+        "target": 4096
+      },
+      {
+        "input": 4095,
+        "target": 4096
+      },
+      {
+        "input": 4096,
+        "target": 8192
+      },
+      {
+        "input": 4097,
+        "target": 8192
+      },
+      {
+        "input": 8191,
+        "target": 8192
+      },
+      {
+        "input": 8192,
+        "target": 12288
+      },
+      {
+        "input": 20000,
+        "target": 20480
+      }
+    ]
+  }
+}

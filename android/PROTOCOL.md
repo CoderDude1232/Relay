@@ -163,8 +163,12 @@ libsignal on the client, so the bytes matter:
   `2: varint device_id`, `3: fixed64 expires` (**unix ms**), `4: bytes identity_key(33)`,
   `5: bytes signer` (the serialized ServerCertificate), `6: string sender_uuid`.
   Field `1` (e164) is **omitted**.
-- `sender_uuid` carries the **relay account id string** — treat it as an opaque id,
-  not necessarily a parseable UUID.
+- `sender_uuid` carries the **relay account id string**. Correcting an earlier
+  hedge in this document: account ids **are** RFC 4122 v4 UUIDs — the relay's
+  `store.newUUID()` sets the version and variant nibbles explicitly. This is
+  load-bearing on Android, because libsignal's `SealedSessionCipher` constructor
+  takes a `java.util.UUID` for the local identity, so an opaque non-UUID account
+  id would have made the stock sealed-sender API unusable. Verified in Stage 2.
 - Signatures are **XEd25519** (SHA-512, `0xFE ‖ 0xFF×31` domain prefix, sign bit in
   the top bit of the last signature byte) — libsignal validates these natively.
 - Expiry: **7 days**. iOS refreshes when within 1 day of expiry.
@@ -795,16 +799,64 @@ equal length (catching a field encoded spuriously or not at all).
   debug builds are pinned to `arm64-v8a` alone. Debug APK: **173 MB**. Budget disk
   accordingly — this project wants ~10 GB of slack.
 
-### Stage 2 — crypto core
-Identity/registration/prekey generation, PQXDH, ratchet, sender keys, safety numbers,
-sealed sender, OPRF, attachment cipher, content padding.
-**Interop tests (all offline, golden-vector based, plus one live):**
-- OPRF: blind → live `POST /v1/directory/oprf` → unblind → token must equal the token
-  the server indexed for a known username (resolve returns the account).
-- Sealed sender: validate a **real** certificate fetched from
-  `GET /v1/certificate/delivery` against the embedded trust root.
-- Safety number: same 60 digits as iOS for a fixed pair of identity keys.
-- Padding: byte-identical output to `ContentPadding` for a table of input sizes.
+### Stage 2 — crypto core ✅ delivered
+
+`:crypto` holds `CryptoEngine` (the single entry point, mirroring iOS's
+`CryptoCore.CryptoEngine`), `AttachmentCipher`, `BlindedDiscovery` and the value
+types; `ContentPadding` sits in `:core`, matching iOS where it lives in
+`RelayCore` rather than `CryptoCore`. `:crypto` carries no protobuf dependency,
+the same boundary `CryptoCore` keeps.
+
+**42 unit tests pass, and they run on the JVM** — libsignal's jar bundles a
+desktop dylib, so PQXDH, the ratchet, sender keys, sealed sender and safety
+numbers are all verifiable without an emulator. That was not a given and it
+shapes every later stage's test strategy.
+
+Covered: PQXDH establishment (with and without a one-time pre-key), ratchet
+round-trips both directions, cross-peer ciphertext rejection, SKDM distribution,
+distribution-id rotation locking out a removed member, safety-number symmetry /
+60 digits / QR scan comparison, sealed-sender round-trip plus rejection of an
+unknown trust root and an expired certificate, the OPRF against Go vectors, the
+attachment blob layout against a Go-produced blob, and the padding bucket table.
+
+**Two deviations from the plan above, both deliberate:**
+
+1. **The OPRF vectors are transcribed, not imported.** `server/internal/oprf` and
+   `internal/sealedsender` are under `internal/`, so Go forbids importing them
+   from the separate `tools/genvectors` module — the module is separate precisely
+   so vector generation cannot modify `../server/`. The generator therefore
+   re-implements the ~15-line OPRF using the same `gtank/ristretto255` library the
+   server uses. That still cross-checks everything that actually differs between
+   implementations (ristretto encodings, SHA-512 → `from_hash`, domain tags, hash
+   input order), but it is weaker than importing the server's own code. Moving the
+   generator into `server/` or exporting `internal/oprf` would fix it — **your
+   call, since both touch the shared module.** The attachment vector has no such
+   caveat: it uses only Go's standard library.
+
+2. **The live checks move to Stage 4.** Both the live OPRF round-trip and
+   validating a real `GET /v1/certificate/delivery` certificate need an
+   authenticated client, which does not exist until the networking stage. Stage 2
+   instead mints certificates in-test using libsignal's own XEd25519 signing,
+   reproducing the exact field layout §1.6 documents, and libsignal validates
+   them — which proves the documented layout is the one libsignal accepts. Stage 4
+   adds the live versions, following iOS's convention of a test that skips itself
+   when the server env var is absent.
+
+**Implementation traps worth keeping:**
+- **`SessionBuilder` takes `(store, remote, local)` but `SessionCipher` takes
+  `(store, local, remote)`** — the two libsignal classes order their addresses
+  oppositely. Getting it wrong stores the session correctly and then throws
+  `NoSessionException` at encrypt time, so `containsSession` still says true and
+  the bug looks like state corruption. All uses funnel through one helper.
+- libsignal reports a bad trust root, an expired certificate and a malformed
+  sealed envelope all as `InvalidMetadataMessageException`, not
+  `InvalidCertificateException`. Client behaviour is identical for all three (ack
+  and drop), so they collapse into one exception type.
+- lazysodium-java's bundled-native extractor fails under this toolchain's JDK
+  (it enumerates the `.dylib` jar entry as a directory). Tests extract the library
+  themselves and use `SodiumJava(absolutePath)`. **Production is unaffected** —
+  lazysodium-android unpacks from the APK — but that Android path is still
+  unverified until the instrumented tests run on your emulator.
 
 ### Stage 3 — secure storage
 Keystore-wrapped SQLCipher; all six libsignal store protocols; identity +

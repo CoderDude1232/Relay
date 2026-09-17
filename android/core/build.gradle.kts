@@ -31,5 +31,6 @@ dependencies {
     implementation(project(":net"))
 
     testImplementation(libs.junit)
+    testImplementation(libs.gson)
     testImplementation(libs.kotlinx.coroutines.test)
 }

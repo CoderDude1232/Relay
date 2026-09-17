@@ -6,8 +6,9 @@
 // proves the Kotlin codegen agrees with the Go codegen about every field number
 // and encoding. If a .proto changes, regenerate:
 //
-//	cd android/tools/genvectors && ~/sdk/go/bin/go run . \
-//	    > ../../proto/src/test/resources/golden/wire-vectors.json
+//	cd android/tools/genvectors
+//	~/sdk/go/bin/go run . -kind=wire   > ../../proto/src/test/resources/golden/wire-vectors.json
+//	~/sdk/go/bin/go run . -kind=crypto > ../../crypto/src/test/resources/golden/crypto-vectors.json
 //
 // Nothing here writes to ../../../server; the module only imports it.
 package main
@@ -16,6 +17,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 
@@ -35,6 +37,20 @@ type vector struct {
 func repeat(b byte, n int) []byte { return bytes.Repeat([]byte{b}, n) }
 
 func main() {
+	kind := flag.String("kind", "wire", "which vector set to emit: wire | crypto")
+	flag.Parse()
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+
+	if *kind == "crypto" {
+		if err := enc.Encode(cryptoVectors()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	var vectors []vector
 	add := func(name, notes string, m proto.Message) {
 		raw, err := proto.Marshal(m)
@@ -324,8 +340,6 @@ func main() {
 		"protoSources": []string{"proto/relay.proto", "proto/content.proto"},
 		"vectors":      vectors,
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

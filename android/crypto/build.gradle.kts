@@ -33,9 +33,17 @@ dependencies {
     }
     implementation(libs.jna) { artifact { type = "aar" } }
     implementation(libs.kotlinx.coroutines.android)
-    implementation(project(":proto"))
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // libsignal bundles a JVM dylib, so its unit tests run without an emulator.
+    // libsodium does not: lazysodium-android carries only Android .so files, so
+    // JVM tests need the -java artifact and JNA's desktop .jar natives.
+    testImplementation(libs.lazysodium.java)
+    testImplementation(libs.jna)
+    // Used only to hand-build sealed-sender certificates in tests, mirroring the
+    // exact field layout the Go relay emits (PROTOCOL.md 1.6).
+    testImplementation(libs.protobuf.javalite)
+    testImplementation(libs.gson)
     androidTestImplementation(libs.androidx.junit)
 }
