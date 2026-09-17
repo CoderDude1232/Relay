@@ -1,4 +1,4 @@
-package app.relaymsg.Relay
+package app.relaymsg
 
 import org.junit.Test
 

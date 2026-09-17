@@ -1,4 +1,4 @@
-package app.relaymsg.Relay.ui.theme
+package app.relaymsg.ui.theme
 
 import android.app.Activity
 import android.os.Build

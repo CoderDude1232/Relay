@@ -758,14 +758,42 @@ unit tests; **instrumented/emulator runs and device installs are yours**.
 ### Stage 0 — this document
 Sign-off on §0 drift items, §2.3 bootstrap, §7.5 FCM, §7.6 mappings.
 
-### Stage 1 — project setup
-`libsignal-android:0.97.4`, protobuf-kotlin + `protoc` wired to `../proto/*.proto`
-(generated at build time, never checked in by hand), libsodium, OkHttp, Room or raw
-SQLCipher, Hilt-or-manual DI, JDK 17 toolchain, module layout mirroring iOS
-(`:crypto`, `:storage`, `:net`, `:core`, `:app`).
-**Interop test:** a JVM unit test that round-trips a hand-built `Content` through the
-generated Kotlin classes and asserts the serialized bytes equal a fixture produced by
-the Swift/Go codegen (golden vectors committed under `android/src/test/resources`).
+### Stage 1 — project setup ✅ delivered
+
+Package `app.relaymsg`; modules `:proto :crypto :storage :net :core :app`; JDK 17
+bytecode; `libsignal-android:0.97.4`; protoc-generated Java-lite + Kotlin DSL from
+`../proto/` at build time (nothing checked in); libsodium, OkHttp, SQLCipher and
+coroutines wired to their stage's module.
+
+**Interop test — passing:** `:proto`'s `WireVectorsTest` runs 22 golden vectors
+generated from the relay's **own Go protobuf types** by `android/tools/genvectors`
+(a standalone Go module that only *imports* `../server`, never modifies it).
+
+One correction to the plan as written above: it promised the Kotlin bytes would
+*equal* the Go bytes. They don't, legitimately — **protobuf field order is not
+canonical across implementations**; Go emits `oneof` members after the top-level
+fields while the Java/Kotlin runtime emits strictly ascending field numbers. Both
+encodings are valid and each parses the other. The test therefore asserts: Go's
+bytes decode in Kotlin to exactly the expected message (this is what catches a wrong
+field number — the value would land elsewhere or in `unknownFields`), re-encoding
+those bytes reproduces the Kotlin encoding byte-for-byte, and the two encodings have
+equal length (catching a field encoded spuriously or not at all).
+
+**Setup findings worth keeping:**
+- `org.signal:libsignal-android` on Maven Central **stops at 0.86.5**. Signal
+  publishes current releases to their own bucket, declared in the vendored
+  checkout's `java/build.gradle`. `settings.gradle.kts` adds it, group-filtered:
+  `https://storage.googleapis.com/build-artifacts.signal.org/libraries/maven`
+- libsignal-android requires **core library desugaring** (`desugar_jdk_libs`),
+  enabled in every module on its compile classpath.
+- Its AAR declares `minSdkVersion 23`, so our `minSdk 26` is fine.
+- `lazysodium-android` pulls JNA as a **jar**; Android needs the **aar** (it carries
+  the native libs). Both on the classpath duplicates every `com.sun.jna` class and
+  dexing fails, so `:crypto` excludes the transitive jar.
+- `libsignal_jni.so` is ~140 MB per ABI and the AAR also ships a test-only
+  `libsignal_jni_testing.so` of similar size. The latter is excluded in packaging;
+  debug builds are pinned to `arm64-v8a` alone. Debug APK: **173 MB**. Budget disk
+  accordingly — this project wants ~10 GB of slack.
 
 ### Stage 2 — crypto core
 Identity/registration/prekey generation, PQXDH, ratchet, sender keys, safety numbers,

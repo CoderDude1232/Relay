@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "app.relaymsg.Relay"
+    namespace = "app.relaymsg"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "app.relaymsg.Relay"
+        applicationId = "app.relaymsg"
         minSdk = 26
         targetSdk = 37
         versionCode = 1
@@ -20,6 +20,17 @@ android {
     }
 
     buildTypes {
+        debug {
+            ndk {
+                // libsignal_jni.so is ~140 MB per ABI, so every extra ABI is another
+                // ~140 MB of debug APK. This Mac is Apple Silicon and its emulator
+                // images are arm64, same as the owner's phone, so debug ships one ABI.
+                // Add "x86_64" here if you ever run an Intel host or x86_64 system
+                // image (the symptom is INSTALL_FAILED_NO_MATCHING_ABIS).
+                // Release is unfiltered and keeps all four.
+                abiFilters += listOf("arm64-v8a")
+            }
+        }
         release {
             optimization {
                 enable = false
@@ -27,15 +38,32 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+        // Required by libsignal-android (it uses java.time / java.util.stream APIs
+        // above our minSdk of 26).
+        isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
         compose = true
     }
+    packaging {
+        jniLibs {
+            // libsignal-android ships a ~115 MB-per-ABI test-only native library
+            // next to the real one. Without this the APK is several hundred MB.
+            excludes += "**/libsignal_jni_testing.so"
+        }
+    }
 }
 
 dependencies {
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
+    implementation(project(":core"))
+    implementation(project(":crypto"))
+    implementation(project(":storage"))
+    implementation(project(":net"))
+    implementation(project(":proto"))
+
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)
@@ -44,6 +72,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

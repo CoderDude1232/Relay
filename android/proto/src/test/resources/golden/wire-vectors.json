@@ -1,0 +1,141 @@
+{
+  "_comment": "GENERATED FILE -- do not edit. Produced by android/tools/genvectors from the relay's own Go protobuf types. Regenerate after any change to proto/.",
+  "protoSources": [
+    "proto/relay.proto",
+    "proto/content.proto"
+  ],
+  "vectors": [
+    {
+      "name": "content_text_full",
+      "type": "relay.content.Content",
+      "notes": "every top-level Content field set at once: body oneof + group_id(8), padding(12), sender ids(13,14), expires_after_ms(15), sync_recipient(16)",
+      "bytes": "Qgdncm91cC0xYgiqqqqqqqqqqmoLYWNjdC1zZW5kZXJwA3iAuJkpggEJYWNjdC1wZWVyCqABCgloZWxsbyDinJMQgNjch5UzGh4ImNDch5UzEgZhY2N0LWEaDXByaW9yIG1lc3NhZ2UibAoGYmxvYi0xEiABAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBARogAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIiCmltYWdlL2pwZWcogCAyCXBob3RvLmpwZzigBkDYBA=="
+    },
+    {
+      "name": "content_text_minimal",
+      "type": "relay.content.Content",
+      "notes": "proto3 default elision: empty body string and zero timestamp emit nothing",
+      "bytes": "CgA="
+    },
+    {
+      "name": "content_receipt_read",
+      "type": "relay.content.Content",
+      "notes": "read receipt over three sender timestamps",
+      "bytes": "agthY2N0LXNlbmRlcnABEhYIAhISgdjch5Uzgtjch5Uzg9jch5Uz"
+    },
+    {
+      "name": "content_typing_started",
+      "type": "relay.content.Content",
+      "notes": "ephemeral typing indicator",
+      "bytes": "agthY2N0LXNlbmRlcnABGgkIARCA2NyHlTM="
+    },
+    {
+      "name": "content_reaction",
+      "type": "relay.content.Content",
+      "notes": "multi-byte emoji payload",
+      "bytes": "agthY2N0LXNlbmRlcnACIhwKBPCfjokSBmFjY3QtYRiA2NyHlTMo9Nvch5Uz"
+    },
+    {
+      "name": "content_group_update_add",
+      "type": "relay.content.Content",
+      "notes": "full roster + admins + rotated distribution_id(11) + invite_key(12)",
+      "bytes": "Qgdncm91cC0xagphY2N0LWFkbWlucAEyjgEIBxACGgphY2N0LWFkbWluIghhY2N0LW5ld0IKYWNjdC1hZG1pbkIGYWNjdC1iQghhY2N0LW5ld0oKYWNjdC1hZG1pblABWiQ2ZjFhMmIzYy00ZDVlLTRmNjAtODg5OS1hYWJiY2NkZGVlZmZiIDMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMz"
+    },
+    {
+      "name": "content_sender_key_distribution",
+      "type": "relay.content.Content",
+      "notes": "SKDM carried over a pairwise session",
+      "bytes": "Qgdncm91cC0xKlgKMERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERBIkNmYxYTJiM2MtNGQ1ZS00ZjYwLTg4OTktYWFiYmNjZGRlZWZm"
+    },
+    {
+      "name": "content_delete",
+      "type": "relay.content.Content",
+      "notes": "unsend / delete-for-everyone",
+      "bytes": "agthY2N0LXNlbmRlcnABOhQIgNjch5UzEgthY2N0LXNlbmRlcg=="
+    },
+    {
+      "name": "content_edit",
+      "type": "relay.content.Content",
+      "notes": "in-place edit of an earlier message",
+      "bytes": "agthY2N0LXNlbmRlcnABWhQIgNjch5UzEgtlZGl0ZWQgYm9keQ=="
+    },
+    {
+      "name": "content_profile",
+      "type": "relay.content.Content",
+      "notes": "E2EE profile distribution with an avatar pointer",
+      "bytes": "SnAKBUV0aGFuEmAKC2Jsb2ItYXZhdGFyEiAFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRogBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYiCmltYWdlL2pwZWcogBAYgNjch5Uz"
+    },
+    {
+      "name": "content_call_offer",
+      "type": "relay.content.Content",
+      "notes": "CallMessage.Type OFFER == 0, so proto3 elides the type field entirely -- receivers must default to OFFER",
+      "bytes": "agthY2N0LXNlbmRlcnABUikSBmNhbGwtMRofdj0wDQpvPS0gMSAxIElOIElQNCAxMjcuMC4wLjENCg=="
+    },
+    {
+      "name": "content_call_group_ring",
+      "type": "relay.content.Content",
+      "notes": "group ring with a participant list",
+      "bytes": "Qgdncm91cC0xUisIBhIGY2FsbC0yKgdncm91cC0xOgZhY2N0LWE6BmFjY3QtYjoGYWNjdC1j"
+    },
+    {
+      "name": "content_poll",
+      "type": "relay.content.Content",
+      "notes": "field 17 -- two-byte tag",
+      "bytes": "Qgdncm91cC0xigEnCgZMdW5jaD8SBFRoYWkSBVN1c2hpEgdCdXJnZXJzGAEggNjch5Uz"
+    },
+    {
+      "name": "content_poll_vote",
+      "type": "relay.content.Content",
+      "notes": "field 18 -- two-byte tag, packed repeated uint32",
+      "bytes": "Qgdncm91cC0xkgEaCgZhY2N0LWEQgNjch5UzGgIAAiDo39yHlTM="
+    },
+    {
+      "name": "client_frame_send",
+      "type": "relay.v1.ClientFrame",
+      "notes": "mailbox-addressed send: destination_account holds an opaque mailbox id and messages carries exactly one DeviceMessage",
+      "bytes": "CCoSaAoUbWJ4LTAxMjM0NTY3ODlhYmNkZWYSSQgCELlgGAEiQHd3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3cYgNjch5Uz"
+    },
+    {
+      "name": "client_frame_ack",
+      "type": "relay.v1.ClientFrame",
+      "notes": "envelope ack",
+      "bytes": "GiIKIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm"
+    },
+    {
+      "name": "envelope_sealed",
+      "type": "relay.v1.Envelope",
+      "notes": "sealed sender: sender_account(2) and sender_device(3) are empty/zero and therefore absent from the wire",
+      "bytes": "CiAwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiACKiCIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiDCA2NyHlTM4+9jch5Uz"
+    },
+    {
+      "name": "envelope_unsealed_ephemeral",
+      "type": "relay.v1.Envelope",
+      "notes": "authenticated send, ephemeral (never queued)",
+      "bytes": "CiBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMBILYWNjdC1zZW5kZXIYASACKhCZmZmZmZmZmZmZmZmZmZmZMIDY3IeVMzj72NyHlTNAAQ=="
+    },
+    {
+      "name": "server_frame_mismatched_devices",
+      "type": "relay.v1.ServerFrame",
+      "notes": "the missing/extra/stale lists the client's retry algorithm depends on",
+      "bytes": "ChUIKhACGgICAyIBCSoBBDD72NyHlTM="
+    },
+    {
+      "name": "server_frame_queue_empty",
+      "type": "relay.v1.ServerFrame",
+      "notes": "end-of-backlog marker",
+      "bytes": "GgA="
+    },
+    {
+      "name": "server_frame_nuke",
+      "type": "relay.v1.ServerFrame",
+      "notes": "signed remote-wipe command relayed to every device",
+      "bytes": "IoQBCgthY2N0LXNlbmRlchIkMTExMTIyMjItMzMzMy00NDQ0LTU1NTUtNjY2Njc3Nzc4ODg4GIDY3IeVMyABKkbu7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u"
+    },
+    {
+      "name": "server_frame_device_list_changed",
+      "type": "relay.v1.ServerFrame",
+      "notes": "device-list change hint",
+      "bytes": "KgQIARAF"
+    }
+  ]
+}
