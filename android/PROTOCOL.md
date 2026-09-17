@@ -858,12 +858,48 @@ attachment blob layout against a Go-produced blob, and the padding bucket table.
   lazysodium-android unpacks from the APK — but that Android path is still
   unverified until the instrumented tests run on your emulator.
 
-### Stage 3 — secure storage
-Keystore-wrapped SQLCipher; all six libsignal store protocols; identity +
-registration id in Keystore only; message/conversation/group stores; envelope-id
-dedup table.
-**Interop test:** persist a session, kill and reopen the process, decrypt a message
-encrypted before the restart. Plus a Keystore-unavailable fallback path test.
+### Stage 3 — secure storage ✅ built, ⚠️ unverified
+
+`:storage` holds `MasterKeyStore` (Android Keystore), `RelayDatabase` (SQLCipher),
+`SqlCipherSignalStore` (all six libsignal stores), `MessageStore` and the
+`SecureStore` composition root. Identity key pair and registration id live in the
+Keystore only and never enter the database, matching iOS's Keychain/SQLCipher split.
+
+The master key is 32 random bytes, AES-GCM wrapped by a Keystore key, with only
+the wrapped blob persisted. Hardware tier is attempted **StrongBox → TEE →
+software** and the result is recorded, so the app can tell the user which
+guarantee they actually got. The wrapping key is deliberately **not** bound to
+user authentication: the client must decrypt incoming messages while the device
+is locked (the push path), the same reason iOS uses
+`AfterFirstUnlockThisDeviceOnly` instead of a biometric-gated item.
+
+**Schema:** iOS reached its shape through 18 incremental migrations because it
+has an installed base. Android has none, so the same final shape is created as a
+single version 1, with identical table and column names.
+
+**One table iOS does not have.** libsignal's Java `KyberPreKeyStore` requires
+`markKyberPreKeyUsed(kyberPreKeyId, signedPreKeyId, baseKey)` and expects the
+store to raise `ReusedBaseKeyException` when that tuple repeats. Relay publishes a
+single **last-resort** Kyber prekey and never rotates it per handshake, so that
+check is the only thing standing between a captured `PreKeySignalMessage` and a
+successful replay — hence `kyber_prekey_uses`. iOS's Swift `KyberPreKeyStore`
+protocol exposes no base key, so it cannot perform this check in the store.
+**Worth confirming how the Swift side covers that case** — flagging rather than
+assuming a gap.
+
+> ⚠️ **These tests have not been run.** SQLCipher ships Android native libraries
+> and the Keystore is a platform service, so neither exists on the host JVM and
+> this module's tests must be instrumented. There is no emulator on this machine
+> (no system images installed, and `cmdline-tools` is absent). The code compiles
+> and the tests are written; running `./gradlew :storage:connectedDebugAndroidTest`
+> against an arm64 AVD is what will actually prove it. Written and waiting:
+> master-key stability across reopen, the raw key never appearing in
+> preferences, tier recording, identity persistence, **a session encrypted before
+> a restart decrypting after it**, TOFU plus distrust of a changed key, the
+> verification-state transitions that drive the safety-number warning, Kyber
+> replay refusal, envelope-claim exactly-once, read-receipts never downgrading,
+> disappearing-message expiry, group roster round-trip and distribution-id
+> rotation, newest-wins profiles, and wipe.
 
 ### Stage 4 — networking
 REST client with **`Relay-Sig`** (+ Basic for the auth-key bootstrap), WebSocket with

@@ -20,6 +20,7 @@ okhttp = "5.5.0"
 lazysodium = "5.2.0"
 jna = "5.19.1"
 sqlcipher = "4.19.0"
+androidxSqlite = "2.7.1"
 gson = "2.14.0"
 # libsignal-android requires core library desugaring.
 desugar = "2.1.5"
@@ -53,6 +54,9 @@ lazysodium-android = { group = "com.goterl", name = "lazysodium-android", versio
 lazysodium-java = { group = "com.goterl", name = "lazysodium-java", version.ref = "lazysodium" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
+# sqlcipher-android's SQLiteDatabase implements androidx.sqlite's SupportSQLiteDatabase,
+# so the interface must be on the compile classpath.
+androidx-sqlite = { group = "androidx.sqlite", name = "sqlite", version.ref = "androidxSqlite" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
 
