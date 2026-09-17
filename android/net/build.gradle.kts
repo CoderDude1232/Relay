@@ -11,6 +11,9 @@ android {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -29,6 +32,13 @@ dependencies {
     api(project(":proto"))
     implementation(project(":crypto"))
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.gson)
+    // org.json ships as a stub in android.jar; the real implementation lets the
+    // request layer be unit-tested on the JVM. (Robolectric would also work, but
+    // 4.17 cannot run on this toolchain's JDK 25.)
+    testImplementation(libs.json)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

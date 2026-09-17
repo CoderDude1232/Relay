@@ -1,0 +1,154 @@
+{
+  "_comment": "GENERATED FILE -- do not edit. Produced by android/tools/genvectors -kind=crypto. The OPRF section is transcribed from server/internal/oprf (Go's internal rule blocks importing it); the attachment section uses only the Go standard library.",
+  "attachment": {
+    "_comment": "AES-256-GCM. blob is nonce(12) || ciphertext || tag(16); digest is SHA-256 OF THE BLOB.",
+    "blob": "hGHLTnsnFJgafMD4/5lw7HzN8rPwXO7MVW7xStQ9c6ScV2YNtdc+bvmlwlU4ldhKk49U1T3KyCgWusFDKCQHmA==",
+    "digest": "TO8/a9MX1p0pSkYUc+gS7PsMU/tUkclp8Vj4AR1LIOA=",
+    "key": "5o4KZcbcHiG2zMMaO79MjthXKLhJ10W83iNU+rMWnPQ=",
+    "plaintext": "cmVsYXkgYXR0YWNobWVudCBpbnRlcm9wIOKckyBwYXlsb2Fk"
+  },
+  "oprf": {
+    "cases": [
+      {
+        "identifier": "alice",
+        "normalized": "alice",
+        "token": "94q5/bayUg4M5SoPZZ8D8dxKgELRlGcIa+6QFpUeDKk="
+      },
+      {
+        "identifier": "  Alice  ",
+        "normalized": "alice",
+        "token": "94q5/bayUg4M5SoPZZ8D8dxKgELRlGcIa+6QFpUeDKk="
+      },
+      {
+        "identifier": "BOB.SMITH_99",
+        "normalized": "bob.smith_99",
+        "token": "1h74NuBeVeAeSYOkV84yxCCcKXb3uMCMW41RYE5Bgmo="
+      },
+      {
+        "identifier": "user@example.com",
+        "normalized": "user@example.com",
+        "token": "dWDQYN3OcnfXP7AhAU6IwnjrUyVKP1xss+16U+YJyXE="
+      },
+      {
+        "identifier": "ünïcödé",
+        "normalized": "ünïcödé",
+        "token": "vwX8zS9uid37D+jVqYGysx2NNQusIdM/bTeNHnpubCA="
+      }
+    ],
+    "hashToGroupDomain": "Relay-OPRF-v1-h2g",
+    "keyScalar": "zQse1VGoAepRSnycL5SEdJOZyomo/wOal4oGy+USlgI=",
+    "tokenDomain": "Relay-OPRF-v1-token"
+  },
+  "padding": {
+    "buckets": [
+      256,
+      512,
+      1024,
+      4096
+    ],
+    "cases": [
+      {
+        "input": 0,
+        "target": 256
+      },
+      {
+        "input": 1,
+        "target": 256
+      },
+      {
+        "input": 255,
+        "target": 256
+      },
+      {
+        "input": 256,
+        "target": 512
+      },
+      {
+        "input": 257,
+        "target": 512
+      },
+      {
+        "input": 511,
+        "target": 512
+      },
+      {
+        "input": 512,
+        "target": 1024
+      },
+      {
+        "input": 1023,
+        "target": 1024
+      },
+      {
+        "input": 1024,
+        "target": 4096
+      },
+      {
+        "input": 4095,
+        "target": 4096
+      },
+      {
+        "input": 4096,
+        "target": 8192
+      },
+      {
+        "input": 4097,
+        "target": 8192
+      },
+      {
+        "input": 8191,
+        "target": 8192
+      },
+      {
+        "input": 8192,
+        "target": 12288
+      },
+      {
+        "input": 20000,
+        "target": 20480
+      }
+    ]
+  },
+  "relaySig": {
+    "_comment": "Canonical string is METHOD \\n PATH \\n TIMESTAMP \\n NONCE; the path excludes the query string. Signature is ECDSA-P256 ASN.1/DER over SHA-256 of it.",
+    "cases": [
+      {
+        "method": "GET",
+        "path": "/v1/queue",
+        "timestampMs": 1758000000000,
+        "nonce": "bm9uY2UtMQ==",
+        "canonical": "GET\n/v1/queue\n1758000000000\nbm9uY2UtMQ==",
+        "digest": "P+m9NSegCBGUAwu3He0s2JrN09cv/zgo7e9OSA+L6fg=",
+        "signature": "MEYCIQDZ4WL6Jnd5jzl9vqlHaA4iS1pE6ilzLb3As8SvKxJJQgIhAL9UBN8q8EZdQYXUXtbL7s7RUwVVP1s6aE97YH5Pkral"
+      },
+      {
+        "method": "PUT",
+        "path": "/v1/keys",
+        "timestampMs": 1758000000001,
+        "nonce": "bm9uY2UtMg==",
+        "canonical": "PUT\n/v1/keys\n1758000000001\nbm9uY2UtMg==",
+        "digest": "nr2MFhoz+g9yS3b2mL/y+FY4wkGTwM4gsw3nMCdQGkM=",
+        "signature": "MEYCIQDti6GwhMuLuy3jc+aq2JA/bmIwkC14Zbis/hpUG4ipfwIhAKXo/nRuqf7fMI0GpXYq4o/56uGmhOsGjO9/tULNoyYn"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/keys/6f1a2b3c-4d5e-4f60-8899-aabbccddeeff",
+        "timestampMs": 1758000000002,
+        "nonce": "bm9uY2UtMw==",
+        "canonical": "GET\n/v1/keys/6f1a2b3c-4d5e-4f60-8899-aabbccddeeff\n1758000000002\nbm9uY2UtMw==",
+        "digest": "q0hgn7eBHmGv+IlVPniaD1/s33ViecWm0lANcX/Rkhk=",
+        "signature": "MEYCIQDJGRF1JazAo/xiLe7XGm6AXmU3801zepRA2Vbyq20aSAIhALJYP17Cs+3q/bdL7GHFDNLnTZhPlKNbaPJsqTaAAhtK"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/messages/ack",
+        "timestampMs": 1758000000003,
+        "nonce": "bm9uY2UtNA==",
+        "canonical": "POST\n/v1/messages/ack\n1758000000003\nbm9uY2UtNA==",
+        "digest": "zl/XpsPhmPbvFwOrV0ttexOQ+w9DdLE9uuzh3dGBq8E=",
+        "signature": "MEQCIG8Nbk3/173+xoZtv7Pz8vZC4xbBJhF5f6+UVVXAARVCAiAYVLkdBi+tmqFHaDwAzsa35cRkzpUQzCuXlkxGJiTzdw=="
+      }
+    ],
+    "publicKey": "BBQiRra7a3/eR84BAz0Pts0jn6byhswJvD6y/t/IqS0LceAcAaBhxMg5RpckMwmWbEjV9eQLSxdafOun2r7QD+0="
+  }
+}

@@ -3,10 +3,13 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
+	"strconv"
 	"strings"
 
 	"github.com/gtank/ristretto255"
@@ -132,6 +135,51 @@ func cryptoVectors() map[string]any {
 		paddingCases = append(paddingCases, paddingCase{Input: n, Target: paddingTarget(n)})
 	}
 
+	// --- Relay-Sig request auth -------------------------------------------
+	// Mirrors server/internal/api/sigauth.go. Android is the first client to
+	// implement this scheme, so these vectors pin the canonical string, the
+	// digest, and the ASN.1/DER signature encoding the Go verifier accepts.
+	// NOTE the path excludes the query string: the server signs r.URL.Path.
+	authKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		panic(err)
+	}
+	type authCase struct {
+		Method      string `json:"method"`
+		Path        string `json:"path"`
+		TimestampMs int64  `json:"timestampMs"`
+		Nonce       string `json:"nonce"`
+		Canonical   string `json:"canonical"`
+		Digest      string `json:"digest"`
+		Signature   string `json:"signature"`
+	}
+	var authCases []authCase
+	for _, c := range []struct {
+		method, path, nonce string
+		ts                  int64
+	}{
+		{"GET", "/v1/queue", "bm9uY2UtMQ==", 1758000000000},
+		{"PUT", "/v1/keys", "bm9uY2UtMg==", 1758000000001},
+		// A path that would carry a query string in the real request: only the
+		// path is signed, so ?device=3 must NOT appear here.
+		{"GET", "/v1/keys/6f1a2b3c-4d5e-4f60-8899-aabbccddeeff", "bm9uY2UtMw==", 1758000000002},
+		{"POST", "/v1/messages/ack", "bm9uY2UtNA==", 1758000000003},
+	} {
+		canonical := c.method + "\n" + c.path + "\n" +
+			strconv.FormatInt(c.ts, 10) + "\n" + c.nonce
+		digest := sha256.Sum256([]byte(canonical))
+		sig, err := ecdsa.SignASN1(rand.Reader, authKey, digest[:])
+		if err != nil {
+			panic(err)
+		}
+		authCases = append(authCases, authCase{
+			Method: c.method, Path: c.path, TimestampMs: c.ts, Nonce: c.nonce,
+			Canonical: canonical,
+			Digest:    b64(digest[:]),
+			Signature: b64(sig),
+		})
+	}
+
 	return map[string]any{
 		"_comment": "GENERATED FILE -- do not edit. Produced by android/tools/genvectors -kind=crypto. " +
 			"The OPRF section is transcribed from server/internal/oprf (Go's internal rule blocks importing it); " +
@@ -148,6 +196,12 @@ func cryptoVectors() map[string]any {
 			"blob":      b64(blob),
 			"digest":    b64(digest[:]),
 			"plaintext": b64(plaintext),
+		},
+		"relaySig": map[string]any{
+			"_comment": "Canonical string is METHOD \\n PATH \\n TIMESTAMP \\n NONCE; the path " +
+				"excludes the query string. Signature is ECDSA-P256 ASN.1/DER over SHA-256 of it.",
+			"publicKey": b64(elliptic.Marshal(elliptic.P256(), authKey.X, authKey.Y)),
+			"cases":     authCases,
 		},
 		"padding": map[string]any{
 			"buckets": []int{256, 512, 1024, 4096},
