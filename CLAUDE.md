@@ -18,10 +18,14 @@ Staged plan with a **user check-in between stages** (don't build ahead):
 3. ✅ Secure storage (`SecureStorage/`) — 6 tests passing
 4. ✅ Networking (`RelayKit/`) — unit + live e2e test against real relayd passing
 5. ✅ Core messaging UI — working on 2 simulators + user's iPhone over LAN
-6. ⛔ Push/NSE — **blocked**: needs paid Apple Developer membership (APNs). NSE
-   target exists but `NotificationService.swift` is untouched template code.
-7. ⏳ Next up: safety-number verification UI (crypto + storage hooks already
-   exist), groups (sender keys, rotation on membership change), media.
+6. ✅ Push/NSE — APNs (paid membership acquired) + FCM for Android; contentless
+   wake by default with opt-in ciphertext-in-push. NSE fetches from `GET /v1/queue`.
+7. ✅ Shipped since: safety-number verification UI, groups (client-authoritative,
+   fully E2E — the relay keeps **no** group state), media/attachments, calls
+   (WebRTC + TURN), profiles, sealed sender, blinded discovery, encrypted iCloud
+   backup, device linking, remote wipe (nuke), and `Relay-Sig` request-signature
+   auth. Now underway: an **Android client** (`android/`) and hardening — see
+   `TODO.md`. Current focus is deploy + device-testing the built batch (`TESTING.md`).
 
 ## Repo layout
 
@@ -83,24 +87,29 @@ with the same wire contract. Wire-affecting changes land in `proto/` +
   clients dedup by envelope id (incoming message id == envelope id). Ephemeral
   envelopes (typing) never queue. Receipts reference sender timestamps; read
   never downgrades to delivered.
-- Fan-out: sender must cover exactly all registered devices of the destination
-  (minus own device on self-sends) with matching registration ids, else the
-  whole send is rejected (`MISMATCHED_DEVICES` + missing/extra/stale lists);
-  client re-fetches bundles and retries once.
-- Auth: HTTP Basic `"<accountUUID>.<deviceId>" : devicePassword` for REST and
-  WS upgrade.
+- Fan-out: `SendRequest.destination_account` is an **opaque mailbox id** and
+  each frame carries **exactly one** device message; the sender sends one frame
+  per recipient mailbox. The response's missing/extra/stale device lists drive a
+  bundle re-fetch so the sender covers all of a recipient's devices (minus own
+  device on self-sends). Sealed sends go over the unauthenticated
+  `POST /v1/messages/sealed` path instead.
+- Auth: `Relay-Sig` per-request ECDSA-P256 signatures (preferred; keyed on the
+  device auth key) **or** HTTP Basic `"<accountUUID>.<deviceId>" : devicePassword`
+  during the transition — for both REST and the WS upgrade. See `server/README.md`.
 - UI: SwiftUI + Liquid Glass (glass on chrome only, flat fills for bubbles).
 
 ## Deliberate gaps (not bugs)
 
-- No typing-indicator sending; receiving is parsed but ignored.
-- No self-sync to own other devices (no device-linking flow yet; fan-out
-  machinery already supports it).
 - On mismatch retry the client re-processes ALL bundles (may reset healthy
   sessions — wasteful but correct; acceptable for now).
 - Failed decrypts are acked and dropped (poison-message protection).
-- Keychain/Secure-Enclave path has never run on a **real device** (simulator
-  uses the fallback) — verify when convenient.
+- No one-time Kyber prekey pool — last-resort Kyber prekey only.
+- Group sends in sealed-sender mode are pairwise (per-member), not sender-key.
+- `GET /v1/accounts/by-username` is plaintext legacy; new code uses blinded discovery.
+
+(Typing-indicator send/receive, self-sync to own devices, and device linking now
+exist — they used to be listed here. The Keychain/Secure-Enclave path is
+device-verified.)
 
 ## Dev environment quirks (this Mac)
 
@@ -142,7 +151,14 @@ with the same wire contract. Wire-affecting changes land in `proto/` +
 
 ## Where to pick up
 
-Stage 7 is next: safety-number UI (use `CryptoEngine.safetyNumber` +
-`SQLCipherSignalStore.isVerified/setVerified`; QR from `SafetyNumber.scannable`),
-then groups (sender keys — proto enum + stores already have slots), then media.
-Stage 6 (push) unblocks only if the user buys the paid Apple membership.
+The core iOS app and its privacy program are shipped (see the build-status list
+above). Current focus:
+1. **Deploy + device-test the built batch** — contentless push, email-at-rest,
+   groups, sealed sender, blinded discovery, multi-device sync, iCloud backup.
+   Checklist: `TESTING.md`; tracked in `TODO.md` ("NEXT").
+2. **`Relay-Sig` client signer** — the server accepts signatures; iOS still sends
+   HTTP Basic. Plumb the device auth key into `RelayKit` (REST + WS) + extensions,
+   then retire Basic. See `TODO.md` and the `relay-auth-hardening` memory.
+3. **Android client** (`android/`, its own `CLAUDE.md`) — must interoperate with
+   the same wire contract; the server-side FCM sender for it landed in `server/`.
+4. Deferred: DDoS/origin-IP hiding (`TODO.md`).

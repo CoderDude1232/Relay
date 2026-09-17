@@ -278,6 +278,12 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// ciphertext included directly in the APNs payload (faster, slightly less
 		// private — Apple's servers carry the encrypted blob). Off by default.
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_include_content BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Cross-platform push: Android wakes via FCM, iOS via APNs. `push_kind`
+		// records which transport this device registered ('apns' | 'fcm'); the
+		// matching token lives in apns_token or fcm_token. Defaults to 'apns' so
+		// existing iOS devices are unaffected.
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT`,
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_kind TEXT NOT NULL DEFAULT 'apns'`,
 		// Email privacy: never store the email in plaintext. We keep only the
 		// OPRF-keyed token (the same keyed hash used for blinded discovery), which
 		// is a one-way, non-enumerable-without-the-key value. All email lookups
@@ -998,9 +1004,47 @@ func (s *Store) RotateMailbox(accountID string, deviceID uint32) (string, error)
 
 func (s *Store) SetAPNSToken(accountID string, deviceID uint32, token string) error {
 	ctx := context.Background()
-	_, err := s.db.Exec(ctx, `UPDATE devices SET apns_token = $1 WHERE account_id = $2 AND device_id = $3`,
+	_, err := s.db.Exec(ctx, `UPDATE devices SET apns_token = $1, push_kind = 'apns' WHERE account_id = $2 AND device_id = $3`,
 		token, accountID, deviceID)
 	return err
+}
+
+// SetFCMToken registers this device's Firebase Cloud Messaging token and marks
+// it as an FCM-push device (Android).
+func (s *Store) SetFCMToken(accountID string, deviceID uint32, token string) error {
+	ctx := context.Background()
+	_, err := s.db.Exec(ctx, `UPDATE devices SET fcm_token = $1, push_kind = 'fcm' WHERE account_id = $2 AND device_id = $3`,
+		token, accountID, deviceID)
+	return err
+}
+
+// PushTarget returns how to wake a device: its push kind ('apns'|'fcm') and the
+// matching token. token is "" when the device has registered none.
+func (s *Store) PushTarget(accountID string, deviceID uint32) (kind, token string, err error) {
+	ctx := context.Background()
+	var apnsTok, fcmTok *string
+	err = s.db.QueryRow(ctx,
+		`SELECT push_kind, apns_token, fcm_token FROM devices WHERE account_id = $1 AND device_id = $2`,
+		accountID, deviceID,
+	).Scan(&kind, &apnsTok, &fcmTok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+	switch kind {
+	case "fcm":
+		if fcmTok != nil {
+			token = *fcmTok
+		}
+	default:
+		kind = "apns"
+		if apnsTok != nil {
+			token = *apnsTok
+		}
+	}
+	return kind, token, nil
 }
 
 // APNSToken returns the device's APNs token, or "" if not registered.

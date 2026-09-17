@@ -20,6 +20,7 @@ import (
 	"github.com/relayapp/relay-server/internal/api"
 	"github.com/relayapp/relay-server/internal/apns"
 	"github.com/relayapp/relay-server/internal/blob"
+	"github.com/relayapp/relay-server/internal/fcm"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
@@ -61,6 +62,7 @@ func main() {
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
 	apnsTopic := flag.String("apns-topic", "com.morgandaly.RelayMessenger", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
+	fcmServiceAccount := flag.String("fcm-service-account", "", "path to a Firebase service-account JSON key (enables FCM push for Android devices)")
 	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")
 	turnSecret := flag.String("turn-secret", "", "shared HMAC-SHA1 secret for coturn REST API credential generation")
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
@@ -98,6 +100,15 @@ func main() {
 		h.SetPusher(pusher)
 		h.SetVoIPPusher(pusher) // same key/cert sends VoIP pushes on the .voip sub-topic
 		slog.Info("apns push enabled", "topic", *apnsTopic, "production", *apnsProduction)
+	}
+	if *fcmServiceAccount != "" {
+		fcmPusher, err := fcm.New(*fcmServiceAccount)
+		if err != nil {
+			slog.Error("failed to load FCM service account", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		h.SetFCMPusher(fcmPusher)
+		slog.Info("fcm push enabled")
 	}
 
 	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)

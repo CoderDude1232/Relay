@@ -32,6 +32,13 @@ type Pusher interface {
 	Push(deviceToken string, envelope []byte) error
 }
 
+// FCMPusher wakes an offline Android device via Firebase Cloud Messaging. Same
+// contract as Pusher: a nil/empty envelope is a content-free data-only wake; a
+// non-nil envelope is carried for the opt-in ciphertext-in-push case. Optional.
+type FCMPusher interface {
+	Push(deviceToken string, envelope []byte) error
+}
+
 // VoIPPusher sends a PushKit VoIP push to wake the app and present the
 // CallKit incoming-call UI. Optional; nil means calls only work in-foreground.
 type VoIPPusher interface {
@@ -41,6 +48,7 @@ type VoIPPusher interface {
 type Hub struct {
 	store      *store.Store
 	pusher     Pusher
+	fcmPusher  FCMPusher
 	voipPusher VoIPPusher
 
 	mu       sync.RWMutex
@@ -61,6 +69,9 @@ func New(st *store.Store) *Hub {
 
 // SetPusher attaches an APNs sender used to wake offline devices.
 func (h *Hub) SetPusher(p Pusher) { h.pusher = p }
+
+// SetFCMPusher attaches a Firebase Cloud Messaging sender for Android devices.
+func (h *Hub) SetFCMPusher(p FCMPusher) { h.fcmPusher = p }
 
 // SetVoIPPusher attaches a PushKit sender for incoming-call wakes.
 func (h *Hub) SetVoIPPusher(p VoIPPusher) { h.voipPusher = p }
@@ -184,30 +195,48 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 }
 
 func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) {
-	token, err := h.store.APNSToken(accountID, deviceID)
+	kind, token, err := h.store.PushTarget(accountID, deviceID)
 	if err != nil || token == "" {
 		if err != nil {
-			slog.Warn("apns: token lookup failed", "err", privlog.Error(err))
+			slog.Warn("push: token lookup failed", "err", privlog.Error(err))
 		} else {
-			slog.Info("apns: offline device has no token")
+			slog.Info("push: offline device has no token")
 		}
 		return
 	}
-	// Content-free wake by default: the device's NSE fetches + decrypts the
-	// envelope from the relay, so Apple never carries message data. A device may
-	// opt in to ciphertext-in-push (faster) via its push-content preference.
+
+	// Pick the transport registered by this device. If its sender isn't
+	// configured on this server, the envelope still delivers on next connect.
+	var send func(string, []byte) error
+	switch kind {
+	case "fcm":
+		if h.fcmPusher == nil {
+			slog.Info("push: fcm device but no fcm sender configured")
+			return
+		}
+		send = h.fcmPusher.Push
+	default:
+		if h.pusher == nil {
+			return
+		}
+		send = h.pusher.Push
+	}
+
+	// Content-free wake by default: the device fetches + decrypts the envelope
+	// from the relay, so the push provider never carries message data. A device
+	// may opt in to ciphertext-in-push (faster) via its push-content preference.
 	payload := []byte(nil)
 	if include, err := h.store.PushIncludeContent(accountID, deviceID); err != nil {
-		slog.Warn("apns: push-content lookup failed", "err", privlog.Error(err))
+		slog.Warn("push: push-content lookup failed", "err", privlog.Error(err))
 	} else if include {
 		payload = envelope
 	}
-	slog.Info("apns: pushing to offline device")
+	slog.Info("push: waking offline device", "kind", kind)
 	go func() {
-		if err := h.pusher.Push(token, payload); err != nil {
-			slog.Warn("apns push failed", "err", privlog.Error(err))
+		if err := send(token, payload); err != nil {
+			slog.Warn("push failed", "kind", kind, "err", privlog.Error(err))
 		} else {
-			slog.Info("apns push sent")
+			slog.Info("push sent", "kind", kind)
 		}
 	}()
 }

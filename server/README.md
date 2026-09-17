@@ -85,40 +85,92 @@ memory only.
 
 ## REST API (JSON; binary fields are standard base64)
 
+`auth` column: `sig` = an authenticated endpoint (`Relay-Sig` signature, or HTTP
+Basic during the transition — see Authentication); `none` = unauthenticated.
+Envelope ids are 32-char hex (16 random bytes), not UUIDs.
+
+### Accounts
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/accounts` | none | `{username, password, email?, accountPassword?}` → `201 {accountId, deviceId, mailboxId}`. Username `^[a-zA-Z0-9._\-]{1,64}$`, password 8–1024. `409` username taken, `429` >20/IP/hour. Email stored only as its OPRF token. |
+| `POST /v1/accounts/oauth` | none (Supabase token) | `{accessToken, password, username?, accountPassword?}`. Verifies the token with Supabase, resolves by Supabase user id then email (back-filling the id) → `201/200 {accountId, deviceId, username, mailboxId, created}`. `404` username required (prompt + retry), `409` taken, `503` Supabase unconfigured. Requires `-supabase-url`/`-supabase-anon-key`. |
+| `POST /v1/accounts/recover` | none | `{email, accountPassword}` → `201 {accountId, username, deviceId, devicePassword, mailboxId}`. `404/401/422/503`. Matches on the email's OPRF token. |
+| `GET /v1/accounts/by-username/{username}` | none | → `{accountId}`. 600/IP/hour. **Legacy/plaintext** — new clients use blinded discovery. |
+| `GET /v1/accounts/by-email/{email}` | sig | → `{accountId, username}`. 3000/account/hour. |
+| `GET /v1/accounts/{account}` | sig | → `{username}`. 600/account/hour. |
+| `PUT /v1/accounts/me/username` | sig | `{username}` → `204`. `409` taken. Reindexes the blinded directory. |
+| `PUT /v1/accounts/me/access-key` | sig | `{accessKey}` (base64, **exactly 32 bytes**) → `204`. Sealed-sender access key; returned to session-establishing peers in `GET /v1/keys/{account}`, presented on the unauthenticated delivery path. Rotating revokes old senders. |
+| `POST /v1/accounts/me/nuke` | sig | `{commandId, creationTimeMs, initiatingDeviceId, signature}` → `204`. Signed remote wipe; broadcasts a `Nuke` frame to all live sessions. Signature over `relay-nuke-v1\n…`; rejects >5 min old / >30 s future / duplicate `commandId`. |
+
+### Devices
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/devices` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {accountId, deviceId, mailboxId, deviceListVersion}`. Broadcasts `DeviceListChanged(DEVICE_ADDED)`. `409` on stale `expectedVersion`. |
+| `GET /v1/devices` | sig | → `{devices:[{deviceId, mailboxId}], deviceListVersion}` |
+| `DELETE /v1/devices/{id}` | sig | `{auth{…}}` → `204`. Broadcasts `DEVICE_REMOVED`. |
+| `POST /v1/devices/link-invitations` | sig | `{auth{…}}` → `201 {linkToken, verificationCode, expiresAt}` |
+| `POST /v1/devices/link-claims` | none | `{linkToken, verificationCode}` → `200 {accountId, deviceId, password, username}`. `404` expired/used, `409` device list changed. |
+| `PUT /v1/devices/auth-key` | sig | `{publicKey}` — uncompressed P-256 point `0x04‖X‖Y` (65 bytes), ≤512 B → `204`. Stores the key `Relay-Sig` and nuke/device-list signatures verify against. |
+| `GET /v1/devices/{id}/auth-key` | sig | → `{authPublicKey}` (same account only). Lets clients verify a peer device's nuke/device-list signatures. |
+| `PUT /v1/devices/apns` | sig | `{token}` → `204`. Registers an APNs token (iOS); sets push kind `apns`. |
+| `PUT /v1/devices/fcm` | sig | `{token}` → `204`. Registers a Firebase Cloud Messaging token (Android); sets push kind `fcm`. Requires `-fcm-service-account` for the server to actually send. |
+| `PUT /v1/devices/voip` | sig | `{token}` → `204`. PushKit VoIP token (iOS; no Android analogue). |
+| `PUT /v1/devices/me/push-content` | sig | `{includeContent}` → `204`. `false` (default) = content-free wake (the device fetches the envelope from `GET /v1/queue`); `true` embeds the encrypted envelope in the push (`"e"`). Applies to both APNs and FCM. |
+| `POST /v1/devices/me/mailbox/rotate` | sig | → `200 {mailboxId}`. Fresh opaque mailbox id (clients rotate daily in sealed mode). The offline queue is keyed by (account, device), not mailbox, so queued deliveries are unaffected. |
+
+### Keys
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `PUT /v1/keys` | sig | `{registrationId, identityKey, signedPreKey{keyId,publicKey,signature}, kyberPreKey{…}, oneTimePreKeys[{keyId,publicKey}]}` → `204`. Identity/signed/Kyber **replace**; one-time keys **append**. ≤200 OTKs/upload, 100 uploads/account/hour. Kyber prekey is **required** (PQXDH). |
+| `GET /v1/keys/count` | sig | → `{count}`. Replenish below ~20. |
+| `GET /v1/keys/{account}[?device=N]` | sig | → `{devices:[{deviceId, mailboxId, registrationId, identityKey, signedPreKey, kyberPreKey, oneTimePreKey|null}], accessKey?}`. Consumes one OTK per device; `null` when exhausted (degraded PQXDH). 200/(requester,target)/hour; own-account fetches exempt. |
+
+### Messaging
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/messages/sealed` | **none** | `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral, clientTimestamp}` → `200 {serverTimestamp}`. Verifies `accessKey` matches the destination account (constant-time) without learning the sender, delivers an envelope with **empty sender fields**. `403` for *any* failure (unknown mailbox and wrong key are indistinguishable). 600/IP/min, 120/mailbox/min. |
+| `GET /v1/queue` | sig | → `{envelopes:[base64 serialized Envelope]}`. Does **not** dequeue. HTTP/3-capable QUIC fallback for receiving when the TCP WebSocket can't connect. |
+| `POST /v1/messages/ack` | sig | `{envelopeId}` → `204`. REST equivalent of the WebSocket ack. |
+| `POST /v1/call/{account}` | sig | `{callId, callerName, kind}` → `204`. Fires a VoIP push (iOS/PushKit). |
+
+### Session establishment, discovery, invites, presence
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `GET /v1/certificate/delivery` | sig | Mint a libsignal sealed-sender certificate (binds account id, device id, stored identity key; 7-day expiry) → `201 {certificate, expiresAt}`. `503` if sealed sender unconfigured, `409` if no keys. Requires `-sealed-sender-trust-key`; clients embed the trust-root public key (logged at startup). |
+| `POST /v1/directory/oprf` | sig | `{blinded:[base64 ristretto255,…]}` (1–1024) → `{evaluated:[base64,…]}` (`k·B`). Blinded discovery step 1; the relay never learns the identifiers. Requires `-oprf-key`; `503` if unset. 200/account/hour (shared with resolve). |
+| `POST /v1/directory/resolve` | sig | `{tokens:[base64,…]}` (1–1024, unblinded OPRF outputs) → `{results:[{token, accountId, username},…]}`. Unmatched tokens omitted, so non-registered contacts stay private. |
+| `POST /v1/contact-invites` | sig | → `201 {token, expiresAt}` (7-day, single-use). Share as `https://relaymsg.app/c/<token>`. |
+| `POST /v1/contact-invites/claim` | sig | `{token}` → `{accountId, username}`; `404` invalid/expired/used. Marked used atomically. |
+| `POST /v1/group-invites` | sig | `{blob}` (base64 opaque ciphertext, 1–65536 B) → `201 {token, expiresAt}`. 20/account/day. |
+| `POST /v1/group-invites/claim` | sig | `{token}` → `{blob}`. Multi-use until expiry. 50/account/hour. Share as `https://relaymsg.app/g/<token>`. |
+| `GET /v1/presence/{account}` | sig | → `{online, lastSeen}` (ms since epoch, 0 = never). In-memory only. 300/account/min. |
+
+### Attachments & TURN
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/attachments` | sig | → `201 {id}` |
+| `PUT /v1/attachments/{id}` | sig | raw `application/octet-stream` body → `204`; `413` over the cap. Opaque ciphertext only. |
+| `GET /v1/attachments/{id}` | sig | → raw bytes; `404` after TTL reaping. |
+| `GET /v1/turn-credentials` | sig | → `{urls[], username, credential, ttl}` (coturn REST HMAC-SHA1, 1 h). `404` when TURN isn't configured — treat as "no TURN", not an error. |
+
+### Real-time
+
 | Method & path | Auth | Purpose |
 |---|---|---|
-| `POST /v1/accounts` | none | Create account + primary device. Body `{username, password}` → `201 {accountId, deviceId}` |
-| `POST /v1/accounts/oauth` | none (Supabase token) | Sign in (or create) a social-login account and provision a fresh device. Body `{accessToken, password, username?, accountPassword?}`. The relay verifies `accessToken` with Supabase (`GET /auth/v1/user`) and resolves the account by Supabase user id, then email (back-filling the id). Returns `201 {accountId, deviceId, username, mailboxId, created:true}` on create, `200 {…, created:false}` on recover. `404` when no account exists yet and no `username` was supplied (client should prompt), `409` if the chosen username is taken, `503` if Supabase auth isn't configured on the server. Requires the `-supabase-url` / `-supabase-anon-key` flags. |
-| `POST /v1/contact-invites` | basic | Mint a single-use contact invite token → `201 {token, expiresAt}` (7-day expiry). Share as `https://relaymsg.app/c/<token>`. |
-| `POST /v1/contact-invites/claim` | basic | Redeem a contact invite. Body `{token}` → `200 {accountId, username}`; `404` if invalid, expired, or already used. Marked used atomically so it resolves exactly once. |
-| `POST /v1/messages/sealed` | **none** | Sealed-sender delivery. Body `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral, clientTimestamp}`. Server verifies `accessKey` matches the destination account (constant-time) without learning the sender, then delivers an envelope with **empty sender fields** → `200 {serverTimestamp}`; `403` on any failure (doesn't reveal mailbox existence). Rate-limited per IP + per mailbox. |
-| `GET /v1/queue` | basic | Return this device's currently-queued envelopes (base64) without dequeuing → `{envelopes[]}`. HTTP/3-capable QUIC fallback for receiving when the TCP WebSocket can't connect (congested networks); the client acks each via the endpoint below. |
-| `POST /v1/messages/ack` | basic | Remove a delivered envelope from this device's queue. Body `{envelopeId}` → `204`. REST equivalent of the WebSocket ack. |
-| `PUT /v1/accounts/me/access-key` | basic | Store this account's 32-byte sealed-sender access key. Body `{accessKey}` (base64) → `204`. Returned to session-establishing peers in `GET /v1/keys/{account}` (`accessKey`); presented on the unauthenticated delivery path. Rotating it revokes old senders. |
-| `POST /v1/devices/me/mailbox/rotate` | basic | Assign this device a fresh opaque mailbox id → `200 {mailboxId}`. Clients rotate daily (in sealed-sender mode) so the relay can't track a long-lived routing identifier. Peers pick up the new id on their next `GET /v1/keys/{account}` fetch; sealed sends to the stale id get `403` and the sender refreshes + retries. The offline queue is keyed by (account, device), not mailbox, so queued deliveries are unaffected. |
-| `GET /v1/certificate/delivery` | basic | Mint a libsignal sealed-sender certificate for this device (binds account id, device id, stored identity key; 7-day expiry) → `201 {certificate, expiresAt}`. `503` if sealed sender isn't configured, `409` if the device hasn't published keys. Requires the `-sealed-sender-trust-key` flag; clients embed the trust-root public key (logged at startup) to validate. |
-| `POST /v1/devices` | basic | Register an additional device. Body `{password}` → `201 {accountId, deviceId}` |
-| `PUT /v1/devices/apns` | basic | Store this device's APNs token. Body `{token}` → `204` |
-| `PUT /v1/devices/me/push-content` | basic | Set this device's push-content preference. Body `{includeContent}` → `204`. `false` (default) = content-free wake (payload carries no message; the NSE fetches the envelope from `GET /v1/queue`). `true` = the relay embeds the encrypted envelope in the APNs payload (`"e"`) for a faster wake without a fetch. Message stays E2E-encrypted either way. |
-| `PUT /v1/keys` | basic | Upload `{registrationId, identityKey, signedPreKey{keyId, publicKey, signature}, kyberPreKey{keyId, publicKey, signature}, oneTimePreKeys[{keyId, publicKey}]}` → `204`. Identity, signed prekey and (last-resort) Kyber prekey replace; one-time prekeys append. PQXDH requires the Kyber prekey. |
-| `GET /v1/keys/count` | basic | Remaining one-time prekeys for this device → `{count}`. Clients replenish below ~20. |
-| `GET /v1/keys/{account}?device=N` | basic | Fetch prekey bundles (all devices when `?device` omitted), each with identity key, signed prekey and Kyber prekey. Consumes one one-time prekey per device; `oneTimePreKey` is `null` when the pool is exhausted (degraded PQXDH via signed prekeys only). |
-| `POST /v1/directory/oprf` | basic | Blinded discovery, step 1. Body `{blinded:[base64 ristretto255 element,…]}` (1–1024) → `{evaluated:[base64,…]}` where each is `k·B`. The relay evaluates the OPRF under its secret key without learning the identifiers being queried. Requires `-oprf-key`; `503` if unset. Rate-limited per account. |
-| `POST /v1/directory/resolve` | basic | Blinded discovery, step 2. Body `{tokens:[base64,…]}` (the OPRF outputs the client derives after unblinding) → `{results:[{token, accountId, username},…]}`. Unmatched tokens are omitted, so non-registered contacts stay private. Rate-limited per account. |
-| `GET /v1/accounts/by-username/{username}` | basic | Resolve username → `{accountId}`. **Legacy/plaintext** — kept for compatibility; new clients use blinded discovery. |
-| `GET /v1/accounts/{account}` | basic | Resolve account id → `{username}` |
-| `GET /v1/presence/{account}` | basic | Connection state → `{online, lastSeen}`. `online` = any device has a live WebSocket; `lastSeen` is ms since epoch of the last connect/disconnect (0 if never). |
-| `POST /v1/attachments` | basic | Allocate an attachment id → `201 {id}` |
-| `PUT /v1/attachments/{id}` | basic | Upload the encrypted blob (raw `application/octet-stream`) → `204`. `413` if over the size cap. The relay stores opaque ciphertext only. |
-| `GET /v1/attachments/{id}` | basic | Download the encrypted blob (raw bytes) → `200` / `404`. Reaped after the TTL. |
-| `POST /v1/groups` | basic | Create a group. Body `{name, members[]}` (creator added automatically) → `201 {id, name, distributionId, revision, members[]}`. |
-| `GET /v1/groups/{id}` | basic | Group roster + state; members only (`403` otherwise). |
-| `POST /v1/groups/{id}/members` | basic | Add a member. Body `{account}` → updated group. Revision bumps; distribution id unchanged. |
-| `DELETE /v1/groups/{id}/members/{account}` | basic | Remove a member (or self = leave) → updated group. **Rotates `distributionId`** so the removed member can't read future messages. |
-| `PUT /v1/groups/{id}` | basic | Rename. Body `{name}` → updated group. |
-| `GET /v1/ws` | basic | WebSocket upgrade for real-time delivery |
+| `GET /v1/ws` | sig | WebSocket upgrade for real-time delivery (see below). |
 
-The relay stores the group roster (member account ids) and a `distributionId` (the current sender-key epoch) but never sees group message plaintext — group messages are sender-key-encrypted and fanned out per member, exactly like 1:1 traffic.
+**Groups are client-authoritative and fully E2E-encrypted. The relay keeps no
+group state** — no roster, name, admins, `distribution_id` or `invite_key`. All
+of that travels inside the encrypted `content.GroupUpdate`; group messages are
+sender-key-encrypted and fanned out per member exactly like 1:1 traffic. The
+only group-related server surface is the opaque `group-invites` blob store
+above. (Earlier revisions had `/v1/groups*` roster endpoints; they were removed.)
 
 ## WebSocket protocol
 
@@ -128,14 +180,48 @@ Every binary WS message is one serialized `relay.v1.ClientFrame`
 On connect the server drains the device's offline queue as `Envelope`
 frames, then sends `QueueEmpty`; everything after that is real-time.
 
-Sending (`SendRequest`) fans out per device: the sender must include one
-ciphertext for **every** registered device of the destination account
-(omitting its own device when messaging itself). If the device list is
-wrong or a `registration_id` is stale, the server rejects the entire send
-with `SEND_STATUS_MISMATCHED_DEVICES` and lists
-`missing/extra/stale_devices` so the client can re-fetch bundles and retry
-— partial fan-out never happens.
+**Sending (`SendRequest`) is per-mailbox, one device per frame.**
+`destination_account` is an **opaque mailbox id** (not an account id), and
+`messages` must contain **exactly one** `DeviceMessage` for the device behind
+that mailbox — the server rejects any other count with
+`SEND_STATUS_MISMATCHED_DEVICES`. To reach every device of a recipient the
+sender sends N separate frames, one per mailbox. On a cross-account send the
+response lists the recipient's other registered devices in `missing_devices`
+(and `extra_devices`/`stale_devices` when the addressed device id or
+`registration_id` is wrong) so the sender can fetch those bundles and send the
+remaining frames; a stale `registration_id` yields `stale_devices`. Self-sends
+(own-device sync) skip the missing-devices hint. Unknown mailbox →
+`SEND_STATUS_UNKNOWN_ACCOUNT`.
 
 Delivery is at-least-once: envelopes stay in the queue until the client
 acks them (`AckRequest{envelope_id}`); clients must deduplicate by envelope
-id. `ephemeral` envelopes (typing indicators) skip the queue entirely.
+id. `ephemeral` envelopes (typing indicators) skip the queue entirely. When a
+destination device is offline (or its socket is backlogged) the server fires a
+push (APNs or FCM per the device's registered kind) to wake it.
+
+## Push (APNs + FCM)
+
+The relay wakes offline devices over **APNs** (iOS) or **FCM** (Android),
+chosen per device by which token it registered (`push_kind`). Both are optional
+and disabled unless configured; without them the envelope still delivers on the
+device's next connect.
+
+**Content-free by default.** The push carries **no message data** — for APNs an
+`alert`/`mutable-content` wake, for FCM a **data-only** message (no
+`notification` block) so the app, not the OS, decides what to show. The device
+then fetches the encrypted envelope from `GET /v1/queue`, decrypts it
+on-device, and acks via `POST /v1/messages/ack`. So neither Apple nor Google
+ever carries message content.
+
+**Opt-in ciphertext-in-push** (`PUT /v1/devices/me/push-content
+{includeContent:true}`) embeds the base64 `Envelope` under key `"e"` for a
+faster wake without a fetch — identical on both providers. FCM's data payload is
+capped at ~4 KB, so an envelope that would exceed the budget silently degrades
+to a content-free wake (the device fetches it from the queue instead); the
+message stays end-to-end encrypted either way.
+
+Flags:
+- APNs: `-apns-key` (`.p8`), `-apns-key-id`, `-apns-team-id`, `-apns-topic`,
+  `-apns-production`. The same key also sends PushKit VoIP on the `.voip` sub-topic.
+- FCM: `-fcm-service-account` (path to a Firebase service-account JSON key). The
+  sender uses FCM HTTP v1 with a service-account-signed OAuth2 token.

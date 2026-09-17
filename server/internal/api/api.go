@@ -183,6 +183,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.handleRemoveDevice))
 	mux.HandleFunc("PUT /v1/devices/auth-key", s.auth(s.handleSetDeviceAuthKey))
 	mux.HandleFunc("PUT /v1/devices/apns", s.auth(s.handleSetAPNSToken))
+	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
 	mux.HandleFunc("PUT /v1/devices/voip", s.auth(s.handleSetVoIPToken))
 	mux.HandleFunc("PUT /v1/devices/me/push-content", s.auth(s.handleSetPushContent))
 	mux.HandleFunc("POST /v1/call/{account}", s.auth(s.handleCallOffer))
@@ -1038,6 +1039,21 @@ func (s *Server) handleSetAPNSToken(w http.ResponseWriter, r *http.Request, dev 
 		return
 	}
 	if err := s.store.SetAPNSToken(dev.AccountID, dev.DeviceID, req.Token); err != nil {
+		internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSetFCMToken(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+		httpError(w, http.StatusBadRequest, "token required")
+		return
+	}
+	if err := s.store.SetFCMToken(dev.AccountID, dev.DeviceID, req.Token); err != nil {
 		internalError(w, err)
 		return
 	}
