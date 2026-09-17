@@ -887,19 +887,40 @@ protocol exposes no base key, so it cannot perform this check in the store.
 **Worth confirming how the Swift side covers that case** — flagging rather than
 assuming a gap.
 
-> ⚠️ **These tests have not been run.** SQLCipher ships Android native libraries
-> and the Keystore is a platform service, so neither exists on the host JVM and
-> this module's tests must be instrumented. There is no emulator on this machine
-> (no system images installed, and `cmdline-tools` is absent). The code compiles
-> and the tests are written; running `./gradlew :storage:connectedDebugAndroidTest`
-> against an arm64 AVD is what will actually prove it. Written and waiting:
-> master-key stability across reopen, the raw key never appearing in
-> preferences, tier recording, identity persistence, **a session encrypted before
-> a restart decrypting after it**, TOFU plus distrust of a changed key, the
-> verification-state transitions that drive the safety-number warning, Kyber
-> replay refusal, envelope-claim exactly-once, read-receipts never downgrading,
-> disappearing-message expiry, group roster round-trip and distribution-id
-> rotation, newest-wins profiles, and wipe.
+**Verified on device: 24/24 instrumented tests pass** on a Pixel 8 AVD, API 37,
+`arm64-v8a`, **16 KB page size**. SQLCipher and the Keystore are platform APIs
+with no JVM implementation, so these must be instrumented:
+`./gradlew :storage:connectedDebugAndroidTest`.
+
+Covered: master-key stability across reopen, the raw key never appearing in
+preferences, tier recording, identity persistence, **a session encrypted before a
+restart decrypting after it**, TOFU plus distrust of a changed key, the
+verification-state transitions that drive the safety-number warning, Kyber replay
+refusal, envelope-claim exactly-once, read receipts never downgrading,
+disappearing-message expiry, group roster round-trip and distribution-id
+rotation, newest-wins profiles, wipe, and LIKE-escaping in search.
+
+Settled in passing: **libsignal, libsodium and SQLCipher all load on a 16 KB
+page-size device.** Unaligned native libraries are rejected there, so this was a
+real risk for three large `.so` dependencies.
+
+**The bug this stage caught, which JVM tests could not have.** `RelayDatabase.query`
+bound parameters through SQLCipher's `String[]` overload, which stringifies every
+argument — a `ByteArray` became its Java identity string, so any read comparing
+against a BLOB column matched nothing. It surfaced as the Kyber replay check
+failing to find its own row: the replay was still refused, but by a primary-key
+constraint throwing `SQLiteConstraintException` instead of the
+`ReusedBaseKeyException` callers catch. Fixed to the `Object...` overload —
+**spread with `*`**, since it is a vararg and passing the array bare binds it as
+one argument. `run` was never affected: `execSQL` takes a real `Object[]`.
+
+Two false greens worth knowing about, both of which look like success:
+- an instrumented build with **zero tests executed** reports `BUILD SUCCESSFUL`
+  identically to one where everything passed. `:storage` was missing
+  `androidx.test:runner`, which is where `AndroidJUnitRunner` lives —
+  `androidx.test.ext:junit` does not pull it in.
+- a `@Before` that throws surfaces only as `lateinit property not initialized`
+  from `@After`, masking the real cause.
 
 ### Stage 4 — networking
 REST client with **`Relay-Sig`** (+ Basic for the auth-key bootstrap), WebSocket with

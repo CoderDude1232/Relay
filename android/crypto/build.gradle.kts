@@ -46,4 +46,5 @@ dependencies {
     testImplementation(libs.protobuf.javalite)
     testImplementation(libs.gson)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }

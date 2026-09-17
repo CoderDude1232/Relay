@@ -46,13 +46,26 @@ class RelayDatabase private constructor(private val db: SQLiteDatabase) {
         db.execSQL(sql, bindings.toTypedArray())
     }
 
-    /** Runs a query and maps each row with [map]. */
+    /**
+     * Runs a query and maps each row with [map].
+     *
+     * Two easy ways to get this wrong, both of which fail silently or confusingly:
+     *
+     *  - The `String[]` overload stringifies every argument, turning a `ByteArray`
+     *    into its Java identity string, so comparisons against a BLOB column match
+     *    nothing. Hence the `Object...` overload.
+     *  - That overload is a **vararg**, so the array must be spread with `*`.
+     *    Without it Kotlin passes the array as one argument and every query binds
+     *    a single value no matter how many `?` placeholders it has.
+     *
+     * `run` above is unaffected by both: `execSQL` takes a real `Object[]`.
+     */
     fun <T> query(
         sql: String,
         bindings: List<Any?> = emptyList(),
         map: (Row) -> T,
     ): List<T> {
-        db.rawQuery(sql, bindings.map { it?.toString() }.toTypedArray()).use { cursor ->
+        db.rawQuery(sql, *bindings.toTypedArray()).use { cursor ->
             val out = ArrayList<T>(cursor.count)
             while (cursor.moveToNext()) out.add(map(Row(cursor)))
             return out

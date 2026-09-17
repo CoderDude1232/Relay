@@ -36,4 +36,5 @@ dependencies {
     // SQLCipher and the Android Keystore are platform APIs with no JVM
     // implementation, so this module's tests must run on a device or emulator.
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }
