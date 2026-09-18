@@ -1,0 +1,119 @@
+package app.relaymsg
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import app.relaymsg.core.ConnectionState
+import app.relaymsg.core.RelayService
+import app.relaymsg.storage.Conversation
+import app.relaymsg.storage.StoredMessage
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+/** What the app is currently showing. */
+sealed interface AppPhase {
+    data object Loading : AppPhase
+    data object SignedOut : AppPhase
+    data class Ready(val service: RelayService) : AppPhase
+    data class Failed(val message: String) : AppPhase
+}
+
+class RelayViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val _phase = MutableStateFlow<AppPhase>(AppPhase.Loading)
+    val phase: StateFlow<AppPhase> = _phase.asStateFlow()
+
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    private val service: RelayService? get() = (_phase.value as? AppPhase.Ready)?.service
+
+    @Suppress("OPT_IN_USAGE")
+    val conversations: StateFlow<List<Conversation>> = _phase
+        .flatMapLatest { (it as? AppPhase.Ready)?.service?.conversations ?: flowOf(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    @Suppress("OPT_IN_USAGE")
+    val activeMessages: StateFlow<List<StoredMessage>> = _phase
+        .flatMapLatest { (it as? AppPhase.Ready)?.service?.activeMessages ?: flowOf(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    @Suppress("OPT_IN_USAGE")
+    val connection: StateFlow<ConnectionState> = _phase
+        .flatMapLatest {
+            (it as? AppPhase.Ready)?.service?.connection ?: flowOf(ConnectionState.DISCONNECTED)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ConnectionState.DISCONNECTED)
+
+    init {
+        viewModelScope.launch {
+            _phase.value = runCatching { RelayService.restore(getApplication()) }
+                .fold(
+                    onSuccess = { restored ->
+                        restored?.let { it.start(); AppPhase.Ready(it) } ?: AppPhase.SignedOut
+                    },
+                    onFailure = { AppPhase.Failed(it.friendlyMessage()) },
+                )
+        }
+    }
+
+    fun register(username: String) {
+        if (_busy.value) return
+        _busy.value = true
+        viewModelScope.launch {
+            _phase.value = runCatching { RelayService.register(getApplication(), username) }
+                .fold(
+                    onSuccess = { it.start(); AppPhase.Ready(it) },
+                    onFailure = { AppPhase.Failed(it.friendlyMessage()) },
+                )
+            _busy.value = false
+        }
+    }
+
+    fun retry() {
+        _phase.value = AppPhase.SignedOut
+    }
+
+    fun openConversation(conversationId: String) = service?.openConversation(conversationId)
+
+    fun closeConversation() = service?.closeConversation()
+
+    fun send(conversationId: String, body: String) {
+        val service = service ?: return
+        viewModelScope.launch { service.sendText(conversationId, body) }
+    }
+
+    /** Resolves a username and opens the conversation, invoking [onOpened] with its id. */
+    fun startConversation(username: String, onOpened: (String) -> Unit, onError: (String) -> Unit) {
+        val service = service ?: return
+        if (_busy.value) return
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { service.startConversation(username.trim()) }
+                .onSuccess { id -> service.refreshConversations(); onOpened(id) }
+                .onFailure { onError(it.friendlyMessage()) }
+            _busy.value = false
+        }
+    }
+
+    fun titleFor(conversation: Conversation): String =
+        service?.conversationTitle(conversation) ?: conversation.peerAccount.take(8)
+
+    private fun Throwable.friendlyMessage(): String = when (this) {
+        is app.relaymsg.net.RelayApiException -> when (status) {
+            409 -> "That username is taken."
+            404 -> "No such user."
+            // The relay 503s the directory endpoints when it is started without
+            // an OPRF key, which is a server configuration problem, not a typo.
+            503 -> "The server has contact discovery disabled."
+            else -> serverMessage.ifEmpty { "Server error ($status)." }
+        }
+        else -> message ?: "Something went wrong."
+    }
+}
