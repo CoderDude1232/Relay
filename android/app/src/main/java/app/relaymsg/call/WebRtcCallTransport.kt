@@ -18,9 +18,6 @@ import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import org.webrtc.AudioTrack
-import org.webrtc.CameraVideoCapturer
-import org.webrtc.Camera2Enumerator
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -29,7 +26,6 @@ import org.webrtc.PeerConnection
 import org.webrtc.RtpReceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
-import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoTrack
 
 /**
@@ -55,16 +51,29 @@ class WebRtcCallTransport(
     private val onLocalVideo: (VideoTrack?) -> Unit = {},
     /** True while the front camera is selected, so the preview mirrors correctly. */
     private val onCameraFacing: (Boolean) -> Unit = {},
+    /**
+     * Capture shared with the other legs of a group call.
+     *
+     * When null this transport owns its own capture and disposes it on close;
+     * when supplied it borrows and leaves disposal to the owner. Group calls must
+     * share, because Camera2 only lets a process open a camera once.
+     */
+    private val sharedMedia: WebRtc.LocalMedia? = null,
+    /** iOS labels group legs `grp` and 1:1 streams `stream0`. Cosmetic, matched anyway. */
+    private val streamId: String = STREAM_ID,
 ) : CallTransport {
 
     private val audioManager =
         context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private var connection: PeerConnection? = null
-    private var audioTrack: AudioTrack? = null
-    private var videoTrack: VideoTrack? = null
-    private var capturer: CameraVideoCapturer? = null
-    private var surfaceHelper: SurfaceTextureHelper? = null
+
+    /** Capture this transport opened itself, and must therefore dispose. */
+    private var ownedMedia: WebRtc.LocalMedia? = null
+
+    /** Whichever capture is in use, owned or borrowed. */
+    private val media: WebRtc.LocalMedia? get() = sharedMedia ?: ownedMedia
+
     private var previousAudioMode: Int? = null
     private var connectionListener: ((MediaConnectionState) -> Unit)? = null
 
@@ -116,7 +125,7 @@ class WebRtcCallTransport(
     }
 
     override fun setMicrophoneEnabled(enabled: Boolean) {
-        audioTrack?.setEnabled(enabled)
+        media?.setMicrophoneEnabled(enabled)
     }
 
     /**
@@ -160,35 +169,27 @@ class WebRtcCallTransport(
     }
 
     override fun switchCamera() {
-        capturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
-            override fun onCameraSwitchDone(isFrontCamera: Boolean) = onCameraFacing(isFrontCamera)
-            override fun onCameraSwitchError(error: String?) {
-                Log.w(TAG, "camera switch failed: $error")
-            }
-        })
+        media?.switchCamera(onCameraFacing)
     }
 
     override fun setCameraEnabled(enabled: Boolean) {
         // Track-level, like mute: the peer sees a frozen frame, and there is
         // nothing to renegotiate. Stopping the capturer would also drop the
         // track, which needs a new offer to bring back.
-        videoTrack?.setEnabled(enabled)
+        media?.setCameraEnabled(enabled)
     }
 
     override fun close() {
         onRemoteVideo(null)
-        onLocalVideo(null)
-        runCatching { capturer?.stopCapture() }
-        capturer?.dispose()
-        surfaceHelper?.dispose()
-        videoTrack?.dispose()
-        audioTrack?.dispose()
         connection?.dispose()
-        capturer = null
-        surfaceHelper = null
-        videoTrack = null
-        audioTrack = null
         connection = null
+        // Only capture this transport opened. A group leg closing must not take
+        // the camera away from the others.
+        ownedMedia?.let {
+            onLocalVideo(null)
+            it.close()
+        }
+        ownedMedia = null
         pendingRemote.clear()
         hasRemoteDescription = false
         restoreAudio()
@@ -218,9 +219,23 @@ class WebRtcCallTransport(
         connection = pc
 
         configureAudio()
-        addAudio(pc)
-        if (isVideo) addVideo(pc)
+        attachLocalMedia(pc, isVideo)
         return pc
+    }
+
+    private fun attachLocalMedia(pc: PeerConnection, isVideo: Boolean) {
+        val wantsCamera = isVideo && granted(Manifest.permission.CAMERA)
+        if (isVideo && !wantsCamera) {
+            // Downgrade rather than failing the call: the remote side offered
+            // video, but an audio-only answer is a valid reply to that.
+            Log.w(TAG, "camera permission not granted; continuing audio-only")
+        }
+        val local = sharedMedia
+            ?: WebRtc.openLocalMedia(context, wantsCamera, onCameraFacing).also { ownedMedia = it }
+
+        pc.addTrack(local.audioTrack, listOf(streamId))
+        local.videoTrack?.let { pc.addTrack(it, listOf(streamId)) }
+        if (ownedMedia != null) onLocalVideo(local.videoTrack)
     }
 
     private fun configuration(plan: IcePlan): PeerConnection.RTCConfiguration {
@@ -243,53 +258,6 @@ class WebRtcCallTransport(
                 iceTransportsType = PeerConnection.IceTransportsType.RELAY
             }
         }
-    }
-
-    private fun addAudio(pc: PeerConnection) {
-        val factory = WebRtc.factory(context)
-        val source = factory.createAudioSource(MediaConstraints())
-        // Track and stream ids match iOS so a capture from either side reads the
-        // same; nothing depends on them protocol-wise.
-        val track = factory.createAudioTrack(AUDIO_TRACK_ID, source)
-        audioTrack = track
-        pc.addTrack(track, listOf(STREAM_ID))
-    }
-
-    private fun addVideo(pc: PeerConnection) {
-        if (!granted(Manifest.permission.CAMERA)) {
-            // Downgrade to audio rather than failing the call outright: the
-            // remote side negotiated video but an audio-only answer is valid.
-            Log.w(TAG, "camera permission not granted; continuing audio-only")
-            return
-        }
-        val enumerator = Camera2Enumerator(context)
-        val device = enumerator.deviceNames.firstOrNull(enumerator::isFrontFacing)
-            ?: enumerator.deviceNames.firstOrNull()
-            ?: run {
-                Log.w(TAG, "no camera available; continuing audio-only")
-                return
-            }
-
-        val factory = WebRtc.factory(context)
-        val source = factory.createVideoSource(false)
-        val helper = SurfaceTextureHelper.create(CAPTURE_THREAD, WebRtc.eglContext())
-        val camera = enumerator.createCapturer(device, null) ?: run {
-            helper.dispose()
-            source.dispose()
-            Log.w(TAG, "could not open camera; continuing audio-only")
-            return
-        }
-
-        camera.initialize(helper, context, source.capturerObserver)
-        camera.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
-
-        val track = factory.createVideoTrack(VIDEO_TRACK_ID, source)
-        capturer = camera
-        surfaceHelper = helper
-        videoTrack = track
-        pc.addTrack(track, listOf(STREAM_ID))
-        onLocalVideo(track)
-        onCameraFacing(enumerator.isFrontFacing(device))
     }
 
     private fun markRemoteReady(pc: PeerConnection) {
@@ -399,22 +367,17 @@ class WebRtcCallTransport(
         )
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "RelayCall"
 
-        // Matching iOS's ids, purely so a capture from either client reads alike.
-        const val AUDIO_TRACK_ID = "audio0"
-        const val VIDEO_TRACK_ID = "video0"
+        /** iOS's stream ids: `stream0` for a 1:1 call, `grp` for a mesh leg. */
         const val STREAM_ID = "stream0"
-        const val CAPTURE_THREAD = "RelayCapture"
+        const val GROUP_STREAM_ID = "grp"
 
         // Pre-31 there is no device id to use, only a boolean.
         const val LEGACY_EARPIECE = 0
         const val LEGACY_SPEAKER = 1
 
-        const val VIDEO_WIDTH = 1280
-        const val VIDEO_HEIGHT = 720
-        const val VIDEO_FPS = 30
     }
 }
 

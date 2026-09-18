@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
+import app.relaymsg.call.GroupCallScreen
 import app.relaymsg.ui.CallLogScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
@@ -132,11 +133,18 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 onSendImage = { uri -> viewModel.sendImage(open, uri) },
                 loadAttachment = { viewModel.attachmentBytes(it) },
                 onBack = { viewModel.closeConversation(); openConversationId = null },
-                // Group calls do not exist yet, and a group conversation's
-                // "peer" is the group id, which is not callable.
-                onCall = conversation
-                    ?.takeIf { it.groupId == null }
-                    ?.let { target -> { video -> viewModel.placeCall(target.peerAccount, video) } },
+                // A group conversation's "peer" is its group id, which rings
+                // everyone rather than one account.
+                onCall = conversation?.let { target ->
+                    { video ->
+                        val group = target.groupId
+                        if (group != null) {
+                            viewModel.startGroupCall(group, video)
+                        } else {
+                            viewModel.placeCall(target.peerAccount, video)
+                        }
+                    }
+                },
             )
         }
 
@@ -160,6 +168,24 @@ private fun InCallOverlay(viewModel: RelayViewModel) {
     val remoteVideo by CallMedia.remoteVideo.collectAsState()
     val localVideo by CallMedia.localVideo.collectAsState()
     val localMirror by CallMedia.localMirror.collectAsState()
+
+    val groupCall by viewModel.groupCall.collectAsState()
+    val groupVideo by CallMedia.groupVideo.collectAsState()
+
+    groupCall?.let { group ->
+        GroupCallScreen(
+            call = group,
+            remoteVideo = groupVideo,
+            localVideo = localVideo,
+            localMirror = localMirror,
+            onJoin = viewModel::joinGroupCall,
+            onLeave = viewModel::leaveGroupCall,
+            onToggleMute = viewModel::toggleGroupMute,
+            onToggleCamera = viewModel::toggleGroupCamera,
+            onSwitchCamera = viewModel::switchGroupCamera,
+        )
+        return
+    }
 
     val active = call ?: return
     if (fullScreenElsewhere) return

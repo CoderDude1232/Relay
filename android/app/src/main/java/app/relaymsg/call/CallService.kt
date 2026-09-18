@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -136,22 +137,28 @@ class CallService : Service() {
         }
     }
 
-    /** Follows the call to its end, so the notification never outlives it. */
+    /**
+     * Follows the call to its end, so the notification never outlives it.
+     *
+     * Both kinds at once: a group call leaves `calls.call` null throughout, so
+     * watching only that would leave the service running forever after one.
+     */
     private suspend fun watchCall(relay: RelayService) {
-        relay.calls.call.collect { active ->
-            when {
-                active != null -> {
-                    sawCall = true
-                    if (active.state == CallState.ACTIVE) {
-                        wake?.let {
-                            NotificationManagerCompat.from(this)
-                                .notify(CallNotifications.NOTIFICATION_ID, CallNotifications.ongoing(this, it))
-                        }
+        combine(relay.calls.call, relay.groupCalls.call) { direct, group ->
+            direct != null || group != null
+        }.collect { inCall ->
+            if (inCall) {
+                sawCall = true
+                if (relay.calls.call.value?.state == CallState.ACTIVE) {
+                    wake?.let {
+                        NotificationManagerCompat.from(this)
+                            .notify(CallNotifications.NOTIFICATION_ID, CallNotifications.ongoing(this, it))
                     }
                 }
-                // Null after the call existed means it ended — by hangup, by
-                // decline, or because there was no media transport to connect.
-                sawCall -> finish(missed = false)
+            } else if (sawCall) {
+                // Ended — by hangup, by decline, by the last group member
+                // leaving, or because there was no media transport to connect.
+                finish(missed = false)
             }
         }
     }
@@ -167,6 +174,7 @@ class CallService : Service() {
     private suspend fun ringTimeout(relay: RelayService, incoming: CallWake) {
         delay(RING_TIMEOUT_MS)
         if (finished) return
+        if (relay.groupCalls.call.value != null) return
         val state = relay.calls.call.value?.state
         if (state == null || state == CallState.INCOMING_RINGING) {
             runCatching { relay.calls.hangUp() }
@@ -190,7 +198,17 @@ class CallService : Service() {
 
     private fun decline() {
         scope.launch {
-            runCatching { RelayRuntime.require(applicationContext)?.calls?.hangUp() }
+            val relay = RelayRuntime.require(applicationContext)
+            runCatching {
+                // The notification's one "end" action has to mean the right thing
+                // for whichever kind of call is actually running.
+                val group = relay?.groupCalls?.call?.value
+                when {
+                    group == null -> relay?.calls?.hangUp()
+                    group.isRinging -> relay.groupCalls.decline()
+                    else -> relay.groupCalls.leave()
+                }
+            }
             finish(missed = false)
         }
     }

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import app.relaymsg.call.CallService
 import app.relaymsg.call.CallWake
 import app.relaymsg.core.ActiveCall
+import app.relaymsg.core.ActiveGroupCall
 import app.relaymsg.core.AudioRoute
 import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.ConnectionState
@@ -174,14 +175,19 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
      * already inside [CallService]. Without it, backgrounding the app during a
      * call lets the system freeze the process, which drops the call.
      */
+    /**
+     * [subject] is the peer's account for a 1:1 call and the group id for a group
+     * one; [CallWake] only uses it to label the notification, so it does not care
+     * which.
+     */
     private fun holdProcessOpen(
         service: RelayService,
-        peerAccount: String,
+        subject: String,
         callId: String,
         isVideo: Boolean,
     ) = CallService.ongoing(
         getApplication(),
-        CallWake(callId, peerAccount, service.displayName(peerAccount), isVideo),
+        CallWake(callId, subject, service.displayName(subject), isVideo),
     )
 
     fun hangUp() {
@@ -222,6 +228,51 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun clearCallLog() = service?.clearCallLog()
+
+    // ----------------------------------------------------------- group calls
+
+    @Suppress("OPT_IN_USAGE")
+    val groupCall: StateFlow<ActiveGroupCall?> = _phase
+        .flatMapLatest { (it as? AppPhase.Ready)?.service?.groupCalls?.call ?: flowOf(null) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun startGroupCall(groupId: String, isVideo: Boolean) {
+        val service = service ?: return
+        viewModelScope.launch {
+            val callId = service.startGroupCall(groupId, isVideo) ?: return@launch
+            holdProcessOpen(service, groupId, callId, isVideo)
+        }
+    }
+
+    fun joinGroupCall() {
+        val service = service ?: return
+        val call = groupCall.value ?: return
+        viewModelScope.launch {
+            service.groupCalls.join()
+            holdProcessOpen(service, call.groupId, call.callId, call.isVideo)
+        }
+    }
+
+    /** Declines a ring, or leaves a call already joined — the same button either way. */
+    fun leaveGroupCall() {
+        val service = service ?: return
+        val call = groupCall.value ?: return
+        viewModelScope.launch {
+            if (call.isRinging) service.groupCalls.decline() else service.groupCalls.leave()
+        }
+    }
+
+    fun toggleGroupMute() {
+        val service = service ?: return
+        service.groupCalls.setMuted(!(groupCall.value?.isMuted ?: false))
+    }
+
+    fun toggleGroupCamera() {
+        val service = service ?: return
+        service.groupCalls.setCameraEnabled(!(groupCall.value?.isCameraOn ?: true))
+    }
+
+    fun switchGroupCamera() = service?.groupCalls?.switchCamera()
 
     /** The name to show on a call, which is the conversation title if we have one. */
     fun callerName(call: ActiveCall): String =

@@ -858,9 +858,83 @@ indicator would leak what is happening in someone's room; iOS sends nothing
 either. Mute is a track-level enable, so there is no renegotiation. Speaker uses
 `setCommunicationDevice` on API 31+ and falls back to `isSpeakerphoneOn`.
 
-**Not built yet:** group calls, ICE restart on failure, Bluetooth device
-selection, a call log, and camera switch/off during a call. Nothing here has run
-on a device.
+#### 7.5.5 Media connection state — and why there is no ICE restart
+
+A call is **not** ACTIVE when the SDP exchange completes; it is ACTIVE when ICE
+reports connected. iOS has always done this (`didChange RTCIceConnectionState`),
+Android did not, and iOS is right: an answered offer says nothing about whether
+media flows. Both sides now stay CONNECTING until it does.
+
+Grace periods on trouble, matching iOS `scheduleIceFailure`:
+
+| ICE state | wait before ending the call |
+|---|---|
+| `failed` | 3 s |
+| `disconnected` | 10 s |
+| `connected` / `completed` | cancels a pending timer |
+
+The wait *is* the recovery: with `GATHER_CONTINUALLY`, WebRTC finds a new
+candidate pair by itself far more often than not, and ending a call that was
+about to come back is worse than a few seconds of silence. Repeated failure
+reports do not restart the timer, or a permanently broken call would never end.
+Ending sends HANGUP, so the far side is not left watching a dead call.
+
+**There is deliberately no ICE restart.** A restart means a fresh OFFER mid-call,
+and iOS's `handleCallMessage` routes an OFFER for a call it already has into
+`reportIncomingCall`, which is guarded on `.idle` and replies **BUSY**. Adding it
+on Android alone would end calls rather than rescue them. It needs a matching iOS
+change (accept an OFFER for the in-progress `callId` as a renegotiation) — raise
+it with the iOS session before building it here.
+
+#### 7.5.6 Group calls
+
+A **full mesh**: one peer connection per other participant, no SFU, no server
+involvement beyond carrying encrypted signals. Separate state machine from 1:1
+(`GroupCallManager`), the way iOS separates them — there is no per-peer ringing,
+no BUSY, no single remote party, and the call ends when the last member leaves.
+
+**Routing:** a signal is a group signal when `group_id` is non-empty **or** its
+type is GROUP_RING / GROUP_JOIN / GROUP_LEAVE. The type alone is not enough: a
+mesh carries plain OFFER / ANSWER / ICE between members, and only `group_id`
+separates those from a 1:1 call. Same rule as iOS `handleCallMessage`.
+
+**The mesh builds itself from one rule: whoever is already in the call offers to
+whoever joins.**
+
+| signal | ephemeral | to | meaning |
+|---|---|---|---|
+| `GROUP_RING` | no | every participant | call started; carries `participants` and the kind in `ice` (§7.5.2) |
+| `GROUP_JOIN` | yes | participants **+ the caller**, minus self | I'm in — everyone present replies with an OFFER addressed to me |
+| `GROUP_LEAVE` | yes | every connected peer | I'm out; drop my leg only |
+| `OFFER`/`ANSWER`/`ICE` | per §6.12 | one member | a mesh leg, addressed with `target_account` |
+
+`target_account` is what makes point-to-point legs possible on a fan-out
+transport: every member receives every signal and ignores the ones not addressed
+to it. Stream id is `grp`, not `stream0`.
+
+Behaviours that are easy to get wrong, all tested in `GroupCallManagerTest`:
+- A GROUP_RING received while already in a call is **ignored, not answered with
+  BUSY** — a ring is a broadcast, and BUSY would end it for the caller.
+- HANGUP or BUSY from a member means *that member left*, not that the call is
+  over. The call ends only when the last peer goes.
+- Candidates are queued **per peer**, so one slow member cannot hold up anyone
+  else's leg.
+- Declining is silent (iOS `declineGroupCall` sends nothing).
+
+**No call push for group calls.** GROUP_RING is durable, so the relay queues it
+and it arrives over the socket or an ordinary message wake. iOS documents why a
+VoIP push would be wrong here: it drives the receiver into its 1:1 incoming state
+and blocks the GROUP_RING path entirely. Android inherits the consequence — a
+group call does not wake a sleeping phone.
+
+**Android-specific:** the mesh legs **must share one capture** (`WebRtc.LocalMedia`,
+owned by `GroupCallCoordinator`). Camera2 lets a process open a camera once, so
+per-leg capture would work for the first member and fail for every other one.
+Sharing is also what makes mute and camera-off apply to everyone at once.
+
+**Not built yet:** ICE restart (above — blocked on iOS), and a group call cannot
+ring a sleeping device (above — by design, inherited from iOS). Nothing in this
+section has run on a device.
 
 ### 7.6 Platform mappings (all proposals, pending your approval)
 
@@ -1154,9 +1228,17 @@ Done and verified live against `api.relaymsg.app`:
 - **Calls — in-call UI.** `CallScreen` (video + self-preview, duration, mute,
   speaker, accept/hang up), call buttons in the chat top bar, and `CallService`
   holding the process open for outgoing calls too (§7.5.4).
+- **Calls — the rest.** ICE state and grace-period recovery (§7.5.5), group
+  calls (§7.5.6), audio-route selection incl. Bluetooth, camera switch/off, and
+  the call log.
 
-Remaining: backup (Drive), then the long tail. Calls are **feature-complete for
-1:1 and completely unverified** — no part of the media path has run on hardware.
+Remaining: backup (Drive), then the long tail. Calls are **feature-complete and
+completely unverified** — no part of the media path has run on hardware.
+
+One divergence worth knowing about if calls ever join the backup: iOS writes the
+completed-call outcome as `answered`, Android as `completed`. Harmless today —
+the `calls` table is local-only on both clients and is not in the backup snapshot
+— but a cross-platform restore would need one of them to move.
 
 **Push is written but never observed working.** Firebase initialises, a token is
 acquired and the relay accepts it. Two things blocked verification: the relay ran

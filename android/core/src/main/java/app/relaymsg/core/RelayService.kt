@@ -285,9 +285,46 @@ class RelayService private constructor(
     }
 
     /**
+     * Supplies one transport per mesh leg of a group call.
+     *
+     * Separate from [callTransportFactory] because the legs must share capture:
+     * a camera can only be opened once per process.
+     */
+    @Volatile
+    var groupCallTransportFactory: (peer: String) -> CallTransport = { NoMediaTransport() }
+
+    /** Group calls: a full mesh, and a different lifecycle from 1:1 (see [GroupCallManager]). */
+    val groupCalls = GroupCallManager(
+        ownAccount = credentials.accountId,
+        ownDevice = credentials.deviceId,
+        newTransport = { peer -> groupCallTransportFactory(peer) },
+        send = ::sendCallSignal,
+        nameOf = ::displayName,
+        groupNameOf = { groupId -> store.messages.group(groupId)?.name ?: "Group call" },
+    )
+
+    /** Starts a group call with everyone in [groupId] except this account. */
+    suspend fun startGroupCall(groupId: String, isVideo: Boolean): String? =
+        withContext(Dispatchers.IO) {
+            val group = store.messages.group(groupId) ?: return@withContext null
+            groupCalls.start(groupId, group.name, group.members, isVideo)
+        }
+
+    /**
      * Call signalling rides the same encrypted envelope as a message; only the
      * queueing differs, and [CallSignalling.isEphemeral] decides that.
      */
+    /**
+     * Sends a call signal to the state machine that owns it.
+     *
+     * A group mesh carries plain OFFER / ANSWER / ICE between members, so the
+     * type alone cannot decide this — only `group_id` separates a mesh leg from
+     * a 1:1 call. Same rule as iOS's `handleCallMessage`.
+     */
+    private suspend fun routeCallSignal(signal: CallSignal) {
+        if (CallSignalling.isGroupSignal(signal)) groupCalls.onSignal(signal) else calls.onSignal(signal)
+    }
+
     private suspend fun sendCallSignal(
         peer: String,
         content: relay.content.ContentOuterClass.Content,
@@ -358,7 +395,7 @@ class RelayService private constructor(
         try {
             val outcome = pipeline.apply(envelope)
             // Before the store refreshes: a ringing phone is latency-sensitive.
-            outcome.callSignal?.let { calls.onSignal(it) }
+            outcome.callSignal?.let { routeCallSignal(it) }
             outcome.deliveryReceiptFor?.let { timestamp ->
                 outcome.peerAccount?.let { peer -> sendDeliveryReceipt(peer, timestamp) }
             }
@@ -519,7 +556,7 @@ class RelayService private constructor(
                 val outcome = pipeline.apply(envelope)
                 if (!outcome.isDuplicate) applied += outcome
                 // The durable OFFER arrives this way after a call push wake.
-                outcome.callSignal?.let { calls.onSignal(it) }
+                outcome.callSignal?.let { routeCallSignal(it) }
                 outcome.deliveryReceiptFor?.let { timestamp ->
                     outcome.peerAccount?.let { peer -> sendDeliveryReceipt(peer, timestamp) }
                 }
@@ -539,7 +576,7 @@ class RelayService private constructor(
             val envelope = app.relaymsg.net.IncomingEnvelope.parse(serialized) ?: return@withContext null
             try {
                 pipeline.apply(envelope).also { outcome ->
-                    outcome.callSignal?.let { calls.onSignal(it) }
+                    outcome.callSignal?.let { routeCallSignal(it) }
                     if (!outcome.isDuplicate) refreshConversations()
                 }
             } catch (_: Throwable) {

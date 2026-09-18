@@ -278,7 +278,7 @@ private fun Controls(
     }
 }
 
-private fun AudioRouteKind.icon() = when (this) {
+internal fun AudioRouteKind.icon() = when (this) {
     AudioRouteKind.SPEAKER -> Icons.Filled.VolumeUp
     AudioRouteKind.BLUETOOTH -> Icons.Filled.Bluetooth
     AudioRouteKind.WIRED -> Icons.Filled.Headset
@@ -286,7 +286,7 @@ private fun AudioRouteKind.icon() = when (this) {
 }
 
 @Composable
-private fun CircleButton(
+internal fun CircleButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     background: Color,
@@ -344,7 +344,7 @@ private fun elapsed(since: Long?): String {
  * nothing useful to read in the stack trace.
  */
 @Composable
-private fun VideoSurface(track: VideoTrack, mirror: Boolean, modifier: Modifier) {
+internal fun VideoSurface(track: VideoTrack, mirror: Boolean, modifier: Modifier) {
     // Previews and screenshot tests have no EGL context and no native library.
     if (LocalInspectionMode.current) {
         Box(modifier.background(Color.DarkGray))
@@ -378,4 +378,4 @@ private fun VideoSurface(track: VideoTrack, mirror: Boolean, modifier: Modifier)
 }
 
 /** Not in the Material palette: "answer" is green everywhere, so it is green here. */
-private val AnswerGreen = Color(0xFF2E7D32)
+internal val AnswerGreen = Color(0xFF2E7D32)

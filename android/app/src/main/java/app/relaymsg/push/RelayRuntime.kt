@@ -2,6 +2,7 @@ package app.relaymsg.push
 
 import android.content.Context
 import app.relaymsg.call.CallMedia
+import app.relaymsg.call.GroupCallCoordinator
 import app.relaymsg.call.WebRtcCallTransport
 import app.relaymsg.core.RelayService
 import kotlinx.coroutines.CoroutineScope
@@ -64,6 +65,7 @@ object RelayRuntime {
                 onCameraFacing = CallMedia::setCameraFacing,
             )
         }
+        GroupCallCoordinator.install(app, service, scope)
     }
 
     /**

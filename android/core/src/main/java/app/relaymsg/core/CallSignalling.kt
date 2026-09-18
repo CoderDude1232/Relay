@@ -129,6 +129,136 @@ object CallSignalling {
     fun hangup(callId: String, ownAccount: String, ownDevice: Int): Content =
         simple(CallMessage.Type.HANGUP, callId, ownAccount, ownDevice)
 
+    // ------------------------------------------------------------ group calls
+
+    /**
+     * Whether a signal belongs to a group call.
+     *
+     * The rule is iOS's `handleCallMessage`, and it is deliberately broad: a
+     * non-empty `group_id` **or** one of the three group-only types. The types
+     * alone are not enough, because a group mesh carries plain OFFER / ANSWER /
+     * ICE between members and only `group_id` distinguishes those from a 1:1
+     * call.
+     */
+    fun isGroupSignal(signal: CallSignal): Boolean =
+        signal.groupId.isNotEmpty() ||
+            signal.type == CallMessage.Type.GROUP_RING ||
+            signal.type == CallMessage.Type.GROUP_JOIN ||
+            signal.type == CallMessage.Type.GROUP_LEAVE
+
+    /** Starts a group call. Durable, so a member who is offline still learns of it. */
+    fun groupRing(
+        callId: String,
+        groupId: String,
+        participants: List<String>,
+        isVideo: Boolean,
+        ownAccount: String,
+        ownDevice: Int,
+    ): Content = content {
+        call = callMessage {
+            type = CallMessage.Type.GROUP_RING
+            this.callId = callId
+            this.groupId = groupId
+            this.participants.addAll(participants)
+            // Same overload as a 1:1 OFFER (§7.5.2).
+            if (isVideo) ice = KIND_METADATA_VIDEO
+        }
+        senderAccountId = ownAccount
+        senderDeviceId = ownDevice
+    }
+
+    /**
+     * Announces that this device has joined.
+     *
+     * Everyone already in the call answers a JOIN by offering to the joiner, so
+     * this one message is what builds the joiner's half of the mesh.
+     */
+    fun groupJoin(callId: String, groupId: String, ownAccount: String, ownDevice: Int): Content =
+        groupSimple(CallMessage.Type.GROUP_JOIN, callId, groupId, ownAccount, ownDevice)
+
+    fun groupLeave(callId: String, groupId: String, ownAccount: String, ownDevice: Int): Content =
+        groupSimple(CallMessage.Type.GROUP_LEAVE, callId, groupId, ownAccount, ownDevice)
+
+    private fun groupSimple(
+        type: CallMessage.Type,
+        callId: String,
+        groupId: String,
+        ownAccount: String,
+        ownDevice: Int,
+    ): Content = content {
+        call = callMessage {
+            this.type = type
+            this.callId = callId
+            this.groupId = groupId
+        }
+        senderAccountId = ownAccount
+        senderDeviceId = ownDevice
+    }
+
+    /**
+     * One leg of the mesh.
+     *
+     * `target_account` is what makes a mesh possible over a fan-out transport:
+     * every member receives every signal, and each ignores the ones not
+     * addressed to it.
+     */
+    fun groupOffer(
+        callId: String,
+        groupId: String,
+        sdp: String,
+        target: String,
+        ownAccount: String,
+        ownDevice: Int,
+    ): Content = content {
+        call = callMessage {
+            type = CallMessage.Type.OFFER
+            this.callId = callId
+            this.groupId = groupId
+            this.sdp = sdp
+            targetAccount = target
+        }
+        senderAccountId = ownAccount
+        senderDeviceId = ownDevice
+    }
+
+    fun groupAnswer(
+        callId: String,
+        groupId: String,
+        sdp: String,
+        target: String,
+        ownAccount: String,
+        ownDevice: Int,
+    ): Content = content {
+        call = callMessage {
+            type = CallMessage.Type.ANSWER
+            this.callId = callId
+            this.groupId = groupId
+            this.sdp = sdp
+            targetAccount = target
+        }
+        senderAccountId = ownAccount
+        senderDeviceId = ownDevice
+    }
+
+    fun groupIce(
+        callId: String,
+        groupId: String,
+        candidateJson: String,
+        target: String,
+        ownAccount: String,
+        ownDevice: Int,
+    ): Content = content {
+        call = callMessage {
+            type = CallMessage.Type.ICE
+            this.callId = callId
+            this.groupId = groupId
+            ice = candidateJson
+            targetAccount = target
+        }
+        senderAccountId = ownAccount
+        senderDeviceId = ownDevice
+    }
+
     /** Exactly what iOS emits for a video call — do not reformat. */
     const val KIND_METADATA_VIDEO = "{\"kind\":\"video\"}"
 

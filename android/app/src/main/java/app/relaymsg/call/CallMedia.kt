@@ -25,6 +25,11 @@ object CallMedia {
     /** This device's camera, for the self-preview. */
     val localVideo: StateFlow<VideoTrack?> = _localVideo.asStateFlow()
 
+    private val _groupVideo = MutableStateFlow<Map<String, VideoTrack>>(emptyMap())
+
+    /** Remote camera per group-call member, keyed by account. */
+    val groupVideo: StateFlow<Map<String, VideoTrack>> = _groupVideo.asStateFlow()
+
     private val _localMirror = MutableStateFlow(true)
 
     /** True while the front camera is selected; drives the self-preview mirror. */
@@ -47,6 +52,16 @@ object CallMedia {
 
     fun setLocalVideo(track: VideoTrack?) {
         _localVideo.value = track
+    }
+
+    fun setGroupVideo(peer: String, track: VideoTrack?) {
+        _groupVideo.value = _groupVideo.value.toMutableMap().apply {
+            if (track == null) remove(peer) else put(peer, track)
+        }
+    }
+
+    fun clearGroupVideo() {
+        _groupVideo.value = emptyMap()
     }
 
     fun setCameraFacing(front: Boolean) {
