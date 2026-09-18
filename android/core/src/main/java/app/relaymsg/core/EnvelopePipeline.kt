@@ -28,6 +28,7 @@ class EnvelopePipeline(
         val deliveryReceiptFor: Long? = null,
         val notificationBody: String? = null,
         val typingStarted: Boolean? = null,
+        val callSignal: CallSignal? = null,
         val isDuplicate: Boolean = false,
     )
 
@@ -92,6 +93,14 @@ class EnvelopePipeline(
             }
 
             Content.BodyCase.GROUP_UPDATE -> applyGroupUpdate(content, sender, groupId)
+
+            Content.BodyCase.CALL -> Outcome(
+                conversationId = conversationId,
+                peerAccount = sender,
+                // Call signals are routed to the call manager rather than stored;
+                // the caller decides what to do with them.
+                callSignal = CallSignalling.parse(content, sender),
+            )
 
             Content.BodyCase.TYPING -> Outcome(
                 conversationId = conversationId,
