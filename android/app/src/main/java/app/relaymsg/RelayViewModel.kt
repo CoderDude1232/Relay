@@ -86,6 +86,38 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeConversation() = service?.closeConversation()
 
+    /**
+     * Sends a picked image. The bytes are read here rather than in the service
+     * so the content resolver (and the permission that came with the picker)
+     * stays in the UI layer.
+     */
+    fun sendImage(conversationId: String, uri: android.net.Uri) {
+        val service = service ?: return
+        viewModelScope.launch {
+            runCatching {
+                val resolver = getApplication<Application>().contentResolver
+                val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: return@launch
+                val type = resolver.getType(uri) ?: "application/octet-stream"
+                service.sendAttachments(
+                    conversationId = conversationId,
+                    body = "",
+                    attachments = listOf(
+                        RelayService.OutgoingAttachment(
+                            bytes = bytes,
+                            contentType = type,
+                            filename = uri.lastPathSegment,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Decrypts an attachment for display, downloading it if needed. */
+    suspend fun attachmentBytes(attachment: app.relaymsg.storage.StoredAttachment): ByteArray? =
+        service?.attachmentBytes(attachment)
+
     fun send(conversationId: String, body: String) {
         val service = service ?: return
         viewModelScope.launch { service.sendText(conversationId, body) }

@@ -109,6 +109,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
             title = conversation?.let(viewModel::titleFor) ?: "Conversation",
             messages = messages,
             onSend = { body -> viewModel.send(open, body) },
+            onSendImage = { uri -> viewModel.sendImage(open, uri) },
+            loadAttachment = { viewModel.attachmentBytes(it) },
             onBack = { viewModel.closeConversation(); openConversationId = null },
         )
     }

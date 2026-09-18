@@ -24,7 +24,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -142,6 +144,55 @@ class LiveRelayInteropTest {
             assertTrue(!devices.single().mailboxId.isNullOrEmpty())
             } finally {
                 harness.cleanUp()
+            }
+        }
+    }
+
+    @Test
+    fun attachmentRoundTripsThroughTheRelayAsOpaqueCiphertext() {
+        // Proves the blob pipeline against the real relay: encrypt under a fresh
+        // key, upload, and have the far side fetch and decrypt using only the key
+        // and digest that travelled inside the encrypted Content.
+        //
+        // Also checks the property the design depends on: what the relay stores
+        // is NOT the plaintext. A relay that returned our bytes unchanged would
+        // pass a naive round-trip test while storing readable media.
+        runBlocking {
+            val alice = buildHarness()
+            val bob = buildHarness()
+            try {
+                val plaintext = ByteArray(4096) { (it * 31 % 251).toByte() }
+                val sealed = app.relaymsg.crypto.AttachmentCipher.seal(plaintext)
+                val blobId = alice.api.uploadAttachment(sealed.ciphertext)
+                Log.i(TAG, "uploaded attachment $blobId (${sealed.ciphertext.size} bytes ciphertext)")
+
+                // Anyone authenticated can fetch the blob -- it is opaque, and its
+                // secrecy rests entirely on the key never reaching the relay.
+                val fetched = bob.api.downloadAttachment(blobId)
+                assertArrayEquals("relay returned different bytes", sealed.ciphertext, fetched)
+
+                assertFalse(
+                    "relay stored something resembling the plaintext",
+                    fetched.contentEquals(plaintext),
+                )
+                assertEquals(plaintext.size + 12 + 16, fetched.size)
+
+                val opened = app.relaymsg.crypto.AttachmentCipher.open(
+                    fetched, sealed.key, sealed.digest,
+                )
+                assertArrayEquals(plaintext, opened)
+
+                // And a tampered blob must fail closed, before decryption.
+                val tampered = fetched.copyOf().also { it[it.size - 1] = (it.last() + 1).toByte() }
+                org.junit.Assert.assertThrows(
+                    app.relaymsg.crypto.AttachmentCipher.DigestMismatchException::class.java,
+                ) {
+                    app.relaymsg.crypto.AttachmentCipher.open(tampered, sealed.key, sealed.digest)
+                }
+                Log.i(TAG, "attachment decrypted correctly and tampering rejected")
+            } finally {
+                alice.cleanUp()
+                bob.cleanUp()
             }
         }
     }

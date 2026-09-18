@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,6 +42,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -241,8 +244,13 @@ fun ChatScreen(
     title: String,
     messages: List<StoredMessage>,
     onSend: (String) -> Unit,
+    onSendImage: (android.net.Uri) -> Unit,
+    loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
     onBack: () -> Unit,
 ) {
+    val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let(onSendImage) }
     var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
@@ -270,13 +278,23 @@ fun ChatScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(messages, key = { it.id }) { MessageBubble(it) }
+                items(messages, key = { it.id }) { MessageBubble(it, loadAttachment) }
             }
             HorizontalDivider()
             Row(
                 Modifier.fillMaxWidth().padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                IconButton(
+                    onClick = {
+                        pickImage.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                androidx.activity.result.contract.ActivityResultContracts
+                                    .PickVisualMedia.ImageOnly,
+                            ),
+                        )
+                    },
+                ) { Icon(Icons.Filled.Add, contentDescription = "Attach image") }
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -294,7 +312,10 @@ fun ChatScreen(
 }
 
 @Composable
-private fun MessageBubble(message: StoredMessage) {
+private fun MessageBubble(
+    message: StoredMessage,
+    loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
+) {
     val outgoing = message.isOutgoing
     Row(
         Modifier.fillMaxWidth(),
@@ -318,10 +339,16 @@ private fun MessageBubble(message: StoredMessage) {
                 )
                 Spacer(Modifier.height(2.dp))
             }
-            Text(
-                if (message.isDeleted) "This message was deleted" else message.body,
-                style = MaterialTheme.typography.bodyLarge,
-            )
+            message.attachments.forEach { attachment ->
+                AttachmentImage(attachment, loadAttachment)
+                Spacer(Modifier.height(4.dp))
+            }
+            if (message.body.isNotEmpty() || message.isDeleted) {
+                Text(
+                    if (message.isDeleted) "This message was deleted" else message.body,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     message.timestamp.asClockTime(),
@@ -350,6 +377,55 @@ private fun MessageBubble(message: StoredMessage) {
                 )
             }
         }
+    }
+}
+
+/**
+ * Renders an attachment once it has been fetched and decrypted.
+ *
+ * Decryption happens per-attachment and off the main thread; until it completes
+ * (or if the digest check fails) a placeholder stands in rather than an empty gap.
+ */
+@Composable
+private fun AttachmentImage(
+    attachment: app.relaymsg.storage.StoredAttachment,
+    loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
+) {
+    var bitmap by remember(attachment.id) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    var failed by remember(attachment.id) { mutableStateOf(false) }
+
+    LaunchedEffect(attachment.id) {
+        val bytes = loadAttachment(attachment)
+        if (bytes == null) {
+            failed = true
+        } else {
+            bitmap = android.graphics.BitmapFactory
+                .decodeByteArray(bytes, 0, bytes.size)
+                ?.asImageBitmap()
+            if (bitmap == null) failed = true
+        }
+    }
+
+    val image = bitmap
+    when {
+        image != null -> androidx.compose.foundation.Image(
+            bitmap = image,
+            contentDescription = attachment.filename ?: "Attachment",
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)),
+            contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+        )
+        failed -> Text(
+            "Attachment unavailable",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        else -> Box(
+            Modifier.fillMaxWidth().height(120.dp)
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp)),
+            contentAlignment = Alignment.Center,
+        ) { CircularProgressIndicator(Modifier.height(20.dp)) }
     }
 }
 

@@ -1,6 +1,7 @@
 package app.relaymsg.core
 
 import android.content.Context
+import app.relaymsg.crypto.AttachmentCipher
 import app.relaymsg.crypto.BlindedDiscovery
 import app.relaymsg.net.RelayApiClient
 import app.relaymsg.net.RelayApiException
@@ -15,6 +16,7 @@ import app.relaymsg.storage.DeviceAuthKey
 import app.relaymsg.storage.MasterKeyStore
 import app.relaymsg.storage.MessageStatus
 import app.relaymsg.storage.SecureStore
+import app.relaymsg.storage.StoredAttachment
 import app.relaymsg.storage.StoredMessage
 import java.security.SecureRandom
 import java.util.UUID
@@ -142,6 +144,7 @@ class RelayService private constructor(
     }
 
     private val authKey = DeviceAuthKey()
+    private val blobs = AttachmentBlobStore(context)
 
     /**
      * ristretto255 for blinded discovery, via libsodium. Created lazily so a
@@ -395,6 +398,124 @@ class RelayService private constructor(
         conversations.value.firstOrNull { it.peerAccount == account }?.peerUsername
             ?: account.take(8)
 
+    // ------------------------------------------------------------ attachments
+
+    /** An attachment chosen by the user, before encryption. */
+    data class OutgoingAttachment(
+        val bytes: ByteArray,
+        val contentType: String,
+        val filename: String? = null,
+        val width: Int = 0,
+        val height: Int = 0,
+    )
+
+    /**
+     * Sends a message carrying attachments.
+     *
+     * Each blob gets a **fresh** AES-256-GCM key; the ciphertext goes to the
+     * relay and the key plus a digest of that ciphertext travel end-to-end
+     * inside the encrypted Content. The relay therefore stores bytes it can
+     * never read and cannot link to a conversation.
+     */
+    suspend fun sendAttachments(
+        conversationId: String,
+        body: String,
+        attachments: List<OutgoingAttachment>,
+    ) = withContext(Dispatchers.IO) {
+        val peer = store.messages.peerAccount(conversationId) ?: return@withContext
+        val timestamp = System.currentTimeMillis()
+        val localId = UUID.randomUUID().toString()
+
+        val stored = mutableListOf<StoredAttachment>()
+        val pointers = mutableListOf<relay.content.ContentOuterClass.AttachmentPointer>()
+        for (item in attachments) {
+            val sealed = AttachmentCipher.seal(item.bytes)
+            val id = api.uploadAttachment(sealed.ciphertext)
+            // Cache our own copy so the sender can view it without re-fetching.
+            blobs.write(id, sealed.ciphertext)
+
+            stored += StoredAttachment(
+                id = id,
+                key = sealed.key,
+                digest = sealed.digest,
+                contentType = item.contentType,
+                size = sealed.ciphertext.size.toLong(),
+                filename = item.filename,
+                width = item.width,
+                height = item.height,
+                isDownloaded = true,
+            )
+            pointers += relay.content.attachmentPointer {
+                this.id = id
+                key = com.google.protobuf.ByteString.copyFrom(sealed.key)
+                digest = com.google.protobuf.ByteString.copyFrom(sealed.digest)
+                contentType = item.contentType
+                // The pointer's size is the CIPHERTEXT length, not the plaintext.
+                size = sealed.ciphertext.size.toLong()
+                item.filename?.let { filename = it }
+                width = item.width
+                height = item.height
+            }
+        }
+
+        store.messages.insertMessage(
+            id = localId,
+            conversationId = conversationId,
+            isOutgoing = true,
+            body = body,
+            timestamp = timestamp,
+            status = MessageStatus.SENDING,
+            attachments = stored,
+        )
+        refreshActiveMessages(); refreshConversations()
+
+        val content = relay.content.content {
+            text = relay.content.textMessage {
+                this.body = body
+                this.timestamp = timestamp
+                this.attachments.addAll(pointers)
+            }
+            senderAccountId = credentials.accountId
+            senderDeviceId = credentials.deviceId
+        }
+        val status = try {
+            val outcome = messenger.sendOverWebSocket(
+                socket, peer, content.toByteArray(), timestamp,
+            )
+            if (outcome is SendOutcome.Ok) MessageStatus.SENT else MessageStatus.FAILED
+        } catch (_: Throwable) {
+            MessageStatus.FAILED
+        }
+        store.messages.updateStatus(localId, status)
+        refreshActiveMessages(); refreshConversations()
+    }
+
+    /**
+     * Returns an attachment's plaintext, downloading it if not cached.
+     *
+     * The digest is checked against the pointer **before** decryption is
+     * attempted, so a tampered or corrupted blob fails closed rather than being
+     * fed to the cipher.
+     */
+    suspend fun attachmentBytes(attachment: StoredAttachment): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val ciphertext = blobs.read(attachment.id)
+                ?: runCatching { api.downloadAttachment(attachment.id) }
+                    .getOrNull()
+                    ?.also { blobs.write(attachment.id, it) }
+                ?: return@withContext null
+
+            runCatching {
+                AttachmentCipher.open(ciphertext, attachment.key, attachment.digest)
+            }.onSuccess {
+                store.messages.markAttachmentDownloaded(attachment.id)
+            }.onFailure {
+                // A digest mismatch means the cached copy is bad; drop it so a
+                // retry re-fetches rather than failing forever on the same bytes.
+                blobs.delete(attachment.id)
+            }.getOrNull()
+        }
+
     // ---------------------------------------------------------------- groups
 
     /**
@@ -504,6 +625,7 @@ class RelayService private constructor(
     fun signOut() {
         stop()
         store.wipe()
+        blobs.clear()
         authKey.delete()
     }
 }
