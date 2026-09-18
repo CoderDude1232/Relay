@@ -47,7 +47,48 @@ class CallSignallingTest {
         transport: CallTransport = FakeTransport(),
         recorder: Recorder = Recorder(),
     ): Pair<CallManager, Recorder> =
-        CallManager(me, 1, transport, { p, c, e -> recorder.sent += Recorder.Sent(p, c, e) }) to recorder
+        CallManager(me, 1, { transport }, { p, c, e -> recorder.sent += Recorder.Sent(p, c, e) }) to recorder
+
+    // ------------------------------------------------------------- call kind
+
+    @Test
+    fun `video offers carry the iOS kind metadata and audio offers carry none`() {
+        // iOS reads the kind out of the OFFER's `ice` field, so the exact string
+        // matters; an audio offer must stay empty or it would decode as video.
+        val video = CallSignalling.offer("call-1", "sdp", me, 1, isVideo = true)
+        assertEquals("""{"kind":"video"}""", video.call.ice)
+
+        val audio = CallSignalling.offer("call-1", "sdp", me, 1, isVideo = false)
+        assertEquals("", audio.call.ice)
+    }
+
+    @Test
+    fun `call kind comes from metadata first and the SDP only as a fallback`() {
+        fun signal(ice: String, sdp: String) = CallSignal(
+            type = CallMessage.Type.OFFER, callId = "c", sdp = sdp, ice = ice,
+            fromAccount = peer, groupId = "", targetAccount = "", participants = emptyList(),
+        )
+
+        assertTrue(CallSignalling.isVideoOffer(signal("""{"kind":"video"}""", "")))
+        // Metadata wins even when the SDP disagrees.
+        assertFalse(CallSignalling.isVideoOffer(signal("""{"kind":"audio"}""", "m=video 9 RTP")))
+        // No metadata: fall back to the SDP, the way iOS does.
+        assertTrue(CallSignalling.isVideoOffer(signal("", "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\n")))
+        assertFalse(CallSignalling.isVideoOffer(signal("", "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF\r\n")))
+    }
+
+    @Test
+    fun `m equals video inside an attribute does not make a call video`() {
+        // Line-anchored, not a substring search: guessing video here would open
+        // the camera on an audio call.
+        val signal = CallSignal(
+            type = CallMessage.Type.OFFER, callId = "c",
+            sdp = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF\r\na=label:m=video\r\n",
+            ice = "", fromAccount = peer, groupId = "", targetAccount = "",
+            participants = emptyList(),
+        )
+        assertFalse(CallSignalling.isVideoOffer(signal))
+    }
 
     // ------------------------------------------------------------ ephemerality
 

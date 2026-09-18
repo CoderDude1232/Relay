@@ -724,6 +724,66 @@ Until that lands, Android runs **WebSocket + 5 s queue poll while the process is
 alive**, with a foreground service for reliability. Everything else works; only
 background wake-ups are missing. This mirrors iOS's own Stage 6 block.
 
+#### 7.5.1 Call wakes (server done 2026-09-18; Android client still TODO)
+
+`POST /v1/call/{account}` → `hub.PushCallToAccount` now branches per device on
+`push_kind`, exactly like `Deliver`:
+- **apns** → PushKit VoIP push (`PushVoIP`, the device's separate VoIP token).
+- **fcm** → high-priority **data-only** message via `fcm.PushCall`, since Android
+  has no PushKit. Data block:
+
+  | key | value |
+  |---|---|
+  | `type` | `"call"` (distinguishes a call wake from a message `"wake"`/`"msg"`) |
+  | `call_id` | the call id |
+  | `caller_account` | caller's account id (already known to the recipient — nothing new revealed) |
+  | `caller_name` | caller display name; **omitted when empty** (same as the VoIP payload; do not add more) |
+  | `kind` | call kind (audio/video) |
+
+  Contentless in the same spirit as message wakes — no message content, no data
+  beyond what the VoIP path already carries.
+
+**Android client** (done 2026-09-18, `app/src/main/java/app/relaymsg/call/`):
+
+- `RelayMessagingService` branches on `type == "call"` **before** its blocking
+  queue work — ringing is a few-hundred-millisecond job and the fetch is not.
+- `IncomingCallService` is a `foregroundServiceType="phoneCall"` service. It
+  posts the CallStyle **full-screen-intent** notification, brings the socket up
+  (`RelayService.start()`, now idempotent — ANSWER/ICE are ephemeral and only
+  reach a connected device), and drains the queue. The drain is what actually
+  delivers the OFFER, so `CallManager` enters `INCOMING_RINGING` and RINGING goes
+  back to the caller. 60 s ring timeout, then HANGUP + a missed-call notification.
+- `IncomingCallActivity` is the full-screen-intent target: `showWhenLocked`,
+  `turnScreenOn`, and it only forwards accept/decline to the service, so the lock
+  screen and the heads-up card take the same path.
+- Permissions: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_PHONE_CALL`,
+  `MANAGE_OWN_CALLS`, `USE_FULL_SCREEN_INTENT` — all install-time, none prompt.
+
+**Still open on this path:**
+
+1. **No media transport.** `CallManager` runs on `NoMediaTransport` until WebRTC
+   lands, so answering fails by design rather than pretending to connect. Next
+   Android piece.
+2. **Never observed working.** The emulator cannot receive FCM at all
+   (`gms.persistent` is not running), so every part of this is unverified on a
+   real wake — it needs the physical phone.
+3. `MANAGE_OWN_CALLS` is what qualifies the app for the `phoneCall` FGS type
+   without being the default dialer; **verify on-device** that the type is
+   accepted on API 34+. A refusal is handled (it falls back to a plain
+   notification) but that is a degraded path, not the intended one.
+4. Not using `TelecomManager`/`ConnectionService` (Signal does). That would give
+   system call UI, audio routing and Bluetooth handling. Deferred deliberately —
+   it is a large surface with real OEM variance, and nothing else depends on it.
+
+#### 7.5.2 Call kind on the wire (interop detail, easy to miss)
+
+iOS overloads the OFFER's `ice` field to carry the call kind: `{"kind":"video"}`
+for video, **empty** for audio (`CallManager.metadataJSON`). A receiver resolves
+the kind as *metadata first, SDP second* —
+`callKind(fromMetadata: msg.ice) ?? sdpContainsVideo(msg.sdp)` — and the SDP check
+is **line-anchored** on `m=video`, not a substring search. Android matches this in
+`CallSignalling.isVideoOffer`. Getting it wrong opens the camera on an audio call.
+
 ### 7.6 Platform mappings (all proposals, pending your approval)
 
 | iOS | Android | Note |
@@ -1001,7 +1061,15 @@ Done and verified live against `api.relaymsg.app`:
 - **Media** — encrypted blobs, live round-trip, UI. The test also asserts the
   relay does NOT return the plaintext, which a naive round-trip would miss.
 
-Remaining: multi-device sync, calls (WebRTC), backup (Drive).
+- **Multi-device sync + device linking.**
+- **Calls — signalling half.** `CallSignalling` (builders, `parse`, the
+  iOS-exact ephemerality rule, call-kind metadata §7.5.2) and `CallManager` (state
+  machine, pending-ICE queue, BUSY on a second offer, MISSED vs HUNG_UP), wired
+  into both receive paths. Plus the **background call-wake path** (§7.5.1):
+  `type:"call"` → foreground service → full-screen-intent ring.
+
+Remaining: **the WebRTC media transport** (`CallTransport` is the seam; calls
+signal correctly today but carry no audio), backup (Drive).
 
 **Push is written but never observed working.** Firebase initialises, a token is
 acquired and the relay accepts it. Two things blocked verification: the relay ran

@@ -13,6 +13,8 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import app.relaymsg.MainActivity
+import app.relaymsg.call.CallWake
+import app.relaymsg.call.IncomingCallService
 import app.relaymsg.R
 import app.relaymsg.core.EnvelopePipeline
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -33,6 +35,10 @@ import kotlinx.coroutines.runBlocking
  * base64 envelope in `data.e` when the device has opted in to
  * ciphertext-in-push. The relay silently degrades `msg` to `wake` when the
  * envelope exceeds FCM's payload budget, so both must be handled.
+ *
+ * `"call"` is the third kind and takes a different path entirely: it is what
+ * stands in for iOS's PushKit, it is latency-critical, and it must ring rather
+ * than notify. See [IncomingCallService] and PROTOCOL.md §7.5.1.
  */
 class RelayMessagingService : FirebaseMessagingService() {
 
@@ -54,6 +60,15 @@ class RelayMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        // A call is handled without blocking: the point of the high-priority wake
+        // is to ring in the next few hundred milliseconds, and the fetch it needs
+        // is far longer than that. The foreground service it starts is what keeps
+        // the process alive to do the rest.
+        if (message.data["type"] == CallWake.TYPE) {
+            CallWake.from(message.data)?.let { IncomingCallService.ring(this, it) }
+            return
+        }
+
         // FCM allows roughly 10-20s here. Blocking is acceptable and simpler than
         // handing off to WorkManager, since the work is one fetch and a decrypt.
         runBlocking {

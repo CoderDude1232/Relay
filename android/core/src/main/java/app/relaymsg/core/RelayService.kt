@@ -167,9 +167,57 @@ class RelayService private constructor(
     val activeMessages: StateFlow<List<StoredMessage>> = _activeMessages.asStateFlow()
 
     private var activeConversationId: String? = null
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /** Connects and keeps reconnecting until [stop]. */
+    /**
+     * Supplies the media transport for calls.
+     *
+     * WebRTC is a large native dependency and lives in the app module, so the app
+     * installs the real factory at start-up; until then calls signal correctly
+     * (and interoperate with iOS) but carry no media. See PROTOCOL.md §7.6.
+     */
+    @Volatile
+    var callTransportFactory: () -> CallTransport = { NoMediaTransport() }
+
+    /**
+     * The call state machine. Signals reach it from both receive paths — the
+     * socket while the app is running, and the queue drain a push wake triggers.
+     */
+    val calls = CallManager(
+        ownAccount = credentials.accountId,
+        ownDevice = credentials.deviceId,
+        newTransport = { callTransportFactory() },
+        send = ::sendCallSignal,
+    )
+
+    /**
+     * Call signalling rides the same encrypted envelope as a message; only the
+     * queueing differs, and [CallSignalling.isEphemeral] decides that.
+     */
+    private suspend fun sendCallSignal(
+        peer: String,
+        content: relay.content.ContentOuterClass.Content,
+        ephemeral: Boolean,
+    ) {
+        messenger.sendOverWebSocket(
+            socket = socket,
+            account = peer,
+            plaintext = content.toByteArray(),
+            clientTimestamp = System.currentTimeMillis(),
+            ephemeral = ephemeral,
+        )
+    }
+
+    /**
+     * Connects and keeps reconnecting until [stop].
+     *
+     * Idempotent: the UI starts it when the app opens, and a background call
+     * wake starts it again because signalling after the OFFER (ANSWER, ICE) is
+     * ephemeral and only reaches a connected socket. A second connection loop
+     * would advance the Double Ratchet concurrently with the first.
+     */
     fun start() {
+        if (!started.compareAndSet(false, true)) return
         refreshConversations()
         scope.launch { runConnectionLoop() }
         scope.launch {
@@ -214,6 +262,8 @@ class RelayService private constructor(
         val envelope = event.envelope
         try {
             val outcome = pipeline.apply(envelope)
+            // Before the store refreshes: a ringing phone is latency-sensitive.
+            outcome.callSignal?.let { calls.onSignal(it) }
             outcome.deliveryReceiptFor?.let { timestamp ->
                 outcome.peerAccount?.let { peer -> sendDeliveryReceipt(peer, timestamp) }
             }
@@ -373,6 +423,8 @@ class RelayService private constructor(
             try {
                 val outcome = pipeline.apply(envelope)
                 if (!outcome.isDuplicate) applied += outcome
+                // The durable OFFER arrives this way after a call push wake.
+                outcome.callSignal?.let { calls.onSignal(it) }
                 outcome.deliveryReceiptFor?.let { timestamp ->
                     outcome.peerAccount?.let { peer -> sendDeliveryReceipt(peer, timestamp) }
                 }
@@ -391,7 +443,10 @@ class RelayService private constructor(
         withContext(Dispatchers.IO) {
             val envelope = app.relaymsg.net.IncomingEnvelope.parse(serialized) ?: return@withContext null
             try {
-                pipeline.apply(envelope).also { if (!it.isDuplicate) refreshConversations() }
+                pipeline.apply(envelope).also { outcome ->
+                    outcome.callSignal?.let { calls.onSignal(it) }
+                    if (!outcome.isDuplicate) refreshConversations()
+                }
             } catch (_: Throwable) {
                 null
             } finally {

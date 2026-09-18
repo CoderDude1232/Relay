@@ -46,6 +46,26 @@ interface CallTransport {
 }
 
 /**
+ * The transport used until WebRTC is wired in (PROTOCOL.md §7.6).
+ *
+ * It fails loudly rather than pretending: signalling is complete and
+ * interoperable, but a call placed or answered through this transport carries no
+ * media, so it ends as [CallEndReason.FAILED] instead of silently connecting to
+ * nothing.
+ */
+class NoMediaTransport : CallTransport {
+    override suspend fun createOffer(isVideo: Boolean): String =
+        throw UnsupportedOperationException("no media transport installed")
+
+    override suspend fun createAnswer(remoteSdp: String, isVideo: Boolean): String =
+        throw UnsupportedOperationException("no media transport installed")
+
+    override suspend fun acceptAnswer(remoteSdp: String) = Unit
+    override suspend fun addIceCandidate(candidateJson: String) = Unit
+    override fun close() = Unit
+}
+
+/**
  * Drives one call at a time: state, signalling, and the call log.
  *
  * Deliberately transport-agnostic. Everything that has to match iOS —
@@ -55,7 +75,15 @@ interface CallTransport {
 class CallManager(
     private val ownAccount: String,
     private val ownDevice: Int,
-    private val transport: CallTransport,
+    /**
+     * Creates the media transport for one call.
+     *
+     * A factory rather than a single instance for two reasons: a WebRTC
+     * `PeerConnection` is per-call and cannot be reused once closed, and the real
+     * implementation lives in the app module (WebRTC is a large native
+     * dependency) while this state machine has to stay JVM-testable.
+     */
+    private val newTransport: () -> CallTransport,
     /** Sends a signalling Content to a peer; `ephemeral` follows [CallSignalling.isEphemeral]. */
     private val send: suspend (peer: String, content: Content, ephemeral: Boolean) -> Unit,
     private val now: () -> Long = System::currentTimeMillis,
@@ -73,16 +101,19 @@ class CallManager(
      */
     private val pendingCandidates = mutableListOf<String>()
 
+    /** The transport for the call in progress; null whenever [call] is null. */
+    private var transport: CallTransport? = null
+
     suspend fun placeCall(peer: String, isVideo: Boolean): String? {
         if (_call.value != null) return null // already on a call
         val callId = UUID.randomUUID().toString()
         _call.value = ActiveCall(callId, peer, true, isVideo, CallState.OUTGOING_RINGING, now())
 
         return try {
-            val sdp = transport.createOffer(isVideo)
+            val sdp = newTransport().also { transport = it }.createOffer(isVideo)
             // OFFER is durable: it must survive the callee being offline, or a
             // call could never wake a sleeping phone.
-            emit(peer, CallSignalling.offer(callId, sdp, ownAccount, ownDevice))
+            emit(peer, CallSignalling.offer(callId, sdp, ownAccount, ownDevice, isVideo))
             callId
         } catch (_: Throwable) {
             end(CallEndReason.FAILED)
@@ -102,7 +133,7 @@ class CallManager(
                 }
                 _call.value = ActiveCall(
                     signal.callId, signal.fromAccount, false,
-                    isVideo = signal.sdp.contains("m=video"),
+                    isVideo = CallSignalling.isVideoOffer(signal),
                     state = CallState.INCOMING_RINGING, startedAt = now(),
                 )
                 pendingOffer = signal.sdp
@@ -112,8 +143,9 @@ class CallManager(
 
             CallMessage.Type.ANSWER -> {
                 if (current == null || current.callId != signal.callId) return null
+                val media = transport ?: return end(CallEndReason.FAILED)
                 runCatching {
-                    transport.acceptAnswer(signal.sdp)
+                    media.acceptAnswer(signal.sdp)
                     flushPendingCandidates()
                 }.onFailure { return end(CallEndReason.FAILED) }
                 _call.value = current.copy(state = CallState.ACTIVE, connectedAt = now())
@@ -122,8 +154,11 @@ class CallManager(
 
             CallMessage.Type.ICE -> {
                 if (current == null || current.callId != signal.callId) return null
-                if (current.state == CallState.ACTIVE || current.state == CallState.CONNECTING) {
-                    runCatching { transport.addIceCandidate(signal.ice) }
+                val media = transport
+                if (media != null &&
+                    (current.state == CallState.ACTIVE || current.state == CallState.CONNECTING)
+                ) {
+                    runCatching { media.addIceCandidate(signal.ice) }
                 } else {
                     pendingCandidates += signal.ice
                 }
@@ -168,7 +203,7 @@ class CallManager(
 
         _call.value = current.copy(state = CallState.CONNECTING)
         return try {
-            val sdp = transport.createAnswer(offer, current.isVideo)
+            val sdp = newTransport().also { transport = it }.createAnswer(offer, current.isVideo)
             emit(current.peerAccount, CallSignalling.answer(current.callId, sdp, ownAccount, ownDevice))
             flushPendingCandidates()
             _call.value = _call.value?.copy(state = CallState.ACTIVE, connectedAt = now())
@@ -195,11 +230,13 @@ class CallManager(
     private suspend fun flushPendingCandidates() {
         val queued = pendingCandidates.toList()
         pendingCandidates.clear()
-        queued.forEach { runCatching { transport.addIceCandidate(it) } }
+        val media = transport ?: return
+        queued.forEach { runCatching { media.addIceCandidate(it) } }
     }
 
     private fun end(reason: CallEndReason): CallEndReason {
-        transport.close()
+        transport?.close()
+        transport = null
         pendingCandidates.clear()
         pendingOffer = null
         _call.value = _call.value?.copy(state = CallState.ENDED)

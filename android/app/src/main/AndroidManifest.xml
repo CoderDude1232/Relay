@@ -7,6 +7,21 @@
     <!-- Required from API 33 to show the notification a push wake produces. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      Calls. Android has no PushKit: a call wake rings by starting a foreground
+      service and posting a full-screen-intent notification.
+        - MANAGE_OWN_CALLS is what qualifies this app to use the phoneCall
+          foreground-service type without being the default dialer.
+        - USE_FULL_SCREEN_INTENT is granted by default to apps in the calling
+          category from API 34; without it the call still posts as a heads-up
+          notification, it just cannot wake the screen.
+      All four are install-time permissions - none of them prompt.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
     <application
         android:name=".RelayApplication"
         android:allowBackup="false"
@@ -29,6 +44,31 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          The screen a call's full-screen intent raises. It lives in its own task
+          and outside recents: it is a transient interruption, not somewhere the
+          user navigates back to.
+        -->
+        <activity
+            android:name=".call.IncomingCallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Relay"
+            android:turnScreenOn="true" />
+
+        <!--
+          Holds the process alive while a call rings and runs. phoneCall is the
+          type that matches what it does, and the one whose Doze and
+          background-start behaviour is written for exactly this case.
+        -->
+        <service
+            android:name=".call.IncomingCallService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall" />
 
         <!--
           Receives contentless FCM wakes. The payload never carries message text

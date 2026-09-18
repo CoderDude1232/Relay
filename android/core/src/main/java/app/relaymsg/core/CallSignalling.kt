@@ -60,7 +60,13 @@ object CallSignalling {
         else -> false
     }
 
-    fun offer(callId: String, sdp: String, ownAccount: String, ownDevice: Int): Content =
+    fun offer(
+        callId: String,
+        sdp: String,
+        ownAccount: String,
+        ownDevice: Int,
+        isVideo: Boolean = false,
+    ): Content =
         content {
             call = callMessage {
                 // OFFER is 0, so proto3 elides the field. Set it anyway for
@@ -68,6 +74,10 @@ object CallSignalling {
                 type = CallMessage.Type.OFFER
                 this.callId = callId
                 this.sdp = sdp
+                // iOS overloads the OFFER's `ice` field to carry the call kind
+                // (`CallManager.metadataJSON`). Empty for audio, so an audio
+                // offer stays byte-identical to one with no metadata at all.
+                if (isVideo) ice = KIND_METADATA_VIDEO
             }
             senderAccountId = ownAccount
             senderDeviceId = ownDevice
@@ -118,6 +128,38 @@ object CallSignalling {
 
     fun hangup(callId: String, ownAccount: String, ownDevice: Int): Content =
         simple(CallMessage.Type.HANGUP, callId, ownAccount, ownDevice)
+
+    /** Exactly what iOS emits for a video call — do not reformat. */
+    const val KIND_METADATA_VIDEO = "{\"kind\":\"video\"}"
+
+    /**
+     * Whether an incoming OFFER is a video call.
+     *
+     * Mirrors iOS: the `ice` metadata wins, and the SDP is only consulted when
+     * there is none. The SDP check is line-anchored because `m=video` can appear
+     * inside an attribute value, and treating an audio call as video would open
+     * the camera.
+     */
+    fun isVideoOffer(signal: CallSignal): Boolean =
+        kindFromMetadata(signal.ice) ?: sdpContainsVideo(signal.sdp)
+
+    /**
+     * Reads `{"kind":"video"}`.
+     *
+     * Matched with a regex rather than a JSON parser on purpose: `org.json` is a
+     * stub on the JVM unit-test classpath, and pulling in a JSON dependency for
+     * one fixed two-token object would be worse than reading it directly.
+     */
+    private fun kindFromMetadata(metadata: String): Boolean? {
+        if (metadata.isBlank()) return null
+        val kind = Regex("\"kind\"\\s*:\\s*\"([^\"]*)\"").find(metadata)
+            ?.groupValues?.get(1)
+            ?: return null
+        return kind == "video"
+    }
+
+    private fun sdpContainsVideo(sdp: String): Boolean =
+        sdp.splitToSequence('\n').any { it.trim().startsWith("m=video") }
 
     /** Reads a decrypted `Content` as a call signal, or null if it isn't one. */
     fun parse(content: Content, fromAccount: String): CallSignal? {
