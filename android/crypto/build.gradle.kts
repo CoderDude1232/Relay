@@ -25,7 +25,7 @@ dependencies {
     // CryptoCore equivalent: libsignal (PQXDH, ratchet, sender keys, safety
     // numbers, sealed sender) + libsodium (ristretto255 for the discovery OPRF).
     api(libs.libsignal.android)
-    implementation(libs.lazysodium.android) {
+    api(libs.lazysodium.android) {
         // JNA must come from the .aar, which carries the Android native libraries.
         // lazysodium's POM pulls the plain .jar; having both puts every
         // com.sun.jna class on the classpath twice and dexing fails.

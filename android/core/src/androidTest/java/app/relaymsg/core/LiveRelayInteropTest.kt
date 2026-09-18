@@ -143,6 +143,62 @@ class LiveRelayInteropTest {
     }
 
     @Test
+    fun resolvesItsOwnUsernameThroughBlindedDiscovery() {
+        // The live OPRF round-trip, against the relay's real secret key: blind the
+        // username, have the server evaluate it, unblind, derive the token, and
+        // look it up. The token we compute must equal the one the server indexed
+        // when the account was created -- which is the whole basis of discovery,
+        // since the client can only ever produce the blinded form.
+        //
+        // Offline vectors cannot prove this: they check our arithmetic against a
+        // transcription of the server's algorithm, not against its actual key.
+        runBlocking {
+            val harness = buildHarness()
+            try {
+                val sodium = com.goterl.lazysodium.LazySodiumAndroid(
+                    com.goterl.lazysodium.SodiumAndroid(),
+                )
+                val discovery = app.relaymsg.crypto.BlindedDiscovery(sodium)
+
+                val blinded = discovery.blind(harness.username)
+                val evaluated = harness.api.directoryEvaluate(listOf(blinded.element))
+                assertEquals(1, evaluated.size)
+
+                val token = discovery.token(blinded, evaluated.first())
+                val matches = harness.api.directoryResolve(listOf(token))
+
+                assertEquals("directory did not resolve our own username", 1, matches.size)
+                assertEquals(harness.credentials.accountId, matches.first().accountId)
+                assertEquals(harness.username, matches.first().username)
+                Log.i(TAG, "blinded discovery resolved ${harness.username} correctly")
+            } finally {
+                harness.cleanUp()
+            }
+        }
+    }
+
+    @Test
+    fun blindedDiscoveryRevealsNothingForAnUnregisteredName() {
+        // Non-users must simply be absent from the results rather than producing a
+        // distinguishable error, or discovery would leak who is registered.
+        runBlocking {
+            val harness = buildHarness()
+            try {
+                val sodium = com.goterl.lazysodium.LazySodiumAndroid(
+                    com.goterl.lazysodium.SodiumAndroid(),
+                )
+                val discovery = app.relaymsg.crypto.BlindedDiscovery(sodium)
+                val blinded = discovery.blind("definitely-not-registered-${UUID.randomUUID()}")
+                val evaluated = harness.api.directoryEvaluate(listOf(blinded.element))
+                val token = discovery.token(blinded, evaluated.first())
+                assertTrue(harness.api.directoryResolve(listOf(token)).isEmpty())
+            } finally {
+                harness.cleanUp()
+            }
+        }
+    }
+
+    @Test
     fun sendsWithoutConsumingAOneTimePreKey() {
         // Diagnostic for a peer that cannot decrypt our messages. The relay hands
         // out a one-time prekey per bundle fetch; we deliberately discard it and

@@ -1,7 +1,9 @@
 package app.relaymsg.core
 
 import android.content.Context
+import app.relaymsg.crypto.BlindedDiscovery
 import app.relaymsg.net.RelayApiClient
+import app.relaymsg.net.RelayApiException
 import app.relaymsg.net.RelayAuthenticator
 import app.relaymsg.net.RelayCredentials
 import app.relaymsg.net.RelayEvent
@@ -140,6 +142,16 @@ class RelayService private constructor(
     }
 
     private val authKey = DeviceAuthKey()
+
+    /**
+     * ristretto255 for blinded discovery, via libsodium. Created lazily so a
+     * device that never starts a conversation never loads the native library.
+     */
+    private val discovery by lazy {
+        BlindedDiscovery(
+            com.goterl.lazysodium.LazySodiumAndroid(com.goterl.lazysodium.SodiumAndroid()),
+        )
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _conversations = MutableStateFlow<List<Conversation>>(emptyList())
@@ -222,15 +234,41 @@ class RelayService private constructor(
 
     /** Resolves a username to an account id and opens (or finds) the conversation. */
     suspend fun startConversation(username: String): String = withContext(Dispatchers.IO) {
-        // Blinded discovery is the private path, but the relay 503s when it is not
-        // configured; fall back so the app still works on such a deployment.
-        val accountId = runCatching { resolveViaDirectory(username) }
-            .getOrElse { api.lookupAccountId(username) }
+        val accountId = resolveAccount(username)
         store.messages.conversation(accountId, username)
     }
 
-    private suspend fun resolveViaDirectory(username: String): String {
-        throw UnsupportedOperationException("blinded discovery wired in a later stage")
+    /**
+     * Resolves a username **without telling the relay which username we asked
+     * for**: blind it, let the server evaluate the OPRF under its secret key,
+     * unblind, and look the resulting token up (PROTOCOL.md §1.7).
+     *
+     * Falls back to the legacy plaintext endpoint only when the relay reports
+     * discovery unconfigured (503). That fallback is a genuine privacy
+     * downgrade — the username crosses the wire in the clear — so it is narrow
+     * and deliberate rather than a catch-all: any other failure, including "no
+     * such user", propagates.
+     */
+    suspend fun resolveUsername(username: String): String = withContext(Dispatchers.IO) {
+        resolveAccount(username)
+    }
+
+    private suspend fun resolveAccount(username: String): String {
+        val blinded = try {
+            discovery.blind(username)
+        } catch (e: Throwable) {
+            throw IllegalStateException("could not blind the username", e)
+        }
+        val evaluated = try {
+            api.directoryEvaluate(listOf(blinded.element)).firstOrNull()
+                ?: throw RelayApiException(404, "no such user")
+        } catch (e: RelayApiException) {
+            if (e.status == 503) return api.lookupAccountId(username) else throw e
+        }
+        val token = discovery.token(blinded, evaluated)
+        val match = api.directoryResolve(listOf(token)).firstOrNull()
+            ?: throw RelayApiException(404, "no such user")
+        return match.accountId
     }
 
     suspend fun sendText(conversationId: String, body: String) = withContext(Dispatchers.IO) {
