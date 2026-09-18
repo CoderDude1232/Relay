@@ -42,6 +42,10 @@ zxing = "3.5.3"
 # ZXing decodes the frames, so there is no Play Services dependency and no
 # model download.
 cameraX = "1.6.2"
+# Custom Tabs, for the Google OAuth hand-off. The alternative -- a WebView --
+# is exactly what OAuth providers reject, and rightly: it would let the app read
+# the password being typed.
+browser = "1.10.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -55,6 +59,7 @@ androidx-camera-core = { group = "androidx.camera", name = "camera-core", versio
 androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraX" }
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
+androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

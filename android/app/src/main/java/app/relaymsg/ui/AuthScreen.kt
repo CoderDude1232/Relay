@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -24,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -55,6 +57,7 @@ fun AuthScreen(
     onSubmitUsername: (String) -> Unit,
     onShowSignUp: () -> Unit,
     onShowSignIn: () -> Unit,
+    onGoogleSignIn: () -> Unit,
     onLinkDevice: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -77,7 +80,8 @@ fun AuthScreen(
         )
 
         when (step) {
-            AuthStep.WELCOME -> Welcome(busy, onShowSignUp, onShowSignIn, onLinkDevice)
+            AuthStep.WELCOME ->
+                Welcome(busy, onShowSignUp, onShowSignIn, onGoogleSignIn, onLinkDevice)
             AuthStep.SIGN_UP -> EmailForm(
                 submitLabel = "Create account",
                 confirmPassword = true,
@@ -118,9 +122,27 @@ private fun Welcome(
     busy: Boolean,
     onShowSignUp: () -> Unit,
     onShowSignIn: () -> Unit,
+    onGoogleSignIn: () -> Unit,
     onLinkDevice: () -> Unit,
 ) {
-    Button(onClick = onShowSignUp, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+    // Google is first: it both creates and recovers an account in one tap, so
+    // for most people it is the whole of onboarding.
+    Button(
+        onClick = onGoogleSignIn,
+        enabled = !busy,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.White,
+            contentColor = Color(0xFF3C4043),
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Continue with Google", fontWeight = FontWeight.SemiBold)
+    }
+    Button(
+        onClick = onShowSignUp,
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+    ) {
         Text("Create account with email")
     }
     OutlinedButton(

@@ -273,6 +273,21 @@ class RelayService private constructor(
             completeEmailAuth(context, session, username, accountPassword = null, server = server)
         }
 
+        /**
+         * Finishes a sign-in that came from an OAuth provider.
+         *
+         * Identical to the email path once a Supabase session exists — the relay
+         * only ever sees the token, and does not care how it was obtained.
+         */
+        suspend fun signInWithOAuth(
+            context: Context,
+            session: SupabaseSession,
+            username: String? = null,
+            server: String = DEFAULT_SERVER,
+        ): EmailAuthResult = withContext(Dispatchers.IO) {
+            completeEmailAuth(context, session, username, accountPassword = null, server = server)
+        }
+
         /** Retries the relay half with a username the user has now chosen. */
         suspend fun completeWithUsername(
             context: Context,

@@ -12,6 +12,8 @@ import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.ConnectionState
 import app.relaymsg.core.EmailAuthResult
 import app.relaymsg.core.RelayService
+import app.relaymsg.net.PkcePair
+import app.relaymsg.net.SupabaseAuth
 import app.relaymsg.push.RelayRuntime
 import app.relaymsg.storage.Conversation
 import app.relaymsg.ui.AuthStep
@@ -43,6 +45,9 @@ sealed interface AppPhase {
      */
     data class Linking(val qr: String?, val error: String?) : AppPhase
 }
+
+/** Must also be listed in Supabase → Authentication → URL Configuration. */
+private const val OAUTH_REDIRECT = "app.relaymsg://auth-callback"
 
 class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -126,6 +131,63 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _authStep.value = step
     }
 
+    private val _pendingAuthUrl = MutableStateFlow<String?>(null)
+
+    /** Set when a browser tab should be opened for OAuth; cleared once it is. */
+    val pendingAuthUrl: StateFlow<String?> = _pendingAuthUrl.asStateFlow()
+
+    /**
+     * The PKCE verifier for the sign-in currently in flight.
+     *
+     * Deliberately in memory only: it is the secret half of the exchange, and
+     * persisting it would outlive the attempt it belongs to.
+     */
+    private var pkce: PkcePair? = null
+
+    fun startGoogleSignIn() {
+        if (_busy.value) return
+        _authError.value = null
+        val pair = PkcePair.generate()
+        pkce = pair
+        _pendingAuthUrl.value = SupabaseAuth().authorizeUrl(
+            provider = "google",
+            redirectUri = OAUTH_REDIRECT,
+            codeChallenge = pair.challenge,
+        )
+    }
+
+    fun authUrlOpened() {
+        _pendingAuthUrl.value = null
+    }
+
+    /**
+     * Handles the redirect back from the browser.
+     *
+     * Returns false for anything that is not our callback, so the caller can
+     * leave other intents alone.
+     */
+    fun onOAuthRedirect(uri: android.net.Uri): Boolean {
+        if (uri.scheme != "app.relaymsg" || uri.host != "auth-callback") return false
+        val verifier = pkce ?: return false
+        pkce = null
+
+        val code = uri.getQueryParameter("code")
+        if (code == null) {
+            // Supabase reports a refusal in the query string rather than an HTTP
+            // status, since this arrives as a browser redirect.
+            _authError.value = uri.getQueryParameter("error_description")
+                ?: uri.getQueryParameter("error")
+                        ?: "Sign-in was cancelled."
+            return true
+        }
+
+        authenticate {
+            val session = SupabaseAuth().exchangeOAuthCode(code, verifier.verifier)
+            RelayService.signInWithOAuth(getApplication(), session)
+        }
+        return true
+    }
+
     fun signUpWithEmail(email: String, password: String) =
         authenticate { RelayService.signUpWithEmail(getApplication(), email, password, null) }
 
@@ -134,6 +196,7 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun submitUsername(username: String) {
         val pending = pendingUsername ?: return authBack()
+
         authenticate { RelayService.completeWithUsername(getApplication(), pending, username) }
     }
 

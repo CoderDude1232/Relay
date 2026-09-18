@@ -972,8 +972,8 @@ The account layer iOS uses and Android does not:
 | Create account with email + password | `POST /v1/accounts/oauth` | **done** |
 | Sign in / recover | `POST /v1/accounts/oauth` | **done** |
 | Link an existing device (both directions) | §7.9 | **done** |
-| Continue with Google (OAuth + PKCE) | `POST /v1/accounts/oauth` | **missing** |
-| Sign in with Apple | `POST /v1/accounts/oauth` | n/a on Android |
+| Continue with Google (OAuth + PKCE) | `POST /v1/accounts/oauth` | **done** |
+| Sign in with Apple | — | **not applicable on Android** |
 | Display name, recovery key, backup restore | — | **missing** |
 
 **Accounts live in Supabase, not in the relay.** The relay never sees a human
@@ -993,6 +993,37 @@ user id, then by email. So both sign-up and sign-in are two hops —
   configuration problem, not something a retry fixes.
 - Confirmation-required sign-ups return `200` with a user and **no session**.
   That is surfaced as "confirm your email", not passed on as a blank token.
+
+#### Google sign-in (PKCE)
+
+Supabase holds the Google client credentials, so the app ships no client secret
+— and could not keep one anyway, since anything in an APK is public. The code is
+bound to the attempt with **PKCE** instead:
+
+1. Generate a 32-byte verifier, base64url **unpadded**; the challenge is
+   `S256` over the verifier's **ASCII characters**, not the bytes it decodes to.
+2. Open `{project}/auth/v1/authorize?provider=google&redirect_to=…&code_challenge=…&code_challenge_method=s256`
+   in a **Custom Tab** — never a WebView. A WebView would let the app read the
+   password being typed, which is exactly why providers reject them.
+3. The browser redirects to `app.relaymsg://auth-callback?code=…`, caught by
+   `MainActivity` (`launchMode="singleTop"`, so it arrives via `onNewIntent`
+   rather than stacking a second copy of the app).
+4. `POST /auth/v1/token?grant_type=pkce` `{auth_code, code_verifier}` → session,
+   then the same `POST /v1/accounts/oauth` as every other path.
+
+Failures come back **in the redirect query string**, not as an HTTP status
+(`error_description` / `error`), because this arrives as a browser redirect.
+
+⚠️ **`app.relaymsg://auth-callback` must be added to Supabase → Authentication →
+URL Configuration → Redirect URLs**, alongside iOS's
+`com.morgandaly.RelayMessenger://auth-callback`. Without it Supabase refuses the
+authorize request and the tab shows its own error page. Nothing else is needed on
+the Google side — no Android OAuth client, no SHA-1 registration — because the
+credentials are Supabase's.
+
+The scheme is private-use, so any app could register it. That is precisely what
+PKCE defends: an intercepted code is worthless without the verifier, which never
+leaves the process and is never persisted.
 
 **What sign-in does not restore: the E2EE identity key.** A device signed in
 this way mints a fresh one, so everyone who has messaged the account sees a

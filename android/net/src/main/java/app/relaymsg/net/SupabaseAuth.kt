@@ -47,6 +47,19 @@ class SupabaseAuth(
             JSONObject().put("email", email).put("password", password),
         )
 
+    /**
+     * Exchanges a Google PKCE authorization code for a session.
+     *
+     * [verifier] must be the one whose challenge started the flow — that pairing
+     * is what stops another app that intercepted the redirect from redeeming the
+     * code.
+     */
+    suspend fun exchangeOAuthCode(code: String, verifier: String): SupabaseSession =
+        post(
+            "/auth/v1/token?grant_type=pkce",
+            JSONObject().put("auth_code", code).put("code_verifier", verifier),
+        )
+
     /** Exchanges a stored refresh token for a fresh pair. Call after a 401. */
     suspend fun refresh(refreshToken: String): SupabaseSession =
         post(
@@ -99,6 +112,22 @@ class SupabaseAuth(
             userId = user?.optString("id").orEmpty(),
             email = user?.optString("email").orEmpty(),
         )
+    }
+
+    /**
+     * Where the browser is sent to start a Google sign-in.
+     *
+     * Supabase owns the Google client credentials, so the app never holds a
+     * Google client secret. PKCE binds the resulting code to this attempt:
+     * the challenge goes out in the URL, the verifier stays here.
+     */
+    fun authorizeUrl(provider: String, redirectUri: String, codeChallenge: String): String {
+        val redirect = java.net.URLEncoder.encode(redirectUri, "UTF-8")
+        return "$projectUrl/auth/v1/authorize?provider=$provider" +
+            "&redirect_to=$redirect" +
+            "&code_challenge=$codeChallenge" +
+            // Lowercase "s256" is what iOS sends and what Supabase expects here.
+            "&code_challenge_method=s256"
     }
 
     companion object {

@@ -1,8 +1,10 @@
 package app.relaymsg
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,7 +24,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
 import app.relaymsg.call.GroupCallScreen
@@ -35,24 +36,37 @@ import app.relaymsg.ui.ScanLinkScreen
 import app.relaymsg.ui.theme.RelayTheme
 
 class MainActivity : ComponentActivity() {
+
+    private val viewModel: RelayViewModel by viewModels()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // A cold start through the OAuth link: the browser tab handed back
+        // before this activity existed.
+        intent?.data?.let(viewModel::onOAuthRedirect)
         setContent {
             RelayTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
-                    RelayApp()
+                    RelayApp(viewModel)
                 }
             }
         }
     }
+
+    /** The usual path: the app was already running behind the browser tab. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.data?.let(viewModel::onOAuthRedirect)
+    }
 }
 
 @Composable
-private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
+private fun RelayApp(viewModel: RelayViewModel) {
     val phase by viewModel.phase.collectAsState()
     val busy by viewModel.busy.collectAsState()
 
@@ -62,6 +76,7 @@ private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
         is AppPhase.SignedOut -> {
             val step by viewModel.authStep.collectAsState()
             val authError by viewModel.authError.collectAsState()
+            OpenOAuthTab(viewModel)
             AuthScreen(
                 step = step,
                 busy = busy,
@@ -71,6 +86,7 @@ private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
                 onSubmitUsername = viewModel::submitUsername,
                 onShowSignUp = viewModel::showSignUp,
                 onShowSignIn = viewModel::showSignIn,
+                onGoogleSignIn = viewModel::startGoogleSignIn,
                 onLinkDevice = viewModel::startLinking,
                 onBack = viewModel::authBack,
             )
@@ -93,6 +109,30 @@ private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
         }
 
         is AppPhase.Ready -> SignedIn(viewModel, current)
+    }
+}
+
+/**
+ * Hands a pending OAuth URL to a Custom Tab.
+ *
+ * A Custom Tab rather than a WebView on purpose: it shares the browser's own
+ * cookies (so an already-signed-in Google account is one tap), the address bar
+ * is visible and verifiable, and the app never gets to see the page — which is
+ * why providers reject in-app WebViews for sign-in.
+ */
+@Composable
+private fun OpenOAuthTab(viewModel: RelayViewModel) {
+    val url by viewModel.pendingAuthUrl.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(url) {
+        val target = url ?: return@LaunchedEffect
+        runCatching {
+            androidx.browser.customtabs.CustomTabsIntent.Builder()
+                .setShowTitle(true)
+                .build()
+                .launchUrl(context, android.net.Uri.parse(target))
+        }
+        viewModel.authUrlOpened()
     }
 }
 
