@@ -273,6 +273,11 @@ class RelayService private constructor(
 
     suspend fun sendText(conversationId: String, body: String) = withContext(Dispatchers.IO) {
         val peer = store.messages.peerAccount(conversationId) ?: return@withContext
+        // A group conversation's "peer" IS the group id; route it accordingly.
+        store.messages.group(peer)?.let {
+            sendGroupText(conversationId, peer, body)
+            return@withContext
+        }
         val timestamp = System.currentTimeMillis()
         val localId = UUID.randomUUID().toString()
 
@@ -389,6 +394,85 @@ class RelayService private constructor(
     fun displayName(account: String): String =
         conversations.value.firstOrNull { it.peerAccount == account }?.peerUsername
             ?: account.take(8)
+
+    // ---------------------------------------------------------------- groups
+
+    /**
+     * Creates a group and announces it to its members.
+     *
+     * The group id and the sender-key epoch are both generated here: the relay
+     * holds no group state whatsoever, so there is nothing to ask and nothing to
+     * reserve. Members learn of the group only from the CREATE update.
+     */
+    suspend fun createGroup(name: String, memberUsernames: List<String>): String =
+        withContext(Dispatchers.IO) {
+            val members = memberUsernames.map { resolveAccount(it.trim()) }.toMutableList()
+            if (credentials.accountId !in members) members += credentials.accountId
+
+            val groupId = UUID.randomUUID().toString()
+            val distributionId = UUID.randomUUID().toString()
+
+            store.messages.upsertGroup(
+                id = groupId,
+                name = name,
+                distributionId = distributionId,
+                revision = 1,
+                members = members,
+                // The creator is the only admin until they promote someone.
+                admins = listOf(credentials.accountId),
+            )
+
+            val update = messenger.buildGroupUpdate(
+                groupId = groupId,
+                action = relay.content.ContentOuterClass.GroupUpdate.Action.CREATE,
+                revision = 1,
+                name = name,
+                members = members,
+                admins = listOf(credentials.accountId),
+                distributionId = distributionId,
+            )
+            messenger.sendToGroupMembers(
+                socket, members, update.toByteArray(), System.currentTimeMillis(),
+            )
+            refreshConversations()
+            store.messages.groupConversationId(groupId).orEmpty()
+        }
+
+    /** Sends a message to a group, encrypted once under our sender key. */
+    private suspend fun sendGroupText(conversationId: String, groupId: String, body: String) {
+        val group = store.messages.group(groupId) ?: return
+        if (group.isAnnounceOnly && credentials.accountId !in group.admins) return
+
+        val timestamp = System.currentTimeMillis()
+        val localId = UUID.randomUUID().toString()
+        store.messages.insertMessage(
+            id = localId,
+            conversationId = conversationId,
+            isOutgoing = true,
+            body = body,
+            timestamp = timestamp,
+            status = MessageStatus.SENDING,
+            senderAccount = credentials.accountId,
+        )
+        refreshActiveMessages(); refreshConversations()
+
+        val content = messenger.buildGroupTextContent(groupId, body, timestamp)
+        val status = try {
+            val outcome = messenger.sendGroupMessage(
+                socket = socket,
+                groupId = groupId,
+                distributionId = group.distributionId,
+                members = group.members,
+                plaintext = content.toByteArray(),
+                clientTimestamp = timestamp,
+            )
+            if (outcome is SendOutcome.Ok) MessageStatus.SENT else MessageStatus.FAILED
+        } catch (_: Throwable) {
+            MessageStatus.FAILED
+        }
+        store.messages.updateStatus(localId, status)
+        refreshActiveMessages(); refreshConversations()
+    }
 
     // ------------------------------------------------------------------- reads
 

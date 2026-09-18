@@ -7,6 +7,7 @@ import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.storage.StoredAttachment
 import relay.content.ContentOuterClass.Content
 import relay.content.ContentOuterClass.ReceiptMessage
+import java.util.UUID
 import relay.content.ContentOuterClass.TypingMessage
 
 /**
@@ -77,6 +78,21 @@ class EnvelopePipeline(
                 messages.editMessage(conversationId, content.edit.targetTimestamp, content.edit.newBody)
                 Outcome(conversationId, sender)
             }
+            Content.BodyCase.SENDER_KEY_DISTRIBUTION -> {
+                // A member handing us their sender key for the current epoch.
+                // Must be processed before any of their group messages can be
+                // decrypted, and it arrives over a pairwise session precisely so
+                // it does not depend on already having one.
+                messenger.processSenderKeyDistribution(
+                    content.senderKeyDistribution.data.toByteArray(),
+                    sender,
+                    decrypted.senderDeviceId,
+                )
+                Outcome(conversationId, sender)
+            }
+
+            Content.BodyCase.GROUP_UPDATE -> applyGroupUpdate(content, sender, groupId)
+
             Content.BodyCase.TYPING -> Outcome(
                 conversationId = conversationId,
                 peerAccount = sender,
@@ -84,6 +100,62 @@ class EnvelopePipeline(
             )
             else -> Outcome(conversationId, sender)
         }
+    }
+
+    /**
+     * Applies a roster or metadata change.
+     *
+     * Groups are client-authoritative — the relay stores nothing — so this table
+     * IS the roster, and [Content.getGroupId] plus the update's member list is
+     * the only source of truth (PROTOCOL.md §0.2, §7.3).
+     */
+    private fun applyGroupUpdate(content: Content, sender: String, groupId: String?): Outcome {
+        val update = content.groupUpdate
+        val id = groupId ?: return Outcome(null, sender)
+        val existing = messages.group(id)
+
+        // `revision` exists to drop stale updates: at-least-once delivery and
+        // per-device fan-out mean the same change can arrive more than once, and
+        // out of order relative to a newer one.
+        if (existing != null && update.revision in 1..existing.revision) {
+            return Outcome(messages.groupConversationId(id), sender)
+        }
+
+        // An empty distribution_id means "metadata only, keep the current epoch".
+        // A non-empty one on a REMOVE is the actor rotating it so the removed
+        // member cannot read anything further.
+        val distributionId = update.distributionId.ifEmpty {
+            existing?.distributionId ?: UUID.randomUUID().toString()
+        }
+        val members = if (update.membersList.isNotEmpty()) {
+            update.membersList.toList()
+        } else {
+            existing?.members.orEmpty()
+        }
+        val admins = if (update.adminsList.isNotEmpty()) {
+            update.adminsList.toList()
+        } else {
+            existing?.admins.orEmpty()
+        }
+
+        messages.upsertGroup(
+            id = id,
+            name = update.name.ifEmpty { existing?.name ?: "Group" },
+            distributionId = distributionId,
+            revision = maxOf(update.revision, existing?.revision ?: 0),
+            members = members,
+            admins = admins,
+        )
+        if (update.description.isNotEmpty()) messages.setGroupDescription(id, update.description)
+        if (update.hasAvatar() || update.announceOnly != (existing?.isAnnounceOnly ?: false)) {
+            messages.setGroupAnnounceOnly(id, update.announceOnly)
+        }
+
+        return Outcome(
+            conversationId = messages.groupConversationId(id),
+            peerAccount = sender,
+            notificationBody = null, // roster changes are system lines, not notifications
+        )
     }
 
     private fun applyText(

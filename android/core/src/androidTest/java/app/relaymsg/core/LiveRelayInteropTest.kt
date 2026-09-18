@@ -65,6 +65,7 @@ class LiveRelayInteropTest {
 
     /** A fresh account, store and connected client for one test. */
     private class Harness(
+        val pipeline: EnvelopePipeline,
         val username: String,
         val credentials: RelayCredentials,
         val api: RelayApiClient,
@@ -110,7 +111,10 @@ class LiveRelayInteropTest {
         messenger.bootstrap(authPublicKey = authKey.publicKey(), accessKey = accessKey)
         Log.i(TAG, "bootstrapped: auth key uploaded, prekeys published, access key set")
 
-        Harness(username, credentials, api, messenger, RelayWebSocket(server, auth), store, masterKeys, authKey)
+        Harness(
+            EnvelopePipeline(messenger, store.messages, credentials.accountId),
+            username, credentials, api, messenger, RelayWebSocket(server, auth), store, masterKeys, authKey,
+        )
     }
 
     private fun Harness.cleanUp() {
@@ -138,6 +142,108 @@ class LiveRelayInteropTest {
             assertTrue(!devices.single().mailboxId.isNullOrEmpty())
             } finally {
                 harness.cleanUp()
+            }
+        }
+    }
+
+    @Test
+    fun groupMessageEncryptedOnceReachesEveryMember() {
+        // The sender-key path end to end: a group is announced, the members learn
+        // the roster from the update alone (the relay stores NO group state), the
+        // sender distributes its sender key pairwise, and one ciphertext is fanned
+        // out to everyone.
+        runBlocking {
+            val alice = buildHarness()
+            val bob = buildHarness()
+            try {
+                val received = Channel<DecryptedEnvelope>(Channel.UNLIMITED)
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                val applied = Channel<EnvelopePipeline.Outcome>(Channel.UNLIMITED)
+
+                suspend fun connect(h: Harness, sink: Channel<EnvelopePipeline.Outcome>?) {
+                    val drained = Channel<Unit>(Channel.CONFLATED)
+                    h.socket.connect()
+                        .onEach { event ->
+                            when (event) {
+                                is RelayEvent.QueueDrained -> drained.trySend(Unit)
+                                is RelayEvent.Envelope ->
+                                    runCatching { h.pipeline.apply(event.envelope) }
+                                        .getOrNull()?.let { sink?.trySend(it) }
+                                else -> Unit
+                            }
+                        }
+                        .launchIn(scope)
+                    withTimeoutOrNull(30_000) { drained.receive() }
+                }
+                connect(bob, applied)
+                connect(alice, null)
+
+                // Alice creates the group locally and announces it. Bob has never
+                // heard of it until this update lands.
+                val groupId = UUID.randomUUID().toString()
+                val distributionId = UUID.randomUUID().toString()
+                val members = listOf(alice.credentials.accountId, bob.credentials.accountId)
+
+                alice.store.messages.upsertGroup(
+                    groupId, "Interop", distributionId, 1, members,
+                    listOf(alice.credentials.accountId),
+                )
+                val update = alice.messenger.buildGroupUpdate(
+                    groupId = groupId,
+                    action = relay.content.ContentOuterClass.GroupUpdate.Action.CREATE,
+                    revision = 1,
+                    name = "Interop",
+                    members = members,
+                    admins = listOf(alice.credentials.accountId),
+                    distributionId = distributionId,
+                )
+                alice.messenger.sendToGroupMembers(
+                    alice.socket, members, update.toByteArray(), System.currentTimeMillis(),
+                )
+
+                // Bob must end up with the roster purely from that message.
+                assertTrue(
+                    "bob never received the group update",
+                    withTimeoutOrNull(45_000) { applied.receive() } != null,
+                )
+                val bobsGroup = requireNotNull(bob.store.messages.group(groupId)) {
+                    "bob has no group after the CREATE update"
+                }
+                assertEquals("Interop", bobsGroup.name)
+                assertEquals(members.sorted(), bobsGroup.members.sorted())
+                assertEquals(distributionId, bobsGroup.distributionId)
+
+                // Now the message itself: one sender-key ciphertext, fanned out.
+                val timestamp = System.currentTimeMillis()
+                val body = "group hello \u2713 $timestamp"
+                val outcome = alice.messenger.sendGroupMessage(
+                    socket = alice.socket,
+                    groupId = groupId,
+                    distributionId = distributionId,
+                    members = members,
+                    plaintext = alice.messenger.buildGroupTextContent(groupId, body, timestamp).toByteArray(),
+                    clientTimestamp = timestamp,
+                )
+                assertTrue("group send rejected: $outcome", outcome is SendOutcome.Ok)
+
+                // Bob receives the SKDM first, then the sender-key message.
+                var delivered: EnvelopePipeline.Outcome? = null
+                withTimeoutOrNull(60_000) {
+                    while (true) {
+                        val next = applied.receive()
+                        if (next.conversationId != null && !next.isDuplicate) {
+                            val stored = bob.store.messages.messages(next.conversationId!!)
+                            if (stored.any { it.body == body }) { delivered = next; break }
+                        }
+                    }
+                }
+                assertTrue("bob never decrypted the group message", delivered != null)
+                Log.i(TAG, "group message decrypted by ${bob.username} via sender key")
+
+                scope.cancel()
+            } finally {
+                alice.cleanUp()
+                bob.cleanUp()
             }
         }
     }

@@ -12,6 +12,7 @@ import app.relaymsg.net.RelayWebSocket
 import app.relaymsg.net.SendOutcome
 import app.relaymsg.storage.MessageStore
 import app.relaymsg.storage.SecureStore
+import java.util.UUID
 import org.signal.libsignal.protocol.SignalProtocolAddress
 import relay.content.ContentOuterClass.Content
 import relay.content.content
@@ -25,6 +26,11 @@ data class DecryptedEnvelope(
     val envelopeId: String,
     /** The E2E-attested sender, never the server-stamped field when both exist. */
     val senderAccount: String,
+    /**
+     * The sending device. Sender keys are keyed by (account, device), so a
+     * distribution message from one device of a peer says nothing about another.
+     */
+    val senderDeviceId: Int,
     val content: Content,
 )
 
@@ -311,6 +317,136 @@ class RelayMessenger(
         return fetched.first
     }
 
+    // ----------------------------------------------------------------- groups
+
+    /**
+     * Builds a `GroupUpdate` content for [group], stamped as this device.
+     *
+     * Every field the recipients need travels here — the relay stores no group
+     * state at all, so an update that omits the roster leaves recipients with a
+     * stale one.
+     */
+    fun buildGroupUpdate(
+        groupId: String,
+        action: relay.content.ContentOuterClass.GroupUpdate.Action,
+        revision: Long,
+        name: String = "",
+        members: List<String> = emptyList(),
+        admins: List<String> = emptyList(),
+        target: String = "",
+        distributionId: String = "",
+    ): Content = content {
+        groupUpdate = relay.content.groupUpdate {
+            this.action = action
+            this.revision = revision
+            this.actor = credentials.accountId
+            if (name.isNotEmpty()) this.name = name
+            if (target.isNotEmpty()) this.target = target
+            if (distributionId.isNotEmpty()) this.distributionId = distributionId
+            if (members.isNotEmpty()) this.members.addAll(members)
+            if (admins.isNotEmpty()) this.admins.addAll(admins)
+        }
+        this.groupId = groupId
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+    }
+
+    /** A group message, encrypted once under our sender key for this epoch. */
+    fun buildGroupTextContent(groupId: String, body: String, timestamp: Long): Content =
+        buildTextContent(body, timestamp, groupId)
+
+    /**
+     * Hands our sender key to any member who does not yet have it for this
+     * epoch, over their **pairwise** session.
+     *
+     * Tracked per (group, epoch, member) so each member is served once —
+     * redistributing on every send would be wasteful and, worse, would reset
+     * their ratchet state for the epoch.
+     */
+    suspend fun distributeSenderKeyIfNeeded(
+        socket: RelayWebSocket,
+        groupId: String,
+        distributionId: String,
+        members: List<String>,
+    ) {
+        val epochKey = "skdm:$groupId:$distributionId"
+        val alreadySent = store.messages.kvGet(epochKey)
+            ?.decodeToString()?.split(",")?.filter { it.isNotBlank() }?.toMutableSet()
+            ?: mutableSetOf()
+        val targets = members.filter { it != credentials.accountId && it !in alreadySent }
+        if (targets.isEmpty()) return
+
+        val skdm = engine.senderKeyDistributionMessage(UUID.fromString(distributionId))
+        val payload = content {
+            senderKeyDistribution = relay.content.senderKeyDistribution {
+                data = com.google.protobuf.ByteString.copyFrom(skdm)
+                this.distributionId = distributionId
+            }
+            this.groupId = groupId
+            senderAccountId = credentials.accountId
+            senderDeviceId = credentials.deviceId
+        }.toByteArray()
+
+        for (member in targets) {
+            val delivered = runCatching {
+                sendOverWebSocket(socket, member, payload, System.currentTimeMillis())
+            }.getOrNull()
+            if (delivered is SendOutcome.Ok) alreadySent += member
+        }
+        store.messages.kvPut(epochKey, alreadySent.joinToString(",").toByteArray())
+    }
+
+    /**
+     * Sends a group message by encrypting **once** with our sender key and
+     * fanning the identical ciphertext out to every member's devices.
+     *
+     * Note iOS does NOT use this path while sealed sender is on — it sends
+     * individual pairwise sealed copies instead, since a sealed message cannot
+     * be a broadcast without multi-recipient sealing. Both must be handled on
+     * receive; this is the sender-key half (PROTOCOL.md §1.4).
+     */
+    suspend fun sendGroupMessage(
+        socket: RelayWebSocket,
+        groupId: String,
+        distributionId: String,
+        members: List<String>,
+        plaintext: ByteArray,
+        clientTimestamp: Long,
+    ): SendOutcome {
+        distributeSenderKeyIfNeeded(socket, groupId, distributionId, members)
+
+        val padded = ContentPadding.pad(plaintext)
+        val ciphertext = engine.groupEncrypt(padded, UUID.fromString(distributionId))
+
+        var worst: SendOutcome = SendOutcome.Ok(0)
+        for (member in members.filter { it != credentials.accountId }) {
+            val devices = addressableDevices(member)
+            for (device in devices) {
+                val mailboxId = device.mailboxId
+                if (mailboxId.isNullOrEmpty()) continue
+                val outcome = socket.send(
+                    mailboxId = mailboxId,
+                    payload = DeviceMessagePayload(device.id, device.registrationId, ciphertext),
+                    clientTimestamp = clientTimestamp,
+                )
+                if (outcome !is SendOutcome.Ok && worst is SendOutcome.Ok) worst = outcome
+            }
+        }
+        return worst
+    }
+
+    /** Sends a pairwise (non-sender-key) payload to each member. Used for updates. */
+    suspend fun sendToGroupMembers(
+        socket: RelayWebSocket,
+        members: List<String>,
+        plaintext: ByteArray,
+        clientTimestamp: Long,
+    ) {
+        for (member in members.filter { it != credentials.accountId }) {
+            runCatching { sendOverWebSocket(socket, member, plaintext, clientTimestamp) }
+        }
+    }
+
     // -------------------------------------------------------------- receiving
 
     /**
@@ -353,7 +489,12 @@ class RelayMessenger(
         val attested =
             if (content.senderAccountId.isNotEmpty()) content.senderAccountId else senderAddress.name
 
-        return DecryptedEnvelope(envelope.id, attested, content)
+        return DecryptedEnvelope(envelope.id, attested, senderAddress.deviceId, content)
+    }
+
+    /** Records a peer device's sender key so their group messages can be decrypted. */
+    fun processSenderKeyDistribution(data: ByteArray, account: String, deviceId: Int) {
+        engine.processSenderKeyDistribution(data, SignalProtocolAddress(account, deviceId))
     }
 
     /** Convenience for callers that only need the store. */
