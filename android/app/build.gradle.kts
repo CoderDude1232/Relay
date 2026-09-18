@@ -67,6 +67,24 @@ android {
             // next to the real one. Without this the APK is several hundred MB.
             excludes += "**/libsignal_jni_testing.so"
         }
+        resources {
+            // libsignal-android depends on the JVM libsignal-client, which
+            // carries desktop natives as ordinary jar resources: macOS dylibs
+            // and Windows DLLs, ~178 MB of them. They sit at the APK root and
+            // can never be loaded on Android. The real Android library is a
+            // jniLib under lib/<abi>/ and is not matched by these patterns.
+            excludes += listOf(
+                "libsignal_jni*.dylib",
+                "libsignal_jni*.dll",
+                "signal_jni*.dll",
+                // The Linux desktop builds, which carry an arch suffix the
+                // Android library does not.
+                "libsignal_jni_amd64.so",
+                "libsignal_jni_aarch64.so",
+                "libsignal_jni_testing_amd64.so",
+                "libsignal_jni_testing_aarch64.so",
+            )
+        }
     }
 }
 
