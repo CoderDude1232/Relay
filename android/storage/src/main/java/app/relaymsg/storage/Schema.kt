@@ -21,14 +21,27 @@ internal object Schema {
     val STATEMENTS: List<String> = listOf(
         // --- libsignal state -------------------------------------------------
         """
+        -- Keyed by (account, device), NOT by account alone.
+        --
+        -- iOS keys this table by account id. That works only while every device of
+        -- an account shares one identity key, which is Signal's model but NOT
+        -- Relay's: each device generates its own identity in its own Keychain or
+        -- Keystore, so a two-device peer legitimately presents two identity keys.
+        -- With an account-keyed table the second device's bundle looks like the
+        -- first device's key being replaced and libsignal raises
+        -- UntrustedIdentityException, making multi-device peers unreachable.
+        -- Verified against the live relay: account "eth" has two devices with two
+        -- distinct identity keys.
         CREATE TABLE remote_identities (
-            address       TEXT PRIMARY KEY,      -- peer account id
+            address       TEXT NOT NULL,         -- peer account id
+            device_id     INTEGER NOT NULL,
             identity_key  BLOB NOT NULL,
             verified      INTEGER NOT NULL DEFAULT 0,
             first_seen_at INTEGER NOT NULL,
             -- The key in effect when the user last verified. Lets the UI tell
             -- "never verified" (NULL) from "was verified, key has since changed".
-            verified_key  BLOB
+            verified_key  BLOB,
+            PRIMARY KEY (address, device_id)
         );
         """,
         """

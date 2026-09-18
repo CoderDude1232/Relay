@@ -54,11 +54,12 @@ class SqlCipherSignalStore(
         // the UI can still tell "was verified, key has since changed".
         db.run(
             """
-            INSERT INTO remote_identities (address, identity_key, verified, first_seen_at)
-            VALUES (?, ?, 0, ?)
-            ON CONFLICT (address) DO UPDATE SET identity_key = excluded.identity_key, verified = 0
+            INSERT INTO remote_identities (address, device_id, identity_key, verified, first_seen_at)
+            VALUES (?, ?, ?, 0, ?)
+            ON CONFLICT (address, device_id)
+            DO UPDATE SET identity_key = excluded.identity_key, verified = 0
             """,
-            listOf(address.name, identity.serialize(), now()),
+            listOf(address.name, address.deviceId, identity.serialize(), now()),
         )
         return if (existing == null) IdentityChange.NEW_OR_UNCHANGED else IdentityChange.REPLACED_EXISTING
     }
@@ -74,9 +75,16 @@ class SqlCipherSignalStore(
 
     override fun getIdentity(address: SignalProtocolAddress): IdentityKey? =
         db.query(
-            "SELECT identity_key FROM remote_identities WHERE address = ?",
-            listOf(address.name),
+            "SELECT identity_key FROM remote_identities WHERE address = ? AND device_id = ?",
+            listOf(address.name, address.deviceId),
         ) { IdentityKey(it.blob(0)) }.firstOrNull()
+
+    /** Every device identity recorded for a peer, lowest device id first. */
+    fun identities(address: String): List<Pair<Int, IdentityKey>> =
+        db.query(
+            "SELECT device_id, identity_key FROM remote_identities WHERE address = ? ORDER BY device_id",
+            listOf(address),
+        ) { it.int(0) to IdentityKey(it.blob(1)) }
 
     // ------------------------------------------------- verification state
 
@@ -100,6 +108,8 @@ class SqlCipherSignalStore(
      * which also dismisses a pending "changed" warning.
      */
     fun setVerified(verified: Boolean, address: String) {
+        // Verification is a user-facing statement about a *person*, so it applies
+        // to every device of theirs we know about.
         if (verified) {
             db.run(
                 "UPDATE remote_identities SET verified = 1, verified_key = identity_key WHERE address = ?",
@@ -113,18 +123,32 @@ class SqlCipherSignalStore(
         }
     }
 
-    fun verificationState(address: String): VerificationState =
-        db.query(
+    /**
+     * The peer's verification state, aggregated across their devices.
+     *
+     * CHANGED wins over everything: if any device's key has changed since the user
+     * verified it, they should be warned. VERIFIED requires every known device to
+     * be verified, so newly linked device does not silently inherit trust.
+     */
+    fun verificationState(address: String): VerificationState {
+        val rows = db.query(
             "SELECT verified, identity_key, verified_key FROM remote_identities WHERE address = ?",
             listOf(address),
         ) { row ->
             when {
+                row.blobOrNull(2) != null && !row.blob(2).contentEquals(row.blob(1)) ->
+                    VerificationState.CHANGED
                 row.int(0) == 1 -> VerificationState.VERIFIED
-                row.blobOrNull(2) == null -> VerificationState.UNVERIFIED
-                !row.blob(2).contentEquals(row.blob(1)) -> VerificationState.CHANGED
                 else -> VerificationState.UNVERIFIED
             }
-        }.firstOrNull() ?: VerificationState.UNVERIFIED
+        }
+        return when {
+            rows.isEmpty() -> VerificationState.UNVERIFIED
+            rows.any { it == VerificationState.CHANGED } -> VerificationState.CHANGED
+            rows.all { it == VerificationState.VERIFIED } -> VerificationState.VERIFIED
+            else -> VerificationState.UNVERIFIED
+        }
+    }
 
     // ------------------------------------------------------------ PreKeyStore
 

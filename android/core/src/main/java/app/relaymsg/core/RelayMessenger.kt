@@ -1,0 +1,353 @@
+package app.relaymsg.core
+
+import app.relaymsg.crypto.CryptoEngine
+import app.relaymsg.crypto.MessageKind
+import app.relaymsg.net.DeviceMessagePayload
+import app.relaymsg.net.IncomingEnvelope
+import app.relaymsg.net.PreKeyMaintainer
+import app.relaymsg.net.RelayApiClient
+import app.relaymsg.net.RelayApiException
+import app.relaymsg.net.RelayCredentials
+import app.relaymsg.net.RelayWebSocket
+import app.relaymsg.net.SendOutcome
+import app.relaymsg.storage.MessageStore
+import app.relaymsg.storage.SecureStore
+import org.signal.libsignal.protocol.SignalProtocolAddress
+import relay.content.ContentOuterClass.Content
+import relay.content.content
+import relay.content.textMessage
+
+/** A peer device we can address: its id, opaque mailbox and registration id. */
+data class PeerDevice(val id: Int, val mailboxId: String?, val registrationId: Int)
+
+/** A decrypted incoming message, once the envelope pipeline is done with it. */
+data class DecryptedEnvelope(
+    val envelopeId: String,
+    /** The E2E-attested sender, never the server-stamped field when both exist. */
+    val senderAccount: String,
+    val content: Content,
+)
+
+/**
+ * Orchestrates sending and receiving — the counterpart of iOS's
+ * `MessagingService`, minus the UI concerns.
+ *
+ * The fan-out rules it implements are the subtle part; see PROTOCOL.md §4.
+ */
+class RelayMessenger(
+    private val api: RelayApiClient,
+    private val engine: CryptoEngine,
+    private val store: SecureStore,
+    private val credentials: RelayCredentials,
+    private val sealedSenderTrustRoot: ByteArray? = null,
+) {
+    private val peerAccessKeys = mutableMapOf<String, ByteArray>()
+    private var senderCertificate: Pair<ByteArray, Long>? = null
+
+    /** Prekey ids come from a monotonic counter in the encrypted kv table. */
+    private val allocator = object : PreKeyMaintainer.IdAllocator {
+        override fun allocate(count: Int): IntRange {
+            val key = "next-prekey-id"
+            val current = store.messages.kvGet(key)?.toString(Charsets.UTF_8)?.toIntOrNull() ?: 1
+            val next = current + count
+            store.messages.kvPut(key, next.toString().toByteArray())
+            return current until next
+        }
+    }
+
+    // ------------------------------------------------------------- bootstrap
+
+    /**
+     * Brings a brand-new device fully online.
+     *
+     * Order matters: the auth key must be uploaded over Basic before anything can
+     * be signed, and keys must be published before peers can start a session.
+     */
+    suspend fun bootstrap(authPublicKey: ByteArray, accessKey: ByteArray) {
+        api.uploadDeviceAuthKeyWithBasicAuth(authPublicKey)
+        PreKeyMaintainer().publishInitialKeys(api, engine, allocator)
+        api.setAccessKey(accessKey)
+    }
+
+    /** Re-publishes signed and Kyber prekeys, and tops up the one-time pool. */
+    suspend fun refreshKeys() {
+        val maintainer = PreKeyMaintainer()
+        maintainer.republishSignedPreKeys(api, engine, allocator)
+        maintainer.replenishIfNeeded(api, engine, allocator)
+    }
+
+    // -------------------------------------------------------------- sessions
+
+    /**
+     * Fetches fresh bundles for every device of [account] and establishes
+     * sessions, recording the device list and the peer's access key.
+     *
+     * Our own device is skipped: libsignal refuses a session to self, and when
+     * refreshing our own account for multi-device sync the relay returns this
+     * device's bundle too — without the skip that aborts the whole refresh.
+     */
+    suspend fun refreshSessions(account: String): List<PeerDevice> {
+        val (bundles, accessKey) = api.fetchPreKeyBundles(account)
+        accessKey?.let { peerAccessKeys[account] = it }
+
+        val devices = bundles.mapNotNull { bundle ->
+            if (account == credentials.accountId && bundle.deviceId == credentials.deviceId) {
+                return@mapNotNull null
+            }
+            engine.processPeerBundle(bundle, SignalProtocolAddress(account, bundle.deviceId))
+            PeerDevice(bundle.deviceId, bundle.mailboxId, bundle.registrationId)
+        }
+        storeKnownDevices(account, devices)
+        return devices
+    }
+
+    private fun storeKnownDevices(account: String, devices: List<PeerDevice>) {
+        val encoded = devices.joinToString(";") { "${it.id},${it.mailboxId ?: ""},${it.registrationId}" }
+        store.messages.kvPut("peer-devices:$account", encoded.toByteArray())
+    }
+
+    private fun knownDevices(account: String): List<PeerDevice> =
+        store.messages.kvGet("peer-devices:$account")
+            ?.toString(Charsets.UTF_8)
+            ?.split(";")
+            ?.filter { it.isNotBlank() }
+            ?.mapNotNull { row ->
+                val parts = row.split(",")
+                if (parts.size != 3) return@mapNotNull null
+                PeerDevice(
+                    id = parts[0].toIntOrNull() ?: return@mapNotNull null,
+                    mailboxId = parts[1].ifEmpty { null },
+                    registrationId = parts[2].toIntOrNull() ?: 0,
+                )
+            }
+            .orEmpty()
+
+    /** Known devices, refreshing when absent or missing a mailbox id. */
+    private suspend fun addressableDevices(account: String): List<PeerDevice> {
+        val known = knownDevices(account)
+        if (known.isNotEmpty() && known.none { it.mailboxId.isNullOrEmpty() }) return known
+        return refreshSessions(account)
+    }
+
+    // ---------------------------------------------------------------- sending
+
+    /** Builds a `Content` carrying a text message, stamped as this device. */
+    fun buildTextContent(body: String, timestamp: Long, groupId: String? = null): Content =
+        content {
+            text = textMessage {
+                this.body = body
+                this.timestamp = timestamp
+            }
+            // Recipients prefer these over the envelope's server-stamped sender,
+            // and for sealed messages they are the only self-declared identity —
+            // checked against the certificate to catch spoofing.
+            senderAccountId = credentials.accountId
+            senderDeviceId = credentials.deviceId
+            groupId?.let { this.groupId = it }
+        }
+
+    /**
+     * Sends [plaintext] to every device of [account] over the authenticated
+     * WebSocket, one frame per mailbox, applying the mismatch-retry rule.
+     *
+     * The rule matters: on a cross-account send the relay reports **every other
+     * device** of the destination as missing, including ones an earlier frame in
+     * this same send already reached. Retrying all of them duplicates messages,
+     * so only genuinely unaddressed devices plus stale ones are retried, once.
+     */
+    suspend fun sendOverWebSocket(
+        socket: RelayWebSocket,
+        account: String,
+        plaintext: ByteArray,
+        clientTimestamp: Long,
+        ephemeral: Boolean = false,
+    ): SendOutcome {
+        val payload = if (ephemeral) plaintext else ContentPadding.pad(plaintext)
+        var devices = addressableDevices(account)
+        val firstRound = devices.map { it.id }.toSet()
+
+        var outcome = deliver(socket, account, devices, payload, clientTimestamp, ephemeral)
+        if (outcome !is SendOutcome.MismatchedDevices) return outcome
+
+        refreshSessions(account)
+        devices = addressableDevices(account)
+        val retryIds = (outcome.missing.toSet() - firstRound) + outcome.stale.toSet()
+        if (retryIds.isEmpty()) {
+            // Everything the relay called "missing" was already delivered to.
+            return SendOutcome.Ok(0)
+        }
+
+        outcome = deliver(
+            socket, account, devices.filter { it.id in retryIds }, payload, clientTimestamp, ephemeral,
+        )
+        if (outcome is SendOutcome.MismatchedDevices && outcome.extra.isEmpty()) {
+            val addressed = firstRound + retryIds
+            if ((outcome.missing + outcome.stale).all { it in addressed }) {
+                return SendOutcome.Ok(0)
+            }
+        }
+        return outcome
+    }
+
+    /** One frame per mailbox, accumulating mismatch info rather than stopping early. */
+    private suspend fun deliver(
+        socket: RelayWebSocket,
+        account: String,
+        devices: List<PeerDevice>,
+        payload: ByteArray,
+        clientTimestamp: Long,
+        ephemeral: Boolean,
+    ): SendOutcome {
+        val missing = mutableListOf<Int>()
+        val extra = mutableListOf<Int>()
+        val stale = mutableListOf<Int>()
+
+        for (device in devices) {
+            val mailboxId = device.mailboxId
+            if (mailboxId.isNullOrEmpty()) continue
+            val address = SignalProtocolAddress(account, device.id)
+            val encrypted = engine.encrypt(payload, address)
+            val outcome = socket.send(
+                mailboxId = mailboxId,
+                payload = DeviceMessagePayload(device.id, device.registrationId, encrypted),
+                clientTimestamp = clientTimestamp,
+                ephemeral = ephemeral,
+            )
+            when (outcome) {
+                is SendOutcome.Ok -> Unit
+                is SendOutcome.MismatchedDevices -> {
+                    // Keep going: devices after a stale one still need addressing.
+                    missing += outcome.missing
+                    extra += outcome.extra
+                    stale += outcome.stale
+                }
+                else -> return outcome
+            }
+        }
+        return if (missing.isEmpty() && extra.isEmpty() && stale.isEmpty()) {
+            SendOutcome.Ok(0)
+        } else {
+            SendOutcome.MismatchedDevices(missing, extra, stale)
+        }
+    }
+
+    /**
+     * Sends sealed, over the unauthenticated delivery endpoint, so the relay
+     * never learns the sender. Requires the peer to have published an access key.
+     *
+     * A `403` means a stale mailbox or rotated access key, so the failed devices
+     * are refreshed and retried once — retrying all of them would duplicate the
+     * copies that already landed.
+     */
+    suspend fun sendSealed(
+        account: String,
+        plaintext: ByteArray,
+        clientTimestamp: Long,
+        ephemeral: Boolean = false,
+    ) {
+        val payload = if (ephemeral) plaintext else ContentPadding.pad(plaintext)
+        val certificate = senderCertificate()
+        if (peerAccessKeys[account] == null) refreshSessions(account)
+        val accessKey = peerAccessKeys[account]
+            ?: throw IllegalStateException("recipient has not published a sealed-sender access key")
+
+        val failed = sealedPass(account, addressableDevices(account), payload, certificate, accessKey, clientTimestamp, ephemeral)
+        if (failed.isEmpty()) return
+
+        refreshSessions(account)
+        val refreshedKey = peerAccessKeys[account] ?: accessKey
+        val retry = addressableDevices(account).filter { device -> failed.any { it.id == device.id } }
+        val stillFailed = sealedPass(account, retry, payload, certificate, refreshedKey, clientTimestamp, ephemeral)
+        if (stillFailed.isNotEmpty()) throw IllegalStateException("sealed delivery rejected")
+    }
+
+    private suspend fun sealedPass(
+        account: String,
+        devices: List<PeerDevice>,
+        payload: ByteArray,
+        certificate: ByteArray,
+        accessKey: ByteArray,
+        clientTimestamp: Long,
+        ephemeral: Boolean,
+    ): List<PeerDevice> {
+        val failed = mutableListOf<PeerDevice>()
+        for (device in devices) {
+            val mailboxId = device.mailboxId
+            if (mailboxId.isNullOrEmpty()) continue
+            val address = SignalProtocolAddress(account, device.id)
+            if (!engine.hasSession(address)) refreshSessions(account)
+            val sealed = engine.sealedEncrypt(payload, address, certificate)
+            try {
+                api.sendSealed(
+                    mailboxId = mailboxId,
+                    type = MessageKind.MESSAGE,
+                    content = sealed,
+                    accessKey = accessKey,
+                    ephemeral = ephemeral,
+                    clientTimestamp = clientTimestamp,
+                )
+            } catch (e: RelayApiException) {
+                if (e.status == 403) failed += device else throw e
+            }
+        }
+        return failed
+    }
+
+    /** The cached delivery certificate, refreshed within a day of expiry. */
+    private suspend fun senderCertificate(): ByteArray {
+        val cached = senderCertificate
+        val now = System.currentTimeMillis()
+        if (cached != null && cached.second - now > 24 * 3600_000L) return cached.first
+        val fetched = api.deliveryCertificate()
+        senderCertificate = fetched
+        return fetched.first
+    }
+
+    // -------------------------------------------------------------- receiving
+
+    /**
+     * Decrypts one envelope and returns its content, or null when it is a
+     * duplicate.
+     *
+     * Order is deliberate: claim the id first (Double Ratchet decryption is
+     * destructive, so exactly one claimant may proceed), then recover the sender
+     * — cryptographically for sealed envelopes — then reject a plaintext that
+     * names a different sender than the certificate does.
+     */
+    fun processEnvelope(envelope: IncomingEnvelope): DecryptedEnvelope? {
+        if (!store.messages.claimEnvelope(envelope.id)) return null
+
+        val senderAddress: SignalProtocolAddress
+        val plaintext: ByteArray
+        if (envelope.senderAccount.isEmpty()) {
+            val trustRoot = requireNotNull(sealedSenderTrustRoot) {
+                "a sealed envelope arrived but no trust root is configured"
+            }
+            // Validate at the time the relay accepted the message: a certificate
+            // that was valid then must still open after a delayed delivery.
+            val validationTime =
+                if (envelope.serverTimestamp > 0) envelope.serverTimestamp else System.currentTimeMillis()
+            val result = engine.sealedDecrypt(envelope.message.data, trustRoot, validationTime)
+            senderAddress = SignalProtocolAddress(result.senderAccountId, result.senderDeviceId)
+            plaintext = result.plaintext
+        } else {
+            senderAddress = SignalProtocolAddress(envelope.senderAccount, envelope.senderDevice)
+            plaintext = engine.decrypt(envelope.message, senderAddress)
+        }
+
+        val content = Content.parseFrom(plaintext)
+        if (envelope.senderAccount.isEmpty() &&
+            content.senderAccountId.isNotEmpty() &&
+            content.senderAccountId != senderAddress.name
+        ) {
+            throw IllegalStateException("sealed sender spoofed: plaintext claims a different account")
+        }
+        val attested =
+            if (content.senderAccountId.isNotEmpty()) content.senderAccountId else senderAddress.name
+
+        return DecryptedEnvelope(envelope.id, attested, content)
+    }
+
+    /** Convenience for callers that only need the store. */
+    val messages: MessageStore get() = store.messages
+}
