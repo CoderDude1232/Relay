@@ -22,6 +22,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -247,6 +249,8 @@ fun ChatScreen(
     onSendImage: (android.net.Uri) -> Unit,
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
     onBack: () -> Unit,
+    /** Places a call; `true` for video. Null hides the buttons — groups have no calls yet. */
+    onCall: ((Boolean) -> Unit)? = null,
 ) {
     val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
@@ -266,6 +270,16 @@ fun ChatScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    onCall?.let { call ->
+                        IconButton(onClick = { call(true) }) {
+                            Icon(Icons.Filled.Videocam, contentDescription = "Video call")
+                        }
+                        IconButton(onClick = { call(false) }) {
+                            Icon(Icons.Filled.Call, contentDescription = "Call")
+                        }
                     }
                 },
             )

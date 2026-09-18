@@ -1,6 +1,7 @@
 package app.relaymsg.push
 
 import android.content.Context
+import app.relaymsg.call.CallMedia
 import app.relaymsg.call.WebRtcCallTransport
 import app.relaymsg.core.RelayService
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +59,8 @@ object RelayRuntime {
                 onLocalCandidate = { json ->
                     scope.launch { runCatching { service.calls.sendLocalCandidate(json) } }
                 },
+                onRemoteVideo = CallMedia::setRemoteVideo,
+                onLocalVideo = CallMedia::setLocalVideo,
             )
         }
     }

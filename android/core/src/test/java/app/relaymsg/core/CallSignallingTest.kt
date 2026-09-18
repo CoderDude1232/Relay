@@ -40,6 +40,12 @@ class CallSignallingTest {
         override suspend fun createAnswer(remoteSdp: String, isVideo: Boolean) = "answer-sdp"
         override suspend fun acceptAnswer(remoteSdp: String) {}
         override suspend fun addIceCandidate(candidateJson: String) { applied += candidateJson }
+        // Named off the interface methods on purpose: a `var microphoneEnabled`
+        // would generate the same JVM setter signature as setMicrophoneEnabled.
+        var micOn = true
+        var speaker = false
+        override fun setMicrophoneEnabled(enabled: Boolean) { micOn = enabled }
+        override fun setSpeakerphoneOn(on: Boolean) { speaker = on }
         override fun close() { closed = true }
     }
 
@@ -188,6 +194,36 @@ class CallSignallingTest {
         calls.onSignal(signal(CallMessage.Type.HANGUP, "some-other-call"))
         assertEquals("unrelated hangup must not end our call", CallState.OUTGOING_RINGING, calls.call.value?.state)
         assertEquals(callId, calls.call.value?.callId)
+    }
+
+    @Test
+    fun `mute and speaker are local only and never reach the wire`() = runTest {
+        val transport = FakeTransport()
+        val (calls, recorder) = manager(transport)
+        calls.placeCall(peer, isVideo = false)
+        recorder.sent.clear()
+
+        calls.setMuted(true)
+        assertFalse(transport.micOn)
+        assertTrue(calls.call.value!!.isMuted)
+
+        calls.setSpeakerOn(true)
+        assertTrue(transport.speaker)
+        assertTrue(calls.call.value!!.isSpeakerOn)
+
+        // A "they muted you" indicator would leak what is happening in someone's
+        // room, so nothing is signalled. iOS does not send one either.
+        assertTrue("muting must not be signalled", recorder.sent.isEmpty())
+    }
+
+    @Test
+    fun `mute with no call in progress is ignored`() = runTest {
+        val transport = FakeTransport()
+        val (calls, _) = manager(transport)
+        calls.setMuted(true)
+
+        assertNull(calls.call.value)
+        assertTrue("must not touch a transport that does not exist", transport.micOn)
     }
 
     @Test

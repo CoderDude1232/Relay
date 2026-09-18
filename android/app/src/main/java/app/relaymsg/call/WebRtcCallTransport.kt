@@ -3,7 +3,9 @@ package app.relaymsg.call
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import app.relaymsg.core.CallTransport
@@ -46,6 +48,8 @@ class WebRtcCallTransport(
     private val onLocalCandidate: (String) -> Unit,
     /** The peer's video track, once it arrives. Null when the call ends. */
     private val onRemoteVideo: (VideoTrack?) -> Unit = {},
+    /** This device's camera track, for the self-preview. Null when the call ends. */
+    private val onLocalVideo: (VideoTrack?) -> Unit = {},
 ) : CallTransport {
 
     private val audioManager =
@@ -101,8 +105,33 @@ class WebRtcCallTransport(
         if (hasRemoteDescription) pc.addIceCandidate(candidate) else pendingRemote += candidate
     }
 
+    override fun setMicrophoneEnabled(enabled: Boolean) {
+        audioTrack?.setEnabled(enabled)
+    }
+
+    override fun setSpeakerphoneOn(on: Boolean) {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val wanted = if (on) {
+                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                } else {
+                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                }
+                val device = audioManager.availableCommunicationDevices
+                    .firstOrNull { it.type == wanted }
+                // A tablet may have no earpiece at all; leaving routing alone
+                // beats forcing it somewhere that does not exist.
+                if (device != null) audioManager.setCommunicationDevice(device)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = on
+            }
+        }.onFailure { Log.w(TAG, "could not switch audio route", it) }
+    }
+
     override fun close() {
         onRemoteVideo(null)
+        onLocalVideo(null)
         runCatching { capturer?.stopCapture() }
         capturer?.dispose()
         surfaceHelper?.dispose()
@@ -213,6 +242,7 @@ class WebRtcCallTransport(
         surfaceHelper = helper
         videoTrack = track
         pc.addTrack(track, listOf(STREAM_ID))
+        onLocalVideo(track)
     }
 
     private fun markRemoteReady(pc: PeerConnection) {
@@ -244,6 +274,9 @@ class WebRtcCallTransport(
     }
 
     private fun restoreAudio() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { audioManager.clearCommunicationDevice() }
+        }
         previousAudioMode?.let { mode -> runCatching { audioManager.mode = mode } }
         previousAudioMode = null
     }

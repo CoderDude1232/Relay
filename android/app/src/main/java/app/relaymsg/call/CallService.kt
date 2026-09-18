@@ -21,7 +21,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Keeps the process alive and ringing for one incoming call.
+ * Keeps the process alive for one call, incoming or outgoing.
+ *
+ * Every call needs it, not just the ones that ring: an app backgrounded during a
+ * call has no claim on the CPU, and a frozen process is a dropped call.
  *
  * This is the Android half of the call-wake path. The relay's FCM message is
  * **high priority and data-only**, which is what buys a Doze exemption and a
@@ -35,7 +38,7 @@ import kotlinx.coroutines.launch
  * is what actually drives `CallManager` into `INCOMING_RINGING` and sends RINGING
  * back to the caller.
  */
-class IncomingCallService : Service() {
+class CallService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var wake: CallWake? = null
@@ -56,6 +59,7 @@ class IncomingCallService : Service() {
         when (intent?.action) {
             ACTION_DECLINE -> decline()
             ACTION_ACCEPT -> accept()
+            ACTION_ONGOING -> ongoing(intent)
             else -> ring(intent)
         }
         // Never restart with a null intent: a call that has already been missed
@@ -85,6 +89,28 @@ class IncomingCallService : Service() {
             Log.i(TAG, "full-screen intent not permitted; ringing as heads-up only")
         }
         beginRinging(incoming)
+    }
+
+    /**
+     * Holds an outgoing call up. No ring, no timeout — the state machine already
+     * gives up on its own, and the caller can see the screen.
+     */
+    private fun ongoing(intent: Intent) {
+        CallNotifications.ensureChannels(this)
+        val call = CallWake.fromIntent(intent)
+        if (call == null) {
+            goForeground(CallNotifications.incoming(this, UNKNOWN_CALLER))
+            finish(missed = false)
+            return
+        }
+        wake = call
+        goForeground(CallNotifications.ongoing(this, call))
+        if (ringing) return
+        ringing = true
+        scope.launch {
+            val relay = RelayRuntime.require(applicationContext) ?: return@launch finish(missed = false)
+            watchCall(relay)
+        }
     }
 
     private fun beginRinging(incoming: CallWake) {
@@ -213,6 +239,7 @@ class IncomingCallService : Service() {
         private const val TAG = "RelayCall"
 
         const val ACTION_RING = "app.relaymsg.call.RING"
+        const val ACTION_ONGOING = "app.relaymsg.call.ONGOING"
         const val ACTION_ACCEPT = "app.relaymsg.call.ACCEPT"
         const val ACTION_DECLINE = "app.relaymsg.call.DECLINE"
 
@@ -231,13 +258,33 @@ class IncomingCallService : Service() {
          * notification rather than dropping the call.
          */
         fun ring(context: Context, wake: CallWake) {
-            val intent = wake.putInto(Intent(context, IncomingCallService::class.java))
-                .setAction(ACTION_RING)
+            start(context, wake, ACTION_RING) {
+                CallNotifications.ringWithoutService(context, wake)
+            }
+        }
+
+        /**
+         * Holds up a call this device placed.
+         *
+         * Started from the foreground, so the background-start restrictions do
+         * not apply and there is nothing to fall back to.
+         */
+        fun ongoing(context: Context, wake: CallWake) {
+            start(context, wake, ACTION_ONGOING) {}
+        }
+
+        private inline fun start(
+            context: Context,
+            wake: CallWake,
+            action: String,
+            onRefused: () -> Unit,
+        ) {
+            val intent = wake.putInto(Intent(context, CallService::class.java)).setAction(action)
             try {
                 ContextCompat.startForegroundService(context, intent)
             } catch (t: Throwable) {
-                Log.w(TAG, "foreground service refused; ringing without one", t)
-                CallNotifications.ringWithoutService(context, wake)
+                Log.w(TAG, "foreground service refused for $action", t)
+                onRefused()
             }
         }
     }

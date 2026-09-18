@@ -23,6 +23,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import app.relaymsg.call.CallMedia
+import app.relaymsg.call.CallScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.OnboardingScreen
@@ -98,28 +100,68 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
 
     var openConversationId by remember { mutableStateOf<String?>(null) }
 
-    val open = openConversationId
-    if (open == null) {
-        ConversationListScreen(
-            username = phase.service.username,
-            connection = connection,
-            conversations = conversations,
-            titleFor = viewModel::titleFor,
-            busy = busy,
-            onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
-            onStartConversation = viewModel::startConversation,
-        )
-    } else {
-        val conversation = conversations.firstOrNull { it.id == open }
-        ChatScreen(
-            title = conversation?.let(viewModel::titleFor) ?: "Conversation",
-            messages = messages,
-            onSend = { body -> viewModel.send(open, body) },
-            onSendImage = { uri -> viewModel.sendImage(open, uri) },
-            loadAttachment = { viewModel.attachmentBytes(it) },
-            onBack = { viewModel.closeConversation(); openConversationId = null },
-        )
+    Box(Modifier.fillMaxSize()) {
+        val open = openConversationId
+        if (open == null) {
+            ConversationListScreen(
+                username = phase.service.username,
+                connection = connection,
+                conversations = conversations,
+                titleFor = viewModel::titleFor,
+                busy = busy,
+                onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
+                onStartConversation = viewModel::startConversation,
+            )
+        } else {
+            val conversation = conversations.firstOrNull { it.id == open }
+            ChatScreen(
+                title = conversation?.let(viewModel::titleFor) ?: "Conversation",
+                messages = messages,
+                onSend = { body -> viewModel.send(open, body) },
+                onSendImage = { uri -> viewModel.sendImage(open, uri) },
+                loadAttachment = { viewModel.attachmentBytes(it) },
+                onBack = { viewModel.closeConversation(); openConversationId = null },
+                // Group calls do not exist yet, and a group conversation's
+                // "peer" is the group id, which is not callable.
+                onCall = conversation
+                    ?.takeIf { it.groupId == null }
+                    ?.let { target -> { video -> viewModel.placeCall(target.peerAccount, video) } },
+            )
+        }
+
+        InCallOverlay(viewModel)
     }
+}
+
+/**
+ * The call UI, on top of whatever the app was showing.
+ *
+ * Covers calls placed from here and calls that arrived over the socket while the
+ * app was open — the ones no push wake ever fires for. A call that came in as a
+ * wake is already on screen in [app.relaymsg.call.IncomingCallActivity], which is
+ * what `CallMedia.fullScreen` reports, and rendering both would attach two
+ * renderers to one video track.
+ */
+@Composable
+private fun InCallOverlay(viewModel: RelayViewModel) {
+    val call by viewModel.call.collectAsState()
+    val fullScreenElsewhere by CallMedia.fullScreen.collectAsState()
+    val remoteVideo by CallMedia.remoteVideo.collectAsState()
+    val localVideo by CallMedia.localVideo.collectAsState()
+
+    val active = call ?: return
+    if (fullScreenElsewhere) return
+
+    CallScreen(
+        call = active,
+        peerName = viewModel.callerName(active),
+        remoteVideo = remoteVideo,
+        localVideo = localVideo,
+        onAccept = viewModel::acceptCall,
+        onHangUp = viewModel::hangUp,
+        onToggleMute = viewModel::toggleMute,
+        onToggleSpeaker = viewModel::toggleSpeaker,
+    )
 }
 
 @Composable

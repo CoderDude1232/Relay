@@ -21,6 +21,8 @@ data class ActiveCall(
     val state: CallState,
     val startedAt: Long,
     val connectedAt: Long? = null,
+    val isMuted: Boolean = false,
+    val isSpeakerOn: Boolean = false,
 )
 
 /**
@@ -40,6 +42,17 @@ interface CallTransport {
 
     /** Adds a remote ICE candidate (JSON-encoded RTCIceCandidate). */
     suspend fun addIceCandidate(candidateJson: String)
+
+    /**
+     * Mutes or unmutes the local microphone.
+     *
+     * A track-level enable, not a renegotiation: the peer sees silence, not a
+     * changed session, so there is nothing to signal and nothing to go wrong.
+     */
+    fun setMicrophoneEnabled(enabled: Boolean)
+
+    /** Routes call audio to the loudspeaker, or back to the earpiece. */
+    fun setSpeakerphoneOn(on: Boolean)
 
     /** Tears the peer connection down and releases audio/video devices. */
     fun close()
@@ -62,6 +75,8 @@ class NoMediaTransport : CallTransport {
 
     override suspend fun acceptAnswer(remoteSdp: String) = Unit
     override suspend fun addIceCandidate(candidateJson: String) = Unit
+    override fun setMicrophoneEnabled(enabled: Boolean) = Unit
+    override fun setSpeakerphoneOn(on: Boolean) = Unit
     override fun close() = Unit
 }
 
@@ -219,6 +234,26 @@ class CallManager(
         val current = _call.value ?: return null
         emit(current.peerAccount, CallSignalling.hangup(current.callId, ownAccount, ownDevice))
         return end(if (current.state == CallState.INCOMING_RINGING) CallEndReason.DECLINED else CallEndReason.HUNG_UP)
+    }
+
+    /**
+     * Mutes or unmutes the microphone.
+     *
+     * Local only — the peer is not told, deliberately. A "they muted" indicator
+     * would be a side channel about what is happening in someone's room, and iOS
+     * does not send one either.
+     */
+    fun setMuted(muted: Boolean) {
+        val current = _call.value ?: return
+        transport?.setMicrophoneEnabled(!muted)
+        _call.value = current.copy(isMuted = muted)
+    }
+
+    /** Switches between the loudspeaker and the earpiece. */
+    fun setSpeakerOn(on: Boolean) {
+        val current = _call.value ?: return
+        transport?.setSpeakerphoneOn(on)
+        _call.value = current.copy(isSpeakerOn = on)
     }
 
     /** Sends a locally-gathered ICE candidate to the peer. */

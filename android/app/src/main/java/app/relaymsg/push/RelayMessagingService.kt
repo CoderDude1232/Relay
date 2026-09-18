@@ -14,7 +14,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import app.relaymsg.MainActivity
 import app.relaymsg.call.CallWake
-import app.relaymsg.call.IncomingCallService
+import app.relaymsg.call.CallService
 import app.relaymsg.R
 import app.relaymsg.core.EnvelopePipeline
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -38,7 +38,7 @@ import kotlinx.coroutines.runBlocking
  *
  * `"call"` is the third kind and takes a different path entirely: it is what
  * stands in for iOS's PushKit, it is latency-critical, and it must ring rather
- * than notify. See [IncomingCallService] and PROTOCOL.md §7.5.1.
+ * than notify. See [CallService] and PROTOCOL.md §7.5.1.
  */
 class RelayMessagingService : FirebaseMessagingService() {
 
@@ -65,7 +65,7 @@ class RelayMessagingService : FirebaseMessagingService() {
         // is far longer than that. The foreground service it starts is what keeps
         // the process alive to do the rest.
         if (message.data["type"] == CallWake.TYPE) {
-            CallWake.from(message.data)?.let { IncomingCallService.ring(this, it) }
+            CallWake.from(message.data)?.let { CallService.ring(this, it) }
             return
         }
 

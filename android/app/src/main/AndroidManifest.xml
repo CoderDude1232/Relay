@@ -79,7 +79,7 @@
           background-start behaviour is written for exactly this case.
         -->
         <service
-            android:name=".call.IncomingCallService"
+            android:name=".call.CallService"
             android:exported="false"
             android:foregroundServiceType="phoneCall" />
 

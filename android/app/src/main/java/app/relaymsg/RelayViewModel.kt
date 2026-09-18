@@ -3,6 +3,9 @@ package app.relaymsg
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.relaymsg.call.CallService
+import app.relaymsg.call.CallWake
+import app.relaymsg.core.ActiveCall
 import app.relaymsg.core.ConnectionState
 import app.relaymsg.core.RelayService
 import app.relaymsg.push.RelayRuntime
@@ -135,6 +138,67 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
             _busy.value = false
         }
     }
+
+    // ----------------------------------------------------------------- calls
+
+    @Suppress("OPT_IN_USAGE")
+    val call: StateFlow<ActiveCall?> = _phase
+        .flatMapLatest { (it as? AppPhase.Ready)?.service?.calls?.call ?: flowOf(null) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun placeCall(peerAccount: String, isVideo: Boolean = false) {
+        val service = service ?: return
+        viewModelScope.launch {
+            val callId = service.calls.placeCall(peerAccount, isVideo) ?: return@launch
+            holdProcessOpen(service, peerAccount, callId, isVideo)
+        }
+    }
+
+    fun acceptCall() {
+        val service = service ?: return
+        val call = call.value ?: return
+        viewModelScope.launch {
+            if (service.calls.accept()) {
+                holdProcessOpen(service, call.peerAccount, call.callId, call.isVideo)
+            }
+        }
+    }
+
+    /**
+     * Puts the call behind a foreground service.
+     *
+     * Only needed for calls that started in the UI: one woken by a push is
+     * already inside [CallService]. Without it, backgrounding the app during a
+     * call lets the system freeze the process, which drops the call.
+     */
+    private fun holdProcessOpen(
+        service: RelayService,
+        peerAccount: String,
+        callId: String,
+        isVideo: Boolean,
+    ) = CallService.ongoing(
+        getApplication(),
+        CallWake(callId, peerAccount, service.displayName(peerAccount), isVideo),
+    )
+
+    fun hangUp() {
+        val service = service ?: return
+        viewModelScope.launch { service.calls.hangUp() }
+    }
+
+    fun toggleMute() {
+        val service = service ?: return
+        service.calls.setMuted(!(call.value?.isMuted ?: false))
+    }
+
+    fun toggleSpeaker() {
+        val service = service ?: return
+        service.calls.setSpeakerOn(!(call.value?.isSpeakerOn ?: false))
+    }
+
+    /** The name to show on a call, which is the conversation title if we have one. */
+    fun callerName(call: ActiveCall): String =
+        service?.displayName(call.peerAccount) ?: call.peerAccount.take(8)
 
     fun titleFor(conversation: Conversation): String =
         service?.conversationTitle(conversation) ?: conversation.peerAccount.take(8)

@@ -760,7 +760,10 @@ background wake-ups are missing. This mirrors iOS's own Stage 6 block.
 
 - `RelayMessagingService` branches on `type == "call"` **before** its blocking
   queue work — ringing is a few-hundred-millisecond job and the fetch is not.
-- `IncomingCallService` is a `foregroundServiceType="phoneCall"` service. It
+- `CallService` is a `foregroundServiceType="phoneCall"` service, used by
+  **every** call rather than only the ones that ring — an app backgrounded
+  mid-call has no claim on the CPU, and a frozen process is a dropped call. For
+  an incoming wake it
   posts the CallStyle **full-screen-intent** notification, brings the socket up
   (`RelayService.start()`, now idempotent — ANSWER/ICE are ephemeral and only
   reach a connected device), and drains the queue. The drain is what actually
@@ -834,10 +837,30 @@ Android-specific, no iOS counterpart:
   routing, hardware AEC, volume keys on the call stream); the previous mode is
   restored on close, since this process does not own it.
 
-**Not built yet:** the in-call UI (so `onRemoteVideo` has no renderer — video
-negotiates and captures but nothing displays it), group calls, ICE restart on
-failure, and speaker/Bluetooth routing controls. Nothing here has run on a
-device.
+#### 7.5.4 In-call UI
+
+One composable, `CallScreen`, for every call. `MainActivity` hosts it as an
+overlay for calls placed or received while the app is open — a call arriving over
+the socket fires no push wake, so that path has to exist — and
+`IncomingCallActivity` hosts the same composable over the lock screen for a call
+that came in as a wake. `CallMedia.fullScreen` says which one is showing; two
+renderers attached to one `VideoTrack` is not something to discover on a user's
+phone.
+
+`IncomingCallActivity` opens before the OFFER has been decrypted, so it renders a
+placeholder built from the push metadata alone and swaps to the real state once
+the queue drain produces it. It closes on the call going from existing to not
+existing, which covers hangup, decline, BUSY and a failed connect without
+enumerating them.
+
+**Mute and speaker are local and are never signalled.** A "they muted you"
+indicator would leak what is happening in someone's room; iOS sends nothing
+either. Mute is a track-level enable, so there is no renegotiation. Speaker uses
+`setCommunicationDevice` on API 31+ and falls back to `isSpeakerphoneOn`.
+
+**Not built yet:** group calls, ICE restart on failure, Bluetooth device
+selection, a call log, and camera switch/off during a call. Nothing here has run
+on a device.
 
 ### 7.6 Platform mappings (all proposals, pending your approval)
 
@@ -1128,8 +1151,12 @@ Done and verified live against `api.relaymsg.app`:
   Installed into `RelayService` by `RelayRuntime`, so the UI and a push wake get
   the same one.
 
-Remaining: the **in-call UI** (nothing renders remote video, and there is no
-screen for an active call), backup (Drive).
+- **Calls — in-call UI.** `CallScreen` (video + self-preview, duration, mute,
+  speaker, accept/hang up), call buttons in the chat top bar, and `CallService`
+  holding the process open for outgoing calls too (§7.5.4).
+
+Remaining: backup (Drive), then the long tail. Calls are **feature-complete for
+1:1 and completely unverified** — no part of the media path has run on hardware.
 
 **Push is written but never observed working.** Firebase initialises, a token is
 acquired and the relay accepts it. Two things blocked verification: the relay ran

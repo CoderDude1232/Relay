@@ -89,8 +89,8 @@ object CallNotifications {
             .setStyle(
                 NotificationCompat.CallStyle.forIncomingCall(
                     caller,
-                    action(context, IncomingCallService.ACTION_DECLINE, wake),
-                    action(context, IncomingCallService.ACTION_ACCEPT, wake),
+                    action(context, CallService.ACTION_DECLINE, wake),
+                    action(context, CallService.ACTION_ACCEPT, wake),
                 ),
             )
             .setFullScreenIntent(fullScreen(context, wake), true)
@@ -115,7 +115,7 @@ object CallNotifications {
             .setStyle(
                 NotificationCompat.CallStyle.forOngoingCall(
                     caller,
-                    action(context, IncomingCallService.ACTION_DECLINE, wake),
+                    action(context, CallService.ACTION_DECLINE, wake),
                 ),
             )
             .setContentIntent(fullScreen(context, wake))
@@ -192,7 +192,7 @@ object CallNotifications {
      * whether they were tapped on the lock screen or in the heads-up card.
      */
     private fun action(context: Context, action: String, wake: CallWake): PendingIntent {
-        val intent = wake.putInto(Intent(context, IncomingCallService::class.java)).setAction(action)
+        val intent = wake.putInto(Intent(context, CallService::class.java)).setAction(action)
         return PendingIntent.getService(
             context,
             action.hashCode(),
