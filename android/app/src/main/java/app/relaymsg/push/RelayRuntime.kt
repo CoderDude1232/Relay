@@ -1,7 +1,12 @@
 package app.relaymsg.push
 
 import android.content.Context
+import app.relaymsg.call.WebRtcCallTransport
 import app.relaymsg.core.RelayService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -21,12 +26,40 @@ import kotlinx.coroutines.sync.withLock
 object RelayRuntime {
     private val lock = Mutex()
 
+    /** Outlives any one call: local candidates keep arriving after connect. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     @Volatile
     private var service: RelayService? = null
 
     /** Registers the service the UI created, so push reuses it. */
-    fun attach(service: RelayService) {
+    fun attach(context: Context, service: RelayService) {
+        install(context, service)
         this.service = service
+    }
+
+    /**
+     * Gives the service its media transport.
+     *
+     * WebRTC lives in the app module, so `:core` ships a `NoMediaTransport` and
+     * the real factory is installed here — the one place every [RelayService] in
+     * this process passes through, whether it was created by the UI or restored
+     * by a push.
+     */
+    private fun install(context: Context, service: RelayService) {
+        val app = context.applicationContext
+        service.callTransportFactory = {
+            WebRtcCallTransport(
+                context = app,
+                icePlan = service::icePlan,
+                // Trickle ICE: candidates are gathered continuously and each one
+                // is signalled as it appears, rather than waiting for gathering
+                // to finish before sending the offer.
+                onLocalCandidate = { json ->
+                    scope.launch { runCatching { service.calls.sendLocalCandidate(json) } }
+                },
+            )
+        }
     }
 
     /**
@@ -39,7 +72,10 @@ object RelayRuntime {
         return lock.withLock {
             service ?: runCatching { RelayService.restore(context.applicationContext) }
                 .getOrNull()
-                ?.also { service = it }
+                ?.also { restored ->
+                    install(context, restored)
+                    service = restored
+                }
         }
     }
 

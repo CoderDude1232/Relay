@@ -11,6 +11,7 @@ import app.relaymsg.net.RelayEvent
 import app.relaymsg.net.RelayWebSocket
 import app.relaymsg.net.RequestSigner
 import app.relaymsg.net.SendOutcome
+import app.relaymsg.net.TurnCredentials
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.DeviceAuthKey
 import app.relaymsg.storage.MasterKeyStore
@@ -61,6 +62,7 @@ class RelayService private constructor(
         private const val KV_DEVICE_ID = "account.device"
         private const val KV_PASSWORD = "account.password"
         private const val KV_USERNAME = "account.username"
+        private const val KV_PRIVATE_CALLS = "calls.private"
 
         /**
          * Opens the store and restores a signed-in account, or returns null when
@@ -189,6 +191,39 @@ class RelayService private constructor(
         newTransport = { callTransportFactory() },
         send = ::sendCallSignal,
     )
+
+    /**
+     * TURN-only calling, on by default exactly as on iOS.
+     *
+     * With it on, no candidate carrying this device's address is ever offered, so
+     * the peer learns nothing about where the call is coming from. It costs
+     * latency and relay bandwidth, which is why it is a setting at all.
+     */
+    var privateCallMode: Boolean
+        get() = store.messages.kvGet(KV_PRIVATE_CALLS)?.decodeToString() != "0"
+        set(value) = store.messages.kvPut(KV_PRIVATE_CALLS, (if (value) "1" else "0").toByteArray())
+
+    /** Credentials and the wall-clock ms at which they stop being usable. */
+    private var cachedTurn: Pair<TurnCredentials, Long>? = null
+
+    /**
+     * The ICE configuration for a new peer connection.
+     *
+     * Credentials are cached for their TTL less a minute, so a call started right
+     * on the boundary does not begin with an expired TURN password. A failed
+     * fetch is not fatal: the call proceeds without TURN rather than not at all.
+     */
+    suspend fun icePlan(): IcePlan = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val cached = cachedTurn?.takeIf { it.second > now }?.first
+        val credentials = cached ?: runCatching { api.turnCredentials() }
+            .getOrNull()
+            ?.also { fresh ->
+                val ttlMs = (maxOf(fresh.ttl, 60L) - 60L) * 1000L
+                cachedTurn = fresh to (now + ttlMs)
+            }
+        IceServerPolicy.plan(credentials, privateCallMode)
+    }
 
     /**
      * Call signalling rides the same encrypted envelope as a message; only the

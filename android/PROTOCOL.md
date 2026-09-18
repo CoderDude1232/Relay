@@ -618,6 +618,19 @@ updates.
 **Non-ephemeral (queue):** OFFER, HANGUP, GROUP_RING.
 Note `OFFER = 0` — proto3 cannot distinguish "unset" from OFFER; always set `type`.
 
+`ice` is a **JSON object**, not an SDP line, and its keys are the browser
+`RTCIceCandidate` names, not WebRTC's native ones:
+
+```json
+{"candidate": "candidate:842163049 1 udp ...", "sdpMid": "0", "sdpMLineIndex": 0}
+```
+
+`sdpMid` is always written, as `""` when the platform gives null: iOS's `parseIce`
+requires all three keys and drops the candidate if any is missing — which shows up
+as a call that rings and never connects. Android: `IceCandidateJson`.
+
+On an **OFFER**, `ice` is overloaded to carry the call kind instead — see §7.5.2.
+
 ### 6.13 `PollMessage` / `PollVote`
 
 `PollMessage`: `question`=1, `options`=2 (repeated string), `multi_select`=3,
@@ -783,6 +796,48 @@ the kind as *metadata first, SDP second* —
 `callKind(fromMetadata: msg.ice) ?? sdpContainsVideo(msg.sdp)` — and the SDP check
 is **line-anchored** on `m=video`, not a substring search. Android matches this in
 `CallSignalling.isVideoOffer`. Getting it wrong opens the camera on an audio call.
+
+#### 7.5.3 Media transport (WebRTC)
+
+`io.github.webrtc-sdk:android:125.6422.07` against the iOS client's
+stasel/WebRTC **152**. Unlike libsignal, this gap is fine: WebRTC's wire
+protocols (SDP, ICE, DTLS-SRTP) are stable across milestones by design. It is a
+constraint rather than a choice — 125 is the newest `android` artifact published
+to Maven Central.
+
+Peer-connection configuration, matching iOS `makePeerConnection`:
+
+| setting | value |
+|---|---|
+| `sdpSemantics` | `UNIFIED_PLAN` |
+| `continualGatheringPolicy` | `GATHER_CONTINUALLY` |
+| `iceCandidatePoolSize` | `4` |
+| `iceTransportsType` | `RELAY` **only** under Private Call Mode *and* only when a TURN server actually exists |
+| track / stream ids | `audio0`, `video0`, `stream0` |
+
+**ICE servers come only from `GET /v1/turn-credentials`.** No public STUN, ever —
+a third-party STUN server learns the caller's IP and that a call is starting,
+which is the thing this app exists to prevent. `404` means "no TURN", not an
+error; the call then relies on host candidates and may not connect, which is the
+intended trade. Credentials are cached for `ttl - 60s`.
+
+**Private Call Mode is on by default** (iOS `privateCallMode`, kv key
+`calls.private`) but degrades silently when there is no TURN server: `RELAY` with
+no TURN gathers **no candidates at all** and can never connect. Rules and tests:
+`IceServerPolicy`.
+
+Android-specific, no iOS counterpart:
+- The transport refuses to open without `RECORD_AUDIO` rather than connecting a
+  silent call — a silent call gets blamed on the other end. A video call with no
+  `CAMERA` grant downgrades to audio instead, which is a valid answer.
+- `MODE_IN_COMMUNICATION` on the `AudioManager` for the duration (earpiece
+  routing, hardware AEC, volume keys on the call stream); the previous mode is
+  restored on close, since this process does not own it.
+
+**Not built yet:** the in-call UI (so `onRemoteVideo` has no renderer — video
+negotiates and captures but nothing displays it), group calls, ICE restart on
+failure, and speaker/Bluetooth routing controls. Nothing here has run on a
+device.
 
 ### 7.6 Platform mappings (all proposals, pending your approval)
 
@@ -1068,8 +1123,13 @@ Done and verified live against `api.relaymsg.app`:
   into both receive paths. Plus the **background call-wake path** (§7.5.1):
   `type:"call"` → foreground service → full-screen-intent ring.
 
-Remaining: **the WebRTC media transport** (`CallTransport` is the seam; calls
-signal correctly today but carry no audio), backup (Drive).
+- **Calls — media transport.** `WebRtcCallTransport` (offer/answer, trickle ICE,
+  audio + camera capture), `IceServerPolicy` and TURN credentials (§7.5.3).
+  Installed into `RelayService` by `RelayRuntime`, so the UI and a push wake get
+  the same one.
+
+Remaining: the **in-call UI** (nothing renders remote video, and there is no
+screen for an active call), backup (Drive).
 
 **Push is written but never observed working.** Firebase initialises, a token is
 acquired and the relay accepts it. Two things blocked verification: the relay ran

@@ -31,6 +31,19 @@ class MalformedResponseException(message: String = "malformed response") : IOExc
 /** An account's live connection state. `lastSeen` is ms since epoch, 0 if never. */
 data class Presence(val online: Boolean, val lastSeen: Long)
 
+/**
+ * Short-lived TURN credentials from `GET /v1/turn-credentials`.
+ *
+ * coturn REST HMAC-SHA1, so [username] already encodes the expiry and the pair
+ * is only good for [ttl] seconds.
+ */
+data class TurnCredentials(
+    val urls: List<String>,
+    val username: String,
+    val credential: String,
+    val ttl: Long,
+)
+
 /** One resolved blinded-directory hit. */
 data class DirectoryMatch(val token: ByteArray, val accountId: String, val username: String) {
     override fun equals(other: Any?): Boolean = this === other || (
@@ -333,6 +346,29 @@ class RelayApiClient(
                 .signed("GET", "/v1/attachments/$id")
                 .build(),
         ).use { it.body.bytes() }
+    }
+
+    // ---------------------------------------------------------------- calls
+
+    /**
+     * Fetches TURN credentials, or null when the relay has no TURN configured.
+     *
+     * A `404` is documented as "no TURN", not a failure — the call still connects
+     * over host/STUN candidates, it just cannot use Private Call Mode. Anything
+     * else is a real error and propagates.
+     */
+    suspend fun turnCredentials(): TurnCredentials? {
+        val json = try {
+            get("v1/turn-credentials")
+        } catch (e: RelayApiException) {
+            if (e.status == 404) return null else throw e
+        }
+        return TurnCredentials(
+            urls = json.optJSONArray("urls")?.mapStrings { it } ?: emptyList(),
+            username = json.optString("username"),
+            credential = json.optString("credential"),
+            ttl = json.optLong("ttl"),
+        )
     }
 
     // ------------------------------------------------------------- invites

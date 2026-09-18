@@ -145,7 +145,7 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun RelayService.startUp() {
         start()
-        RelayRuntime.attach(this)
+        RelayRuntime.attach(getApplication(), this)
         viewModelScope.launch { registerCurrentPushToken(this@startUp) }
     }
 

@@ -74,15 +74,21 @@ private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
 
 @Composable
 private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
-    // From API 33 notifications need runtime consent. Asked once on first reach
-    // of the signed-in UI; declining costs only the banner, not delivery.
+    // Asked once on first reach of the signed-in UI.
+    //  - Notifications (API 33+): declining costs only the banner, not delivery.
+    //  - Microphone: asked up front rather than mid-call, because the first time
+    //    it is needed may well be a call answered from the lock screen.
     val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
     ) { }
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        val wanted = buildList {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                add(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+            add(android.Manifest.permission.RECORD_AUDIO)
         }
+        permissionLauncher.launch(wanted.toTypedArray())
     }
 
     val conversations by viewModel.conversations.collectAsState()

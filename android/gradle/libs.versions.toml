@@ -30,6 +30,12 @@ androidxSqlite = "2.7.1"
 gson = "2.14.0"
 # libsignal-android requires core library desugaring.
 desugar = "2.1.5"
+# The community Android build of Google's libwebrtc. Milestone 125 against the
+# iOS client's stasel/WebRTC 152: WebRTC's wire protocols (SDP, ICE, DTLS-SRTP)
+# are stable across milestones by design, unlike libsignal, so the two
+# interoperate -- but this is the newest `android` artifact published to Maven
+# Central, so the gap is a constraint rather than a choice.
+webrtc = "125.6422.07"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -37,6 +43,7 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 json = { group = "org.json", name = "json", version.ref = "json" }
+webrtc = { group = "io.github.webrtc-sdk", name = "android", version.ref = "webrtc" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

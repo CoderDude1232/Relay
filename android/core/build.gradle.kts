@@ -32,6 +32,9 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.gson)
+    // org.json ships as a stub in android.jar; the real implementation is what
+    // lets the ICE-candidate encoding be unit-tested. Same reason as :net.
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.kotlinx.coroutines.test)

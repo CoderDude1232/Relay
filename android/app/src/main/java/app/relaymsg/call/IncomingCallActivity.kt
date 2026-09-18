@@ -1,12 +1,16 @@
 package app.relaymsg.call
 
+import android.Manifest
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,6 +53,16 @@ class IncomingCallActivity : ComponentActivity() {
             return
         }
 
+        // Answering is the first moment the microphone is actually needed, and a
+        // call woken from the lock screen may be the first time the app has ever
+        // asked. Requested here rather than failing the call in the transport.
+        val microphone = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            dispatch(
+                if (granted) IncomingCallService.ACTION_ACCEPT else IncomingCallService.ACTION_DECLINE,
+                wake,
+            )
+        }
+
         setContent {
             RelayTheme {
                 Surface(
@@ -57,7 +71,13 @@ class IncomingCallActivity : ComponentActivity() {
                 ) {
                     IncomingCall(
                         wake = wake,
-                        onAccept = { dispatch(IncomingCallService.ACTION_ACCEPT, wake) },
+                        onAccept = {
+                            if (hasMicrophone()) {
+                                dispatch(IncomingCallService.ACTION_ACCEPT, wake)
+                            } else {
+                                microphone.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
                         onDecline = { dispatch(IncomingCallService.ACTION_DECLINE, wake) },
                     )
                 }
@@ -77,6 +97,10 @@ class IncomingCallActivity : ComponentActivity() {
         )
         finish()
     }
+
+    private fun hasMicrophone(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
 
     private fun showOverLockScreen() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {

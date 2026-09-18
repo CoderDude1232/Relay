@@ -22,6 +22,19 @@
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
+    <!--
+      Call media. Both are runtime permissions. Without the microphone a call
+      would connect and carry silence, so the transport refuses to start rather
+      than let the user blame the other end; without the camera a video call
+      quietly downgrades to audio.
+    -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- A phone with no camera can still place and take audio calls. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <application
         android:name=".RelayApplication"
         android:allowBackup="false"
