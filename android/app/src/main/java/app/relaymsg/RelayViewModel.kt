@@ -139,8 +139,10 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * The PKCE verifier for the sign-in currently in flight.
      *
-     * Deliberately in memory only: it is the secret half of the exchange, and
-     * persisting it would outlive the attempt it belongs to.
+     * In memory only, deliberately: it is the secret half of the exchange, and
+     * writing it to disk would outlive the one attempt it belongs to. The cost
+     * is that process death while the browser tab is in front loses it — see
+     * [onOAuthRedirect], which reports that rather than failing silently.
      */
     private var pkce: PkcePair? = null
 
@@ -168,8 +170,17 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun onOAuthRedirect(uri: android.net.Uri): Boolean {
         if (uri.scheme != "app.relaymsg" || uri.host != "auth-callback") return false
-        val verifier = pkce ?: return false
+
+        val verifier = pkce
         pkce = null
+        if (verifier == null) {
+            // The verifier lives in memory only, so it is gone if the process was
+            // killed while the browser tab was in front. Say so: the alternative
+            // is the user completing a Google sign-in, returning to the welcome
+            // screen, and being told nothing at all.
+            _authError.value = "Sign-in couldn't be completed. Please try again."
+            return true
+        }
 
         val code = uri.getQueryParameter("code")
         if (code == null) {
