@@ -937,7 +937,51 @@ unsend, receipts, disappearing timer, safety-number screen (incl. QR).
 **Interop test:** the Stage 4 round-trip driven through the real UI on an emulator,
 plus a reaction/edit/delete/receipt matrix against iOS.
 
-### Stage 6 — push (blocked on §7.5)
+### Stages 4–5 ✅ delivered
+
+**Stage 4 (networking)** — `:net` with the REST client, WebSocket, wire mapping,
+prekey maintenance, and the `Relay-Sig` signer (Android is the first client to
+implement it; vectors from Go pin the canonical string, digest and DER
+encoding). Verified live: a throwaway Android account registered against
+`api.relaymsg.app`, established PQXDH sessions from real bundles, and **an iOS
+client received and displayed the message**.
+
+Two defects the live run exposed, neither findable offline:
+- `remote_identities` keyed by account id — copied from iOS — cannot represent a
+  peer whose devices hold different identity keys, which Relay's model allows
+  since each device generates its own identity. Now keyed by `(address, device_id)`.
+- The relay's one-time prekey pool can be poisoned permanently: `PUT /v1/keys`
+  only appends, ids restart at 1 after a store wipe, and `ON CONFLICT DO UPDATE`
+  overwrites only the overlapping range. Confirmed against `eth`, whose pool was
+  a mix of valid and orphaned keys — messages failed roughly two times in three.
+
+**Stage 5 (messaging UI)** — onboarding, conversation list and chat over a
+`RelayService` that owns the account, store, socket and receive loop;
+`EnvelopePipeline` is the receive half. Verified by driving the real app on the
+emulator, including surviving a full emulator restart with account and
+conversation intact.
+
+### Stage 6 — push ⏳ code complete, untestable here
+
+The Android half is done: `RelayMessagingService` handles the relay's data-only
+payload (`type=wake` contentless, or `type=msg` with a base64 envelope in `e`,
+degrading to a wake when oversized), `RelayRuntime` guarantees one
+`RelayService` per process, and the token is registered on sign-in.
+
+The relay's FCM sender **exists in the repo** — `internal/fcm`, the `fcm_token`
+column, a `push_kind` discriminator, hub dispatch and a `-fcm-service-account`
+flag — but the **deployed** binary answers `405` for `PUT /v1/devices/fcm`, so it
+predates that work. The same deployment is still missing `-oprf-key`.
+
+Two things are needed before push can be tested, neither of which can be done
+from here:
+1. a Firebase project and its `google-services.json` in `app/`;
+2. the relay redeployed with the FCM code and `-fcm-service-account`.
+
+Until then the build applies the Google Services plugin **only if that file
+exists**, so the app builds and runs without push rather than failing outright.
+
+### Stage 6 — original plan (blocked on §7.5)
 FCM registration + contentless wake, **once you approve the server-side sender**.
 If you'd rather not touch the server yet, I'll ship a foreground-service keepalive
 instead and mark push blocked, exactly as iOS Stage 6 is.

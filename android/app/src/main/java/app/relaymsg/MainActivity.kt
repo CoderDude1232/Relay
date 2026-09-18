@@ -74,6 +74,17 @@ private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
 
 @Composable
 private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
+    // From API 33 notifications need runtime consent. Asked once on first reach
+    // of the signed-in UI; declining costs only the banner, not delivery.
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            permissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     val conversations by viewModel.conversations.collectAsState()
     val messages by viewModel.activeMessages.collectAsState()
     val connection by viewModel.connection.collectAsState()

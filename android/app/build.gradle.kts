@@ -3,6 +3,20 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Firebase is configured by a google-services.json obtained from the Firebase
+// console. Applying the plugin unconditionally would fail the build for anyone
+// who hasn't added that file yet, so it is applied only when present: the app
+// builds and runs without push until the file is dropped in, then lights up.
+val googleServicesConfig = file("google-services.json")
+if (googleServicesConfig.exists()) {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    logger.lifecycle(
+        "Relay: app/google-services.json absent - building WITHOUT FCM push. " +
+            "Add it from the Firebase console to enable background delivery.",
+    )
+}
+
 android {
     namespace = "app.relaymsg"
     compileSdk {
@@ -75,6 +89,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
+    implementation(libs.kotlinx.coroutines.play.services)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

@@ -289,6 +289,69 @@ class RelayService private constructor(
         }
     }
 
+    // -------------------------------------------------------------------- push
+
+    /**
+     * Registers this device's FCM token so the relay can wake it.
+     *
+     * The default remains a **content-free** wake: the relay sends no message
+     * data and this client fetches the envelope itself. That is the whole point
+     * of the design — Google's push infrastructure never carries message
+     * content, even encrypted.
+     */
+    suspend fun registerPushToken(token: String) = withContext(Dispatchers.IO) {
+        runCatching {
+            api.setFcmToken(token)
+            api.setPushIncludeContent(false)
+        }
+    }
+
+    /**
+     * Drains the offline queue over REST and applies everything in it.
+     *
+     * Used by the push path, and as a fallback when the WebSocket cannot
+     * connect. Returns what was stored so a caller can raise a notification.
+     * Safe to run concurrently with the socket: envelopes are claimed exactly
+     * once, so whichever path arrives second simply finds nothing to do.
+     */
+    suspend fun drainQueue(): List<EnvelopePipeline.Outcome> = withContext(Dispatchers.IO) {
+        val applied = mutableListOf<EnvelopePipeline.Outcome>()
+        val envelopes = runCatching { api.fetchQueue() }.getOrDefault(emptyList())
+        for (envelope in envelopes) {
+            try {
+                val outcome = pipeline.apply(envelope)
+                if (!outcome.isDuplicate) applied += outcome
+                outcome.deliveryReceiptFor?.let { timestamp ->
+                    outcome.peerAccount?.let { peer -> sendDeliveryReceipt(peer, timestamp) }
+                }
+            } catch (_: Throwable) {
+                // Undecryptable: ack and drop, same as the socket path.
+            } finally {
+                runCatching { api.ackMessage(envelope.id) }
+            }
+        }
+        if (applied.isNotEmpty()) refreshConversations()
+        applied
+    }
+
+    /** Applies a single envelope delivered inside a push payload (opt-in mode). */
+    suspend fun applyPushedEnvelope(serialized: ByteArray): EnvelopePipeline.Outcome? =
+        withContext(Dispatchers.IO) {
+            val envelope = app.relaymsg.net.IncomingEnvelope.parse(serialized) ?: return@withContext null
+            try {
+                pipeline.apply(envelope).also { if (!it.isDuplicate) refreshConversations() }
+            } catch (_: Throwable) {
+                null
+            } finally {
+                runCatching { api.ackMessage(envelope.id) }
+            }
+        }
+
+    /** A display name for a peer account, falling back to a short id. */
+    fun displayName(account: String): String =
+        conversations.value.firstOrNull { it.peerAccount == account }?.peerUsername
+            ?: account.take(8)
+
     // ------------------------------------------------------------------- reads
 
     fun openConversation(conversationId: String) {

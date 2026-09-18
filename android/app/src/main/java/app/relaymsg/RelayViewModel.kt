@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.relaymsg.core.ConnectionState
 import app.relaymsg.core.RelayService
+import app.relaymsg.push.RelayRuntime
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.StoredMessage
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 /** What the app is currently showing. */
 sealed interface AppPhase {
@@ -56,7 +58,7 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
             _phase.value = runCatching { RelayService.restore(getApplication()) }
                 .fold(
                     onSuccess = { restored ->
-                        restored?.let { it.start(); AppPhase.Ready(it) } ?: AppPhase.SignedOut
+                        restored?.let { it.startUp(); AppPhase.Ready(it) } ?: AppPhase.SignedOut
                     },
                     onFailure = { AppPhase.Failed(it.friendlyMessage()) },
                 )
@@ -69,7 +71,7 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _phase.value = runCatching { RelayService.register(getApplication(), username) }
                 .fold(
-                    onSuccess = { it.start(); AppPhase.Ready(it) },
+                    onSuccess = { it.startUp(); AppPhase.Ready(it) },
                     onFailure = { AppPhase.Failed(it.friendlyMessage()) },
                 )
             _busy.value = false
@@ -104,6 +106,29 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun titleFor(conversation: Conversation): String =
         service?.conversationTitle(conversation) ?: conversation.peerAccount.take(8)
+
+    /**
+     * Starts the service, publishes it process-wide so the push handler reuses
+     * it, and registers this device's FCM token.
+     */
+    private fun RelayService.startUp() {
+        start()
+        RelayRuntime.attach(this)
+        viewModelScope.launch { registerCurrentPushToken(this@startUp) }
+    }
+
+    /**
+     * Fetches the FCM token and hands it to the relay.
+     *
+     * Quietly does nothing when Firebase has no configuration — the app is
+     * fully usable without push, it just won't wake in the background.
+     */
+    private suspend fun registerCurrentPushToken(service: RelayService) {
+        runCatching {
+            val token = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+            service.registerPushToken(token)
+        }
+    }
 
     private fun Throwable.friendlyMessage(): String = when (this) {
         is app.relaymsg.net.RelayApiException -> when (status) {
