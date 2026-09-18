@@ -126,8 +126,18 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun registerCurrentPushToken(service: RelayService) {
         runCatching {
             val token = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+            // Log a prefix only: the token is a device-addressable identifier, and
+            // a full one sitting in a shared log is worth avoiding.
+            android.util.Log.i("RelayPush", "FCM token acquired (" + token.take(12) + "...)")
             service.registerPushToken(token)
-        }
+                .onSuccess { android.util.Log.i("RelayPush", "token registered with relay") }
+                .onFailure {
+                    // Do NOT claim success here. The relay rejects this endpoint
+                    // entirely until it is redeployed with the FCM sender, and a
+                    // log that says "registered" either way hides that completely.
+                    android.util.Log.w("RelayPush", "relay rejected the token: " + it.message)
+                }
+        }.onFailure { android.util.Log.w("RelayPush", "could not obtain an FCM token: " + it.message) }
     }
 
     private fun Throwable.friendlyMessage(): String = when (this) {

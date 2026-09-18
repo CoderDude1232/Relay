@@ -299,7 +299,7 @@ class RelayService private constructor(
      * of the design — Google's push infrastructure never carries message
      * content, even encrypted.
      */
-    suspend fun registerPushToken(token: String) = withContext(Dispatchers.IO) {
+    suspend fun registerPushToken(token: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             api.setFcmToken(token)
             api.setPushIncludeContent(false)
