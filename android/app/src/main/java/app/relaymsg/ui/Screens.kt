@@ -64,6 +64,7 @@ fun OnboardingScreen(
     busy: Boolean,
     error: String?,
     onRegister: (String) -> Unit,
+    onLinkDevice: () -> Unit,
 ) {
     var username by remember { mutableStateOf("") }
     // The relay enforces this exact charset; rejecting locally avoids a
@@ -105,6 +106,12 @@ fun OnboardingScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             if (busy) CircularProgressIndicator(Modifier.height(18.dp)) else Text("Create account")
+        }
+        Spacer(Modifier.height(24.dp))
+        // The other way in: join an account that already exists on another phone,
+        // rather than creating a second, separate identity.
+        TextButton(onClick = onLinkDevice, enabled = !busy) {
+            Text("Already have Relay on another device?")
         }
     }
 }

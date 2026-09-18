@@ -29,6 +29,7 @@ import app.relaymsg.call.GroupCallScreen
 import app.relaymsg.ui.CallLogScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
+import app.relaymsg.ui.LinkDeviceScreen
 import app.relaymsg.ui.OnboardingScreen
 import app.relaymsg.ui.theme.RelayTheme
 
@@ -61,6 +62,14 @@ private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
             busy = busy,
             error = null,
             onRegister = viewModel::register,
+            onLinkDevice = viewModel::startLinking,
+        )
+
+        is AppPhase.Linking -> LinkDeviceScreen(
+            qr = current.qr,
+            error = current.error,
+            onCancel = viewModel::cancelLinking,
+            onRetry = viewModel::startLinking,
         )
 
         is AppPhase.Failed -> Centered {

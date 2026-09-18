@@ -36,6 +36,8 @@ desugar = "2.1.5"
 # interoperate -- but this is the newest `android` artifact published to Maven
 # Central, so the gap is a constraint rather than a choice.
 webrtc = "125.6422.07"
+# QR encoding for device linking. Pure Java, no native code, ~500 KB.
+zxing = "3.5.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -44,6 +46,7 @@ androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "j
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 json = { group = "org.json", name = "json", version.ref = "json" }
 webrtc = { group = "io.github.webrtc-sdk", name = "android", version.ref = "webrtc" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

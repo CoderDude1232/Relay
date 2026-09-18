@@ -15,6 +15,7 @@ import app.relaymsg.push.RelayRuntime
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +32,14 @@ sealed interface AppPhase {
     data object SignedOut : AppPhase
     data class Ready(val service: RelayService) : AppPhase
     data class Failed(val message: String) : AppPhase
+
+    /**
+     * Showing a linking QR and waiting for the primary.
+     *
+     * A null [qr] means the rendezvous session is still being created; a
+     * non-null [error] means the attempt failed and can be retried.
+     */
+    data class Linking(val qr: String?, val error: String?) : AppPhase
 }
 
 class RelayViewModel(application: Application) : AndroidViewModel(application) {
@@ -83,6 +92,38 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
                 )
             _busy.value = false
         }
+    }
+
+    private var linking: Job? = null
+
+    /**
+     * Links this device to an existing account instead of creating a new one.
+     *
+     * Runs to completion in one job: the relay deletes the rendezvous session on
+     * the first successful fetch of the sealed payload, so abandoning it midway
+     * means starting over with a new code.
+     */
+    fun startLinking() {
+        if (linking?.isActive == true) return
+        _phase.value = AppPhase.Linking(qr = null, error = null)
+        linking = viewModelScope.launch {
+            runCatching {
+                val session = RelayService.beginLinking()
+                _phase.value = AppPhase.Linking(qr = session.qr, error = null)
+                RelayService.completeLinking(getApplication(), session)
+            }.fold(
+                onSuccess = { service -> service.startUp(); _phase.value = AppPhase.Ready(service) },
+                onFailure = { failure ->
+                    _phase.value = AppPhase.Linking(qr = null, error = failure.friendlyMessage())
+                },
+            )
+        }
+    }
+
+    fun cancelLinking() {
+        linking?.cancel()
+        linking = null
+        _phase.value = AppPhase.SignedOut
     }
 
     fun retry() {

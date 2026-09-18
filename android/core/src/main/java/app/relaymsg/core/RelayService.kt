@@ -3,6 +3,7 @@ package app.relaymsg.core
 import android.content.Context
 import app.relaymsg.crypto.AttachmentCipher
 import app.relaymsg.crypto.BlindedDiscovery
+import app.relaymsg.crypto.ProvisioningCipher
 import app.relaymsg.net.RelayApiClient
 import app.relaymsg.net.RelayApiException
 import app.relaymsg.net.RelayAuthenticator
@@ -34,6 +35,26 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** The linking window closed before the primary provisioned this device. */
+class LinkingExpiredException : Exception("the linking code expired")
+
+/** Linking failed in a way retrying will not fix. */
+class LinkingFailedException(message: String) : Exception(message)
+
+/**
+ * A linking session in progress on the device being linked.
+ *
+ * [qr] is what to render; [ephemeral] holds the private half and must not
+ * outlive the attempt, which is why it is not persisted anywhere.
+ */
+class LinkingSession internal constructor(
+    val qr: String,
+    val sessionId: String,
+    val expiresAt: Long,
+    internal val ephemeral: ProvisioningCipher.EphemeralKeyPair,
+    internal val server: String,
+)
 
 /** Where the client is in its connection lifecycle, for the UI to reflect. */
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
@@ -109,6 +130,82 @@ class RelayService private constructor(
             val service = build(context, store, credentials, username, server)
             val accessKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
             service.messenger.bootstrap(service.authKey.publicKey(), accessKey)
+            service
+        }
+
+        /**
+         * Starts linking this device to an existing account.
+         *
+         * Step one of the reversed flow: this device mints a rendezvous session
+         * and an ephemeral key pair, and shows both in a QR for the primary to
+         * scan. The private half stays in memory here and is used once.
+         */
+        suspend fun beginLinking(server: String = DEFAULT_SERVER): LinkingSession =
+            withContext(Dispatchers.IO) {
+                val ephemeral = ProvisioningCipher.EphemeralKeyPair.generate()
+                val session = RelayApiClient(server, auth = null).createProvisioningSession()
+                LinkingSession(
+                    qr = DeviceLinking.LinkQrPayload(
+                        sessionId = session.sessionId,
+                        ephemeralPublicKey = ephemeral.publicKey,
+                        serverUrl = server,
+                    ).encode(),
+                    sessionId = session.sessionId,
+                    expiresAt = session.expiresAt,
+                    ephemeral = ephemeral,
+                    server = server,
+                )
+            }
+
+        /**
+         * Waits for the primary to provision this device, then brings it online.
+         *
+         * Polls until the blob appears or the session expires. The relay deletes
+         * the session on the first successful fetch, so everything after that
+         * point has to succeed or the user must start again — hence the identity
+         * key and credentials are written before anything touches the network.
+         */
+        suspend fun completeLinking(
+            context: Context,
+            session: LinkingSession,
+            pollInterval: Long = 2_000L,
+        ): RelayService = withContext(Dispatchers.IO) {
+            val api = RelayApiClient(session.server, auth = null)
+            var blob: ByteArray? = null
+            while (blob == null) {
+                if (System.currentTimeMillis() > session.expiresAt) {
+                    throw LinkingExpiredException()
+                }
+                blob = runCatching { api.fetchProvisioningBlob(session.sessionId) }.getOrNull()
+                if (blob == null) delay(pollInterval)
+            }
+
+            val plaintext = ProvisioningCipher.open(blob, session.ephemeral)
+            val payload = DeviceLinking.LinkProvisioningPayload.decode(plaintext)
+                ?: throw LinkingFailedException("the provisioning payload was unreadable")
+
+            val store = SecureStore.open(context)
+            // The account's shared identity, not a fresh one. Written before the
+            // stores are used, because the first read would otherwise generate a
+            // new identity and this device would be a stranger to every peer.
+            store.keys.storeIdentityKeyPair(payload.identityKeyPair)
+
+            val credentials = RelayCredentials(payload.accountId, payload.deviceId, payload.password)
+            store.messages.apply {
+                kvPut(KV_ACCOUNT_ID, credentials.accountId.toByteArray())
+                kvPut(KV_DEVICE_ID, credentials.deviceId.toString().toByteArray())
+                kvPut(KV_PASSWORD, credentials.password.toByteArray())
+                kvPut(KV_USERNAME, payload.username.orEmpty().toByteArray())
+            }
+            // Contacts the primary passed along, so the linked device is not blank.
+            payload.peers.forEach { peer ->
+                runCatching { store.messages.conversation(peer.account, peer.username) }
+            }
+
+            val service = build(
+                context, store, credentials, payload.username.orEmpty(), payload.serverUrl,
+            )
+            service.messenger.bootstrapLinkedDevice(service.authKey.publicKey())
             service
         }
 

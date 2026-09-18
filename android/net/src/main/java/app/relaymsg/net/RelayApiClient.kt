@@ -44,6 +44,9 @@ data class TurnCredentials(
     val ttl: Long,
 )
 
+/** A linking rendezvous. `expiresAt` is ms since epoch; the relay allows 10 minutes. */
+data class ProvisioningSession(val sessionId: String, val expiresAt: Long)
+
 /** One resolved blinded-directory hit. */
 data class DirectoryMatch(val token: ByteArray, val accountId: String, val username: String) {
     override fun equals(other: Any?): Boolean = this === other || (
@@ -369,6 +372,52 @@ class RelayApiClient(
             credential = json.optString("credential"),
             ttl = json.optLong("ttl"),
         )
+    }
+
+    // -------------------------------------------------------- device linking
+
+    /**
+     * Mints a rendezvous session for linking this device to an existing account.
+     *
+     * Unauthenticated by necessity: the device calling this has no credentials
+     * yet — acquiring them is the point. The session id alone is not enough to
+     * take over an account, because the payload deposited against it is sealed
+     * to an ephemeral key that only ever appears in the QR.
+     */
+    suspend fun createProvisioningSession(): ProvisioningSession =
+        postJson("v1/provisioning-sessions", null, authenticated = false).let {
+            ProvisioningSession(it.getString("sessionId"), it.getLong("expiresAt"))
+        }
+
+    /**
+     * Polls for the sealed provisioning payload.
+     *
+     * Null means the primary has not deposited it yet (`204`). The session is
+     * single-use and deleted on the first successful fetch, so a caller gets
+     * exactly one chance to keep the result.
+     */
+    suspend fun fetchProvisioningBlob(sessionId: String): ByteArray? {
+        val response = execute(
+            requestBuilder("v1/provisioning-sessions/$sessionId").get().build(),
+        )
+        return response.use {
+            if (it.code == 204) return null
+            JSONObject(it.body.string()).getString("blob").unb64()
+        }
+    }
+
+    /**
+     * Deposits the sealed payload for a device being linked. Primary side.
+     *
+     * The relay stores an opaque blob; it cannot read the identity key inside.
+     */
+    suspend fun storeProvisioningBlob(sessionId: String, blob: ByteArray) {
+        execute(
+            requestBuilder("v1/provisioning-sessions/$sessionId", "PUT")
+                .put(JSONObject().put("blob", blob.b64()).toString().toRequestBody(JSON))
+                .signed("PUT", "/v1/provisioning-sessions/$sessionId")
+                .build(),
+        ).close()
     }
 
     // ------------------------------------------------------------- invites

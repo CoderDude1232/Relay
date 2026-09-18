@@ -75,6 +75,19 @@ class RelayMessenger(
         api.setAccessKey(accessKey)
     }
 
+    /**
+     * Brings a **linked** device online.
+     *
+     * Same as [bootstrap] minus the access key, and that omission is the point:
+     * the account already has one, and rotating it would revoke every sender who
+     * currently holds it — so linking a second phone would silently break sealed
+     * sending from everyone who has ever messaged you.
+     */
+    suspend fun bootstrapLinkedDevice(authPublicKey: ByteArray) {
+        api.uploadDeviceAuthKeyWithBasicAuth(authPublicKey)
+        PreKeyMaintainer().publishInitialKeys(api, engine, allocator)
+    }
+
     /** Re-publishes signed and Kyber prekeys, and tops up the one-time pool. */
     suspend fun refreshKeys() {
         val maintainer = PreKeyMaintainer()

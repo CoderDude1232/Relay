@@ -959,6 +959,93 @@ section has run on a device.
 
 ---
 
+### 7.8 Accounts and onboarding — ⚠️ Android is far behind iOS
+
+**This was missing from earlier drafts of this document; the omission was mine.**
+iOS's onboarding is a four-step flow (welcome → auth → setup → recovery) plus a
+separate link-device screen. Android had a username field and nothing else.
+
+The account layer iOS uses and Android does not:
+
+| iOS | endpoint | Android |
+|---|---|---|
+| Sign in with Apple | `POST /v1/accounts/oauth` | n/a on Android |
+| Continue with Google (OAuth + PKCE) | `POST /v1/accounts/oauth` | **missing** |
+| Create account with email + password | `POST /v1/accounts` with `email` | **missing** |
+| Sign in / recover | `POST /v1/accounts/oauth` | **missing** |
+| Link an existing device | §7.9 | **done** |
+| Display name, recovery key, backup restore | — | **missing** |
+
+`POST /v1/accounts/oauth` verifies a **Supabase** access token server-side
+(`-supabase-url` / `-supabase-anon-key`) and resolves the account by Supabase
+user id, then by email. Android has no Supabase client at all.
+
+Two consequences that matter more than the missing screens:
+
+1. **There is no sign-in.** Clear the app data and an Android-registered account
+   is gone: nothing on the device can prove ownership to the relay.
+2. **Android registers with no `email`**, so the account has no OPRF email token
+   and cannot be recovered even from iOS.
+
+Linking (§7.9) sidesteps both by joining an account that already exists. It does
+not replace them.
+
+### 7.9 Device linking (shared account identity)
+
+The **reversed** flow: the device being linked shows the QR and the primary
+scans it. The new device needs no camera, and the trust anchor is that the
+primary's owner physically pointed a camera at the new device's screen.
+
+1. New device → `POST /v1/provisioning-sessions` (unauthenticated — it has no
+   credentials yet) → `{sessionId, expiresAt}`, 10-minute window.
+2. New device generates an ephemeral **X25519** pair and renders
+   `LinkQRPayload`: `{version:1, sessionId, ephemeralPublicKey (base64, raw 32
+   bytes), serverURL}`. The private half never leaves the device and is used once.
+3. Primary scans, then `POST /v1/devices/link` `{password, auth{...}}` → `201
+   {deviceId}`. No verification code: the camera scan is the anchor.
+4. Primary seals a `LinkProvisioningPayload` and `PUT
+   /v1/provisioning-sessions/{id}` `{blob}`.
+5. New device polls `GET /v1/provisioning-sessions/{id}` — `204` pending, `200
+   {blob}`, `404` expired. **Single-use:** the session is deleted on the first
+   successful fetch.
+
+**`ProvisioningCipher` — must match iOS byte for byte:**
+
+```
+blob = version(0x01) ‖ senderEphemeralPublicKey(32) ‖ nonce(12) ‖ ciphertext ‖ tag(16)
+key  = HKDF-SHA256(ikm = X25519(sender_sk, recipient_pk), salt = "", info = "Relay Device Provisioning v1", 32)
+```
+
+AES-256-GCM. Three details that fail **silently** if wrong, so all three are
+pinned by tests:
+- Public keys are **raw 32 bytes** (CryptoKit `rawRepresentation`). libsignal's
+  `serialize()` prefixes a `0x05` type byte — `ProvisioningCipher` strips and
+  re-adds it in one place.
+- An **empty HKDF salt** means 32 zero bytes (RFC 5869), which is what CryptoKit
+  does. Passing an empty HMAC key instead derives a different key.
+- libsignal's `calculateAgreement` must be plain X25519 — checked against
+  RFC 7748 §6.1.
+
+**`LinkProvisioningPayload`** carries `identityKeyPair` (the account's **shared**
+identity — the whole point of linking), `accountId`, `username?`, `deviceId`,
+`password`, `serverURL`, `peers[{account, username?}]`, and optional history
+sync refs. It is Swift `Codable`, so `Data` is base64 and **nil optionals are
+omitted, not null**.
+
+**Android specifics:**
+- The identity key is written to the Keystore **before** any store read, because
+  the first read would otherwise generate a fresh identity and the linked device
+  would be a stranger to every peer.
+- A linked device publishes prekeys but **does not set an access key**
+  (`bootstrapLinkedDevice`). Rotating it would revoke every sender currently
+  holding it, so linking a second phone would silently break sealed sending from
+  everyone who has ever messaged you.
+- Registration ids stay per-device; only the identity key is shared.
+
+**Not built:** the **primary** side. Android cannot yet scan another device's QR
+and provision it — that needs a camera scanner plus `POST /v1/devices/link`.
+Android can be linked, not do the linking.
+
 ## 8. Proposed staged build plan
 
 Rules: **one stage at a time, owner check-in between each, no building ahead.** Each
