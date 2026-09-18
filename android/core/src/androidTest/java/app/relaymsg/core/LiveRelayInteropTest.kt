@@ -143,6 +143,50 @@ class LiveRelayInteropTest {
     }
 
     @Test
+    fun sendsWithoutConsumingAOneTimePreKey() {
+        // Diagnostic for a peer that cannot decrypt our messages. The relay hands
+        // out a one-time prekey per bundle fetch; we deliberately discard it and
+        // run PQXDH from the signed + Kyber prekeys alone -- the same degraded but
+        // valid path taken when a peer's pool is exhausted.
+        //
+        // If the peer can read THIS but not a normal send, their published
+        // one-time prekeys no longer match the private halves in their store, and
+        // every new session that consumes one dies silently.
+        runBlocking {
+            val peer = peerUsername
+            assumeTrue("set -P...relayPeer=<username> to run", peer != null)
+            val harness = buildHarness()
+            try {
+                val peerAccount = harness.api.lookupAccountId(peer!!)
+                val devices = harness.messenger.refreshSessions(peerAccount, useOneTimePreKeys = false)
+                assertTrue("peer has no registered devices", devices.isNotEmpty())
+                Log.i(TAG, "sessions WITHOUT one-time prekeys: ${devices.size} device(s)")
+
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                val drained = Channel<Unit>(Channel.CONFLATED)
+                harness.socket.connect()
+                    .onEach { if (it is RelayEvent.QueueDrained) drained.trySend(Unit) }
+                    .launchIn(scope)
+                withTimeoutOrNull(20_000) { drained.receive() }
+
+                val timestamp = System.currentTimeMillis()
+                val body = "NO-OTK probe \u2713 ($timestamp)"
+                val outcome = harness.messenger.sendOverWebSocket(
+                    socket = harness.socket,
+                    account = peerAccount,
+                    plaintext = harness.messenger.buildTextContent(body, timestamp).toByteArray(),
+                    clientTimestamp = timestamp,
+                )
+                Log.i(TAG, "NO-OTK send outcome: $outcome from ${harness.username}")
+                assertTrue("relay rejected the send: $outcome", outcome is SendOutcome.Ok)
+                scope.cancel()
+            } finally {
+                harness.cleanUp()
+            }
+        }
+    }
+
+    @Test
     fun receivesAMessageSentFromTheIosClient() {
         // Reverses the direction. Android sending to iOS exercises iOS's PQXDH
         // handshake against prekeys the relay published for it; if those private

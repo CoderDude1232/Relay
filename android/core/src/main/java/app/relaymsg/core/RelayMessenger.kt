@@ -86,11 +86,19 @@ class RelayMessenger(
      * refreshing our own account for multi-device sync the relay returns this
      * device's bundle too — without the skip that aborts the whole refresh.
      */
-    suspend fun refreshSessions(account: String): List<PeerDevice> {
+    suspend fun refreshSessions(
+        account: String,
+        useOneTimePreKeys: Boolean = true,
+    ): List<PeerDevice> {
         val (bundles, accessKey) = api.fetchPreKeyBundles(account)
         accessKey?.let { peerAccessKeys[account] = it }
 
-        val devices = bundles.mapNotNull { bundle ->
+        val devices = bundles.mapNotNull { rawBundle ->
+            // Dropping the one-time prekey yields the same degraded-but-valid
+            // session the relay forces when a peer's pool is exhausted. Useful as
+            // a diagnostic: if a peer can decrypt without a one-time prekey but
+            // not with one, their published pool is out of sync with their store.
+            val bundle = if (useOneTimePreKeys) rawBundle else rawBundle.copy(oneTimePreKey = null)
             if (account == credentials.accountId && bundle.deviceId == credentials.deviceId) {
                 return@mapNotNull null
             }
