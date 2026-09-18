@@ -137,6 +137,39 @@ class RelayApiClient(
         ).close()
     }
 
+    /**
+     * Registers an additional device on this account.
+     *
+     * Device-list changes are signed with the device auth key, not merely
+     * authenticated: [signature] covers the canonical
+     * `relay-device-list-v1` payload including [expectedVersion], so a stale
+     * view of the device list is rejected with 409 rather than racing. That
+     * matters because a silently-added device would receive every future
+     * message.
+     */
+    suspend fun addDevice(
+        password: String,
+        expectedVersion: Long,
+        signerDeviceId: Int,
+        signature: ByteArray,
+    ): Triple<Int, String?, Long> {
+        val body = JSONObject()
+            .put("password", password)
+            .put(
+                "auth",
+                JSONObject()
+                    .put("expectedVersion", expectedVersion)
+                    .put("signerDeviceId", signerDeviceId)
+                    .put("signature", signature.b64()),
+            )
+        val json = postJson("v1/devices", body)
+        return Triple(
+            json.getInt("deviceId"),
+            json.optString("mailboxId").ifEmpty { null },
+            json.optLong("deviceListVersion"),
+        )
+    }
+
     suspend fun listDevices(): Pair<List<LinkedDevice>, Long> {
         val json = get("v1/devices")
         val devices = json.getJSONArray("devices").map { obj ->

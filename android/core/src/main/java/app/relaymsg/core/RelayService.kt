@@ -311,6 +311,12 @@ class RelayService private constructor(
         store.messages.updateStatus(localId, status)
         refreshActiveMessages()
         refreshConversations()
+
+        // Mirror to our own linked devices so the thread stays consistent
+        // everywhere. After the real send, and never allowed to fail it.
+        if (status == MessageStatus.SENT) {
+            messenger.sendSyncToOwnDevices(socket, content, peer, timestamp)
+        }
     }
 
     private suspend fun sendDeliveryReceipt(peer: String, timestamp: Long) {

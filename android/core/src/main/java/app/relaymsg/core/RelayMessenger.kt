@@ -317,6 +317,55 @@ class RelayMessenger(
         return fetched.first
     }
 
+    /**
+     * Mirrors an outgoing message to this account's **other** devices.
+     *
+     * `sync_recipient` carries the peer the message was actually for, so a linked
+     * device files it in the right conversation and stores it as outgoing rather
+     * than as a message from ourselves (PROTOCOL.md §6.1, field 16).
+     *
+     * Deliberately bypasses [sendOverWebSocket]: our own devices are implicitly
+     * trusted, so the identity-acknowledgement check that guards sends to a peer
+     * does not apply, and the relay reports no missing devices for a self-send.
+     *
+     * Best-effort — a linked device that cannot be reached must not fail the
+     * send that already succeeded to the real recipient.
+     */
+    suspend fun sendSyncToOwnDevices(
+        socket: RelayWebSocket,
+        content: Content,
+        peer: String,
+        clientTimestamp: Long,
+    ) {
+        val sync = content.toBuilder().setSyncRecipient(peer).build()
+        val payload = ContentPadding.pad(sync.toByteArray())
+
+        val devices = try {
+            // Always refresh: a device linked since the last send would otherwise
+            // never receive anything, and there is no notification for that.
+            refreshSessions(credentials.accountId)
+                .filter { it.id != credentials.deviceId }
+        } catch (_: Throwable) {
+            return
+        }
+        if (devices.isEmpty()) return
+
+        for (device in devices) {
+            val mailboxId = device.mailboxId
+            if (mailboxId.isNullOrEmpty()) continue
+            runCatching {
+                val address = SignalProtocolAddress(credentials.accountId, device.id)
+                socket.send(
+                    mailboxId = mailboxId,
+                    payload = DeviceMessagePayload(
+                        device.id, device.registrationId, engine.encrypt(payload, address),
+                    ),
+                    clientTimestamp = clientTimestamp,
+                )
+            }
+        }
+    }
+
     // ----------------------------------------------------------------- groups
 
     /**

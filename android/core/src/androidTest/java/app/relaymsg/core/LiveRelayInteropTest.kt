@@ -149,6 +149,148 @@ class LiveRelayInteropTest {
     }
 
     @Test
+    fun outgoingMessagesMirrorToOurOwnLinkedDevices() {
+        // Multi-device sync. Alice links a SECOND device to her account, sends to
+        // Bob from the first, and the second must file that message in the
+        // conversation with BOB -- as an OUTGOING message, not as one received
+        // from herself. sync_recipient is what carries that.
+        runBlocking {
+            val alice = buildHarness()
+            val bob = buildHarness()
+            try {
+                // Link a second device. The relay requires the change to be SIGNED
+                // with the device auth key over the canonical device-list payload,
+                // pinned to the current list version.
+                val (_, version) = alice.api.listDevices()
+                val secondPassword = UUID.randomUUID().toString()
+                val signature = alice.authKey.sign(
+                    app.relaymsg.net.SignedPayloads.deviceMutation(
+                        accountId = alice.credentials.accountId,
+                        expectedVersion = version,
+                        action = "add",
+                        targetDeviceId = 0,
+                        password = secondPassword,
+                    ),
+                )
+                val (secondDeviceId, _, _) = alice.api.addDevice(
+                    password = secondPassword,
+                    expectedVersion = version,
+                    signerDeviceId = alice.credentials.deviceId,
+                    signature = signature,
+                )
+                Log.i(TAG, "linked device $secondDeviceId to ${alice.username}")
+                assertTrue("linked device should not reuse device 1", secondDeviceId != alice.credentials.deviceId)
+
+                // Stand the second device up with its OWN identity and prekeys --
+                // in Relay each device generates its own, which is why peer
+                // identities are keyed by (account, device).
+                val secondCredentials = RelayCredentials(
+                    alice.credentials.accountId, secondDeviceId, secondPassword,
+                )
+                val secondAuthKey = DeviceAuthKey("relay-interop-2nd-${UUID.randomUUID()}")
+                val secondAuth = RelayAuthenticator(
+                    secondCredentials,
+                    object : RequestSigner {
+                        override fun sign(message: ByteArray) = secondAuthKey.sign(message)
+                        override fun publicKey() = secondAuthKey.publicKey()
+                    },
+                )
+                val secondApi = RelayApiClient(server, secondAuth)
+                val secondKeys = MasterKeyStore(context, "interop2-${UUID.randomUUID()}")
+                val secondStore = SecureStore.openInMemory(secondKeys)
+                val secondMessenger = RelayMessenger(
+                    api = secondApi,
+                    engine = secondStore.makeCryptoEngine(secondCredentials.accountId, secondDeviceId),
+                    store = secondStore,
+                    credentials = secondCredentials,
+                    sealedSenderTrustRoot = android.util.Base64.decode(
+                        TRUST_ROOT_BASE64, android.util.Base64.DEFAULT,
+                    ),
+                )
+                val secondPipeline = EnvelopePipeline(
+                    secondMessenger, secondStore.messages, secondCredentials.accountId,
+                )
+                val secondSocket = RelayWebSocket(server, secondAuth)
+                try {
+                    secondMessenger.bootstrap(
+                        secondAuthKey.publicKey(),
+                        ByteArray(32).also { SecureRandom().nextBytes(it) },
+                    )
+
+                    val applied = Channel<EnvelopePipeline.Outcome>(Channel.UNLIMITED)
+                    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                    val drained = Channel<Unit>(Channel.CONFLATED)
+                    secondSocket.connect()
+                        .onEach { event ->
+                            when (event) {
+                                is RelayEvent.QueueDrained -> drained.trySend(Unit)
+                                is RelayEvent.Envelope ->
+                                    runCatching { secondPipeline.apply(event.envelope) }
+                                        .getOrNull()?.let { applied.trySend(it) }
+                                else -> Unit
+                            }
+                        }
+                        .launchIn(scope)
+                    withTimeoutOrNull(30_000) { drained.receive() }
+
+                    val aliceDrained = Channel<Unit>(Channel.CONFLATED)
+                    alice.socket.connect()
+                        .onEach { if (it is RelayEvent.QueueDrained) aliceDrained.trySend(Unit) }
+                        .launchIn(scope)
+                    withTimeoutOrNull(30_000) { aliceDrained.receive() }
+
+                    // Alice sends to Bob from device 1, then mirrors to her own devices.
+                    val timestamp = System.currentTimeMillis()
+                    val body = "sync probe \u2713 $timestamp"
+                    val content = alice.messenger.buildTextContent(body, timestamp)
+                    val outcome = alice.messenger.sendOverWebSocket(
+                        alice.socket, bob.credentials.accountId, content.toByteArray(), timestamp,
+                    )
+                    assertTrue("send to bob rejected: $outcome", outcome is SendOutcome.Ok)
+                    alice.messenger.sendSyncToOwnDevices(
+                        alice.socket, content, bob.credentials.accountId, timestamp,
+                    )
+
+                    // The linked device must now hold it, filed under BOB and marked outgoing.
+                    var stored: app.relaymsg.storage.StoredMessage? = null
+                    withTimeoutOrNull(60_000) {
+                        while (true) {
+                            val next = applied.receive()
+                            val conversationId = next.conversationId ?: continue
+                            val found = secondStore.messages.messages(conversationId)
+                                .firstOrNull { it.body == body }
+                            if (found != null) {
+                                assertEquals(
+                                    "sync copy filed in the wrong conversation",
+                                    bob.credentials.accountId,
+                                    secondStore.messages.peerAccount(conversationId),
+                                )
+                                stored = found
+                                break
+                            }
+                        }
+                    }
+                    assertTrue("linked device never received the sync copy", stored != null)
+                    assertTrue(
+                        "sync copy must be stored as OUTGOING, not as an incoming message",
+                        stored!!.isOutgoing,
+                    )
+                    Log.i(TAG, "sync copy landed on device $secondDeviceId as outgoing")
+                    scope.cancel()
+                } finally {
+                    secondSocket.disconnect()
+                    secondStore.close()
+                    secondKeys.wipe()
+                    secondAuthKey.delete()
+                }
+            } finally {
+                alice.cleanUp()
+                bob.cleanUp()
+            }
+        }
+    }
+
+    @Test
     fun attachmentRoundTripsThroughTheRelayAsOpaqueCiphertext() {
         // Proves the blob pipeline against the real relay: encrypt under a fresh
         // key, upload, and have the far side fetch and decrypt using only the key

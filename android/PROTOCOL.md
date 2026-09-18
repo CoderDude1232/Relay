@@ -987,6 +987,30 @@ If you'd rather not touch the server yet, I'll ship a foreground-service keepali
 instead and mark push blocked, exactly as iOS Stage 6 is.
 **Interop test:** iOS sends while the Android app is swiped away; message arrives.
 
+### Stage 7 — in progress
+
+Done and verified live against `api.relaymsg.app`:
+- **Blinded discovery** — real OPRF against the server's own key; a fresh account
+  resolves its own username through the blinded round-trip, and an unregistered
+  name returns empty rather than a distinguishable error. The plaintext endpoint
+  survives only as a 503 fallback.
+- **Groups** — sender keys, roster reconstruction from `GroupUpdate` alone,
+  epoch rotation. Verified Android↔Android over sender keys, **and iOS→Android**
+  (an iOS-created group appeared with its message decrypted, exercising the
+  sealed-pairwise path iOS uses when sealed sender is on).
+- **Media** — encrypted blobs, live round-trip, UI. The test also asserts the
+  relay does NOT return the plaintext, which a naive round-trip would miss.
+
+Remaining: multi-device sync, calls (WebRTC), backup (Drive).
+
+**Push is written but never observed working.** Firebase initialises, a token is
+acquired and the relay accepts it. Two things blocked verification: the relay ran
+without `-fcm-service-account` until 2026-09-18, and this emulator's
+`com.google.android.gms.persistent` is not running, so it cannot receive FCM at
+all. Acquiring a token uses plain HTTPS; receiving needs the MCS socket — they
+are independent, and a token being accepted proves nothing about delivery. A
+physical Android device is the realistic way to confirm it.
+
 ### Stage 7+ — one at a time
 discovery/contact sync → groups (both sender-key and sealed-pairwise paths) →
 media/voice notes → calls (WebRTC + TURN) → backup (Drive) → multi-device self-sync →
@@ -1015,3 +1039,38 @@ Each gets its own interop test against iOS.
    samples, OPRF vectors, padding sizes, a sealed cert) generated from the Go/Swift
    side, so Android's tests can assert byte equality without a live server. Fine to
    add under `proto/testvectors/` or `android/src/test/resources/`?
+
+---
+
+## 10. Server deployment notes (learned the hard way, 2026-09-18)
+
+`relayd` on `api.relaymsg.app` runs under systemd. **Read the effective config,
+never the unit file alone:**
+
+```sh
+systemctl cat relayd          # unit PLUS every drop-in, in order
+```
+
+A `/etc/systemd/system/relayd.service.d/override.conf` shadowed the unit file for
+a long time — it cleared `ExecStart=` and set its own. Every edit to
+`relayd.service` was silently ignored, which is why `-oprf-key` and
+`-fcm-service-account` appeared present yet never took effect, and why the file
+and the running process disagreed about `-apns-team-id`. It is now moved to
+`/root/relayd-override.conf.bak`.
+
+Other things worth knowing before touching that service:
+
+- `ExecStart` is now **one line**. It used to use `\` continuations, and appending
+  to the first line severs them — systemd then parses the rest as unknown
+  `[Service]` keys and silently drops every remaining flag.
+- Quote the DSN and systemd may pass the quotes through, so pgx reads a password
+  with a trailing `"` — the host and user parse fine, and only the password
+  fails, which looks exactly like a wrong password.
+- `-apns-production` must be **off** while the iPhone runs a debug build from
+  Xcode: development builds get sandbox tokens, which the production APNs host
+  rejects. Turn it on only for TestFlight/App Store builds. The relay targets one
+  environment at a time, so both cannot receive push from one relay.
+- `-apns-team-id` must match the team that issued `AuthKey_*.p8` (`HK396F3767`),
+  which is not necessarily the app's own team id in the root `CLAUDE.md`.
+- Change **one thing per restart**. Five at once means five candidate causes when
+  it crash-loops.
