@@ -27,10 +27,11 @@ import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
 import app.relaymsg.call.GroupCallScreen
 import app.relaymsg.ui.CallLogScreen
+import app.relaymsg.ui.AuthScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
-import app.relaymsg.ui.OnboardingScreen
+import app.relaymsg.ui.ScanLinkScreen
 import app.relaymsg.ui.theme.RelayTheme
 
 class MainActivity : ComponentActivity() {
@@ -58,12 +59,22 @@ private fun RelayApp(viewModel: RelayViewModel = viewModel()) {
     when (val current = phase) {
         is AppPhase.Loading -> Centered { CircularProgressIndicator() }
 
-        is AppPhase.SignedOut -> OnboardingScreen(
-            busy = busy,
-            error = null,
-            onRegister = viewModel::register,
-            onLinkDevice = viewModel::startLinking,
-        )
+        is AppPhase.SignedOut -> {
+            val step by viewModel.authStep.collectAsState()
+            val authError by viewModel.authError.collectAsState()
+            AuthScreen(
+                step = step,
+                busy = busy,
+                error = authError,
+                onSignUp = viewModel::signUpWithEmail,
+                onSignIn = viewModel::signInWithEmail,
+                onSubmitUsername = viewModel::submitUsername,
+                onShowSignUp = viewModel::showSignUp,
+                onShowSignIn = viewModel::showSignIn,
+                onLinkDevice = viewModel::startLinking,
+                onBack = viewModel::authBack,
+            )
+        }
 
         is AppPhase.Linking -> LinkDeviceScreen(
             qr = current.qr,
@@ -111,10 +122,20 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
 
     var openConversationId by remember { mutableStateOf<String?>(null) }
     var showCalls by remember { mutableStateOf(false) }
+    var showScanner by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
         val open = openConversationId
-        if (showCalls) {
+        if (showScanner) {
+            val scanStatus by viewModel.scanStatus.collectAsState()
+            val scanError by viewModel.scanError.collectAsState()
+            ScanLinkScreen(
+                status = scanStatus,
+                error = scanError,
+                onScanned = viewModel::provisionScanned,
+                onBack = { viewModel.resetScan(); showScanner = false },
+            )
+        } else if (showCalls) {
             val calls by viewModel.callLog.collectAsState()
             CallLogScreen(
                 calls = calls,
@@ -132,6 +153,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
                 onStartConversation = viewModel::startConversation,
                 onShowCalls = { showCalls = true },
+                onLinkDevice = { viewModel.resetScan(); showScanner = true },
             )
         } else {
             val conversation = conversations.firstOrNull { it.id == open }

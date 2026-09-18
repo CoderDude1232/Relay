@@ -44,6 +44,19 @@ data class TurnCredentials(
     val ttl: Long,
 )
 
+/** What `POST /v1/accounts/oauth` came back with. */
+sealed interface OAuthAccountResult {
+    data class SignedIn(
+        val credentials: RelayCredentials,
+        val username: String,
+        /** True for a brand-new account, false when an existing one was recovered. */
+        val created: Boolean,
+    ) : OAuthAccountResult
+
+    /** The token is valid but there is no account yet; ask for a username. */
+    data object UsernameRequired : OAuthAccountResult
+}
+
 /** A linking rendezvous. `expiresAt` is ms since epoch; the relay allows 10 minutes. */
 data class ProvisioningSession(val sessionId: String, val expiresAt: Long)
 
@@ -373,6 +386,66 @@ class RelayApiClient(
             ttl = json.optLong("ttl"),
         )
     }
+
+    // ---------------------------------------------------------- oauth accounts
+
+    /**
+     * Registers or recovers an account from a verified Supabase token.
+     *
+     * The relay checks the token server-to-server and resolves the account by
+     * Supabase user id, then by email. That is what lets a returning user sign in
+     * on a brand-new device with no local credentials at all — and why
+     * [username] is only needed the first time.
+     *
+     * A `404` is not an error: it means the token is good but no account exists
+     * yet, so the caller should prompt for a username and retry.
+     */
+    suspend fun registerWithOAuth(
+        accessToken: String,
+        devicePassword: String,
+        username: String? = null,
+        accountPassword: String? = null,
+    ): OAuthAccountResult {
+        val body = JSONObject()
+            .put("accessToken", accessToken)
+            .put("password", devicePassword)
+        username?.takeIf { it.isNotBlank() }?.let { body.put("username", it) }
+        accountPassword?.takeIf { it.isNotEmpty() }?.let { body.put("accountPassword", it) }
+
+        val json = try {
+            postJson("v1/accounts/oauth", body, authenticated = false)
+        } catch (e: RelayApiException) {
+            if (e.status == 404) return OAuthAccountResult.UsernameRequired else throw e
+        }
+        return OAuthAccountResult.SignedIn(
+            credentials = RelayCredentials(
+                accountId = json.getString("accountId"),
+                deviceId = json.getInt("deviceId"),
+                password = devicePassword,
+            ),
+            username = json.optString("username"),
+            created = json.optBoolean("created"),
+        )
+    }
+
+    /** Creates a device on this account for a scanned QR. Primary side of linking. */
+    suspend fun linkDevice(
+        password: String,
+        expectedVersion: Long,
+        signerDeviceId: Int,
+        signature: ByteArray,
+    ): Int = postJson(
+        "v1/devices/link",
+        JSONObject()
+            .put("password", password)
+            .put(
+                "auth",
+                JSONObject()
+                    .put("expectedVersion", expectedVersion)
+                    .put("signerDeviceId", signerDeviceId)
+                    .put("signature", signature.b64()),
+            ),
+    ).getInt("deviceId")
 
     // -------------------------------------------------------- device linking
 

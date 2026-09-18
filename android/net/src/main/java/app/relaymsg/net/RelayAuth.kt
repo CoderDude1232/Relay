@@ -108,8 +108,9 @@ object SignedPayloads {
 
     /**
      * Device-list mutations. [action] is `add`, `link` or `remove`;
-     * [targetDeviceId] is 0 for add/link; [password] is the new device's password
-     * for `add` and empty otherwise.
+     * [targetDeviceId] is 0 for add/link. [password] is the new device's password
+     * for **both** `add` and `link` (the server signs `req.Password` on each) and
+     * empty for `remove`.
      */
     fun deviceMutation(
         accountId: String,

@@ -969,26 +969,39 @@ The account layer iOS uses and Android does not:
 
 | iOS | endpoint | Android |
 |---|---|---|
-| Sign in with Apple | `POST /v1/accounts/oauth` | n/a on Android |
+| Create account with email + password | `POST /v1/accounts/oauth` | **done** |
+| Sign in / recover | `POST /v1/accounts/oauth` | **done** |
+| Link an existing device (both directions) | §7.9 | **done** |
 | Continue with Google (OAuth + PKCE) | `POST /v1/accounts/oauth` | **missing** |
-| Create account with email + password | `POST /v1/accounts` with `email` | **missing** |
-| Sign in / recover | `POST /v1/accounts/oauth` | **missing** |
-| Link an existing device | §7.9 | **done** |
+| Sign in with Apple | `POST /v1/accounts/oauth` | n/a on Android |
 | Display name, recovery key, backup restore | — | **missing** |
 
-`POST /v1/accounts/oauth` verifies a **Supabase** access token server-side
+**Accounts live in Supabase, not in the relay.** The relay never sees a human
+password: it verifies a Supabase access token server-to-server
 (`-supabase-url` / `-supabase-anon-key`) and resolves the account by Supabase
-user id, then by email. Android has no Supabase client at all.
+user id, then by email. So both sign-up and sign-in are two hops —
+`/auth/v1/signup` or `/auth/v1/token?grant_type=password` for a session, then
+`POST /v1/accounts/oauth` with that token.
 
-Two consequences that matter more than the missing screens:
+- Both clients must point at the **same Supabase project**, or an account made
+  on one is invisible to the other. Android's `SupabaseAuth` embeds the same
+  project URL and `anon` key iOS's `SupabaseConfig` does. The anon key is a
+  public client key and authorises nothing on its own.
+- `404` from `/v1/accounts/oauth` is **not an error**: the token is good but no
+  account exists yet, so prompt for a username and retry with the same session.
+- `503` means the relay was started without the Supabase flags — a server
+  configuration problem, not something a retry fixes.
+- Confirmation-required sign-ups return `200` with a user and **no session**.
+  That is surfaced as "confirm your email", not passed on as a blank token.
 
-1. **There is no sign-in.** Clear the app data and an Android-registered account
-   is gone: nothing on the device can prove ownership to the relay.
-2. **Android registers with no `email`**, so the account has no OPRF email token
-   and cannot be recovered even from iOS.
+**What sign-in does not restore: the E2EE identity key.** A device signed in
+this way mints a fresh one, so everyone who has messaged the account sees a
+safety-number change. §7.9 linking is the path that preserves identity, and the
+sign-in screen says so.
 
-Linking (§7.9) sidesteps both by joining an account that already exists. It does
-not replace them.
+`POST /v1/accounts` (username + password, no email) is still used by the live
+interop tests but is no longer reachable from the UI — an account created that
+way has no OPRF email token and cannot be recovered on either client.
 
 ### 7.9 Device linking (shared account identity)
 
@@ -1042,9 +1055,28 @@ omitted, not null**.
   everyone who has ever messaged you.
 - Registration ids stay per-device; only the identity key is shared.
 
-**Not built:** the **primary** side. Android cannot yet scan another device's QR
-and provision it — that needs a camera scanner plus `POST /v1/devices/link`.
-Android can be linked, not do the linking.
+**Primary side** (`RelayService.linkOtherDevice`), also done:
+
+1. Scan and decode the QR. **Refuse a code whose `serverURL` is not this
+   account's relay** — provisioning to a foreign relay would hand it this
+   account's identity key.
+2. `GET /v1/devices` for `deviceListVersion`, mint a random device password.
+3. Sign `relay-device-list-v1 \n accountId \n expectedVersion \n link \n 0 \n
+   password` with the device auth key (`SHA256withECDSA`, so sign the canonical
+   payload, **not** a digest — the key hashes internally). Note the server signs
+   `req.Password` for `link` as well as `add`; an earlier comment here said
+   otherwise.
+4. `POST /v1/devices/link` → `deviceId`. The row is created **before** the
+   payload is sealed, because the payload has to carry that id — and a device
+   created but never provisioned is harmless, since it can never authenticate.
+5. Seal and `PUT /v1/provisioning-sessions/{id}`.
+
+Scanning is CameraX frames decoded by ZXing, deliberately not ML Kit: one QR
+format does not justify Play Services and a downloaded model.
+
+**Not built:** history sync. `LinkProvisioningPayload` has `historyId` /
+`historyKey` / `historyDigest` and Android sends all three as null, so a newly
+linked device starts with contacts but no messages.
 
 ## 8. Proposed staged build plan
 

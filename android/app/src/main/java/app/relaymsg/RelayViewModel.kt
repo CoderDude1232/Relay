@@ -10,9 +10,11 @@ import app.relaymsg.core.ActiveGroupCall
 import app.relaymsg.core.AudioRoute
 import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.ConnectionState
+import app.relaymsg.core.EmailAuthResult
 import app.relaymsg.core.RelayService
 import app.relaymsg.push.RelayRuntime
 import app.relaymsg.storage.Conversation
+import app.relaymsg.ui.AuthStep
 import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
 import kotlinx.coroutines.Job
@@ -92,6 +94,100 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
                 )
             _busy.value = false
         }
+    }
+
+    private val _authStep = MutableStateFlow(AuthStep.WELCOME)
+
+    /** Which part of onboarding is showing. Only meaningful while signed out. */
+    val authStep: StateFlow<AuthStep> = _authStep.asStateFlow()
+
+    private val _authError = MutableStateFlow<String?>(null)
+    val authError: StateFlow<String?> = _authError.asStateFlow()
+
+    /**
+     * A Supabase session waiting for a username.
+     *
+     * Held so choosing a username retries only the relay call — going back to
+     * Supabase would fail, because by then the email is registered there.
+     */
+    private var pendingUsername: EmailAuthResult.UsernameRequired? = null
+
+    fun showSignUp() = moveTo(AuthStep.SIGN_UP)
+
+    fun showSignIn() = moveTo(AuthStep.SIGN_IN)
+
+    fun authBack() {
+        pendingUsername = null
+        moveTo(AuthStep.WELCOME)
+    }
+
+    private fun moveTo(step: AuthStep) {
+        _authError.value = null
+        _authStep.value = step
+    }
+
+    fun signUpWithEmail(email: String, password: String) =
+        authenticate { RelayService.signUpWithEmail(getApplication(), email, password, null) }
+
+    fun signInWithEmail(email: String, password: String) =
+        authenticate { RelayService.signInWithEmail(getApplication(), email, password) }
+
+    fun submitUsername(username: String) {
+        val pending = pendingUsername ?: return authBack()
+        authenticate { RelayService.completeWithUsername(getApplication(), pending, username) }
+    }
+
+    private fun authenticate(attempt: suspend () -> EmailAuthResult) {
+        if (_busy.value) return
+        _busy.value = true
+        _authError.value = null
+        viewModelScope.launch {
+            runCatching { attempt() }
+                .onSuccess { result ->
+                    when (result) {
+                        is EmailAuthResult.Ready -> {
+                            pendingUsername = null
+                            result.service.startUp()
+                            _phase.value = AppPhase.Ready(result.service)
+                        }
+                        is EmailAuthResult.UsernameRequired -> {
+                            pendingUsername = result
+                            moveTo(AuthStep.USERNAME)
+                        }
+                    }
+                }
+                .onFailure { _authError.value = it.friendlyMessage() }
+            _busy.value = false
+        }
+    }
+
+    private val _scanStatus = MutableStateFlow<String?>(null)
+
+    /** Non-null once a code has been read: progress, then the outcome. */
+    val scanStatus: StateFlow<String?> = _scanStatus.asStateFlow()
+
+    private val _scanError = MutableStateFlow<String?>(null)
+    val scanError: StateFlow<String?> = _scanError.asStateFlow()
+
+    /** Provisions a device whose QR we just scanned. Primary side of linking. */
+    fun provisionScanned(qr: String) {
+        val service = service ?: return
+        if (_scanStatus.value != null) return
+        _scanStatus.value = "Linking…"
+        _scanError.value = null
+        viewModelScope.launch {
+            runCatching { service.linkOtherDevice(qr) }
+                .onSuccess { _scanStatus.value = "Linked. The other device is signing in." }
+                .onFailure {
+                    _scanStatus.value = null
+                    _scanError.value = it.friendlyMessage()
+                }
+        }
+    }
+
+    fun resetScan() {
+        _scanStatus.value = null
+        _scanError.value = null
     }
 
     private var linking: Job? = null
@@ -356,12 +452,18 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun Throwable.friendlyMessage(): String = when (this) {
+        is app.relaymsg.net.SupabaseAuthException -> reason.ifEmpty { "Couldn't sign in." }
         is app.relaymsg.net.RelayApiException -> when (status) {
             409 -> "That username is taken."
             404 -> "No such user."
-            // The relay 503s the directory endpoints when it is started without
-            // an OPRF key, which is a server configuration problem, not a typo.
-            503 -> "The server has contact discovery disabled."
+            // The oauth account endpoint 503s when the relay was started without
+            // -supabase-url / -supabase-anon-key. That is server configuration,
+            // not anything the user can fix by retrying.
+            503 -> if (_authStep.value != AuthStep.WELCOME) {
+                "Email sign-in isn't enabled on this server."
+            } else {
+                "The server has contact discovery disabled."
+            }
             else -> serverMessage.ifEmpty { "Server error ($status)." }
         }
         else -> message ?: "Something went wrong."

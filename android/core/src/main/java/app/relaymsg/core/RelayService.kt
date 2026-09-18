@@ -10,8 +10,12 @@ import app.relaymsg.net.RelayAuthenticator
 import app.relaymsg.net.RelayCredentials
 import app.relaymsg.net.RelayEvent
 import app.relaymsg.net.RelayWebSocket
+import app.relaymsg.net.SignedPayloads
 import app.relaymsg.net.RequestSigner
+import app.relaymsg.net.OAuthAccountResult
 import app.relaymsg.net.SendOutcome
+import app.relaymsg.net.SupabaseAuth
+import app.relaymsg.net.SupabaseSession
 import app.relaymsg.net.TurnCredentials
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.DeviceAuthKey
@@ -35,6 +39,22 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** How an email sign-in or sign-up ended. */
+sealed interface EmailAuthResult {
+    data class Ready(val service: RelayService) : EmailAuthResult
+
+    /**
+     * Supabase knows this user, but the relay has no account yet.
+     *
+     * Carries the session so picking a username retries only the relay call —
+     * asking Supabase again would fail, since the email is now registered there.
+     */
+    class UsernameRequired internal constructor(
+        internal val session: SupabaseSession,
+        internal val accountPassword: String?,
+    ) : EmailAuthResult
+}
 
 /** The linking window closed before the primary provisioned this device. */
 class LinkingExpiredException : Exception("the linking code expired")
@@ -71,6 +91,8 @@ class RelayService private constructor(
     private val context: Context,
     val credentials: RelayCredentials,
     val username: String,
+    /** The relay this account lives on; needed when provisioning another device. */
+    val server: String,
     private val store: SecureStore,
     private val api: RelayApiClient,
     private val socket: RelayWebSocket,
@@ -88,6 +110,8 @@ class RelayService private constructor(
         private const val KV_PASSWORD = "account.password"
         private const val KV_USERNAME = "account.username"
         private const val KV_PRIVATE_CALLS = "calls.private"
+        private const val KV_SUPABASE_REFRESH = "supabase.refresh"
+        private const val KV_SUPABASE_USER = "supabase.user"
 
         /**
          * Opens the store and restores a signed-in account, or returns null when
@@ -209,6 +233,101 @@ class RelayService private constructor(
             service
         }
 
+        /**
+         * Creates an account from an email sign-up.
+         *
+         * Two hops: Supabase issues a session for the email and password, then
+         * the relay verifies that token server-to-server and mints the account.
+         * The password is also handed to the relay as the **account** password so
+         * recovery works later; the *device* password is separate and random.
+         */
+        suspend fun signUpWithEmail(
+            context: Context,
+            email: String,
+            password: String,
+            username: String?,
+            server: String = DEFAULT_SERVER,
+        ): EmailAuthResult = withContext(Dispatchers.IO) {
+            val session = SupabaseAuth().signUp(email.trim(), password)
+            completeEmailAuth(context, session, username, password, server)
+        }
+
+        /**
+         * Signs in to an existing account.
+         *
+         * A returning user is recovered by the relay from their verified Supabase
+         * token, so no username is needed — but note what this does **not**
+         * restore: the E2EE identity key. A device signed in this way generates a
+         * fresh one, and everyone who has messaged this account will see a
+         * safety-number change. Device linking (§7.9) is the path that preserves
+         * identity.
+         */
+        suspend fun signInWithEmail(
+            context: Context,
+            email: String,
+            password: String,
+            username: String? = null,
+            server: String = DEFAULT_SERVER,
+        ): EmailAuthResult = withContext(Dispatchers.IO) {
+            val session = SupabaseAuth().signIn(email.trim(), password)
+            completeEmailAuth(context, session, username, accountPassword = null, server = server)
+        }
+
+        /** Retries the relay half with a username the user has now chosen. */
+        suspend fun completeWithUsername(
+            context: Context,
+            pending: EmailAuthResult.UsernameRequired,
+            username: String,
+            server: String = DEFAULT_SERVER,
+        ): EmailAuthResult = withContext(Dispatchers.IO) {
+            completeEmailAuth(
+                context, pending.session, username.trim(), pending.accountPassword, server,
+            )
+        }
+
+        private suspend fun completeEmailAuth(
+            context: Context,
+            session: SupabaseSession,
+            username: String?,
+            accountPassword: String?,
+            server: String,
+        ): EmailAuthResult {
+            val devicePassword = UUID.randomUUID().toString()
+            val result = RelayApiClient(server, auth = null).registerWithOAuth(
+                accessToken = session.accessToken,
+                devicePassword = devicePassword,
+                username = username,
+                accountPassword = accountPassword,
+            )
+            if (result !is OAuthAccountResult.SignedIn) {
+                return EmailAuthResult.UsernameRequired(session, accountPassword)
+            }
+
+            val store = SecureStore.open(context)
+            store.messages.apply {
+                kvPut(KV_ACCOUNT_ID, result.credentials.accountId.toByteArray())
+                kvPut(KV_DEVICE_ID, result.credentials.deviceId.toString().toByteArray())
+                kvPut(KV_PASSWORD, result.credentials.password.toByteArray())
+                kvPut(KV_USERNAME, result.username.toByteArray())
+                // Kept so a later 401 can be refreshed without asking for the
+                // password again. It lives in the SQLCipher store, not prefs.
+                kvPut(KV_SUPABASE_REFRESH, session.refreshToken.toByteArray())
+                kvPut(KV_SUPABASE_USER, session.userId.toByteArray())
+            }
+
+            val service = build(context, store, result.credentials, result.username, server)
+            if (result.created) {
+                val accessKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
+                service.messenger.bootstrap(service.authKey.publicKey(), accessKey)
+            } else {
+                // Joining an account that already exists: publishing keys is
+                // right, rotating its access key is not — that would revoke every
+                // sender who already holds it.
+                service.messenger.bootstrapLinkedDevice(service.authKey.publicKey())
+            }
+            return EmailAuthResult.Ready(service)
+        }
+
         private fun build(
             context: Context,
             store: SecureStore,
@@ -237,6 +356,7 @@ class RelayService private constructor(
                 context = context,
                 credentials = credentials,
                 username = username,
+                server = server,
                 store = store,
                 api = api,
                 socket = RelayWebSocket(server, auth),
@@ -399,6 +519,76 @@ class RelayService private constructor(
         nameOf = ::displayName,
         groupNameOf = { groupId -> store.messages.group(groupId)?.name ?: "Group call" },
     )
+
+    /**
+     * Provisions another device from a scanned QR. **Primary side** of linking.
+     *
+     * Creates the device on this account, then seals this account's identity key
+     * and the new device's credentials to the ephemeral key in the QR and leaves
+     * the ciphertext on the relay. The relay cannot read it.
+     *
+     * The order matters: the device row is created first, because the payload has
+     * to carry its id — and a device created but never provisioned is harmless
+     * (it can never authenticate), whereas a payload for a device that does not
+     * exist is not.
+     */
+    suspend fun linkOtherDevice(qrText: String): Int = withContext(Dispatchers.IO) {
+        val qr = DeviceLinking.LinkQrPayload.decode(qrText)
+            ?: throw LinkingFailedException("That isn't a Relay linking code.")
+        // A code pointing at another relay would send this account's identity key
+        // somewhere it does not belong. Cheap check, serious consequence.
+        if (qr.serverUrl.trimEnd('/') != server.trimEnd('/')) {
+            throw LinkingFailedException("That code is for a different Relay server.")
+        }
+
+        val (_, deviceListVersion) = api.listDevices()
+        val devicePassword = UUID.randomUUID().toString()
+        // Signed over the CANONICAL payload, not a digest: the key signs with
+        // SHA256withECDSA and hashes for us. The password is part of what is
+        // signed, so it cannot be swapped in flight.
+        val signature = authKey.sign(
+            SignedPayloads.deviceMutation(
+                accountId = credentials.accountId,
+                expectedVersion = deviceListVersion,
+                action = "link",
+                targetDeviceId = 0,
+                password = devicePassword,
+            ),
+        )
+        val newDeviceId = api.linkDevice(
+            password = devicePassword,
+            expectedVersion = deviceListVersion,
+            signerDeviceId = credentials.deviceId,
+            signature = signature,
+        )
+
+        val payload = DeviceLinking.LinkProvisioningPayload(
+            // The shared account identity — the whole point of linking rather
+            // than signing in, which would mint a new one and change every
+            // safety number.
+            identityKeyPair = store.signalStore.identityKeyPair.serialize(),
+            accountId = credentials.accountId,
+            username = username.ifEmpty { null },
+            deviceId = newDeviceId,
+            password = devicePassword,
+            serverUrl = server,
+            // Contacts, so the new device is not a blank slate. Groups are left
+            // out: their state rebuilds from GroupUpdate, and a group's "peer" is
+            // its group id, which is not a contact.
+            peers = store.messages.conversations()
+                .filter { it.groupId == null }
+                .map { DeviceLinking.PeerStub(it.peerAccount, it.peerUsername) },
+            historyId = null,
+            historyKey = null,
+            historyDigest = null,
+        )
+
+        api.storeProvisioningBlob(
+            sessionId = qr.sessionId,
+            blob = ProvisioningCipher.seal(payload.encode().toByteArray(), qr.ephemeralPublicKey),
+        )
+        newDeviceId
+    }
 
     /** Starts a group call with everyone in [groupId] except this account. */
     suspend fun startGroupCall(groupId: String, isVideo: Boolean): String? =

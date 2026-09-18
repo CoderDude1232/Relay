@@ -36,8 +36,12 @@ desugar = "2.1.5"
 # interoperate -- but this is the newest `android` artifact published to Maven
 # Central, so the gap is a constraint rather than a choice.
 webrtc = "125.6422.07"
-# QR encoding for device linking. Pure Java, no native code, ~500 KB.
+# QR encoding and decoding for device linking. Pure Java, no native code.
 zxing = "3.5.3"
+# CameraX, for scanning another device's linking QR. Preferred over ML Kit:
+# ZXing decodes the frames, so there is no Play Services dependency and no
+# model download.
+cameraX = "1.6.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -47,6 +51,10 @@ androidx-test-runner = { group = "androidx.test", name = "runner", version.ref =
 json = { group = "org.json", name = "json", version.ref = "json" }
 webrtc = { group = "io.github.webrtc-sdk", name = "android", version.ref = "webrtc" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "cameraX" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "cameraX" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

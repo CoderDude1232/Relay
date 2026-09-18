@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,65 +58,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// ---------------------------------------------------------------- onboarding
-
-@Composable
-fun OnboardingScreen(
-    busy: Boolean,
-    error: String?,
-    onRegister: (String) -> Unit,
-    onLinkDevice: () -> Unit,
-) {
-    var username by remember { mutableStateOf("") }
-    // The relay enforces this exact charset; rejecting locally avoids a
-    // round-trip to be told the same thing.
-    val valid = username.matches(Regex("^[a-zA-Z0-9._\\-]{1,64}$"))
-
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp).imePadding(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("Relay", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Choose a username to get started.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(24.dp))
-        OutlinedTextField(
-            value = username,
-            onValueChange = { username = it },
-            label = { Text("Username") },
-            singleLine = true,
-            enabled = !busy,
-            supportingText = { Text("Letters, numbers, dots, underscores and hyphens.") },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { if (valid) onRegister(username) }),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        if (error != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        }
-        Spacer(Modifier.height(16.dp))
-        Button(
-            onClick = { onRegister(username) },
-            enabled = valid && !busy,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (busy) CircularProgressIndicator(Modifier.height(18.dp)) else Text("Create account")
-        }
-        Spacer(Modifier.height(24.dp))
-        // The other way in: join an account that already exists on another phone,
-        // rather than creating a second, separate identity.
-        TextButton(onClick = onLinkDevice, enabled = !busy) {
-            Text("Already have Relay on another device?")
-        }
-    }
-}
-
 // --------------------------------------------------------- conversation list
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -129,6 +71,7 @@ fun ConversationListScreen(
     onOpen: (String) -> Unit,
     onStartConversation: (String, (String) -> Unit, (String) -> Unit) -> Unit,
     onShowCalls: () -> Unit,
+    onLinkDevice: () -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
     var newChatName by remember { mutableStateOf("") }
@@ -147,6 +90,9 @@ fun ConversationListScreen(
                     )
                     IconButton(onClick = onShowCalls) {
                         Icon(Icons.Filled.Call, contentDescription = "Calls")
+                    }
+                    IconButton(onClick = onLinkDevice) {
+                        Icon(Icons.Filled.QrCodeScanner, contentDescription = "Link a device")
                     }
                 },
             )
