@@ -65,6 +65,7 @@ class LiveRelayInteropTest {
 
     /** A fresh account, store and connected client for one test. */
     private class Harness(
+        val username: String,
         val credentials: RelayCredentials,
         val api: RelayApiClient,
         val messenger: RelayMessenger,
@@ -109,7 +110,7 @@ class LiveRelayInteropTest {
         messenger.bootstrap(authPublicKey = authKey.publicKey(), accessKey = accessKey)
         Log.i(TAG, "bootstrapped: auth key uploaded, prekeys published, access key set")
 
-        Harness(credentials, api, messenger, RelayWebSocket(server, auth), store, masterKeys, authKey)
+        Harness(username, credentials, api, messenger, RelayWebSocket(server, auth), store, masterKeys, authKey)
     }
 
     private fun Harness.cleanUp() {
@@ -137,6 +138,121 @@ class LiveRelayInteropTest {
             assertTrue(!devices.single().mailboxId.isNullOrEmpty())
             } finally {
                 harness.cleanUp()
+            }
+        }
+    }
+
+    @Test
+    fun receivesAMessageSentFromTheIosClient() {
+        // Reverses the direction. Android sending to iOS exercises iOS's PQXDH
+        // handshake against prekeys the relay published for it; if those private
+        // halves are gone (a reinstall, a wiped store), iOS cannot decrypt and --
+        // by design -- acks and drops silently, which is indistinguishable from
+        // the message never arriving. Having iOS start the session instead avoids
+        // that path entirely and says whether the two clients can talk at all.
+        //
+        // Registers a probe account, prints its username, and waits. Send to that
+        // username from the iPhone while it runs.
+        runBlocking {
+            val harness = buildHarness()
+            try {
+                Log.i(TAG, "PROBE READY -- send a message from iOS to: ${harness.username}")
+                Log.i(TAG, "PROBE account id: ${harness.credentials.accountId}")
+
+                val received = Channel<DecryptedEnvelope>(Channel.UNLIMITED)
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                harness.socket.connect()
+                    .onEach { event ->
+                        if (event is RelayEvent.Envelope) {
+                            // Log before decrypting: an envelope that arrives but
+                            // fails to open is a very different diagnosis from one
+                            // that never arrives.
+                            Log.i(
+                                TAG,
+                                "PROBE envelope ${event.envelope.id} sender=" +
+                                    event.envelope.senderAccount.ifEmpty { "<sealed>" } +
+                                    " type=${event.envelope.message.kind}",
+                            )
+                            runCatching { harness.messenger.processEnvelope(event.envelope) }
+                                .onFailure { Log.e(TAG, "PROBE decrypt failed", it) }
+                                .getOrNull()?.let { received.trySend(it) }
+                        }
+                    }
+                    .launchIn(scope)
+
+                val delivered = withTimeoutOrNull(300_000) { received.receive() }
+                assertTrue(
+                    "no message arrived from iOS within 5 minutes -- send to ${harness.username}",
+                    delivered != null,
+                )
+                Log.i(TAG, "PROBE received from ${delivered!!.senderAccount}: ${delivered.content.text.body}")
+                scope.cancel()
+            } finally {
+                harness.cleanUp()
+            }
+        }
+    }
+
+    @Test
+    fun twoAndroidClientsRoundTripThroughTheLiveRelay() {
+        // Isolation test. If this passes, the client's own send AND receive paths
+        // are correct against the real relay, so any failure to reach the iOS
+        // client is on the iOS side (or in the pairing) rather than here. If it
+        // fails, the bug is ours. Worth running before blaming the other client.
+        runBlocking {
+            val alice = buildHarness()
+            val bob = buildHarness()
+            try {
+                val received = Channel<DecryptedEnvelope>(Channel.UNLIMITED)
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                val drained = Channel<Unit>(Channel.CONFLATED)
+
+                bob.socket.connect()
+                    .onEach { event ->
+                        when (event) {
+                            is RelayEvent.QueueDrained -> drained.trySend(Unit)
+                            is RelayEvent.Envelope ->
+                                bob.messenger.processEnvelope(event.envelope)
+                                    ?.let { received.trySend(it) }
+                            else -> Unit
+                        }
+                    }
+                    .launchIn(scope)
+                assertTrue(
+                    "bob's socket never drained its queue",
+                    withTimeoutOrNull(30_000) { drained.receive() } != null,
+                )
+
+                // Alice needs a live socket too: the authenticated send path is a
+                // WebSocket frame, not a REST call.
+                val aliceDrained = Channel<Unit>(Channel.CONFLATED)
+                alice.socket.connect()
+                    .onEach { if (it is RelayEvent.QueueDrained) aliceDrained.trySend(Unit) }
+                    .launchIn(scope)
+                withTimeoutOrNull(30_000) { aliceDrained.receive() }
+
+                alice.messenger.refreshSessions(bob.credentials.accountId)
+
+                val timestamp = System.currentTimeMillis()
+                val body = "loopback \u2713 $timestamp"
+                val outcome = alice.messenger.sendOverWebSocket(
+                    socket = alice.socket,
+                    account = bob.credentials.accountId,
+                    plaintext = alice.messenger.buildTextContent(body, timestamp).toByteArray(),
+                    clientTimestamp = timestamp,
+                )
+                assertTrue("send rejected: $outcome", outcome is SendOutcome.Ok)
+
+                val delivered = withTimeoutOrNull(45_000) { received.receive() }
+                assertTrue("bob never received the message", delivered != null)
+                assertEquals(alice.credentials.accountId, delivered!!.senderAccount)
+                assertEquals(body, delivered.content.text.body)
+                Log.i(TAG, "loopback delivered and decrypted: ${delivered.content.text.body}")
+
+                scope.cancel()
+            } finally {
+                alice.cleanUp()
+                bob.cleanUp()
             }
         }
     }
