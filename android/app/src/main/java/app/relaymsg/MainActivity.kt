@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
+import app.relaymsg.ui.CallLogScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.OnboardingScreen
@@ -99,10 +100,19 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     val busy by viewModel.busy.collectAsState()
 
     var openConversationId by remember { mutableStateOf<String?>(null) }
+    var showCalls by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
         val open = openConversationId
-        if (open == null) {
+        if (showCalls) {
+            val calls by viewModel.callLog.collectAsState()
+            CallLogScreen(
+                calls = calls,
+                onBack = { showCalls = false },
+                onClear = viewModel::clearCallLog,
+                onCall = { peer, video -> showCalls = false; viewModel.placeCall(peer, video) },
+            )
+        } else if (open == null) {
             ConversationListScreen(
                 username = phase.service.username,
                 connection = connection,
@@ -111,6 +121,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 busy = busy,
                 onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
                 onStartConversation = viewModel::startConversation,
+                onShowCalls = { showCalls = true },
             )
         } else {
             val conversation = conversations.firstOrNull { it.id == open }
@@ -148,6 +159,7 @@ private fun InCallOverlay(viewModel: RelayViewModel) {
     val fullScreenElsewhere by CallMedia.fullScreen.collectAsState()
     val remoteVideo by CallMedia.remoteVideo.collectAsState()
     val localVideo by CallMedia.localVideo.collectAsState()
+    val localMirror by CallMedia.localMirror.collectAsState()
 
     val active = call ?: return
     if (fullScreenElsewhere) return
@@ -157,10 +169,15 @@ private fun InCallOverlay(viewModel: RelayViewModel) {
         peerName = viewModel.callerName(active),
         remoteVideo = remoteVideo,
         localVideo = localVideo,
+        localMirror = localMirror,
         onAccept = viewModel::acceptCall,
         onHangUp = viewModel::hangUp,
         onToggleMute = viewModel::toggleMute,
         onToggleSpeaker = viewModel::toggleSpeaker,
+        onSwitchCamera = viewModel::switchCamera,
+        onToggleCamera = viewModel::toggleCamera,
+        audioRoutes = viewModel::audioRoutes,
+        onSelectRoute = viewModel::selectAudioRoute,
     )
 }
 

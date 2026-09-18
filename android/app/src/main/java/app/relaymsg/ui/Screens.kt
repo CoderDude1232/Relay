@@ -121,6 +121,7 @@ fun ConversationListScreen(
     busy: Boolean,
     onOpen: (String) -> Unit,
     onStartConversation: (String, (String) -> Unit, (String) -> Unit) -> Unit,
+    onShowCalls: () -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
     var newChatName by remember { mutableStateOf("") }
@@ -135,8 +136,11 @@ fun ConversationListScreen(
                         text = connection.label(),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 12.dp),
+                        modifier = Modifier.padding(end = 4.dp),
                     )
+                    IconButton(onClick = onShowCalls) {
+                        Icon(Icons.Filled.Call, contentDescription = "Calls")
+                    }
                 },
             )
         },

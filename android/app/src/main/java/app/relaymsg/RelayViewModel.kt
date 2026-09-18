@@ -6,10 +6,13 @@ import androidx.lifecycle.viewModelScope
 import app.relaymsg.call.CallService
 import app.relaymsg.call.CallWake
 import app.relaymsg.core.ActiveCall
+import app.relaymsg.core.AudioRoute
+import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.ConnectionState
 import app.relaymsg.core.RelayService
 import app.relaymsg.push.RelayRuntime
 import app.relaymsg.storage.Conversation
+import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -193,8 +196,32 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleSpeaker() {
         val service = service ?: return
-        service.calls.setSpeakerOn(!(call.value?.isSpeakerOn ?: false))
+        service.calls.setSpeakerOn(call.value?.audioRoute != AudioRouteKind.SPEAKER)
     }
+
+    /** The outputs available right now; only meaningful during a call. */
+    fun audioRoutes(): List<AudioRoute> = service?.calls?.audioRoutes().orEmpty()
+
+    fun selectAudioRoute(route: AudioRoute) {
+        service?.calls?.selectAudioRoute(route)
+    }
+
+    fun switchCamera() {
+        service?.calls?.switchCamera()
+    }
+
+    fun toggleCamera() {
+        val service = service ?: return
+        service.calls.setCameraEnabled(!(call.value?.isCameraOn ?: true))
+    }
+
+    /** The call history, newest first. */
+    @Suppress("OPT_IN_USAGE")
+    val callLog: StateFlow<List<StoredCall>> = _phase
+        .flatMapLatest { (it as? AppPhase.Ready)?.service?.callLog ?: flowOf(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun clearCallLog() = service?.clearCallLog()
 
     /** The name to show on a call, which is the conversation title if we have one. */
     fun callerName(call: ActiveCall): String =

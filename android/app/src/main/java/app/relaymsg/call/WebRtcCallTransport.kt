@@ -8,7 +8,10 @@ import android.media.AudioManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import app.relaymsg.core.AudioRoute
+import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.CallTransport
+import app.relaymsg.core.MediaConnectionState
 import app.relaymsg.core.IceCandidateJson
 import app.relaymsg.core.IcePlan
 import java.io.IOException
@@ -50,6 +53,8 @@ class WebRtcCallTransport(
     private val onRemoteVideo: (VideoTrack?) -> Unit = {},
     /** This device's camera track, for the self-preview. Null when the call ends. */
     private val onLocalVideo: (VideoTrack?) -> Unit = {},
+    /** True while the front camera is selected, so the preview mirrors correctly. */
+    private val onCameraFacing: (Boolean) -> Unit = {},
 ) : CallTransport {
 
     private val audioManager =
@@ -61,6 +66,7 @@ class WebRtcCallTransport(
     private var capturer: CameraVideoCapturer? = null
     private var surfaceHelper: SurfaceTextureHelper? = null
     private var previousAudioMode: Int? = null
+    private var connectionListener: ((MediaConnectionState) -> Unit)? = null
 
     /**
      * Candidates that arrived between `accept()` and the remote description
@@ -105,28 +111,68 @@ class WebRtcCallTransport(
         if (hasRemoteDescription) pc.addIceCandidate(candidate) else pendingRemote += candidate
     }
 
+    override fun onConnectionState(listener: (MediaConnectionState) -> Unit) {
+        connectionListener = listener
+    }
+
     override fun setMicrophoneEnabled(enabled: Boolean) {
         audioTrack?.setEnabled(enabled)
     }
 
-    override fun setSpeakerphoneOn(on: Boolean) {
+    /**
+     * The outputs available right now.
+     *
+     * Labelled by kind rather than by the device's own product name: the name
+     * would be the peer's... no, the *user's* hardware, but reading it on API 31+
+     * drags in Bluetooth permissions for no benefit, and "Headphones" is what a
+     * picker needs to say anyway.
+     */
+    override fun audioRoutes(): List<AudioRoute> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            // Pre-31 there is no device list: `startBluetoothSco` is the only
+            // route to a headset and it is unreliable enough that offering it
+            // would promise more than it delivers.
+            return listOf(
+                AudioRoute(LEGACY_EARPIECE, AudioRouteKind.EARPIECE, "Phone"),
+                AudioRoute(LEGACY_SPEAKER, AudioRouteKind.SPEAKER, "Speaker"),
+            )
+        }
+        return audioManager.availableCommunicationDevices
+            .mapNotNull { device ->
+                kindOf(device.type)?.let { kind -> AudioRoute(device.id, kind, label(kind)) }
+            }
+            .distinctBy { it.kind }
+    }
+
+    override fun selectAudioRoute(route: AudioRoute) {
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val wanted = if (on) {
-                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                } else {
-                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                }
                 val device = audioManager.availableCommunicationDevices
-                    .firstOrNull { it.type == wanted }
-                // A tablet may have no earpiece at all; leaving routing alone
-                // beats forcing it somewhere that does not exist.
+                    .firstOrNull { it.id == route.id }
+                // The headset may have been unplugged between listing and
+                // choosing; leaving routing alone beats forcing it nowhere.
                 if (device != null) audioManager.setCommunicationDevice(device)
             } else {
                 @Suppress("DEPRECATION")
-                audioManager.isSpeakerphoneOn = on
+                audioManager.isSpeakerphoneOn = route.kind == AudioRouteKind.SPEAKER
             }
         }.onFailure { Log.w(TAG, "could not switch audio route", it) }
+    }
+
+    override fun switchCamera() {
+        capturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+            override fun onCameraSwitchDone(isFrontCamera: Boolean) = onCameraFacing(isFrontCamera)
+            override fun onCameraSwitchError(error: String?) {
+                Log.w(TAG, "camera switch failed: $error")
+            }
+        })
+    }
+
+    override fun setCameraEnabled(enabled: Boolean) {
+        // Track-level, like mute: the peer sees a frozen frame, and there is
+        // nothing to renegotiate. Stopping the capturer would also drop the
+        // track, which needs a new offer to bring back.
+        videoTrack?.setEnabled(enabled)
     }
 
     override fun close() {
@@ -243,6 +289,7 @@ class WebRtcCallTransport(
         videoTrack = track
         pc.addTrack(track, listOf(STREAM_ID))
         onLocalVideo(track)
+        onCameraFacing(enumerator.isFrontFacing(device))
     }
 
     private fun markRemoteReady(pc: PeerConnection) {
@@ -296,6 +343,20 @@ class WebRtcCallTransport(
 
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
             Log.i(TAG, "ice connection: $state")
+            connectionListener?.invoke(
+                when (state) {
+                    PeerConnection.IceConnectionState.CONNECTED,
+                    PeerConnection.IceConnectionState.COMPLETED,
+                    -> MediaConnectionState.CONNECTED
+
+                    PeerConnection.IceConnectionState.DISCONNECTED ->
+                        MediaConnectionState.DISCONNECTED
+
+                    PeerConnection.IceConnectionState.FAILED -> MediaConnectionState.FAILED
+                    PeerConnection.IceConnectionState.CLOSED -> MediaConnectionState.CLOSED
+                    else -> MediaConnectionState.CONNECTING
+                },
+            )
         }
 
         // The rest are required by the interface and carry nothing we act on.
@@ -308,6 +369,27 @@ class WebRtcCallTransport(
         override fun onDataChannel(channel: DataChannel?) = Unit
         override fun onRenegotiationNeeded() = Unit
         override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) = Unit
+    }
+
+    private fun kindOf(type: Int): AudioRouteKind? = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> AudioRouteKind.EARPIECE
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> AudioRouteKind.SPEAKER
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        -> AudioRouteKind.WIRED
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLE_HEADSET ->
+            AudioRouteKind.BLUETOOTH
+        // Anything else (HDMI, an aux line, a hearing aid we cannot classify) is
+        // left out rather than offered under a label that might be wrong.
+        else -> null
+    }
+
+    private fun label(kind: AudioRouteKind) = when (kind) {
+        AudioRouteKind.EARPIECE -> "Phone"
+        AudioRouteKind.SPEAKER -> "Speaker"
+        AudioRouteKind.WIRED -> "Headset"
+        AudioRouteKind.BLUETOOTH -> "Bluetooth"
     }
 
     private fun constraints(isVideo: Boolean) = MediaConstraints().apply {
@@ -325,6 +407,10 @@ class WebRtcCallTransport(
         const val VIDEO_TRACK_ID = "video0"
         const val STREAM_ID = "stream0"
         const val CAPTURE_THREAD = "RelayCapture"
+
+        // Pre-31 there is no device id to use, only a boolean.
+        const val LEGACY_EARPIECE = 0
+        const val LEGACY_SPEAKER = 1
 
         const val VIDEO_WIDTH = 1280
         const val VIDEO_HEIGHT = 720

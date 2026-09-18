@@ -25,6 +25,11 @@ object CallMedia {
     /** This device's camera, for the self-preview. */
     val localVideo: StateFlow<VideoTrack?> = _localVideo.asStateFlow()
 
+    private val _localMirror = MutableStateFlow(true)
+
+    /** True while the front camera is selected; drives the self-preview mirror. */
+    val localMirror: StateFlow<Boolean> = _localMirror.asStateFlow()
+
     private val _fullScreen = MutableStateFlow(false)
 
     /**
@@ -42,6 +47,10 @@ object CallMedia {
 
     fun setLocalVideo(track: VideoTrack?) {
         _localVideo.value = track
+    }
+
+    fun setCameraFacing(front: Boolean) {
+        _localMirror.value = front
     }
 
     fun setFullScreen(active: Boolean) {

@@ -61,6 +61,7 @@ object RelayRuntime {
                 },
                 onRemoteVideo = CallMedia::setRemoteVideo,
                 onLocalVideo = CallMedia::setLocalVideo,
+                onCameraFacing = CallMedia::setCameraFacing,
             )
         }
     }

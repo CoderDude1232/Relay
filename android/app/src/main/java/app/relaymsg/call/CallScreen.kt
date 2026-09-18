@@ -19,12 +19,19 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.FlipCameraAndroid
+import androidx.compose.material.icons.filled.Headset
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -38,10 +45,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.relaymsg.core.ActiveCall
+import app.relaymsg.core.AudioRoute
+import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.CallState
 import kotlinx.coroutines.delay
 import org.webrtc.RendererCommon
@@ -62,10 +72,17 @@ fun CallScreen(
     peerName: String,
     remoteVideo: VideoTrack?,
     localVideo: VideoTrack?,
+    /** Mirrored only while the front camera is selected. */
+    localMirror: Boolean = true,
     onAccept: () -> Unit,
     onHangUp: () -> Unit,
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
+    onSwitchCamera: () -> Unit = {},
+    onToggleCamera: () -> Unit = {},
+    /** Queried when the user opens the picker: headsets come and go mid-call. */
+    audioRoutes: () -> List<AudioRoute> = ::emptyList,
+    onSelectRoute: (AudioRoute) -> Unit = {},
 ) {
     val hasVideo = call.isVideo && remoteVideo != null
 
@@ -82,12 +99,13 @@ fun CallScreen(
                     mirror = false,
                     modifier = Modifier.fillMaxSize(),
                 )
-                localVideo?.let { local ->
+                localVideo?.takeIf { call.isCameraOn }?.let { local ->
                     VideoSurface(
                         track = local,
-                        // Mirrored, because a self-view that is not mirrored
-                        // reads as somebody else's camera.
-                        mirror = true,
+                        // The front camera is mirrored, because a self-view that
+                        // is not mirrored reads as somebody else's camera. The
+                        // back camera is not: that one is showing the world.
+                        mirror = localMirror,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(16.dp)
@@ -106,7 +124,17 @@ fun CallScreen(
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
                 Header(call, peerName, onBlack = hasVideo)
-                Controls(call, onAccept, onHangUp, onToggleMute, onToggleSpeaker)
+                Controls(
+                    call = call,
+                    onAccept = onAccept,
+                    onHangUp = onHangUp,
+                    onToggleMute = onToggleMute,
+                    onToggleSpeaker = onToggleSpeaker,
+                    onSwitchCamera = onSwitchCamera,
+                    onToggleCamera = onToggleCamera,
+                    audioRoutes = audioRoutes,
+                    onSelectRoute = onSelectRoute,
+                )
             }
         }
     }
@@ -141,19 +169,35 @@ private fun Controls(
     onHangUp: () -> Unit,
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
+    onSwitchCamera: () -> Unit,
+    onToggleCamera: () -> Unit,
+    audioRoutes: () -> List<AudioRoute>,
+    onSelectRoute: (AudioRoute) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 40.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (call.state == CallState.INCOMING_RINGING) {
+    if (call.state == CallState.INCOMING_RINGING) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 40.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             // Decline is the same action as hanging up; only the label differs.
             CircleButton(Icons.Filled.CallEnd, "Decline", MaterialTheme.colorScheme.error, onHangUp)
             CircleButton(Icons.Filled.Call, "Accept", AnswerGreen, onAccept)
-        } else {
+        }
+        return
+    }
+
+    var routePicker by remember { mutableStateOf<List<AudioRoute>?>(null) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             CircleButton(
                 icon = if (call.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
                 label = if (call.isMuted) "Unmute" else "Mute",
@@ -161,16 +205,84 @@ private fun Controls(
                 onClick = onToggleMute,
                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            CircleButton(Icons.Filled.CallEnd, "Hang up", MaterialTheme.colorScheme.error, onHangUp)
             CircleButton(
-                icon = if (call.isSpeakerOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                label = if (call.isSpeakerOn) "Speaker on" else "Speaker off",
+                icon = call.audioRoute.icon(),
+                label = "Audio output: ${call.audioRoute.name.lowercase()}",
                 background = MaterialTheme.colorScheme.surfaceVariant,
-                onClick = onToggleSpeaker,
+                // With only the phone and the speaker to choose from, a picker
+                // would be two taps to do what one should. A headset makes it a
+                // real choice, so then it becomes one — which is how every phone
+                // app behaves.
+                onClick = {
+                    val routes = audioRoutes()
+                    if (routes.size > 2) routePicker = routes else onToggleSpeaker()
+                },
                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (call.isVideo) {
+                CircleButton(
+                    icon = if (call.isCameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+                    label = if (call.isCameraOn) "Turn camera off" else "Turn camera on",
+                    background = MaterialTheme.colorScheme.surfaceVariant,
+                    onClick = onToggleCamera,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                CircleButton(
+                    icon = Icons.Filled.FlipCameraAndroid,
+                    label = "Switch camera",
+                    background = MaterialTheme.colorScheme.surfaceVariant,
+                    onClick = onSwitchCamera,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
+
+        Spacer(Modifier.size(24.dp))
+        CircleButton(Icons.Filled.CallEnd, "Hang up", MaterialTheme.colorScheme.error, onHangUp)
     }
+
+    routePicker?.let { routes ->
+        AlertDialog(
+            onDismissRequest = { routePicker = null },
+            title = { Text("Audio output") },
+            text = {
+                Column {
+                    routes.forEach { route ->
+                        TextButton(
+                            onClick = { onSelectRoute(route); routePicker = null },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(route.kind.icon(), contentDescription = null)
+                                Spacer(Modifier.size(12.dp))
+                                Text(
+                                    route.name,
+                                    fontWeight = if (route.kind == call.audioRoute) {
+                                        FontWeight.Bold
+                                    } else {
+                                        FontWeight.Normal
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { routePicker = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+private fun AudioRouteKind.icon() = when (this) {
+    AudioRouteKind.SPEAKER -> Icons.Filled.VolumeUp
+    AudioRouteKind.BLUETOOTH -> Icons.Filled.Bluetooth
+    AudioRouteKind.WIRED -> Icons.Filled.Headset
+    AudioRouteKind.EARPIECE -> Icons.Filled.VolumeOff
 }
 
 @Composable

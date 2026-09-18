@@ -1,9 +1,13 @@
 package app.relaymsg.core
 
 import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import relay.content.ContentOuterClass.CallMessage
 import relay.content.ContentOuterClass.Content
 
@@ -22,8 +26,28 @@ data class ActiveCall(
     val startedAt: Long,
     val connectedAt: Long? = null,
     val isMuted: Boolean = false,
-    val isSpeakerOn: Boolean = false,
+    val audioRoute: AudioRouteKind = AudioRouteKind.EARPIECE,
+    val isCameraOn: Boolean = true,
 )
+
+/**
+ * What the media connection is doing, as reported by ICE.
+ *
+ * This is the only honest answer to "is the call actually working": SDP can be
+ * exchanged successfully and media still never flow.
+ */
+enum class MediaConnectionState { CONNECTING, CONNECTED, DISCONNECTED, FAILED, CLOSED }
+
+/** Where call audio can go. */
+enum class AudioRouteKind { EARPIECE, SPEAKER, WIRED, BLUETOOTH }
+
+/**
+ * One selectable audio output.
+ *
+ * [id] is the platform's own device id, opaque here — the state machine only
+ * ever hands it back to the transport.
+ */
+data class AudioRoute(val id: Int, val kind: AudioRouteKind, val name: String)
 
 /**
  * The media transport, abstracted so the call state machine can be tested
@@ -31,6 +55,14 @@ data class ActiveCall(
  * is pure logic.
  */
 interface CallTransport {
+
+    /**
+     * Registers the media-connection listener, before any offer is created.
+     *
+     * Called exactly once per transport; a second call replaces the first.
+     */
+    fun onConnectionState(listener: (MediaConnectionState) -> Unit)
+
     /** Creates a local offer; the SDP is returned for signalling. */
     suspend fun createOffer(isVideo: Boolean): String
 
@@ -51,8 +83,27 @@ interface CallTransport {
      */
     fun setMicrophoneEnabled(enabled: Boolean)
 
-    /** Routes call audio to the loudspeaker, or back to the earpiece. */
-    fun setSpeakerphoneOn(on: Boolean)
+    /**
+     * The outputs call audio can currently go to.
+     *
+     * Queried on demand rather than observed: headsets appear and disappear
+     * mid-call, so the answer is only correct at the moment the user asks.
+     */
+    fun audioRoutes(): List<AudioRoute>
+
+    /** Sends call audio to [route]. */
+    fun selectAudioRoute(route: AudioRoute)
+
+    /** Flips between the front and back cameras. No effect on an audio call. */
+    fun switchCamera()
+
+    /**
+     * Stops or resumes sending video.
+     *
+     * A track-level enable, like mute: the peer sees a frozen last frame rather
+     * than a renegotiated session.
+     */
+    fun setCameraEnabled(enabled: Boolean)
 
     /** Tears the peer connection down and releases audio/video devices. */
     fun close()
@@ -75,8 +126,12 @@ class NoMediaTransport : CallTransport {
 
     override suspend fun acceptAnswer(remoteSdp: String) = Unit
     override suspend fun addIceCandidate(candidateJson: String) = Unit
+    override fun onConnectionState(listener: (MediaConnectionState) -> Unit) = Unit
     override fun setMicrophoneEnabled(enabled: Boolean) = Unit
-    override fun setSpeakerphoneOn(on: Boolean) = Unit
+    override fun audioRoutes(): List<AudioRoute> = emptyList()
+    override fun selectAudioRoute(route: AudioRoute) = Unit
+    override fun switchCamera() = Unit
+    override fun setCameraEnabled(enabled: Boolean) = Unit
     override fun close() = Unit
 }
 
@@ -101,6 +156,10 @@ class CallManager(
     private val newTransport: () -> CallTransport,
     /** Sends a signalling Content to a peer; `ephemeral` follows [CallSignalling.isEphemeral]. */
     private val send: suspend (peer: String, content: Content, ephemeral: Boolean) -> Unit,
+    /** Where the ICE grace-period timers run. Outlives any one call. */
+    private val scope: CoroutineScope,
+    /** Called once per finished call, for the call log. */
+    private val onEnded: (ActiveCall, CallEndReason) -> Unit = { _, _ -> },
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val _call = MutableStateFlow<ActiveCall?>(null)
@@ -119,13 +178,68 @@ class CallManager(
     /** The transport for the call in progress; null whenever [call] is null. */
     private var transport: CallTransport? = null
 
+    /** The pending "give up on this call" timer, if ICE is currently unhappy. */
+    private var recovery: Job? = null
+
+    private fun openTransport(): CallTransport = newTransport().also { fresh ->
+        fresh.onConnectionState(::onMediaState)
+        transport = fresh
+    }
+
+    /**
+     * Reacts to the media connection coming up, wobbling, or dying.
+     *
+     * The grace periods are iOS's (`scheduleIceFailure`): 3 s on `failed`, 10 s
+     * on `disconnected`. They exist because WebRTC recovers from both on its own
+     * surprisingly often — continual gathering keeps trying new pairs — and
+     * ending a call that was about to come back is worse than a few seconds of
+     * silence.
+     *
+     * Note there is no ICE *restart* here, deliberately: a restart means sending
+     * a fresh OFFER mid-call, and iOS answers an OFFER for a call it already has
+     * with BUSY. See PROTOCOL.md §7.5.5.
+     */
+    private fun onMediaState(state: MediaConnectionState) {
+        when (state) {
+            MediaConnectionState.CONNECTED -> {
+                recovery?.cancel()
+                recovery = null
+                markActive()
+            }
+            // Both sides stay in CONNECTING until media actually flows, so the
+            // UI never claims a call is live while ICE is still negotiating.
+            MediaConnectionState.FAILED -> scheduleFailure(FAILED_GRACE_MS)
+            MediaConnectionState.DISCONNECTED -> scheduleFailure(DISCONNECTED_GRACE_MS)
+            MediaConnectionState.CONNECTING, MediaConnectionState.CLOSED -> Unit
+        }
+    }
+
+    private fun markActive() {
+        val current = _call.value ?: return
+        if (current.state == CallState.ACTIVE) return
+        _call.value = current.copy(state = CallState.ACTIVE, connectedAt = current.connectedAt ?: now())
+    }
+
+    private fun scheduleFailure(delayMs: Long) {
+        if (recovery != null) return
+        recovery = scope.launch {
+            delay(delayMs)
+            val current = _call.value ?: return@launch
+            // Tell the peer, or they sit watching a call that is already gone.
+            runCatching {
+                emit(current.peerAccount, CallSignalling.hangup(current.callId, ownAccount, ownDevice))
+            }
+            end(CallEndReason.FAILED)
+        }
+    }
+
     suspend fun placeCall(peer: String, isVideo: Boolean): String? {
         if (_call.value != null) return null // already on a call
         val callId = UUID.randomUUID().toString()
         _call.value = ActiveCall(callId, peer, true, isVideo, CallState.OUTGOING_RINGING, now())
 
         return try {
-            val sdp = newTransport().also { transport = it }.createOffer(isVideo)
+            val sdp = openTransport().createOffer(isVideo)
             // OFFER is durable: it must survive the callee being offline, or a
             // call could never wake a sleeping phone.
             emit(peer, CallSignalling.offer(callId, sdp, ownAccount, ownDevice, isVideo))
@@ -163,7 +277,9 @@ class CallManager(
                     media.acceptAnswer(signal.sdp)
                     flushPendingCandidates()
                 }.onFailure { return end(CallEndReason.FAILED) }
-                _call.value = current.copy(state = CallState.ACTIVE, connectedAt = now())
+                // Not ACTIVE yet: the SDP exchange succeeding says nothing about
+                // whether media will flow. ICE decides that, in [onMediaState].
+                _call.value = current.copy(state = CallState.CONNECTING)
                 null
             }
 
@@ -218,10 +334,9 @@ class CallManager(
 
         _call.value = current.copy(state = CallState.CONNECTING)
         return try {
-            val sdp = newTransport().also { transport = it }.createAnswer(offer, current.isVideo)
+            val sdp = openTransport().createAnswer(offer, current.isVideo)
             emit(current.peerAccount, CallSignalling.answer(current.callId, sdp, ownAccount, ownDevice))
             flushPendingCandidates()
-            _call.value = _call.value?.copy(state = CallState.ACTIVE, connectedAt = now())
             true
         } catch (_: Throwable) {
             end(CallEndReason.FAILED)
@@ -249,11 +364,45 @@ class CallManager(
         _call.value = current.copy(isMuted = muted)
     }
 
-    /** Switches between the loudspeaker and the earpiece. */
-    fun setSpeakerOn(on: Boolean) {
+    /** The outputs available right now; empty when no call is in progress. */
+    fun audioRoutes(): List<AudioRoute> = transport?.audioRoutes().orEmpty()
+
+    /** Sends call audio to [route]. */
+    fun selectAudioRoute(route: AudioRoute) {
         val current = _call.value ?: return
-        transport?.setSpeakerphoneOn(on)
-        _call.value = current.copy(isSpeakerOn = on)
+        transport?.selectAudioRoute(route)
+        _call.value = current.copy(audioRoute = route.kind)
+    }
+
+    /**
+     * The big speaker button: loudspeaker, or back to wherever audio would go
+     * otherwise — which is a headset if one is plugged in or paired, not the
+     * earpiece. Picking the earpiece over a connected headset would be wrong.
+     */
+    fun setSpeakerOn(on: Boolean) {
+        if (_call.value == null) return
+        val routes = audioRoutes()
+        val wanted = if (on) {
+            routes.firstOrNull { it.kind == AudioRouteKind.SPEAKER }
+        } else {
+            routes.firstOrNull { it.kind == AudioRouteKind.BLUETOOTH }
+                ?: routes.firstOrNull { it.kind == AudioRouteKind.WIRED }
+                ?: routes.firstOrNull { it.kind == AudioRouteKind.EARPIECE }
+        }
+        wanted?.let(::selectAudioRoute)
+    }
+
+    /** Flips the camera. Local only — nothing is signalled. */
+    fun switchCamera() {
+        if (_call.value == null) return
+        transport?.switchCamera()
+    }
+
+    /** Stops or resumes sending video. */
+    fun setCameraEnabled(enabled: Boolean) {
+        val current = _call.value ?: return
+        transport?.setCameraEnabled(enabled)
+        _call.value = current.copy(isCameraOn = enabled)
     }
 
     /** Sends a locally-gathered ICE candidate to the peer. */
@@ -270,11 +419,15 @@ class CallManager(
     }
 
     private fun end(reason: CallEndReason): CallEndReason {
+        recovery?.cancel()
+        recovery = null
         transport?.close()
         transport = null
         pendingCandidates.clear()
         pendingOffer = null
-        _call.value = _call.value?.copy(state = CallState.ENDED)
+        _call.value?.let { finished ->
+            runCatching { onEnded(finished.copy(state = CallState.ENDED), reason) }
+        }
         _call.value = null
         return reason
     }
@@ -282,5 +435,11 @@ class CallManager(
     /** Sends with the ephemerality the protocol requires for that signal type. */
     private suspend fun emit(peer: String, content: Content) {
         send(peer, content, CallSignalling.isEphemeral(content.call.type))
+    }
+
+    private companion object {
+        /** iOS `scheduleIceFailure` delays — keep them identical. */
+        const val FAILED_GRACE_MS = 3_000L
+        const val DISCONNECTED_GRACE_MS = 10_000L
     }
 }

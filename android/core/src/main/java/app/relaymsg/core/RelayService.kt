@@ -18,6 +18,10 @@ import app.relaymsg.storage.MasterKeyStore
 import app.relaymsg.storage.MessageStatus
 import app.relaymsg.storage.SecureStore
 import app.relaymsg.storage.StoredAttachment
+import app.relaymsg.storage.StoredCall
+import app.relaymsg.storage.StoredCallDirection
+import app.relaymsg.storage.StoredCallKind
+import app.relaymsg.storage.StoredCallOutcome
 import app.relaymsg.storage.StoredMessage
 import java.security.SecureRandom
 import java.util.UUID
@@ -190,7 +194,62 @@ class RelayService private constructor(
         ownDevice = credentials.deviceId,
         newTransport = { callTransportFactory() },
         send = ::sendCallSignal,
+        scope = scope,
+        onEnded = ::recordCall,
     )
+
+    /**
+     * Writes a finished call to the log.
+     *
+     * The outcome is inferred the way iOS does (`inferredTerminalOutcome`): what
+     * distinguishes a completed call from a failed one is whether media ever
+     * connected, not whether the signalling went cleanly.
+     */
+    private fun recordCall(call: ActiveCall, reason: CallEndReason) {
+        val outcome = when (reason) {
+            CallEndReason.MISSED -> StoredCallOutcome.MISSED
+            CallEndReason.DECLINED -> StoredCallOutcome.DECLINED
+            CallEndReason.HUNG_UP ->
+                if (call.connectedAt != null) StoredCallOutcome.COMPLETED else StoredCallOutcome.FAILED
+            CallEndReason.BUSY, CallEndReason.FAILED -> StoredCallOutcome.FAILED
+        }
+        runCatching {
+            store.messages.upsertCall(
+                StoredCall(
+                    id = call.callId,
+                    peerAccount = call.peerAccount,
+                    peerName = displayName(call.peerAccount),
+                    direction = if (call.isOutgoing) {
+                        StoredCallDirection.OUTGOING
+                    } else {
+                        StoredCallDirection.INCOMING
+                    },
+                    kind = if (call.isVideo) StoredCallKind.VIDEO else StoredCallKind.AUDIO,
+                    startedAt = call.startedAt,
+                    connectedAt = call.connectedAt,
+                    endedAt = System.currentTimeMillis(),
+                    outcome = outcome,
+                ),
+            )
+        }
+        refreshCallLog()
+    }
+
+    private val _callLog = MutableStateFlow<List<StoredCall>>(emptyList())
+
+    /** The call history, newest first. */
+    val callLog: StateFlow<List<StoredCall>> = _callLog.asStateFlow()
+
+    fun refreshCallLog() {
+        scope.launch { _callLog.value = runCatching { store.messages.calls() }.getOrDefault(emptyList()) }
+    }
+
+    fun clearCallLog() {
+        scope.launch {
+            runCatching { store.messages.clearCalls() }
+            refreshCallLog()
+        }
+    }
 
     /**
      * TURN-only calling, on by default exactly as on iOS.
@@ -254,6 +313,7 @@ class RelayService private constructor(
     fun start() {
         if (!started.compareAndSet(false, true)) return
         refreshConversations()
+        refreshCallLog()
         scope.launch { runConnectionLoop() }
         scope.launch {
             // Keep the one-time prekey pool topped up; a depleted pool silently

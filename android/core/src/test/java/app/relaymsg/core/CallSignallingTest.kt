@@ -1,5 +1,7 @@
 package app.relaymsg.core
 
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,6 +17,7 @@ import relay.content.ContentOuterClass.Content
  * Runs on the JVM because [CallTransport] abstracts WebRTC away: what matters
  * for interop is which signals are sent, in what order, and which are ephemeral.
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class CallSignallingTest {
 
     private val me = "6f1a2b3c-4d5e-4f60-8899-aabbccddeeff"
@@ -24,6 +27,7 @@ class CallSignallingTest {
     private class Recorder {
         data class Sent(val peer: String, val content: Content, val ephemeral: Boolean)
         val sent = mutableListOf<Sent>()
+        val ended = mutableListOf<Pair<ActiveCall, CallEndReason>>()
         val types get() = sent.map { it.content.call.type }
     }
 
@@ -33,6 +37,14 @@ class CallSignallingTest {
     ) : CallTransport {
         val applied = mutableListOf<String>()
         var closed = false
+
+        /** Set when the manager attaches; tests drive ICE through it. */
+        var connection: ((MediaConnectionState) -> Unit)? = null
+        override fun onConnectionState(listener: (MediaConnectionState) -> Unit) {
+            connection = listener
+        }
+
+        fun ice(state: MediaConnectionState) = connection?.invoke(state)
         override suspend fun createOffer(isVideo: Boolean): String {
             if (failOnOffer) throw IllegalStateException("no mic")
             return offerSdp
@@ -43,17 +55,35 @@ class CallSignallingTest {
         // Named off the interface methods on purpose: a `var microphoneEnabled`
         // would generate the same JVM setter signature as setMicrophoneEnabled.
         var micOn = true
-        var speaker = false
+        var cameraOn = true
+        var switches = 0
+        var route: AudioRoute? = null
+        var routes = listOf(
+            AudioRoute(1, AudioRouteKind.EARPIECE, "Phone"),
+            AudioRoute(2, AudioRouteKind.SPEAKER, "Speaker"),
+        )
         override fun setMicrophoneEnabled(enabled: Boolean) { micOn = enabled }
-        override fun setSpeakerphoneOn(on: Boolean) { speaker = on }
+        override fun audioRoutes() = routes
+        override fun selectAudioRoute(route: AudioRoute) { this.route = route }
+        override fun switchCamera() { switches++ }
+        override fun setCameraEnabled(enabled: Boolean) { cameraOn = enabled }
         override fun close() { closed = true }
     }
 
-    private fun manager(
-        transport: CallTransport = FakeTransport(),
+    private fun TestScope.manager(
+        transport: FakeTransport = FakeTransport(),
         recorder: Recorder = Recorder(),
     ): Pair<CallManager, Recorder> =
-        CallManager(me, 1, { transport }, { p, c, e -> recorder.sent += Recorder.Sent(p, c, e) }) to recorder
+        CallManager(
+            ownAccount = me,
+            ownDevice = 1,
+            newTransport = { transport },
+            send = { p, c, e -> recorder.sent += Recorder.Sent(p, c, e) },
+            // The grace-period timers live here, so the virtual clock controls
+            // them and a test never actually waits three seconds.
+            scope = backgroundScope,
+            onEnded = { call, reason -> recorder.ended += call to reason },
+        ) to recorder
 
     // ------------------------------------------------------------- call kind
 
@@ -144,7 +174,8 @@ class CallSignallingTest {
 
     @Test
     fun `outgoing call sends an offer and connects on answer`() = runTest {
-        val (calls, recorder) = manager()
+        val transport = FakeTransport()
+        val (calls, recorder) = manager(transport)
         val callId = calls.placeCall(peer, isVideo = false)
 
         assertTrue(callId != null)
@@ -153,13 +184,19 @@ class CallSignallingTest {
         assertEquals(CallState.OUTGOING_RINGING, calls.call.value?.state)
 
         calls.onSignal(signal(CallMessage.Type.ANSWER, callId!!, sdp = "answer"))
+        // An answered SDP exchange is not a working call; only ICE says that.
+        assertEquals(CallState.CONNECTING, calls.call.value?.state)
+        assertNull("not connected until media flows", calls.call.value?.connectedAt)
+
+        transport.ice(MediaConnectionState.CONNECTED)
         assertEquals(CallState.ACTIVE, calls.call.value?.state)
         assertTrue("connected time should be recorded", calls.call.value?.connectedAt != null)
     }
 
     @Test
     fun `incoming call auto-replies ringing then connects when accepted`() = runTest {
-        val (calls, recorder) = manager()
+        val transport = FakeTransport()
+        val (calls, recorder) = manager(transport)
         calls.onSignal(signal(CallMessage.Type.OFFER, "call-9", sdp = "m=audio"))
 
         assertEquals(CallState.INCOMING_RINGING, calls.call.value?.state)
@@ -168,14 +205,19 @@ class CallSignallingTest {
 
         assertTrue(calls.accept())
         assertEquals(CallMessage.Type.ANSWER, recorder.types.last())
+        assertEquals(CallState.CONNECTING, calls.call.value?.state)
+
+        transport.ice(MediaConnectionState.CONNECTED)
         assertEquals(CallState.ACTIVE, calls.call.value?.state)
     }
 
     @Test
     fun `a second incoming call gets busy and does not disturb the active one`() = runTest {
-        val (calls, recorder) = manager()
+        val transport = FakeTransport()
+        val (calls, recorder) = manager(transport)
         calls.onSignal(signal(CallMessage.Type.OFFER, "call-1", sdp = "m=audio"))
         calls.accept()
+        transport.ice(MediaConnectionState.CONNECTED)
         val active = calls.call.value
 
         calls.onSignal(signal(CallMessage.Type.OFFER, "call-2", from = "someone-else", sdp = "m=audio"))
@@ -208,8 +250,8 @@ class CallSignallingTest {
         assertTrue(calls.call.value!!.isMuted)
 
         calls.setSpeakerOn(true)
-        assertTrue(transport.speaker)
-        assertTrue(calls.call.value!!.isSpeakerOn)
+        assertEquals(AudioRouteKind.SPEAKER, transport.route?.kind)
+        assertEquals(AudioRouteKind.SPEAKER, calls.call.value!!.audioRoute)
 
         // A "they muted you" indicator would leak what is happening in someone's
         // room, so nothing is signalled. iOS does not send one either.
@@ -224,6 +266,133 @@ class CallSignallingTest {
 
         assertNull(calls.call.value)
         assertTrue("must not touch a transport that does not exist", transport.micOn)
+    }
+
+    @Test
+    fun `turning the speaker off prefers a headset over the earpiece`() = runTest {
+        val transport = FakeTransport()
+        transport.routes = listOf(
+            AudioRoute(1, AudioRouteKind.EARPIECE, "Phone"),
+            AudioRoute(2, AudioRouteKind.SPEAKER, "Speaker"),
+            AudioRoute(3, AudioRouteKind.BLUETOOTH, "Headphones"),
+        )
+        val (calls, _) = manager(transport)
+        calls.placeCall(peer, isVideo = false)
+
+        calls.setSpeakerOn(true)
+        assertEquals(AudioRouteKind.SPEAKER, calls.call.value!!.audioRoute)
+
+        // "Speaker off" means back to wherever audio would otherwise go. With
+        // headphones paired, that is the headphones, not the earpiece.
+        calls.setSpeakerOn(false)
+        assertEquals(AudioRouteKind.BLUETOOTH, calls.call.value!!.audioRoute)
+    }
+
+    @Test
+    fun `camera controls are local and need a call in progress`() = runTest {
+        val transport = FakeTransport()
+        val (calls, recorder) = manager(transport)
+
+        // No call: nothing to flip, and nothing to crash on.
+        calls.switchCamera()
+        calls.setCameraEnabled(false)
+        assertEquals(0, transport.switches)
+        assertTrue(transport.cameraOn)
+
+        calls.placeCall(peer, isVideo = true)
+        recorder.sent.clear()
+        calls.switchCamera()
+        calls.setCameraEnabled(false)
+
+        assertEquals(1, transport.switches)
+        assertFalse(transport.cameraOn)
+        assertFalse(calls.call.value!!.isCameraOn)
+        assertTrue("camera changes must not be signalled", recorder.sent.isEmpty())
+    }
+
+    // ------------------------------------------------------------ ice recovery
+
+    @Test
+    fun `a disconnect that recovers inside the grace period keeps the call`() = runTest {
+        val transport = FakeTransport()
+        val (calls, recorder) = manager(transport)
+        val callId = calls.placeCall(peer, isVideo = false)!!
+        calls.onSignal(signal(CallMessage.Type.ANSWER, callId, sdp = "answer"))
+        transport.ice(MediaConnectionState.CONNECTED)
+        recorder.sent.clear()
+
+        // WebRTC drops to `disconnected` on any network blip and usually finds a
+        // new candidate pair by itself. Ending the call here would be wrong.
+        transport.ice(MediaConnectionState.DISCONNECTED)
+        advanceTimeBy(9_000)
+        transport.ice(MediaConnectionState.CONNECTED)
+        advanceTimeBy(30_000)
+
+        assertEquals(CallState.ACTIVE, calls.call.value?.state)
+        assertTrue("a recovered blip must not signal anything", recorder.sent.isEmpty())
+    }
+
+    @Test
+    fun `ice failure ends the call after the grace period and tells the peer`() = runTest {
+        val transport = FakeTransport()
+        val (calls, recorder) = manager(transport)
+        val callId = calls.placeCall(peer, isVideo = false)!!
+        calls.onSignal(signal(CallMessage.Type.ANSWER, callId, sdp = "answer"))
+        transport.ice(MediaConnectionState.CONNECTED)
+        recorder.sent.clear()
+
+        transport.ice(MediaConnectionState.FAILED)
+        advanceTimeBy(2_000)
+        assertEquals("must not give up early", CallState.ACTIVE, calls.call.value?.state)
+
+        advanceTimeBy(2_000)
+        assertNull(calls.call.value)
+        // Without this the far side sits watching a call that is already gone.
+        assertEquals(CallMessage.Type.HANGUP, recorder.sent.last().content.call.type)
+        assertEquals(CallEndReason.FAILED, recorder.ended.single().second)
+    }
+
+    @Test
+    fun `the grace period is not restarted by repeated failure reports`() = runTest {
+        val transport = FakeTransport()
+        val (calls, _) = manager(transport)
+        val callId = calls.placeCall(peer, isVideo = false)!!
+        calls.onSignal(signal(CallMessage.Type.ANSWER, callId, sdp = "answer"))
+        transport.ice(MediaConnectionState.CONNECTED)
+
+        // ICE reports state changes repeatedly while it flails. If each one reset
+        // the timer, a permanently broken call would never end.
+        transport.ice(MediaConnectionState.FAILED)
+        advanceTimeBy(2_000)
+        transport.ice(MediaConnectionState.FAILED)
+        transport.ice(MediaConnectionState.DISCONNECTED)
+        advanceTimeBy(1_500)
+
+        assertNull(calls.call.value)
+    }
+
+    // --------------------------------------------------------------- call log
+
+    @Test
+    fun `the call log distinguishes a connected call from one that never was`() = runTest {
+        val connectedTransport = FakeTransport()
+        val (connected, connectedLog) = manager(connectedTransport)
+        val callId = connected.placeCall(peer, isVideo = false)!!
+        connected.onSignal(signal(CallMessage.Type.ANSWER, callId, sdp = "answer"))
+        connectedTransport.ice(MediaConnectionState.CONNECTED)
+        connected.hangUp()
+
+        val (call, reason) = connectedLog.ended.single()
+        assertEquals(CallEndReason.HUNG_UP, reason)
+        assertTrue("a completed call must carry its connect time", call.connectedAt != null)
+        assertTrue(call.isOutgoing)
+
+        // Hanging up before ICE ever connected is a failed call, not a completed
+        // one, and the connect time is what tells them apart.
+        val (never, neverLog) = manager()
+        never.placeCall(peer, isVideo = false)
+        never.hangUp()
+        assertNull(neverLog.ended.single().first.connectedAt)
     }
 
     @Test

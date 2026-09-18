@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import app.relaymsg.core.ActiveCall
+import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.CallState
 import app.relaymsg.core.RelayService
 import app.relaymsg.push.RelayRuntime
@@ -69,6 +70,7 @@ class IncomingCallActivity : ComponentActivity() {
                 }
                 val remoteVideo by CallMedia.remoteVideo.collectAsState()
                 val localVideo by CallMedia.localVideo.collectAsState()
+                val localMirror by CallMedia.localMirror.collectAsState()
 
                 // Before the OFFER lands there is no call object, only what the
                 // push said. Showing a placeholder keeps the screen from
@@ -80,6 +82,7 @@ class IncomingCallActivity : ComponentActivity() {
                     peerName = wake.displayName,
                     remoteVideo = remoteVideo,
                     localVideo = localVideo,
+                    localMirror = localMirror,
                     onAccept = {
                         if (hasMicrophone()) {
                             dispatch(CallService.ACTION_ACCEPT, wake)
@@ -88,8 +91,14 @@ class IncomingCallActivity : ComponentActivity() {
                         }
                     },
                     onHangUp = { dispatch(CallService.ACTION_DECLINE, wake) },
-                    onToggleMute = { relay?.calls?.let { it.setMuted(!shown.isMuted) } },
-                    onToggleSpeaker = { relay?.calls?.let { it.setSpeakerOn(!shown.isSpeakerOn) } },
+                    onToggleMute = { relay?.calls?.setMuted(!shown.isMuted) },
+                    onToggleSpeaker = {
+                        relay?.calls?.setSpeakerOn(shown.audioRoute != AudioRouteKind.SPEAKER)
+                    },
+                    onSwitchCamera = { relay?.calls?.switchCamera() },
+                    onToggleCamera = { relay?.calls?.setCameraEnabled(!shown.isCameraOn) },
+                    audioRoutes = { relay?.calls?.audioRoutes().orEmpty() },
+                    onSelectRoute = { route -> relay?.calls?.selectAudioRoute(route) },
                 )
 
                 // The call existing and then not existing is the only reliable
