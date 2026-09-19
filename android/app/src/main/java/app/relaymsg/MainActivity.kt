@@ -187,8 +187,17 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 ChatScreen(
                     title = conversation?.let(viewModel::titleFor) ?: "Conversation",
                     messages = messages,
-                    onSend = { body -> viewModel.send(open, body) },
-                    onSendImage = { uri -> viewModel.sendImage(open, uri) },
+                    ownAccount = phase.service.credentials.accountId,
+                    // In a group each message carries its own sender; in a 1:1
+                    // chat incoming ones do not, so the conversation's peer is
+                    // the only thing that identifies the author.
+                    peerAccount = conversation?.peerAccount.orEmpty(),
+                    onSend = { body, quote -> viewModel.send(open, body, quote) },
+                    onSendAttachment = { uri -> viewModel.sendAttachment(open, uri) },
+                    onReact = { ts, author, emoji -> viewModel.react(open, ts, author, emoji) },
+                    onEdit = { ts, body -> viewModel.editMessage(open, ts, body) },
+                    onUnsend = { ts -> viewModel.unsend(open, ts) },
+                    onDeleteLocally = viewModel::deleteLocally,
                     loadAttachment = { viewModel.attachmentBytes(it) },
                     onBack = { viewModel.closeConversation(); openConversationId = null },
                     // A group conversation's "peer" is its group id, which rings

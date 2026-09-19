@@ -23,6 +23,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.unit.sp
+import app.relaymsg.storage.QuotedMessage
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
@@ -266,23 +283,44 @@ private fun Conversation.preview(): String {
 
 // ---------------------------------------------------------------------- chat
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** What the composer is doing: a new message, a reply, or an edit in progress. */
+private sealed interface Compose {
+    data object New : Compose
+    data class Reply(val quote: QuotedMessage) : Compose
+    data class Edit(val message: StoredMessage) : Compose
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     title: String,
     messages: List<StoredMessage>,
-    onSend: (String) -> Unit,
-    onSendImage: (android.net.Uri) -> Unit,
+    ownAccount: String,
+    peerAccount: String,
+    onSend: (body: String, quote: QuotedMessage?) -> Unit,
+    onSendAttachment: (android.net.Uri) -> Unit,
+    onReact: (targetTimestamp: Long, targetAuthor: String, emoji: String) -> Unit,
+    onEdit: (targetTimestamp: Long, newBody: String) -> Unit,
+    onUnsend: (targetTimestamp: Long) -> Unit,
+    onDeleteLocally: (messageId: String) -> Unit,
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
     onBack: () -> Unit,
-    /** Places a call; `true` for video. Null hides the buttons — groups have no calls yet. */
+    /** Places a call; `true` for video. Null hides the buttons. */
     onCall: ((Boolean) -> Unit)? = null,
 ) {
     val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let(onSendImage) }
+    ) { uri -> uri?.let(onSendAttachment) }
+    val pickFile = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri -> uri?.let(onSendAttachment) }
+
     var draft by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf<Compose>(Compose.New) }
+    var selected by remember { mutableStateOf<StoredMessage?>(null) }
+    var attachMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val clipboard = LocalClipboardManager.current
 
     // Keep the newest message in view as they arrive.
     LaunchedEffect(messages.size) {
@@ -318,45 +356,74 @@ fun ChatScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(messages, key = { it.id }) { MessageBubble(it, loadAttachment) }
+                items(messages, key = { it.id }) { message ->
+                    MessageBubble(
+                        message = message,
+                        loadAttachment = loadAttachment,
+                        onLongPress = { selected = message },
+                    )
+                }
             }
+
+            ComposerBanner(
+                mode = mode,
+                onCancel = { mode = Compose.New; draft = "" },
+            )
+
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
-                IconButton(
-                    onClick = {
-                        pickImage.launch(
-                            androidx.activity.result.PickVisualMediaRequest(
-                                androidx.activity.result.contract.ActivityResultContracts
-                                    .PickVisualMedia.ImageOnly,
-                            ),
+                Box {
+                    IconButton(onClick = { attachMenu = true }) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = "Attach",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    },
-                ) {
-                    Icon(
-                        Icons.Filled.Add,
-                        contentDescription = "Attach image",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    }
+                    DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Photo or video") },
+                            leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null) },
+                            onClick = {
+                                attachMenu = false
+                                pickImage.launch(
+                                    androidx.activity.result.PickVisualMediaRequest(
+                                        androidx.activity.result.contract.ActivityResultContracts
+                                            .PickVisualMedia.ImageAndVideo,
+                                    ),
+                                )
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("File") },
+                            leadingIcon = {
+                                Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null)
+                            },
+                            onClick = {
+                                attachMenu = false
+                                // Any type: the relay stores ciphertext and never
+                                // looks at what it is.
+                                pickFile.launch(arrayOf("*/*"))
+                            },
+                        )
+                    }
                 }
-                // A pill rather than an outlined field: it reads as a composer
-                // instead of a form, and it grows with the draft.
+
                 TextField(
                     value = draft,
                     onValueChange = { draft = it },
-                    placeholder = { Text("Message") },
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(22.dp)),
+                    placeholder = {
+                        Text(if (mode is Compose.Edit) "Edit message" else "Message")
+                    },
+                    modifier = Modifier.weight(1f).clip(RoundedCornerShape(22.dp)),
                     maxLines = 5,
                     textStyle = MaterialTheme.typography.bodyLarge,
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                         unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        // The underline is what makes a TextField look like a
-                        // form control; a pill does not want one.
                         focusedIndicatorColor = Color.Transparent,
                         unfocusedIndicatorColor = Color.Transparent,
                         disabledIndicatorColor = Color.Transparent,
@@ -366,12 +433,19 @@ fun ChatScreen(
                 val canSend = draft.isNotBlank()
                 IconButton(
                     enabled = canSend,
-                    onClick = { onSend(draft.trim()); draft = "" },
+                    onClick = {
+                        val body = draft.trim()
+                        when (val current = mode) {
+                            is Compose.Edit -> onEdit(current.message.timestamp, body)
+                            is Compose.Reply -> onSend(body, current.quote)
+                            Compose.New -> onSend(body, null)
+                        }
+                        draft = ""
+                        mode = Compose.New
+                    },
                     modifier = Modifier
                         .size(46.dp)
                         .background(
-                            // Dimmed rather than hidden, so the target does not
-                            // move as you type the first character.
                             if (canSend) {
                                 MaterialTheme.colorScheme.primary
                             } else {
@@ -381,8 +455,8 @@ fun ChatScreen(
                         ),
                 ) {
                     Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
+                        if (mode is Compose.Edit) Icons.Filled.Check else Icons.AutoMirrored.Filled.Send,
+                        contentDescription = if (mode is Compose.Edit) "Save edit" else "Send",
                         tint = if (canSend) {
                             MaterialTheme.colorScheme.onPrimary
                         } else {
@@ -394,12 +468,191 @@ fun ChatScreen(
             }
         }
     }
+
+    selected?.let { message ->
+        MessageActions(
+            message = message,
+            authorOf = { it.senderAccount ?: if (it.isOutgoing) ownAccount else peerAccount },
+            onDismiss = { selected = null },
+            onReact = { emoji ->
+                onReact(
+                    message.timestamp,
+                    message.senderAccount ?: if (message.isOutgoing) ownAccount else peerAccount,
+                    emoji,
+                )
+                selected = null
+            },
+            onReply = {
+                mode = Compose.Reply(
+                    QuotedMessage(
+                        targetTimestamp = message.timestamp,
+                        author = message.senderAccount
+                            ?: if (message.isOutgoing) ownAccount else peerAccount,
+                        text = message.body,
+                    ),
+                )
+                selected = null
+            },
+            onCopy = {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(message.body))
+                selected = null
+            },
+            onEdit = {
+                draft = message.body
+                mode = Compose.Edit(message)
+                selected = null
+            },
+            onUnsend = { onUnsend(message.timestamp); selected = null },
+            onDeleteLocally = { onDeleteLocally(message.id); selected = null },
+        )
+    }
+}
+
+/** The strip above the composer while replying to, or editing, a message. */
+@Composable
+private fun ComposerBanner(mode: Compose, onCancel: () -> Unit) {
+    if (mode is Compose.New) return
+    val label = when (mode) {
+        is Compose.Reply -> "Replying to"
+        is Compose.Edit -> "Editing"
+        Compose.New -> return
+    }
+    val body = when (mode) {
+        is Compose.Reply -> mode.quote.text
+        is Compose.Edit -> mode.message.body
+        Compose.New -> ""
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .width(3.dp)
+                .height(32.dp)
+                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp)),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                body,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onCancel) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Cancel",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * What a long press on a message offers.
+ *
+ * Only actions that actually exist appear: editing and unsending are the
+ * author's alone, and the protocol enforces that too — a delete from anyone
+ * else is ignored on receipt.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MessageActions(
+    message: StoredMessage,
+    authorOf: (StoredMessage) -> String,
+    onDismiss: () -> Unit,
+    onReact: (String) -> Unit,
+    onReply: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onUnsend: () -> Unit,
+    onDeleteLocally: () -> Unit,
+) {
+    val hasText = message.body.isNotEmpty() && !message.isDeleted
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        if (!message.isDeleted) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                // The set every messenger converges on. Tapping one you have
+                // already used takes it back.
+                listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+                    .forEach { emoji ->
+                        val mine = message.reactions.any { it.isOutgoing && it.emoji == emoji }
+                        Text(
+                            text = emoji,
+                            fontSize = 28.sp,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(
+                                    if (mine) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        Color.Transparent
+                                    },
+                                )
+                                .clickable { onReact(emoji) }
+                                .padding(8.dp),
+                        )
+                    }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+
+        SheetAction("Reply", Icons.AutoMirrored.Filled.Reply, onReply)
+        if (hasText) SheetAction("Copy text", Icons.Filled.ContentCopy, onCopy)
+        if (message.isOutgoing && hasText) {
+            SheetAction("Edit", Icons.Filled.Edit, onEdit)
+        }
+        if (message.isOutgoing && !message.isDeleted) {
+            SheetAction("Delete for everyone", Icons.Filled.Delete, onUnsend, destructive = true)
+        }
+        SheetAction("Delete for me", Icons.Filled.DeleteOutline, onDeleteLocally, destructive = true)
+        Spacer(Modifier.height(24.dp))
+    }
 }
 
 @Composable
+private fun SheetAction(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    destructive: Boolean = false,
+) {
+    val tint = if (destructive) {
+        MaterialTheme.colorScheme.error
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(18.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = tint)
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun MessageBubble(
     message: StoredMessage,
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
+    onLongPress: () -> Unit,
 ) {
     val outgoing = message.isOutgoing
     // Deep -> band, not the logo's full gradient: white on the bright stop is
@@ -427,6 +680,9 @@ private fun MessageBubble(
                 .widthIn(max = 300.dp)
                 .clip(shape)
                 .background(if (outgoing) outgoingFill else incomingFill)
+                // Long press, not a tap: tapping a bubble should do nothing,
+                // so scrolling past one never springs a menu open.
+                .combinedClickable(onClick = {}, onLongClick = onLongPress)
                 .padding(horizontal = 14.dp, vertical = 9.dp),
         ) {
             message.replyTo?.let { quote ->

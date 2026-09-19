@@ -17,6 +17,7 @@ import app.relaymsg.net.PkcePair
 import app.relaymsg.net.SupabaseAuth
 import app.relaymsg.push.RelayRuntime
 import app.relaymsg.storage.Conversation
+import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.ui.AuthStep
 import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
@@ -310,7 +311,8 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
      * so the content resolver (and the permission that came with the picker)
      * stays in the UI layer.
      */
-    fun sendImage(conversationId: String, uri: android.net.Uri) {
+    /** Sends any file the picker returns; the relay stores ciphertext either way. */
+    fun sendAttachment(conversationId: String, uri: android.net.Uri) {
         val service = service ?: return
         viewModelScope.launch {
             runCatching {
@@ -337,10 +339,29 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun attachmentBytes(attachment: app.relaymsg.storage.StoredAttachment): ByteArray? =
         service?.attachmentBytes(attachment)
 
-    fun send(conversationId: String, body: String) {
+    fun send(conversationId: String, body: String, quote: QuotedMessage? = null) {
         val service = service ?: return
-        viewModelScope.launch { service.sendText(conversationId, body) }
+        viewModelScope.launch { service.sendText(conversationId, body, quote) }
     }
+
+    fun react(conversationId: String, targetTimestamp: Long, targetAuthor: String, emoji: String) {
+        val service = service ?: return
+        viewModelScope.launch {
+            service.toggleReaction(conversationId, targetTimestamp, targetAuthor, emoji)
+        }
+    }
+
+    fun editMessage(conversationId: String, targetTimestamp: Long, newBody: String) {
+        val service = service ?: return
+        viewModelScope.launch { service.editMessage(conversationId, targetTimestamp, newBody) }
+    }
+
+    fun unsend(conversationId: String, targetTimestamp: Long) {
+        val service = service ?: return
+        viewModelScope.launch { service.unsendMessage(conversationId, targetTimestamp) }
+    }
+
+    fun deleteLocally(messageId: String) = service?.deleteMessageLocally(messageId)
 
     /** Resolves a username and opens the conversation, invoking [onOpened] with its id. */
     fun startConversation(username: String, onOpened: (String) -> Unit, onError: (String) -> Unit) {

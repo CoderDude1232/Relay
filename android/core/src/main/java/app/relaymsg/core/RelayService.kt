@@ -22,6 +22,7 @@ import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.DeviceAuthKey
 import app.relaymsg.storage.MasterKeyStore
 import app.relaymsg.storage.MessageStatus
+import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.storage.SecureStore
 import app.relaymsg.storage.StoredAttachment
 import app.relaymsg.storage.StoredCall
@@ -803,7 +804,11 @@ class RelayService private constructor(
         return match.accountId
     }
 
-    suspend fun sendText(conversationId: String, body: String) = withContext(Dispatchers.IO) {
+    suspend fun sendText(
+        conversationId: String,
+        body: String,
+        quote: QuotedMessage? = null,
+    ) = withContext(Dispatchers.IO) {
         val peer = store.messages.peerAccount(conversationId) ?: return@withContext
         // A group conversation's "peer" IS the group id; route it accordingly.
         store.messages.group(peer)?.let {
@@ -821,11 +826,12 @@ class RelayService private constructor(
             body = body,
             timestamp = timestamp,
             status = MessageStatus.SENDING,
+            replyTo = quote,
         )
         refreshActiveMessages()
         refreshConversations()
 
-        val content = messenger.buildTextContent(body, timestamp)
+        val content = messenger.buildTextContent(body, timestamp, quote = quote)
         val status = try {
             val outcome = messenger.sendOverWebSocket(
                 socket = socket,
@@ -846,6 +852,125 @@ class RelayService private constructor(
         if (status == MessageStatus.SENT) {
             messenger.sendSyncToOwnDevices(socket, content, peer, timestamp)
         }
+    }
+
+    /**
+     * Sends something that modifies an existing message — a reaction, an edit,
+     * an unsend.
+     *
+     * Routed exactly as a message is: over the group's sender key when the
+     * conversation is a group, pairwise otherwise, and mirrored to our own
+     * devices in the pairwise case so the change shows up everywhere we are
+     * signed in. All three are **non-ephemeral**: a reaction that only reached
+     * the devices that happened to be online would be worse than none.
+     */
+    private suspend fun sendMessageAction(
+        conversationId: String,
+        timestamp: Long,
+        build: (groupId: String?) -> relay.content.ContentOuterClass.Content,
+    ): Boolean {
+        val peer = store.messages.peerAccount(conversationId) ?: return false
+        val group = store.messages.group(peer)
+
+        return if (group != null) {
+            val content = build(group.id)
+            runCatching {
+                messenger.sendGroupMessage(
+                    socket = socket,
+                    groupId = group.id,
+                    distributionId = group.distributionId,
+                    members = group.members,
+                    plaintext = content.toByteArray(),
+                    clientTimestamp = timestamp,
+                )
+            }.getOrNull() is SendOutcome.Ok
+        } else {
+            val content = build(null)
+            val ok = runCatching {
+                messenger.sendOverWebSocket(socket, peer, content.toByteArray(), timestamp)
+            }.getOrNull() is SendOutcome.Ok
+            if (ok) {
+                runCatching { messenger.sendSyncToOwnDevices(socket, content, peer, timestamp) }
+            }
+            ok
+        }
+    }
+
+    /**
+     * Adds or removes our reaction to a message.
+     *
+     * Reacting again with the same emoji takes it back, which is what every
+     * messenger does and what the protocol's `remove` flag is for. The local
+     * store is updated first so the tap feels instant; the send follows.
+     */
+    suspend fun toggleReaction(
+        conversationId: String,
+        targetTimestamp: Long,
+        targetAuthor: String,
+        emoji: String,
+    ) = withContext(Dispatchers.IO) {
+        val existing = store.messages.messages(conversationId, limit = 200)
+            .firstOrNull { it.timestamp == targetTimestamp }
+            ?.reactions
+            ?.firstOrNull { it.isOutgoing }
+        val remove = existing?.emoji == emoji
+
+        store.messages.setReaction(
+            conversationId = conversationId,
+            targetTimestamp = targetTimestamp,
+            author = credentials.accountId,
+            isOutgoing = true,
+            emoji = emoji,
+            remove = remove,
+        )
+        refreshActiveMessages()
+
+        val now = System.currentTimeMillis()
+        sendMessageAction(conversationId, now) { groupId ->
+            messenger.buildReaction(targetAuthor, targetTimestamp, emoji, remove, now, groupId)
+        }
+    }
+
+    /** Rewrites one of our own messages. Attachments are not editable. */
+    suspend fun editMessage(
+        conversationId: String,
+        targetTimestamp: Long,
+        newBody: String,
+    ) = withContext(Dispatchers.IO) {
+        store.messages.editMessage(conversationId, targetTimestamp, newBody)
+        refreshActiveMessages(); refreshConversations()
+        sendMessageAction(conversationId, System.currentTimeMillis()) { groupId ->
+            messenger.buildEdit(targetTimestamp, newBody, groupId)
+        }
+    }
+
+    /**
+     * Unsends one of our own messages for everyone.
+     *
+     * Leaves a tombstone rather than erasing the row: a message that silently
+     * vanishes from the middle of a conversation is more confusing than one
+     * marked as withdrawn.
+     */
+    suspend fun unsendMessage(
+        conversationId: String,
+        targetTimestamp: Long,
+    ) = withContext(Dispatchers.IO) {
+        store.messages.markDeleted(conversationId, targetTimestamp)
+        refreshActiveMessages(); refreshConversations()
+        sendMessageAction(conversationId, System.currentTimeMillis()) { groupId ->
+            messenger.buildDelete(targetTimestamp, groupId)
+        }
+    }
+
+    /**
+     * Removes a message from this device only.
+     *
+     * Nothing is sent: the other side keeps their copy, which is the honest
+     * behaviour and the one the label promises.
+     */
+    fun deleteMessageLocally(messageId: String) {
+        store.messages.deleteMessage(messageId)
+        refreshActiveMessages(); refreshConversations()
     }
 
     private suspend fun sendDeliveryReceipt(peer: String, timestamp: Long) {

@@ -14,8 +14,13 @@ import app.relaymsg.storage.MessageStore
 import app.relaymsg.storage.SecureStore
 import java.util.UUID
 import org.signal.libsignal.protocol.SignalProtocolAddress
+import app.relaymsg.storage.QuotedMessage
 import relay.content.ContentOuterClass.Content
 import relay.content.content
+import relay.content.deleteMessage
+import relay.content.editMessage
+import relay.content.quote
+import relay.content.reactionMessage
 import relay.content.textMessage
 
 /** A peer device we can address: its id, opaque mailbox and registration id. */
@@ -159,11 +164,86 @@ class RelayMessenger(
     // ---------------------------------------------------------------- sending
 
     /** Builds a `Content` carrying a text message, stamped as this device. */
-    fun buildTextContent(body: String, timestamp: Long, groupId: String? = null): Content =
+    /**
+     * A reaction. Non-ephemeral, so it survives the recipient being offline.
+     *
+     * `target_author` is who *wrote* the message being reacted to, not who is
+     * reacting — in a group it is the only way to identify the target, since
+     * timestamps are only unique per author.
+     */
+    fun buildReaction(
+        targetAuthor: String,
+        targetTimestamp: Long,
+        emoji: String,
+        remove: Boolean,
+        timestamp: Long,
+        groupId: String? = null,
+    ): Content = content {
+        reaction = reactionMessage {
+            this.emoji = emoji
+            this.targetAuthor = targetAuthor
+            this.targetTimestamp = targetTimestamp
+            this.remove = remove
+            this.timestamp = timestamp
+        }
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+        groupId?.let { this.groupId = it }
+    }
+
+    /** An edit. Attachments are not editable, so only the body travels. */
+    fun buildEdit(
+        targetTimestamp: Long,
+        newBody: String,
+        groupId: String? = null,
+    ): Content = content {
+        edit = editMessage {
+            this.targetTimestamp = targetTimestamp
+            this.newBody = newBody
+        }
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+        groupId?.let { this.groupId = it }
+    }
+
+    /**
+     * An unsend. Leaves a tombstone rather than erasing the row, so the gap in
+     * the conversation is visible instead of silently closing up.
+     */
+    fun buildDelete(
+        targetTimestamp: Long,
+        groupId: String? = null,
+    ): Content = content {
+        delete = deleteMessage {
+            this.targetTimestamp = targetTimestamp
+            // Only the author may delete, so the target author is always us.
+            targetAuthor = credentials.accountId
+        }
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+        groupId?.let { this.groupId = it }
+    }
+
+    fun buildTextContent(
+        body: String,
+        timestamp: Long,
+        groupId: String? = null,
+        quote: QuotedMessage? = null,
+    ): Content =
         content {
             text = textMessage {
                 this.body = body
                 this.timestamp = timestamp
+                quote?.let {
+                    this.quote = quote {
+                        targetTimestamp = it.targetTimestamp
+                        author = it.author
+                        // Truncated by the sender: the recipient already has the
+                        // original if they can see it, and a long quote would
+                        // double the size of a one-word reply.
+                        text = it.text.take(120)
+                    }
+                }
             }
             // Recipients prefer these over the envelope's server-stamped sender,
             // and for sealed messages they are the only self-declared identity —

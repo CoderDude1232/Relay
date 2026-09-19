@@ -1,5 +1,7 @@
 package app.relaymsg.ui
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,16 +27,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import app.relaymsg.ui.theme.Magenta
-import app.relaymsg.ui.theme.MagentaBright
+import app.relaymsg.R
 
 /** Which part of onboarding is on screen. */
 enum class AuthStep { WELCOME, SIGN_UP, SIGN_IN, USERNAME }
@@ -73,15 +75,19 @@ fun AuthScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // The wordmark takes the logo's own bolt gradient. Legibility is not at
-        // risk here the way it is on a filled button: this is large display type
-        // on the page ground, not white text sitting on the accent.
-        Text(
-            text = "Relay",
-            style = MaterialTheme.typography.displaySmall.copy(
-                brush = Brush.linearGradient(listOf(Magenta, MagentaBright)),
+        // Two cuts of the wordmark, one per ground. The ink is baked into each
+        // file, so tinting is not an option — pick the right one instead.
+        Image(
+            painter = painterResource(
+                if (isSystemInDarkTheme()) {
+                    R.drawable.relay_wordmark_on_dark
+                } else {
+                    R.drawable.relay_wordmark_on_light
+                },
             ),
-            fontWeight = FontWeight.Bold,
+            contentDescription = "Relay",
+            modifier = Modifier.height(64.dp),
+            contentScale = ContentScale.Fit,
         )
         Text(
             "Private messaging, end-to-end encrypted.",
