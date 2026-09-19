@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.StrikethroughS
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Poll
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MarkEmailUnread
 import androidx.compose.material3.Switch
@@ -94,7 +96,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
@@ -113,9 +121,11 @@ import androidx.compose.ui.text.font.FontStyle
 import app.relaymsg.ui.theme.Magenta
 import app.relaymsg.ui.theme.MagentaDeep
 import app.relaymsg.core.ConnectionState
+import app.relaymsg.core.LocationPayload
 import app.relaymsg.core.RelayService
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.MessageStatus
+import app.relaymsg.storage.SearchResult
 import app.relaymsg.storage.StoredMessage
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -140,8 +150,17 @@ fun ConversationListScreen(
     panicEnabled: Boolean,
     hiddenConversations: Set<String>,
     onToggleHidden: (id: String, hidden: Boolean) -> Unit,
+    searchResults: List<SearchResult>,
+    onSearch: (String) -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
+    var searching by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
+
+    // Opening search should put the caret in the field; otherwise it costs a
+    // second tap every time.
+    LaunchedEffect(searching) { if (searching) runCatching { searchFocus.requestFocus() } }
     var menuFor by remember { mutableStateOf<Conversation?>(null) }
     var confirmDelete by remember { mutableStateOf<Conversation?>(null) }
     var newChatName by remember { mutableStateOf("") }
@@ -150,19 +169,48 @@ fun ConversationListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Relay") },
+                title = {
+                    if (searching) {
+                        TextField(
+                            value = query,
+                            onValueChange = { query = it; onSearch(it) },
+                            placeholder = { Text("Search messages") },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                            ),
+                            modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
+                        )
+                    } else {
+                        Text("Relay")
+                    }
+                },
                 actions = {
-                    Text(
-                        text = connection.label(),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(end = 4.dp),
-                    )
+                    if (searching) {
+                        IconButton(
+                            onClick = { searching = false; query = ""; onSearch("") },
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = "Close search")
+                        }
+                    } else {
+                        Text(
+                            text = connection.label(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(end = 4.dp),
+                        )
+                        IconButton(onClick = { searching = true }) {
+                            Icon(Icons.Filled.Search, contentDescription = "Search")
+                        }
+                    }
                 },
             )
         },
         floatingActionButton = {
-            if (!showNewChat) {
+            if (!showNewChat && !searching) {
                 FloatingActionButton(
                     onClick = { showNewChat = true },
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -206,7 +254,21 @@ fun ConversationListScreen(
                 HorizontalDivider()
             }
 
-            if (conversations.isEmpty()) {
+            val trimmed = query.trim()
+            if (searching && trimmed.isNotEmpty()) {
+                SearchList(
+                    query = trimmed,
+                    conversations = conversations,
+                    titleFor = titleFor,
+                    results = searchResults,
+                    onOpen = { id ->
+                        searching = false
+                        query = ""
+                        onSearch("")
+                        onOpen(id)
+                    },
+                )
+            } else if (conversations.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -281,6 +343,141 @@ fun ConversationListScreen(
                 TextButton(onClick = { confirmDelete = null }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/**
+ * What search shows: conversations whose name matches, then messages whose body
+ * matches, mirroring the two sections iOS puts under its search field.
+ *
+ * The message results arrive already filtered by the service — hidden threads
+ * and marker payloads never reach here.
+ */
+@Composable
+private fun SearchList(
+    query: String,
+    conversations: List<Conversation>,
+    titleFor: (Conversation) -> String,
+    results: List<SearchResult>,
+    onOpen: (String) -> Unit,
+) {
+    val byName = conversations.filter { titleFor(it).contains(query, ignoreCase = true) }
+
+    if (byName.isEmpty() && results.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "No results for \"$query\".",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 40.dp),
+            )
+        }
+        return
+    }
+
+    LazyColumn(Modifier.fillMaxSize()) {
+        if (byName.isNotEmpty()) {
+            item { SearchSectionHeader("Conversations") }
+            items(byName, key = { "c:" + it.id }) { conversation ->
+                ConversationRow(
+                    conversation = conversation,
+                    title = titleFor(conversation),
+                    onClick = { onOpen(conversation.id) },
+                    onLongClick = {},
+                )
+            }
+        }
+        if (results.isNotEmpty()) {
+            item { SearchSectionHeader("Messages") }
+            items(results, key = { "m:" + it.messageId }) { result ->
+                val conversation = conversations.firstOrNull { it.id == result.conversationId }
+                SearchResultRow(
+                    title = conversation?.let(titleFor) ?: "Message",
+                    account = conversation?.peerAccount ?: result.conversationId,
+                    body = result.body,
+                    timestamp = result.timestamp,
+                    query = query,
+                    onClick = { onOpen(result.conversationId) },
+                )
+            }
+        }
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun SearchSectionHeader(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 6.dp),
+    )
+}
+
+@Composable
+private fun SearchResultRow(
+    title: String,
+    account: String,
+    body: String,
+    timestamp: Long,
+    query: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Avatar(id = account, name = title)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = highlight(body, query),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = timestamp.asListTime(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Bolds every occurrence of the query inside the matched body. */
+private fun highlight(text: String, query: String): AnnotatedString = buildAnnotatedString {
+    if (query.isEmpty()) {
+        append(text)
+        return@buildAnnotatedString
+    }
+    var from = 0
+    while (from < text.length) {
+        val at = text.indexOf(query, startIndex = from, ignoreCase = true)
+        if (at < 0) {
+            append(text.substring(from))
+            break
+        }
+        append(text.substring(from, at))
+        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+            append(text.substring(at, at + query.length))
+        }
+        from = at + query.length
     }
 }
 
@@ -462,6 +659,11 @@ fun ChatScreen(
     /** Null in a 1:1 conversation, which has no roster. */
     onShowGroupInfo: (() -> Unit)? = null,
     onSchedule: ((body: String, atMillis: Long) -> Unit)? = null,
+    /** The one live bubble to show, already filtered for expiry. */
+    liveLocation: Pair<String, LocationPayload>? = null,
+    onOpenMap: (String) -> Unit = {},
+    sharingLocation: Boolean = false,
+    onToggleLocation: () -> Unit = {},
     recording: Boolean = false,
     onStartRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
@@ -601,7 +803,12 @@ fun ChatScreen(
                 items(
                     // The notepad rides on ordinary messages, so its revisions
                     // would otherwise fill the thread with marker text.
-                    messages.filterNot { it.body.startsWith(RelayService.NOTEPAD_PREFIX) },
+                    // The notepad and location updates both ride on ordinary
+                    // messages; neither belongs in the thread as text.
+                    messages.filterNot {
+                        it.body.startsWith(RelayService.NOTEPAD_PREFIX) ||
+                            it.body.startsWith(LocationPayload.MARKER)
+                    },
                     key = { it.id },
                 ) { message ->
                     MessageBubble(
@@ -620,6 +827,38 @@ fun ChatScreen(
                             )
                         },
                     )
+                }
+            }
+
+            liveLocation?.let { (who, payload) ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .clickable {
+                            onOpenMap("geo:${payload.lat},${payload.lng}?q=${payload.lat},${payload.lng}")
+                        }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.LocationOn,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "$who is sharing their location",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        )
+                        Text(
+                            "Tap to open in a map app",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                        )
+                    }
                 }
             }
 
@@ -714,6 +953,15 @@ fun ChatScreen(
                                     ),
                                 )
                             },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (sharingLocation) "Stop sharing location" else "Live location")
+                            },
+                            leadingIcon = {
+                                Icon(Icons.Filled.LocationOn, contentDescription = null)
+                            },
+                            onClick = { attachMenu = false; onToggleLocation() },
                         )
                         DropdownMenuItem(
                             text = { Text("Poll") },

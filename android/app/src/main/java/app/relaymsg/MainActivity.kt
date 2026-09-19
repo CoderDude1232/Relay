@@ -251,6 +251,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     val panicEnabled by viewModel.panicEnabled.collectAsState()
     val profileForCard by viewModel.myProfile.collectAsState()
     val hiddenConversations by viewModel.hiddenConversations.collectAsState()
+    val searchResults by viewModel.searchResults.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
     Box(Modifier.fillMaxSize()) {
@@ -262,6 +263,13 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 val conversation = conversations.firstOrNull { it.id == open }
                 val appearance = remember(open, appearanceFor) { viewModel.appearance(open) }
                 val recording by viewModel.recording.collectAsState()
+                val sharingLocation by viewModel.sharingLocation.collectAsState()
+                val locationPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts
+                        .RequestMultiplePermissions(),
+                ) { granted ->
+                    if (granted.values.any { it }) viewModel.startLocationShare(open)
+                }
                 val context = androidx.compose.ui.platform.LocalContext.current
                 val microphone = androidx.activity.compose.rememberLauncherForActivityResult(
                     androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
@@ -316,6 +324,30 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     onShowAppearance = { appearanceFor = open },
                     onShowNotepad = { notepadFor = open },
                     onShowGroupInfo = conversation?.groupId?.let { id -> { groupInfoFor = id } },
+                    liveLocation = remember(open, messages) { viewModel.liveLocation(open) }
+                        ?.let { (who, payload) -> who to payload },
+                    onOpenMap = { uri ->
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(uri)),
+                            )
+                        }
+                    },
+                    sharingLocation = sharingLocation,
+                    onToggleLocation = {
+                        if (sharingLocation) {
+                            viewModel.stopLocationShare(open)
+                        } else if (hasLocation(context)) {
+                            viewModel.startLocationShare(open)
+                        } else {
+                            locationPermission.launch(
+                                arrayOf(
+                                    android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                    android.Manifest.permission.ACCESS_COARSE_LOCATION,
+                                ),
+                            )
+                        }
+                    },
                     onSchedule = { body, at -> viewModel.scheduleMessage(open, body, at) },
                     recording = recording,
                     onStartRecording = {
@@ -557,6 +589,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             panicEnabled = panicEnabled,
                             hiddenConversations = hiddenConversations,
                             onToggleHidden = viewModel::setConversationHidden,
+                            searchResults = searchResults,
+                            onSearch = viewModel::search,
                         )
 
                         Tab.CALLS -> {
@@ -653,6 +687,15 @@ private fun RelayTabBar(selected: Tab, unread: Int, onSelect: (Tab) -> Unit) {
         }
     }
 }
+
+private fun hasLocation(context: android.content.Context): Boolean =
+    listOf(
+        android.Manifest.permission.ACCESS_FINE_LOCATION,
+        android.Manifest.permission.ACCESS_COARSE_LOCATION,
+    ).any {
+        androidx.core.content.ContextCompat.checkSelfPermission(context, it) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
 
 private fun hasMicrophone(context: android.content.Context): Boolean =
     androidx.core.content.ContextCompat.checkSelfPermission(

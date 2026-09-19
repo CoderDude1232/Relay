@@ -23,6 +23,7 @@ import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.storage.SqlCipherSignalStore
 import app.relaymsg.ui.AuthStep
 import app.relaymsg.ui.BiometricGate
+import app.relaymsg.ui.LocationShare
 import app.relaymsg.ui.VoiceNoteRecorder
 import app.relaymsg.ui.Verification
 import app.relaymsg.storage.StoredCall
@@ -803,6 +804,50 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { service.saveNotepad(conversationId, content) }
             _busy.value = false
+        }
+    }
+
+    // ------------------------------------------------------- live location
+
+    private val location by lazy { LocationShare(getApplication()) }
+
+    private val _sharingLocation = MutableStateFlow(false)
+    val sharingLocation: StateFlow<Boolean> = _sharingLocation.asStateFlow()
+
+    /** An hour, matching the longest window iOS offers. */
+    private val shareDurationMs = 60L * 60 * 1000
+
+    fun startLocationShare(conversationId: String): Boolean {
+        val service = service ?: return false
+        val started = location.start(conversationId, shareDurationMs) { payload ->
+            viewModelScope.launch {
+                runCatching { service.sendLocation(conversationId, payload) }
+            }
+        }
+        _sharingLocation.value = started
+        return started
+    }
+
+    fun stopLocationShare(conversationId: String) {
+        val service = service ?: return
+        location.stop { payload ->
+            viewModelScope.launch {
+                runCatching { service.sendLocation(conversationId, payload) }
+            }
+        }
+        _sharingLocation.value = false
+    }
+
+    /** The newest live bubble in a conversation, with a name to show. */
+    fun liveLocation(conversationId: String): Pair<String, app.relaymsg.core.LocationPayload>? {
+        val service = service ?: return null
+        val live = service.liveLocations(conversationId)
+        val own = service.credentials.accountId
+        // Someone else's takes priority: seeing your own bubble is much less
+        // useful than seeing theirs.
+        val entry = live.entries.firstOrNull { it.key != own } ?: live.entries.firstOrNull()
+        return entry?.let { (account, payload) ->
+            (if (account == own) "You are" else "${nameFor(account)} is") to payload
         }
     }
 

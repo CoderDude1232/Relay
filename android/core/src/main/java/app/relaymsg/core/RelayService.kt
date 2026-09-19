@@ -23,6 +23,7 @@ import app.relaymsg.storage.DeviceAuthKey
 import app.relaymsg.storage.MasterKeyStore
 import app.relaymsg.storage.MessageStatus
 import app.relaymsg.storage.QuotedMessage
+import app.relaymsg.storage.SearchResult
 import app.relaymsg.storage.SecureStore
 import app.relaymsg.storage.StoredAttachment
 import app.relaymsg.storage.StoredCall
@@ -1217,6 +1218,34 @@ class RelayService private constructor(
         }
     }
 
+    // ------------------------------------------------------- live location
+
+    /** Sends one position update. Replaces the sender's previous bubble. */
+    suspend fun sendLocation(
+        conversationId: String,
+        payload: LocationPayload,
+    ) = sendText(conversationId, payload.encodeBody())
+
+    /**
+     * The newest live location from each participant in a conversation.
+     *
+     * Computed rather than stored: updates arrive as ordinary messages, and
+     * keeping a separate table in step with them would only be a second thing
+     * to get wrong. Expired and stopped shares are dropped here, so a caller
+     * cannot accidentally render a stale pin as live.
+     */
+    fun liveLocations(conversationId: String): Map<String, LocationPayload> =
+        store.messages.messages(conversationId, limit = 500)
+            .mapNotNull { message ->
+                val payload = LocationPayload.fromBody(message.body) ?: return@mapNotNull null
+                val sender = message.senderAccount
+                    ?: if (message.isOutgoing) credentials.accountId else return@mapNotNull null
+                sender to payload
+            }
+            // Later messages win, so the last update from each sender survives.
+            .toMap()
+            .filterValues { it.isLive() }
+
     // ---------------------------------------------------------- the notepad
 
     /**
@@ -1238,7 +1267,21 @@ class RelayService private constructor(
         content: String,
     ) = sendText(conversationId, NOTEPAD_PREFIX + content)
 
-    fun searchMessages(query: String) = store.messages.searchMessages(query)
+    /**
+     * Full-text search across every stored message.
+     *
+     * Two filters the raw store query cannot apply: a hidden thread stays
+     * hidden — surfacing its messages here would defeat the whole point of
+     * panic mode — and marker-payload bodies (polls, the notepad, live
+     * location) are internal encodings, not text anyone typed.
+     */
+    fun searchMessages(query: String): List<SearchResult> =
+        store.messages.searchMessages(query).filterNot { result ->
+            panic.shouldHide(result.conversationId) ||
+                result.body.startsWith(PollPayload.MARKER) ||
+                result.body.startsWith(NOTEPAD_PREFIX) ||
+                result.body.startsWith(LocationPayload.MARKER)
+        }
 
     fun starredMessages(conversationId: String) = store.messages.starredMessages(conversationId)
 
