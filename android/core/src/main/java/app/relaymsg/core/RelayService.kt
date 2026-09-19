@@ -1004,6 +1004,131 @@ class RelayService private constructor(
         },
     )
 
+    // ------------------------------------------------------------- backup
+
+    /**
+     * Backup settings and the Recovery Key, sharing panic mode's view of the
+     * encrypted kv table.
+     */
+    val backup = BackupManager(
+        object : KeyValueStore {
+            override fun get(key: String) = store.messages.kvGet(key)
+            override fun put(key: String, value: ByteArray) = store.messages.kvPut(key, value)
+            override fun delete(key: String) = store.messages.kvDelete(key)
+        },
+    )
+
+    /** Serializes every conversation, message and group into a snapshot. */
+    fun exportBackupSnapshot(): BackupSnapshot {
+        val conversations = mutableListOf<BackupSnapshot.Conversation>()
+        val groups = mutableListOf<BackupSnapshot.Group>()
+        for (conversation in store.messages.conversations(includeArchived = true)) {
+            val messages = store.messages.messages(conversation.id, limit = 100_000).map { message ->
+                BackupSnapshot.Message(
+                    id = message.id,
+                    body = message.body,
+                    timestamp = message.timestamp,
+                    isOutgoing = message.isOutgoing,
+                    status = message.status.wire,
+                    senderAccount = message.senderAccount,
+                    replyTimestamp = message.replyTo?.targetTimestamp,
+                    replyAuthor = message.replyTo?.author,
+                    replyText = message.replyTo?.text,
+                )
+            }
+            conversations += BackupSnapshot.Conversation(
+                peerAccount = conversation.peerAccount,
+                username = conversation.peerUsername,
+                groupId = conversation.groupId,
+                messages = messages,
+            )
+            conversation.groupId?.let { groupId ->
+                store.messages.group(groupId)?.let { group ->
+                    groups += BackupSnapshot.Group(
+                        id = group.id,
+                        name = group.name,
+                        distributionId = group.distributionId,
+                        revision = group.revision,
+                        members = group.members,
+                        admins = group.admins,
+                        isAnnounceOnly = group.isAnnounceOnly,
+                    )
+                }
+            }
+        }
+        return BackupSnapshot(conversations = conversations, groups = groups)
+    }
+
+    /**
+     * Merges a decrypted snapshot into local storage. Idempotent: an id already
+     * present is skipped, so restoring twice — or restoring onto a device that
+     * has since received some of the same messages — changes nothing.
+     */
+    fun importBackupSnapshot(snapshot: BackupSnapshot) {
+        for (group in snapshot.groups) {
+            store.messages.upsertGroup(
+                id = group.id,
+                name = group.name,
+                distributionId = group.distributionId,
+                revision = group.revision,
+                members = group.members,
+                admins = group.admins,
+                isAnnounceOnly = group.isAnnounceOnly,
+            )
+        }
+        for (conversation in snapshot.conversations) {
+            val conversationId = conversation.groupId?.let { groupId ->
+                store.messages.groupConversationId(groupId)
+                    ?: store.messages.conversation(groupId, conversation.username)
+            } ?: store.messages.conversation(conversation.peerAccount, conversation.username)
+            for (message in conversation.messages) {
+                store.messages.insertMessage(
+                    id = message.id,
+                    conversationId = conversationId,
+                    isOutgoing = message.isOutgoing,
+                    body = message.body,
+                    timestamp = message.timestamp,
+                    status = MessageStatus.from(message.status),
+                    replyTo = message.replyTimestamp?.let {
+                        QuotedMessage(it, message.replyAuthor.orEmpty(), message.replyText.orEmpty())
+                    },
+                    senderAccount = message.senderAccount,
+                )
+            }
+            // Restored history is history, not a pile of unread messages.
+            store.messages.markConversationRead(conversationId)
+        }
+        refreshConversations()
+    }
+
+    /**
+     * The encrypted blob to store wherever the user keeps it. Byte-identical to
+     * what iOS puts in CloudKit, so a backup crosses between the two clients.
+     */
+    fun createBackupBlob(): ByteArray {
+        val key = backup.recoveryKey() ?: BackupCrypto.parse(backup.ensureRecoveryKey())
+        val blob = BackupCrypto.seal(exportBackupSnapshot().encode(), key)
+        backup.lastBackupAt = System.currentTimeMillis()
+        return blob
+    }
+
+    /** Restores a blob, adopting the key so later backups continue from here. */
+    fun restoreBackupBlob(blob: ByteArray, recoveryKeyDisplay: String) {
+        val key = BackupCrypto.parse(recoveryKeyDisplay)
+        importBackupSnapshot(BackupSnapshot.decode(BackupCrypto.open(blob, key)))
+        backup.adoptRecoveryKey(key)
+        backup.isEnabled = true
+        backup.lastBackupAt = System.currentTimeMillis()
+    }
+
+    /** The one-off, password-protected export — iOS's "Export to Files". */
+    fun exportPasswordBackup(password: String): ByteArray =
+        BackupCrypto.sealWithPassword(exportBackupSnapshot().encode(), password)
+
+    fun importPasswordBackup(blob: ByteArray, password: String) {
+        importBackupSnapshot(BackupSnapshot.decode(BackupCrypto.openWithPassword(blob, password)))
+    }
+
     fun setConversationHidden(conversationId: String, hidden: Boolean) {
         panic.setHidden(conversationId, hidden)
         refreshConversations()

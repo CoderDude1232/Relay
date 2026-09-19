@@ -88,6 +88,8 @@ fun SettingsScreen(
     onShowScheduled: () -> Unit,
     onEditProfile: () -> Unit,
     onRemoveDevice: (Int) -> Unit,
+    onShowBackup: () -> Unit,
+    backupEnabled: Boolean,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     var confirmClearCalls by remember { mutableStateOf(false) }
@@ -240,6 +242,19 @@ fun SettingsScreen(
                     title = "Blocked contacts",
                     detail = if (blockedCount == 0) "None" else "$blockedCount blocked",
                     onClick = onShowBlocked,
+                )
+            }
+
+            Section(
+                title = "Backup",
+                footnote = "Encryption sessions stay on this phone either way — a " +
+                    "restore brings back messages, and the safety number changes " +
+                    "the way it would after a reinstall.",
+            ) {
+                ActionRow(
+                    title = "Backup & restore",
+                    detail = if (backupEnabled) "On" else "Off",
+                    onClick = onShowBackup,
                 )
             }
 
@@ -431,7 +446,7 @@ private fun Profile(
  * screen turning into a wall of small grey text.
  */
 @Composable
-private fun Section(
+internal fun Section(
     title: String,
     footnote: String? = null,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
@@ -461,7 +476,7 @@ private fun Section(
 }
 
 @Composable
-private fun SwitchRow(
+internal fun SwitchRow(
     title: String,
     detail: String,
     checked: Boolean,
@@ -485,7 +500,7 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun ActionRow(
+internal fun ActionRow(
     title: String,
     detail: String,
     destructive: Boolean = false,
@@ -512,7 +527,7 @@ private fun ActionRow(
 }
 
 @Composable
-private fun InfoRow(title: String, value: String) {
+internal fun InfoRow(title: String, value: String) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -528,13 +543,13 @@ private fun InfoRow(title: String, value: String) {
 
 /** Hairline between rows inside a card; inset so it does not touch the corners. */
 @Composable
-private fun RowDivider() = HorizontalDivider(
+internal fun RowDivider() = HorizontalDivider(
     color = MaterialTheme.colorScheme.outlineVariant,
     modifier = Modifier.padding(start = 16.dp),
 )
 
 @Composable
-private fun Detail(text: String, modifier: Modifier = Modifier) = Text(
+internal fun Detail(text: String, modifier: Modifier = Modifier) = Text(
     text = text,
     style = MaterialTheme.typography.bodySmall,
     color = MaterialTheme.colorScheme.onSurfaceVariant,

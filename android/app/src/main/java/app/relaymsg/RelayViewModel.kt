@@ -1,6 +1,7 @@
 package app.relaymsg
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.relaymsg.call.CallService
@@ -9,6 +10,7 @@ import app.relaymsg.core.ActiveCall
 import app.relaymsg.core.ActiveGroupCall
 import app.relaymsg.core.AudioRoute
 import app.relaymsg.core.AudioRouteKind
+import app.relaymsg.core.BackupCrypto
 import app.relaymsg.core.ConnectionState
 import app.relaymsg.core.EmailAuthResult
 import app.relaymsg.core.RelayService
@@ -28,6 +30,7 @@ import app.relaymsg.ui.VoiceNoteRecorder
 import app.relaymsg.ui.Verification
 import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -38,6 +41,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 
 /** What the app is currently showing. */
 sealed interface AppPhase {
@@ -684,6 +688,7 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _screenLock.value = service.screenLockEnabled
         _lockTimeout.value = service.screenLockTimeoutSeconds
         refreshPanic()
+        refreshBackup()
         viewModelScope.launch {
             _devices.value = runCatching { service.linkedDevices() }.getOrDefault(emptyList())
         }
@@ -932,6 +937,98 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAppearance(conversationId: String, wallpaperId: String?, bubbleKey: String?) {
         service?.setAppearance(conversationId, wallpaperId, bubbleKey)
+    }
+
+    // -------------------------------------------------------------- backup
+
+    private val _backupEnabled = MutableStateFlow(false)
+    val backupEnabled: StateFlow<Boolean> = _backupEnabled.asStateFlow()
+
+    private val _lastBackupAt = MutableStateFlow<Long?>(null)
+    val lastBackupAt: StateFlow<Long?> = _lastBackupAt.asStateFlow()
+
+    fun setBackupEnabled(enabled: Boolean) {
+        service?.backup?.isEnabled = enabled
+        refreshBackup()
+    }
+
+    /** The key to write down, generating one the first time it is asked for. */
+    fun recoveryKey(): String = service?.backup?.ensureRecoveryKey().orEmpty()
+
+    private fun refreshBackup() {
+        _backupEnabled.value = service?.backup?.isEnabled == true
+        _lastBackupAt.value = service?.backup?.lastBackupAt
+    }
+
+    /**
+     * Writes the encrypted snapshot to a document the user picked.
+     *
+     * Everything here runs on IO: a full snapshot of a busy account is megabytes
+     * of JSON and it is not going through the main thread.
+     */
+    fun writeBackup(uri: Uri, onDone: (String?) -> Unit) {
+        val service = service ?: return onDone("Not signed in.")
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    val blob = service.createBackupBlob()
+                    getApplication<Application>().contentResolver.openOutputStream(uri)?.use { it.write(blob) }
+                        ?: error("Couldn't write to that location.")
+                }.exceptionOrNull()?.friendlyBackupMessage()
+            }
+            refreshBackup()
+            onDone(error)
+        }
+    }
+
+    fun restoreBackup(uri: Uri, recoveryKey: String, onDone: (String?) -> Unit) {
+        val service = service ?: return onDone("Not signed in.")
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    service.restoreBackupBlob(uri.readAllBytes(), recoveryKey)
+                }.exceptionOrNull()?.friendlyBackupMessage()
+            }
+            refreshBackup()
+            onDone(error)
+        }
+    }
+
+    fun exportPasswordBackup(uri: Uri, password: String, onDone: (String?) -> Unit) {
+        val service = service ?: return onDone("Not signed in.")
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    val blob = service.exportPasswordBackup(password)
+                    getApplication<Application>().contentResolver.openOutputStream(uri)?.use { it.write(blob) }
+                        ?: error("Couldn't write to that location.")
+                }.exceptionOrNull()?.friendlyBackupMessage()
+            }
+            onDone(error)
+        }
+    }
+
+    fun importPasswordBackup(uri: Uri, password: String, onDone: (String?) -> Unit) {
+        val service = service ?: return onDone("Not signed in.")
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    service.importPasswordBackup(uri.readAllBytes(), password)
+                }.exceptionOrNull()?.friendlyBackupMessage()
+            }
+            onDone(error)
+        }
+    }
+
+    private fun Uri.readAllBytes(): ByteArray =
+        getApplication<Application>().contentResolver.openInputStream(this)?.use { it.readBytes() }
+            ?: error("Couldn't read that file.")
+
+    private fun Throwable.friendlyBackupMessage(): String = when (this) {
+        is BackupCrypto.WrongKeyException,
+        is BackupCrypto.MalformedBackupException,
+        -> message ?: "That backup couldn't be opened."
+        else -> message ?: "Backup failed."
     }
 
     // ---------------------------------------------------------- panic mode

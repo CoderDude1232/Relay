@@ -3,6 +3,7 @@ package app.relaymsg
 import android.content.Intent
 import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.activity.enableEdgeToEdge
@@ -28,6 +29,7 @@ import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
 import app.relaymsg.call.CallService
 import app.relaymsg.call.GroupCallScreen
+import app.relaymsg.ui.BackupScreen
 import app.relaymsg.ui.BlockedContactsScreen
 import app.relaymsg.ui.CallLogScreen
 import app.relaymsg.ui.AppearanceScreen
@@ -221,6 +223,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var openConversationId by remember { mutableStateOf<String?>(null) }
     var showScanner by remember { mutableStateOf(false) }
     var showBlocked by remember { mutableStateOf(false) }
+    var showBackup by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var verifyPeer by remember { mutableStateOf<String?>(null) }
     var galleryFor by remember { mutableStateOf<String?>(null) }
@@ -254,11 +257,149 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     val searchResults by viewModel.searchResults.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
+    // Every full-screen state below is a push onto the tab UI, so the system
+    // back gesture has to pop it. Without this, back from any of them leaves
+    // the app entirely — which reads as a crash.
+    val onScreen = openConversationId != null || groupInfoFor != null || notepadFor != null ||
+        showScheduled || galleryFor != null || appearanceFor != null || verifyPeer != null ||
+        showProfile || showBlocked || showBackup || showScanner || showContactCard ||
+        showContactSync
+    BackHandler(enabled = onScreen) {
+        when {
+            // Innermost first: a sheet opened from inside a conversation closes
+            // back to the conversation, not to the list.
+            groupInfoFor != null -> groupInfoFor = null
+            notepadFor != null -> notepadFor = null
+            galleryFor != null -> galleryFor = null
+            appearanceFor != null -> appearanceFor = null
+            verifyPeer != null -> verifyPeer = null
+            openConversationId != null -> {
+                viewModel.closeConversation()
+                openConversationId = null
+            }
+            showScheduled -> showScheduled = false
+            showProfile -> showProfile = false
+            showBlocked -> showBlocked = false
+            showBackup -> showBackup = false
+            showContactCard -> showContactCard = false
+            showContactSync -> showContactSync = false
+            showScanner -> showScanner = false
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         val open = openConversationId
         when {
-            // A conversation and the scanner both take the whole screen: the tab
-            // bar would only offer a way to walk out of the middle of something.
+            // These five open from inside a conversation and sit on top of
+            // it, so they have to be matched before the conversation branch —
+            // below it they would never be reached, and their back action
+            // returns to the chat because it stays open underneath.
+            groupInfoFor != null -> {
+                val id = groupInfoFor!!
+                // Re-read on every conversation change, so a roster edit shows
+                // immediately rather than after backing out and returning.
+                val group = remember(id, conversations, busy) { viewModel.group(id) }
+                if (group == null) {
+                    groupInfoFor = null
+                } else {
+                    GroupInfoScreen(
+                        group = group,
+                        ownAccount = phase.service.credentials.accountId,
+                        nameFor = viewModel::nameFor,
+                        busy = busy,
+                        onRename = { viewModel.renameGroup(id, it) },
+                        onAddMember = { viewModel.addGroupMember(id, it) },
+                        onRemoveMember = { viewModel.removeGroupMember(id, it) },
+                        onSetAdmin = { account, admin ->
+                            viewModel.setGroupAdmin(id, account, admin)
+                        },
+                        onSetAnnounceOnly = { viewModel.setGroupAnnounceOnly(id, it) },
+                        onLeave = {
+                            viewModel.leaveGroup(id)
+                            groupInfoFor = null
+                            openConversationId = null
+                        },
+                        onBack = { groupInfoFor = null },
+                    )
+                }
+            }
+
+            notepadFor != null -> {
+                val id = notepadFor!!
+                NotepadScreen(
+                    title = conversations.firstOrNull { it.id == id }
+                        ?.let(viewModel::titleFor) ?: "this chat",
+                    initialContent = remember(id, messages) { viewModel.notepadContent(id) },
+                    busy = busy,
+                    onSave = { content -> viewModel.saveNotepad(id, content) },
+                    onBack = { notepadFor = null },
+                )
+            }
+
+            galleryFor != null -> {
+                val id = galleryFor!!
+                MediaGalleryScreen(
+                    title = conversations.firstOrNull { it.id == id }
+                        ?.let(viewModel::titleFor) ?: "conversation",
+                    attachments = remember(id) { viewModel.attachmentsIn(id) },
+                    load = { viewModel.attachmentBytes(it) },
+                    onBack = { galleryFor = null },
+                )
+            }
+
+            appearanceFor != null -> {
+                val id = appearanceFor!!
+                // Read once per entry and held locally, so each tap repaints
+                // the preview without a round trip through the store.
+                var chosen by remember(id) { mutableStateOf(viewModel.appearance(id)) }
+                AppearanceScreen(
+                    title = conversations.firstOrNull { it.id == id }
+                        ?.let(viewModel::titleFor) ?: "this chat",
+                    wallpaperId = chosen.first,
+                    bubbleKey = chosen.second,
+                    onPick = { wallpaper, bubble ->
+                        chosen = wallpaper to bubble
+                        viewModel.setAppearance(id, wallpaper, bubble)
+                    },
+                    onBack = { appearanceFor = null },
+                )
+            }
+
+            verifyPeer != null -> {
+                val account = verifyPeer!!
+                val safety = remember(account) { viewModel.safetyNumber(account) }
+                val scanResult by viewModel.scanResult.collectAsState()
+                var scanning by remember { mutableStateOf(false) }
+
+                if (scanning) {
+                    ScanLinkScreen(
+                        status = null,
+                        error = null,
+                        onScanned = { code ->
+                            viewModel.verifyScanned(account, code)
+                            scanning = false
+                        },
+                        onBack = { scanning = false },
+                    )
+                } else {
+                    VerificationScreen(
+                        peerName = viewModel.nameFor(account),
+                        numeric = safety?.numeric,
+                        scannableBase64 = safety?.scannable
+                            ?.let { java.util.Base64.getEncoder().encodeToString(it) },
+                        state = viewModel.verification(account),
+                        onSetVerified = { viewModel.setVerified(account, it) },
+                        onScan = { scanning = true },
+                        scanResult = scanResult,
+                        onDismissResult = viewModel::dismissScanResult,
+                        onBack = { viewModel.dismissScanResult(); verifyPeer = null },
+                    )
+                }
+            }
+
+            // A conversation and the scanner both take the whole screen: the
+            // tab bar would only offer a way to walk out of the middle of
+            // something.
             open != null -> {
                 val conversation = conversations.firstOrNull { it.id == open }
                 val appearance = remember(open, appearanceFor) { viewModel.appearance(open) }
@@ -390,47 +531,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 )
             }
 
-            groupInfoFor != null -> {
-                val id = groupInfoFor!!
-                // Re-read on every conversation change, so a roster edit shows
-                // immediately rather than after backing out and returning.
-                val group = remember(id, conversations, busy) { viewModel.group(id) }
-                if (group == null) {
-                    groupInfoFor = null
-                } else {
-                    GroupInfoScreen(
-                        group = group,
-                        ownAccount = phase.service.credentials.accountId,
-                        nameFor = viewModel::nameFor,
-                        busy = busy,
-                        onRename = { viewModel.renameGroup(id, it) },
-                        onAddMember = { viewModel.addGroupMember(id, it) },
-                        onRemoveMember = { viewModel.removeGroupMember(id, it) },
-                        onSetAdmin = { account, admin ->
-                            viewModel.setGroupAdmin(id, account, admin)
-                        },
-                        onSetAnnounceOnly = { viewModel.setGroupAnnounceOnly(id, it) },
-                        onLeave = {
-                            viewModel.leaveGroup(id)
-                            groupInfoFor = null
-                            openConversationId = null
-                        },
-                        onBack = { groupInfoFor = null },
-                    )
-                }
-            }
 
-            notepadFor != null -> {
-                val id = notepadFor!!
-                NotepadScreen(
-                    title = conversations.firstOrNull { it.id == id }
-                        ?.let(viewModel::titleFor) ?: "this chat",
-                    initialContent = remember(id, messages) { viewModel.notepadContent(id) },
-                    busy = busy,
-                    onSave = { content -> viewModel.saveNotepad(id, content) },
-                    onBack = { notepadFor = null },
-                )
-            }
 
             showScheduled -> {
                 val queued by viewModel.scheduled.collectAsState()
@@ -458,66 +559,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 onBack = { showContactSync = false },
             )
 
-            galleryFor != null -> {
-                val id = galleryFor!!
-                MediaGalleryScreen(
-                    title = conversations.firstOrNull { it.id == id }
-                        ?.let(viewModel::titleFor) ?: "conversation",
-                    attachments = remember(id) { viewModel.attachmentsIn(id) },
-                    load = { viewModel.attachmentBytes(it) },
-                    onBack = { galleryFor = null },
-                )
-            }
 
-            appearanceFor != null -> {
-                val id = appearanceFor!!
-                // Read once per entry and held locally, so each tap repaints
-                // the preview without a round trip through the store.
-                var chosen by remember(id) { mutableStateOf(viewModel.appearance(id)) }
-                AppearanceScreen(
-                    title = conversations.firstOrNull { it.id == id }
-                        ?.let(viewModel::titleFor) ?: "this chat",
-                    wallpaperId = chosen.first,
-                    bubbleKey = chosen.second,
-                    onPick = { wallpaper, bubble ->
-                        chosen = wallpaper to bubble
-                        viewModel.setAppearance(id, wallpaper, bubble)
-                    },
-                    onBack = { appearanceFor = null },
-                )
-            }
 
-            verifyPeer != null -> {
-                val account = verifyPeer!!
-                val safety = remember(account) { viewModel.safetyNumber(account) }
-                val scanResult by viewModel.scanResult.collectAsState()
-                var scanning by remember { mutableStateOf(false) }
-
-                if (scanning) {
-                    ScanLinkScreen(
-                        status = null,
-                        error = null,
-                        onScanned = { code ->
-                            viewModel.verifyScanned(account, code)
-                            scanning = false
-                        },
-                        onBack = { scanning = false },
-                    )
-                } else {
-                    VerificationScreen(
-                        peerName = viewModel.nameFor(account),
-                        numeric = safety?.numeric,
-                        scannableBase64 = safety?.scannable
-                            ?.let { java.util.Base64.getEncoder().encodeToString(it) },
-                        state = viewModel.verification(account),
-                        onSetVerified = { viewModel.setVerified(account, it) },
-                        onScan = { scanning = true },
-                        scanResult = scanResult,
-                        onDismissResult = viewModel::dismissScanResult,
-                        onBack = { viewModel.dismissScanResult(); verifyPeer = null },
-                    )
-                }
-            }
 
             showProfile -> {
                 val profile by viewModel.myProfile.collectAsState()
@@ -556,6 +599,22 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     nameFor = viewModel::nameFor,
                     onUnblock = viewModel::unblockAccount,
                     onBack = { showBlocked = false },
+                )
+            }
+
+            showBackup -> {
+                val backupEnabled by viewModel.backupEnabled.collectAsState()
+                val lastBackupAt by viewModel.lastBackupAt.collectAsState()
+                BackupScreen(
+                    enabled = backupEnabled,
+                    lastBackupAt = lastBackupAt,
+                    recoveryKey = viewModel::recoveryKey,
+                    onSetEnabled = viewModel::setBackupEnabled,
+                    onWriteBackup = viewModel::writeBackup,
+                    onRestore = viewModel::restoreBackup,
+                    onExportWithPassword = viewModel::exportPasswordBackup,
+                    onImportWithPassword = viewModel::importPasswordBackup,
+                    onBack = { showBackup = false },
                 )
             }
 
@@ -609,6 +668,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             val inviteLink by viewModel.inviteLink.collectAsState()
                             val blocked by viewModel.blockedAccounts.collectAsState()
                             val profile by viewModel.myProfile.collectAsState()
+                            val backupEnabled by viewModel.backupEnabled.collectAsState()
                             val scheduledCount by viewModel.scheduled.collectAsState()
                             val screenLock by viewModel.screenLock.collectAsState()
                             val lockTimeout by viewModel.lockTimeout.collectAsState()
@@ -650,6 +710,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 onShowScheduled = { showScheduled = true },
                                 onEditProfile = { showProfile = true },
                                 onRemoveDevice = viewModel::removeDevice,
+                                onShowBackup = { showBackup = true },
+                                backupEnabled = backupEnabled,
                             )
                         }
                     }
