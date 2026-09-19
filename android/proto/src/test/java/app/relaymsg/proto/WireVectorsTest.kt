@@ -192,6 +192,11 @@ class WireVectorsTest {
                     size = 2048L
                 }
                 timestamp = 1758000000000L
+                // status = 4, bio = 5. Go wrote these bytes; if the Kotlin
+                // codegen disagreed about either number, the value would land
+                // in a different field and this vector would fail to match.
+                status = "Building Relay"
+                bio = "Long-form bio text, end-to-end encrypted like everything else."
             }
         },
 

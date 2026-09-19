@@ -620,6 +620,8 @@ fun ChatScreen(
     onShowNotepad: () -> Unit = {},
     /** Null in a 1:1 conversation, which has no roster. */
     onShowGroupInfo: (() -> Unit)? = null,
+    /** Null for a group, which has its own info screen instead. */
+    onShowPeer: (() -> Unit)? = null,
     onSchedule: ((body: String, atMillis: Long) -> Unit)? = null,
     /** The one live bubble to show, already filtered for expiry. */
     liveLocation: Pair<String, LocationPayload>? = null,
@@ -660,7 +662,16 @@ fun ChatScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(title) },
+                title = {
+                    // Tapping the name opens their profile, which is the gesture
+                    // every messenger uses and where iOS puts the status and bio.
+                    Text(
+                        text = title,
+                        modifier = onShowPeer
+                            ?.let { Modifier.clickable(onClick = it) }
+                            ?: Modifier,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")

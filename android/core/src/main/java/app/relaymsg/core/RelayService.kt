@@ -128,6 +128,8 @@ class RelayService private constructor(
         // iOS's own key names, so a shared backup reads the same on both.
         private const val KV_MY_NAME = "me:name"
         private const val KV_MY_AVATAR = "me:avatar"
+        private const val KV_MY_STATUS = "me:status"
+        private const val KV_MY_BIO = "me:bio"
         private const val KV_MY_REVISION = "me:rev"
         private const val KV_MY_AVATAR_POINTER = "me:aptr"
         private const val KV_MY_AVATAR_POINTER_REV = "me:aptrrev"
@@ -530,25 +532,40 @@ class RelayService private constructor(
 
     // -------------------------------------------------------------- profile
 
-    private val _myProfile = MutableStateFlow(MyProfile("", null))
+    private val _myProfile = MutableStateFlow(MyProfile("", null, "", ""))
 
     /** This account's own display name and avatar, as peers will see them. */
     val myProfile: StateFlow<MyProfile> = _myProfile.asStateFlow()
 
     /** A profile others see. Kept per account, newest revision wins. */
-    data class MyProfile(val displayName: String, val avatar: ByteArray?) {
+    data class MyProfile(
+        val displayName: String,
+        val avatar: ByteArray?,
+        /** Short "about" line. Empty means unset, and clears it for peers. */
+        val status: String = "",
+        /** Longer free-text bio. Empty means unset. */
+        val bio: String = "",
+    ) {
         override fun equals(other: Any?): Boolean = this === other || (
             other is MyProfile && displayName == other.displayName &&
+                status == other.status && bio == other.bio &&
                 avatar.contentEquals(other.avatar)
             )
 
-        override fun hashCode(): Int = displayName.hashCode() * 31 + (avatar?.contentHashCode() ?: 0)
+        override fun hashCode(): Int {
+            var result = displayName.hashCode()
+            result = 31 * result + status.hashCode()
+            result = 31 * result + bio.hashCode()
+            return 31 * result + (avatar?.contentHashCode() ?: 0)
+        }
     }
 
     private fun loadMyProfile() {
         _myProfile.value = MyProfile(
             displayName = store.messages.kvGet(KV_MY_NAME)?.decodeToString().orEmpty(),
             avatar = store.messages.kvGet(KV_MY_AVATAR),
+            status = store.messages.kvGet(KV_MY_STATUS)?.decodeToString().orEmpty(),
+            bio = store.messages.kvGet(KV_MY_BIO)?.decodeToString().orEmpty(),
         )
     }
 
@@ -562,8 +579,12 @@ class RelayService private constructor(
     suspend fun updateProfile(
         displayName: String,
         avatar: ByteArray?,
+        status: String = _myProfile.value.status,
+        bio: String = _myProfile.value.bio,
     ) = withContext(Dispatchers.IO) {
         store.messages.kvPut(KV_MY_NAME, displayName.toByteArray())
+        store.messages.kvPut(KV_MY_STATUS, status.toByteArray())
+        store.messages.kvPut(KV_MY_BIO, bio.toByteArray())
         if (avatar == null) {
             store.messages.kvDelete(KV_MY_AVATAR)
         } else {
@@ -617,6 +638,8 @@ class RelayService private constructor(
             displayName = _myProfile.value.displayName,
             avatar = myAvatarPointer(),
             revision = revision,
+            status = _myProfile.value.status,
+            bio = _myProfile.value.bio,
         )
         val outcome = messenger.sendOverWebSocket(
             socket = socket,
@@ -680,16 +703,9 @@ class RelayService private constructor(
             )
         }.getOrNull() ?: return
 
-        val existing = store.messages.peerProfile(account)
-        store.messages.upsertProfile(
-            account = account,
-            displayName = existing?.displayName,
-            avatarId = pointer.id,
-            avatarData = bytes,
-            // Same revision the name arrived with, or upsertProfile's
-            // newest-wins guard would reject the picture it belongs to.
-            revision = existing?.revision ?: 0L,
-        )
+        // Not upsertProfile: the picture carries the same revision as the
+        // profile that announced it, and newest-wins would reject it as stale.
+        store.messages.setProfileAvatar(account, pointer.id, bytes)
         refreshConversations()
     }
 
@@ -1165,6 +1181,10 @@ class RelayService private constructor(
     fun safetyNumber(account: String) = engine.safetyNumber(account)
 
     fun verificationState(account: String) = store.signalStore.verificationState(account)
+
+    /** A peer's published profile — name, status, bio, avatar. */
+    fun peerProfile(account: String): app.relaymsg.storage.StoredProfile? =
+        runCatching { store.messages.peerProfile(account) }.getOrNull()
 
     /** A peer's avatar bytes, for a notification or a row. Null if they have none. */
     fun peerAvatar(account: String): ByteArray? =

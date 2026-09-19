@@ -15,7 +15,20 @@ package app.relaymsg.storage
  */
 internal object Schema {
 
-    const val VERSION = 1
+    const val VERSION = 2
+
+    /**
+     * Version 2: the status and bio a peer publishes with their profile.
+     *
+     * Added as an ALTER rather than as columns on version 1's CREATE TABLE,
+     * because installs already at version 1 have run that statement and will
+     * never run it again. Fresh installs run version 1 and then this, and land
+     * on the same shape.
+     */
+    val MIGRATION_2: List<String> = listOf(
+        "ALTER TABLE profiles ADD COLUMN status TEXT;",
+        "ALTER TABLE profiles ADD COLUMN bio TEXT;",
+    )
 
     /** Statements are executed in order inside one transaction. */
     val STATEMENTS: List<String> = listOf(

@@ -143,8 +143,12 @@ class EnvelopePipeline(
                     account = sender,
                     displayName = content.profile.displayName.ifEmpty { null },
                     avatarId = content.profile.avatar.id.ifEmpty { null },
-                    avatarData = null,
                     revision = content.profile.timestamp,
+                    // Empty means cleared, not absent: the sender publishes the
+                    // whole profile each time, so an empty string is them
+                    // removing it rather than an older client omitting it.
+                    status = content.profile.status.ifEmpty { null },
+                    bio = content.profile.bio.ifEmpty { null },
                 )
                 Outcome(
                     conversationId = conversationId,

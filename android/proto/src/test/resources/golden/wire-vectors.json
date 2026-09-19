@@ -63,7 +63,7 @@
       "name": "content_profile",
       "type": "relay.content.Content",
       "notes": "E2EE profile distribution with an avatar pointer",
-      "bytes": "SnAKBUV0aGFuEmAKC2Jsb2ItYXZhdGFyEiAFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBRogBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYiCmltYWdlL2pwZWcogBAYgNjch5Uz"
+      "bytes": "SsABCgVFdGhhbhJgCgtibG9iLWF2YXRhchIgBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUaIAYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGIgppbWFnZS9qcGVnKIAQGIDY3IeVMyIOQnVpbGRpbmcgUmVsYXkqPkxvbmctZm9ybSBiaW8gdGV4dCwgZW5kLXRvLWVuZCBlbmNyeXB0ZWQgbGlrZSBldmVyeXRoaW5nIGVsc2Uu"
     },
     {
       "name": "content_call_offer",

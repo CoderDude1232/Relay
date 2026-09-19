@@ -191,13 +191,70 @@ class MessageStoreTest {
     @Test
     fun profileKeepsTheNewestRevision() {
         val account = peer()
-        messages.upsertProfile(account, "Old Name", null, null, revision = 5)
+        messages.upsertProfile(account, "Old Name", null, revision = 5)
         // A stale update must not overwrite a newer one.
-        messages.upsertProfile(account, "Stale", null, null, revision = 3)
+        messages.upsertProfile(account, "Stale", null, revision = 3)
         assertEquals("Old Name", messages.peerProfile(account)?.displayName)
 
-        messages.upsertProfile(account, "New Name", null, null, revision = 9)
+        messages.upsertProfile(account, "New Name", null, revision = 9)
         assertEquals("New Name", messages.peerProfile(account)?.displayName)
+    }
+
+    @Test
+    fun profileCarriesStatusAndBio() {
+        val account = peer()
+        messages.upsertProfile(
+            account, "Ada", null, revision = 5,
+            status = "Building things", bio = "Longer text about Ada.",
+        )
+        val stored = messages.peerProfile(account)
+        assertEquals("Building things", stored?.status)
+        assertEquals("Longer text about Ada.", stored?.bio)
+    }
+
+    @Test
+    fun clearingStatusAndBioClearsThemLocally() {
+        val account = peer()
+        messages.upsertProfile(
+            account, "Ada", null, revision = 5,
+            status = "Building things", bio = "Longer text.",
+        )
+        // The peer cleared both: the wire carries empty strings, which the
+        // receive path maps to null. Newest-wins still applies.
+        messages.upsertProfile(account, "Ada", null, revision = 6, status = null, bio = null)
+        val stored = messages.peerProfile(account)
+        assertNull(stored?.status)
+        assertNull(stored?.bio)
+        assertEquals("Ada", stored?.displayName)
+    }
+
+    @Test
+    fun staleProfileDoesNotClearStatusAndBio() {
+        val account = peer()
+        messages.upsertProfile(
+            account, "Ada", null, revision = 9,
+            status = "Current", bio = "Current bio.",
+        )
+        messages.upsertProfile(account, "Old", null, revision = 4, status = null, bio = null)
+        val stored = messages.peerProfile(account)
+        assertEquals("Current", stored?.status)
+        assertEquals("Current bio.", stored?.bio)
+    }
+
+    @Test
+    fun avatarSavesAtTheSameRevisionAsTheProfileThatAnnouncedIt() {
+        val account = peer()
+        messages.upsertProfile(account, "Ada", "blob-1", revision = 5, status = "Hi")
+        // The download completes after the profile and carries no newer
+        // revision; going through upsertProfile would reject it as stale.
+        messages.setProfileAvatar(account, "blob-1", byteArrayOf(1, 2, 3))
+        val stored = messages.peerProfile(account)
+        assertEquals("blob-1", stored?.avatarId)
+        assertEquals(3, stored?.avatarData?.size)
+        // and it leaves everything else alone
+        assertEquals("Ada", stored?.displayName)
+        assertEquals("Hi", stored?.status)
+        assertEquals(5L, stored?.revision)
     }
 
     @Test

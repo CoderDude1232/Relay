@@ -175,11 +175,17 @@ class RelayMessenger(
         displayName: String,
         avatar: relay.content.ContentOuterClass.AttachmentPointer?,
         revision: Long,
+        status: String = "",
+        bio: String = "",
     ): Content = content {
         profile = relay.content.profileUpdate {
             this.displayName = displayName
             timestamp = revision
             avatar?.let { this.avatar = it }
+            // Always set, even when empty: the whole profile travels together,
+            // and an empty string is how the sender clears one of these.
+            this.status = status
+            this.bio = bio
         }
         senderAccountId = credentials.accountId
         senderDeviceId = credentials.deviceId

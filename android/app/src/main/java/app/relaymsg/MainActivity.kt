@@ -53,6 +53,7 @@ import app.relaymsg.ui.FindByUsernameScreen
 import app.relaymsg.ui.NewConversationSheet
 import app.relaymsg.ui.NewGroupScreen
 import app.relaymsg.ui.NotepadScreen
+import app.relaymsg.ui.PeerProfileScreen
 import app.relaymsg.ui.ScheduledMessagesScreen
 import app.relaymsg.ui.ProfileScreen
 import app.relaymsg.ui.ScanLinkScreen
@@ -236,6 +237,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var showBlocked by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
     var showNewChat by remember { mutableStateOf(false) }
+    var peerProfileFor by remember { mutableStateOf<String?>(null) }
     var showNewGroup by remember { mutableStateOf(false) }
     var findByUsername by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
@@ -281,7 +283,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
         showScheduled || galleryFor != null || appearanceFor != null || verifyPeer != null ||
         showProfile || showBlocked || showBackup || showScanner || showContactCard ||
         showContactSync || showPrivacy || showSecurity || showDevices ||
-        showNewChat || showNewGroup || findByUsername
+        showNewChat || showNewGroup || findByUsername || peerProfileFor != null
     BackHandler(enabled = onScreen) {
         when {
             // Innermost first: a sheet opened from inside a conversation closes
@@ -291,6 +293,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
             galleryFor != null -> galleryFor = null
             appearanceFor != null -> appearanceFor = null
             verifyPeer != null -> verifyPeer = null
+            peerProfileFor != null -> peerProfileFor = null
             openConversationId != null -> {
                 viewModel.closeConversation()
                 openConversationId = null
@@ -318,6 +321,33 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
             // it, so they have to be matched before the conversation branch —
             // below it they would never be reached, and their back action
             // returns to the chat because it stays open underneath.
+            peerProfileFor != null -> {
+                val account = peerProfileFor!!
+                val conversation = conversations.firstOrNull {
+                    it.groupId == null && it.peerAccount == account
+                }
+                PeerProfileScreen(
+                    account = account,
+                    displayName = viewModel.nameFor(account),
+                    username = conversation?.peerUsername,
+                    // Re-read on every conversation change so a profile that
+                    // arrives while this is open shows without backing out.
+                    profile = remember(account, conversations) {
+                        viewModel.peerProfile(account)
+                    },
+                    isBlocked = account in blockedAccounts,
+                    onVerify = { peerProfileFor = null; verifyPeer = account },
+                    onToggleBlock = {
+                        if (account in blockedAccounts) {
+                            viewModel.unblockAccount(account)
+                        } else {
+                            viewModel.blockAccount(account)
+                        }
+                    },
+                    onBack = { peerProfileFor = null },
+                )
+            }
+
             groupInfoFor != null -> {
                 val id = groupInfoFor!!
                 // Re-read on every conversation change, so a roster edit shows
@@ -489,6 +519,9 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     onShowAppearance = { appearanceFor = open },
                     onShowNotepad = { notepadFor = open },
                     onShowGroupInfo = conversation?.groupId?.let { id -> { groupInfoFor = id } },
+                    onShowPeer = conversation
+                        ?.takeIf { it.groupId == null }
+                        ?.let { target -> { peerProfileFor = target.peerAccount } },
                     liveLocation = remember(open, messages) { viewModel.liveLocation(open) }
                         ?.let { (who, payload) -> who to payload },
                     onOpenMap = { uri ->
@@ -599,6 +632,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     // The picked photo wins until it is saved, so the preview
                     // shows what pressing Save would actually publish.
                     avatar = pending ?: profile.avatar,
+                    status = profile.status,
+                    bio = profile.bio,
                     busy = busy,
                     onPickAvatar = {
                         pickAvatar.launch(
@@ -608,8 +643,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             ),
                         )
                     },
-                    onSave = { name, avatar ->
-                        viewModel.saveProfile(name, avatar)
+                    onSave = { name, avatar, status, bio ->
+                        viewModel.saveProfile(name, avatar, status, bio)
                         showProfile = false
                     },
                     onBack = { showProfile = false },

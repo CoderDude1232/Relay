@@ -126,10 +126,15 @@ data class StoredProfile(
     val avatarId: String?,
     val avatarData: ByteArray?,
     val revision: Long,
+    /** Short "about" line shown under the name. Null when unset or cleared. */
+    val status: String? = null,
+    /** Longer free-text bio, shown in its own section. */
+    val bio: String? = null,
 ) {
     override fun equals(other: Any?): Boolean = this === other || (
         other is StoredProfile && account == other.account &&
             displayName == other.displayName && avatarId == other.avatarId &&
+            status == other.status && bio == other.bio &&
             revision == other.revision
         )
 

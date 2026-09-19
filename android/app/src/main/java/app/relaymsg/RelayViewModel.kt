@@ -453,12 +453,12 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveProfile(displayName: String, avatar: ByteArray?) {
+    fun saveProfile(displayName: String, avatar: ByteArray?, status: String, bio: String) {
         val service = service ?: return
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
-            runCatching { service.updateProfile(displayName, avatar) }
+            runCatching { service.updateProfile(displayName, avatar, status, bio) }
             _pendingAvatar.value = null
             _busy.value = false
         }
@@ -497,6 +497,9 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     fun unblockAccount(account: String) = service?.unblockAccount(account)
 
     fun nameFor(account: String): String = service?.displayName(account) ?: account.take(8)
+
+    /** A peer's published profile, for their profile screen. */
+    fun peerProfile(account: String) = service?.peerProfile(account)
 
     /** Removes another device. Returns via [refreshSettings] once the relay agrees. */
     fun removeDevice(deviceId: Int) {

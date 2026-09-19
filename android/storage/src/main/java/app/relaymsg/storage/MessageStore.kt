@@ -530,7 +530,10 @@ class MessageStore(private val db: RelayDatabase) {
     // ------------------------------------------------------------ profiles
 
     fun peerProfile(account: String): StoredProfile? = db.query(
-        "SELECT account_id, display_name, avatar_id, avatar_data, revision FROM profiles WHERE account_id = ?",
+        """
+        SELECT account_id, display_name, avatar_id, avatar_data, revision, status, bio
+        FROM profiles WHERE account_id = ?
+        """,
         listOf(account),
     ) { row ->
         StoredProfile(
@@ -539,32 +542,63 @@ class MessageStore(private val db: RelayDatabase) {
             avatarId = row.stringOrNull(2),
             avatarData = row.blobOrNull(3),
             revision = row.long(4),
+            status = row.stringOrNull(5),
+            bio = row.stringOrNull(6),
         )
     }.firstOrNull()
 
     /** Newest wins: an older profile revision is ignored. */
+    /**
+     * Applies a peer's published profile. Newest revision wins; an older one is
+     * dropped, which is what keeps two of their devices from fighting.
+     *
+     * Every field is replaced, so a cleared status or bio arrives as null and
+     * clears here too. The avatar *bytes* are deliberately not touched — they
+     * arrive later, by download, through [setProfileAvatar].
+     */
     fun upsertProfile(
         account: String,
         displayName: String?,
         avatarId: String?,
-        avatarData: ByteArray?,
         revision: Long,
+        status: String? = null,
+        bio: String? = null,
     ) {
         val existing = peerProfile(account)
         if (existing != null && existing.revision >= revision) return
         db.run(
             """
-            INSERT INTO profiles (account_id, display_name, avatar_id, avatar_data, revision)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO profiles (account_id, display_name, avatar_id, revision, status, bio)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (account_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 avatar_id    = excluded.avatar_id,
-                avatar_data  = excluded.avatar_data,
-                revision     = excluded.revision
+                revision     = excluded.revision,
+                status       = excluded.status,
+                bio          = excluded.bio
             """,
-            listOf(account, displayName, avatarId, avatarData, revision),
+            listOf(account, displayName, avatarId, revision, status, bio),
         )
     }
+
+    /**
+     * Stores a downloaded avatar.
+     *
+     * Separate from [upsertProfile], and with no revision guard, because the
+     * picture arrives *after* the profile that announced it and carries the
+     * same revision — under the newest-wins rule it would be rejected as stale,
+     * and every peer avatar would silently fail to save.
+     */
+    fun setProfileAvatar(account: String, avatarId: String?, avatarData: ByteArray?) = db.run(
+        """
+        INSERT INTO profiles (account_id, avatar_id, avatar_data, revision)
+        VALUES (?, ?, ?, 0)
+        ON CONFLICT (account_id) DO UPDATE SET
+            avatar_id   = excluded.avatar_id,
+            avatar_data = excluded.avatar_data
+        """,
+        listOf(account, avatarId, avatarData),
+    )
 
     // --------------------------------------------------------------- calls
 

@@ -199,6 +199,8 @@ func main() {
 					Size:        2048,
 				},
 				Timestamp: 1758000000000,
+				Status:    "Building Relay",
+				Bio:       "Long-form bio text, end-to-end encrypted like everything else.",
 			}},
 		})
 

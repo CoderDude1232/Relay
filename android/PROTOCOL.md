@@ -604,7 +604,24 @@ updates.
 ### 6.11 `ProfileUpdate`
 
 `display_name`=1, `avatar`=2 (`AttachmentPointer`, unset = no photo), `timestamp`=3
-(newest wins). Sent pairwise, E2EE; the avatar reuses the blob pipeline.
+(newest wins), **`status`=4** (short "about" line under the name), **`bio`=5**
+(longer free-text profile bio). Sent pairwise, E2EE; the avatar reuses the blob
+pipeline.
+
+All four travel in **one** `ProfileUpdate` — there is no separate status or bio
+message. Distribution is triggered on Save and bumps `timestamp`, so a peer
+applies the whole profile newest-wins and cannot end up with a new name beside
+an old bio.
+
+**Empty string means cleared, not absent.** The sender always writes every
+field, so an empty `status` is the user removing it; Android maps empty to null
+on the way into storage. An older client that does not know these fields simply
+ignores them (proto3 unknown fields), which is what makes the addition
+backward-compatible in both directions.
+
+The relay never parses `Content`, so all of this is end-to-end encrypted by
+construction — there is no server-side profile directory to scrape, and adding
+these fields needed no server or wire-auth change.
 
 ### 6.12 `CallMessage`
 

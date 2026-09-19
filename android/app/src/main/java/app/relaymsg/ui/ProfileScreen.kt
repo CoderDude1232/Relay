@@ -52,12 +52,16 @@ fun ProfileScreen(
     username: String,
     displayName: String,
     avatar: ByteArray?,
+    status: String,
+    bio: String,
     busy: Boolean,
     onPickAvatar: () -> Unit,
-    onSave: (displayName: String, avatar: ByteArray?) -> Unit,
+    onSave: (displayName: String, avatar: ByteArray?, status: String, bio: String) -> Unit,
     onBack: () -> Unit,
 ) {
     var name by remember(displayName) { mutableStateOf(displayName) }
+    var statusText by remember(status) { mutableStateOf(status) }
+    var bioText by remember(bio) { mutableStateOf(bio) }
     val bitmap = remember(avatar) {
         avatar?.let {
             runCatching {
@@ -78,7 +82,7 @@ fun ProfileScreen(
                 actions = {
                     TextButton(
                         enabled = !busy,
-                        onClick = { onSave(name.trim(), avatar) },
+                        onClick = { onSave(name.trim(), avatar, statusText.trim(), bioText.trim()) },
                     ) {
                         if (busy) CircularProgressIndicator(Modifier.height(18.dp)) else Text("Save")
                     }
@@ -109,7 +113,10 @@ fun ProfileScreen(
                 Text(if (avatar == null) "Add photo" else "Change photo")
             }
             if (avatar != null) {
-                TextButton(onClick = { onSave(name.trim(), null) }, enabled = !busy) {
+                TextButton(
+                    onClick = { onSave(name.trim(), null, statusText.trim(), bioText.trim()) },
+                    enabled = !busy,
+                ) {
                     Text("Remove photo", color = MaterialTheme.colorScheme.error)
                 }
             }
@@ -123,6 +130,37 @@ fun ProfileScreen(
                 enabled = !busy,
                 supportingText = {
                     Text("Shown to people you message. Your username stays @$username.")
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = statusText,
+                onValueChange = { statusText = it.take(64) },
+                label = { Text("Status") },
+                singleLine = true,
+                enabled = !busy,
+                supportingText = { Text("A short line under your name.") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = bioText,
+                onValueChange = { bioText = it.take(500) },
+                label = { Text("Bio") },
+                minLines = 3,
+                enabled = !busy,
+                supportingText = {
+                    // Said here rather than nowhere: a profile field that is
+                    // pushed to every contact is not the same as one sitting on
+                    // a server, and the difference is worth knowing before
+                    // typing into it.
+                    Text(
+                        "Encrypted and sent to people you message — the relay " +
+                            "never sees it.",
+                    )
                 },
                 modifier = Modifier.fillMaxWidth(),
             )

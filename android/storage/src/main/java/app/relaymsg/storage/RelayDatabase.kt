@@ -101,6 +101,9 @@ class RelayDatabase private constructor(private val db: SQLiteDatabase) {
             if (version < 1) {
                 Schema.STATEMENTS.forEach { run(it) }
             }
+            if (version < 2) {
+                Schema.MIGRATION_2.forEach { run(it) }
+            }
             run("PRAGMA user_version = ${Schema.VERSION};")
         }
     }
