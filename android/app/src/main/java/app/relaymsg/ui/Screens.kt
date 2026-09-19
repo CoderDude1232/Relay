@@ -26,7 +26,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -89,8 +88,6 @@ fun ConversationListScreen(
     busy: Boolean,
     onOpen: (String) -> Unit,
     onStartConversation: (String, (String) -> Unit, (String) -> Unit) -> Unit,
-    onShowCalls: () -> Unit,
-    onLinkDevice: () -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
     var newChatName by remember { mutableStateOf("") }
@@ -107,12 +104,6 @@ fun ConversationListScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(end = 4.dp),
                     )
-                    IconButton(onClick = onShowCalls) {
-                        Icon(Icons.Filled.Call, contentDescription = "Calls")
-                    }
-                    IconButton(onClick = onLinkDevice) {
-                        Icon(Icons.Filled.QrCodeScanner, contentDescription = "Link a device")
-                    }
                 },
             )
         },

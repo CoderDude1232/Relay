@@ -8,6 +8,7 @@ import app.relaymsg.net.RelayApiClient
 import app.relaymsg.net.RelayApiException
 import app.relaymsg.net.RelayAuthenticator
 import app.relaymsg.net.RelayCredentials
+import app.relaymsg.net.LinkedDevice
 import app.relaymsg.net.RelayEvent
 import app.relaymsg.net.RelayWebSocket
 import app.relaymsg.net.SignedPayloads
@@ -110,6 +111,7 @@ class RelayService private constructor(
         private const val KV_PASSWORD = "account.password"
         private const val KV_USERNAME = "account.username"
         private const val KV_PRIVATE_CALLS = "calls.private"
+        private const val KV_PUSH_CONTENT = "push.includeContent"
         private const val KV_SUPABASE_REFRESH = "supabase.refresh"
         private const val KV_SUPABASE_USER = "supabase.user"
 
@@ -493,6 +495,34 @@ class RelayService private constructor(
     var privateCallMode: Boolean
         get() = store.messages.kvGet(KV_PRIVATE_CALLS)?.decodeToString() != "0"
         set(value) = store.messages.kvPut(KV_PRIVATE_CALLS, (if (value) "1" else "0").toByteArray())
+
+    /**
+     * Every device on this account, newest id last.
+     *
+     * Read-only for now: removing one is a signed device-list mutation like
+     * linking, and is not built.
+     */
+    suspend fun linkedDevices(): List<LinkedDevice> = withContext(Dispatchers.IO) {
+        api.listDevices().first.sortedBy { it.deviceId }
+    }
+
+    /**
+     * Whether the relay may put the encrypted envelope inside the push.
+     *
+     * Off by default, which is the contentless wake: the push says only that
+     * *something* arrived and this device fetches and decrypts it. Turning it on
+     * is faster and costs a little metadata — Google carries the ciphertext,
+     * and its size, rather than an empty tap on the shoulder.
+     */
+    val pushIncludesContent: Boolean
+        get() = store.messages.kvGet(KV_PUSH_CONTENT)?.decodeToString() == "1"
+
+    suspend fun setPushIncludesContent(include: Boolean) = withContext(Dispatchers.IO) {
+        api.setPushIncludeContent(include)
+        // Only recorded once the relay has accepted it, so the switch cannot
+        // claim a setting the server does not actually have.
+        store.messages.kvPut(KV_PUSH_CONTENT, (if (include) "1" else "0").toByteArray())
+    }
 
     /** Credentials and the wall-clock ms at which they stop being usable. */
     private var cachedTurn: Pair<TurnCredentials, Long>? = null

@@ -33,6 +33,18 @@ import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
 import app.relaymsg.ui.ScanLinkScreen
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
+import app.relaymsg.ui.SettingsScreen
 import app.relaymsg.ui.theme.RelayTheme
 
 class MainActivity : ComponentActivity() {
@@ -161,66 +173,135 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     val busy by viewModel.busy.collectAsState()
 
     var openConversationId by remember { mutableStateOf<String?>(null) }
-    var showCalls by remember { mutableStateOf(false) }
     var showScanner by remember { mutableStateOf(false) }
+    var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
     Box(Modifier.fillMaxSize()) {
         val open = openConversationId
-        if (showScanner) {
-            val scanStatus by viewModel.scanStatus.collectAsState()
-            val scanError by viewModel.scanError.collectAsState()
-            ScanLinkScreen(
-                status = scanStatus,
-                error = scanError,
-                onScanned = viewModel::provisionScanned,
-                onBack = { viewModel.resetScan(); showScanner = false },
-            )
-        } else if (showCalls) {
-            val calls by viewModel.callLog.collectAsState()
-            CallLogScreen(
-                calls = calls,
-                onBack = { showCalls = false },
-                onClear = viewModel::clearCallLog,
-                onCall = { peer, video -> showCalls = false; viewModel.placeCall(peer, video) },
-            )
-        } else if (open == null) {
-            ConversationListScreen(
-                username = phase.service.username,
-                connection = connection,
-                conversations = conversations,
-                titleFor = viewModel::titleFor,
-                busy = busy,
-                onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
-                onStartConversation = viewModel::startConversation,
-                onShowCalls = { showCalls = true },
-                onLinkDevice = { viewModel.resetScan(); showScanner = true },
-            )
-        } else {
-            val conversation = conversations.firstOrNull { it.id == open }
-            ChatScreen(
-                title = conversation?.let(viewModel::titleFor) ?: "Conversation",
-                messages = messages,
-                onSend = { body -> viewModel.send(open, body) },
-                onSendImage = { uri -> viewModel.sendImage(open, uri) },
-                loadAttachment = { viewModel.attachmentBytes(it) },
-                onBack = { viewModel.closeConversation(); openConversationId = null },
-                // A group conversation's "peer" is its group id, which rings
-                // everyone rather than one account.
-                onCall = conversation?.let { target ->
-                    { video ->
-                        val group = target.groupId
-                        if (group != null) {
-                            viewModel.startGroupCall(group, video)
-                        } else {
-                            viewModel.placeCall(target.peerAccount, video)
+        when {
+            // A conversation and the scanner both take the whole screen: the tab
+            // bar would only offer a way to walk out of the middle of something.
+            open != null -> {
+                val conversation = conversations.firstOrNull { it.id == open }
+                ChatScreen(
+                    title = conversation?.let(viewModel::titleFor) ?: "Conversation",
+                    messages = messages,
+                    onSend = { body -> viewModel.send(open, body) },
+                    onSendImage = { uri -> viewModel.sendImage(open, uri) },
+                    loadAttachment = { viewModel.attachmentBytes(it) },
+                    onBack = { viewModel.closeConversation(); openConversationId = null },
+                    // A group conversation's "peer" is its group id, which rings
+                    // everyone rather than one account.
+                    onCall = conversation?.let { target ->
+                        { video ->
+                            val group = target.groupId
+                            if (group != null) {
+                                viewModel.startGroupCall(group, video)
+                            } else {
+                                viewModel.placeCall(target.peerAccount, video)
+                            }
+                        }
+                    },
+                )
+            }
+
+            showScanner -> {
+                val scanStatus by viewModel.scanStatus.collectAsState()
+                val scanError by viewModel.scanError.collectAsState()
+                ScanLinkScreen(
+                    status = scanStatus,
+                    error = scanError,
+                    onScanned = viewModel::provisionScanned,
+                    onBack = { viewModel.resetScan(); showScanner = false },
+                )
+            }
+
+            else -> Column(Modifier.fillMaxSize()) {
+                // Each tab keeps its own Scaffold and top bar, so the bar sits
+                // beside them rather than wrapping them in a second Scaffold.
+                Box(Modifier.weight(1f)) {
+                    when (tab) {
+                        Tab.CHATS -> ConversationListScreen(
+                            username = phase.service.username,
+                            connection = connection,
+                            conversations = conversations,
+                            titleFor = viewModel::titleFor,
+                            busy = busy,
+                            onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
+                            onStartConversation = viewModel::startConversation,
+                        )
+
+                        Tab.CALLS -> {
+                            val calls by viewModel.callLog.collectAsState()
+                            CallLogScreen(
+                                calls = calls,
+                                onClear = viewModel::clearCallLog,
+                                onCall = viewModel::placeCall,
+                            )
+                        }
+
+                        Tab.SETTINGS -> {
+                            val privateCalls by viewModel.privateCallMode.collectAsState()
+                            val pushContent by viewModel.pushIncludesContent.collectAsState()
+                            val devices by viewModel.devices.collectAsState()
+                            // Read live each time the tab opens: another device
+                            // may have been linked since it was last shown.
+                            LaunchedEffect(Unit) { viewModel.refreshSettings() }
+                            SettingsScreen(
+                                username = phase.service.username,
+                                accountId = phase.service.credentials.accountId,
+                                deviceId = phase.service.credentials.deviceId,
+                                server = phase.service.server,
+                                privateCallMode = privateCalls,
+                                pushIncludesContent = pushContent,
+                                devices = devices,
+                                onPrivateCallMode = viewModel::setPrivateCallMode,
+                                onPushIncludesContent = viewModel::setPushIncludesContent,
+                                onLinkDevice = { viewModel.resetScan(); showScanner = true },
+                                onClearCallLog = viewModel::clearCallLog,
+                                onSignOut = viewModel::signOut,
+                            )
                         }
                     }
-                },
-            )
+                }
+                RelayTabBar(tab, unread = conversations.sumOf { it.unreadCount }) { tab = it }
+            }
         }
 
         InCallOverlay(viewModel)
     }
+}
+
+private enum class Tab(val label: String) { CHATS("Chats"), CALLS("Calls"), SETTINGS("Settings") }
+
+@Composable
+private fun RelayTabBar(selected: Tab, unread: Int, onSelect: (Tab) -> Unit) {
+    NavigationBar {
+        Tab.entries.forEach { entry ->
+            NavigationBarItem(
+                selected = entry == selected,
+                onClick = { onSelect(entry) },
+                icon = {
+                    if (entry == Tab.CHATS && unread > 0) {
+                        BadgedBox(
+                            badge = {
+                                Badge { Text(if (unread > 99) "99+" else "$unread") }
+                            },
+                        ) { Icon(entry.icon(), contentDescription = null) }
+                    } else {
+                        Icon(entry.icon(), contentDescription = null)
+                    }
+                },
+                label = { Text(entry.label) },
+            )
+        }
+    }
+}
+
+private fun Tab.icon() = when (this) {
+    Tab.CHATS -> Icons.AutoMirrored.Filled.Chat
+    Tab.CALLS -> Icons.Filled.Call
+    Tab.SETTINGS -> Icons.Filled.Settings
 }
 
 /**

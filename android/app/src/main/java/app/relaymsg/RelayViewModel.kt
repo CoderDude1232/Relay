@@ -12,6 +12,7 @@ import app.relaymsg.core.AudioRouteKind
 import app.relaymsg.core.ConnectionState
 import app.relaymsg.core.EmailAuthResult
 import app.relaymsg.core.RelayService
+import app.relaymsg.net.LinkedDevice
 import app.relaymsg.net.PkcePair
 import app.relaymsg.net.SupabaseAuth
 import app.relaymsg.push.RelayRuntime
@@ -488,6 +489,52 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     /** The name to show on a call, which is the conversation title if we have one. */
     fun callerName(call: ActiveCall): String =
         service?.displayName(call.peerAccount) ?: call.peerAccount.take(8)
+
+    // -------------------------------------------------------------- settings
+
+    private val _privateCallMode = MutableStateFlow(true)
+    val privateCallMode: StateFlow<Boolean> = _privateCallMode.asStateFlow()
+
+    private val _pushIncludesContent = MutableStateFlow(false)
+    val pushIncludesContent: StateFlow<Boolean> = _pushIncludesContent.asStateFlow()
+
+    private val _devices = MutableStateFlow<List<LinkedDevice>>(emptyList())
+    val devices: StateFlow<List<LinkedDevice>> = _devices.asStateFlow()
+
+    /** Reads the live values. Called when the settings tab is opened. */
+    fun refreshSettings() {
+        val service = service ?: return
+        _privateCallMode.value = service.privateCallMode
+        _pushIncludesContent.value = service.pushIncludesContent
+        viewModelScope.launch {
+            _devices.value = runCatching { service.linkedDevices() }.getOrDefault(emptyList())
+        }
+    }
+
+    fun setPrivateCallMode(enabled: Boolean) {
+        val service = service ?: return
+        service.privateCallMode = enabled
+        _privateCallMode.value = enabled
+    }
+
+    fun setPushIncludesContent(enabled: Boolean) {
+        val service = service ?: return
+        // Shown optimistically, then corrected: the switch must not end up
+        // claiming a setting the relay rejected.
+        _pushIncludesContent.value = enabled
+        viewModelScope.launch {
+            runCatching { service.setPushIncludesContent(enabled) }
+                .onFailure { _pushIncludesContent.value = service.pushIncludesContent }
+        }
+    }
+
+    fun signOut() {
+        val service = service ?: return
+        service.signOut()
+        pendingUsername = null
+        _authStep.value = AuthStep.WELCOME
+        _phase.value = AppPhase.SignedOut
+    }
 
     fun titleFor(conversation: Conversation): String =
         service?.conversationTitle(conversation) ?: conversation.peerAccount.take(8)

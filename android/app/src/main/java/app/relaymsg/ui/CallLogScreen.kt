@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -12,7 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -49,7 +48,6 @@ import java.util.Locale
 @Composable
 fun CallLogScreen(
     calls: List<StoredCall>,
-    onBack: () -> Unit,
     onClear: () -> Unit,
     onCall: (peerAccount: String, isVideo: Boolean) -> Unit,
 ) {
@@ -57,11 +55,6 @@ fun CallLogScreen(
         topBar = {
             androidx.compose.material3.TopAppBar(
                 title = { Text("Calls") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
                 actions = {
                     if (calls.isNotEmpty()) {
                         TextButton(onClick = onClear) { Text("Clear") }
@@ -75,11 +68,20 @@ fun CallLogScreen(
                 Modifier.fillMaxSize().padding(padding),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    "No calls yet",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 40.dp),
+                ) {
+                    Text("No calls yet", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        "Calls are encrypted end to end, and the log stays on " +
+                            "this phone.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
             }
             return@Scaffold
         }
@@ -105,18 +107,9 @@ private fun CallRow(call: StoredCall, onCall: (String, Boolean) -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = when {
-                missed -> Icons.AutoMirrored.Filled.CallMissed
-                call.direction == StoredCallDirection.OUTGOING -> Icons.AutoMirrored.Filled.CallMade
-                else -> Icons.AutoMirrored.Filled.CallReceived
-            },
-            contentDescription = null,
-            tint = if (missed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(20.dp),
-        )
+        Avatar(id = call.peerAccount, name = call.peerName, size = 44.dp)
         Column(
-            Modifier.weight(1f).padding(start = 16.dp),
+            Modifier.weight(1f).padding(start = 14.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
@@ -124,11 +117,29 @@ private fun CallRow(call: StoredCall, onCall: (String, Boolean) -> Unit) {
                 style = MaterialTheme.typography.bodyLarge,
                 color = if (missed) MaterialTheme.colorScheme.error else Color.Unspecified,
             )
-            Text(
-                text = call.summary(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = when {
+                        missed -> Icons.AutoMirrored.Filled.CallMissed
+                        call.direction == StoredCallDirection.OUTGOING ->
+                            Icons.AutoMirrored.Filled.CallMade
+                        else -> Icons.AutoMirrored.Filled.CallReceived
+                    },
+                    contentDescription = null,
+                    tint = if (missed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.size(5.dp))
+                Text(
+                    text = call.summary(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         if (call.kind == StoredCallKind.VIDEO) {
             Icon(
