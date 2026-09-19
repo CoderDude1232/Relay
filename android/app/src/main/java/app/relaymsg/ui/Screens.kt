@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,9 +14,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -28,6 +31,7 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,13 +52,28 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.font.FontStyle
+import app.relaymsg.ui.theme.Magenta
+import app.relaymsg.ui.theme.MagentaDeep
 import app.relaymsg.core.ConnectionState
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.MessageStatus
 import app.relaymsg.storage.StoredMessage
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -97,13 +116,24 @@ fun ConversationListScreen(
                 },
             )
         },
+        floatingActionButton = {
+            if (!showNewChat) {
+                FloatingActionButton(
+                    onClick = { showNewChat = true },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "New conversation")
+                }
+            }
+        },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Text(
                 "Signed in as $username",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
 
             if (showNewChat) {
@@ -139,24 +169,32 @@ fun ConversationListScreen(
 
             if (conversations.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("No conversations yet", style = MaterialTheme.typography.bodyLarge)
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = { showNewChat = true }) { Text("Start one") }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(horizontal = 40.dp),
+                    ) {
+                        Text(
+                            "No conversations yet",
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Messages are encrypted before they leave this phone, " +
+                                "and deleted from the relay the moment they arrive.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Button(onClick = { showNewChat = true }) { Text("Start a conversation") }
                     }
                 }
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(conversations, key = { it.id }) { conversation ->
                         ConversationRow(conversation, titleFor(conversation)) { onOpen(conversation.id) }
-                        HorizontalDivider()
                     }
-                    item {
-                        TextButton(
-                            onClick = { showNewChat = true },
-                            modifier = Modifier.fillMaxWidth().padding(8.dp),
-                        ) { Text("New conversation") }
-                    }
+                    item { Spacer(Modifier.height(88.dp)) } // clearance for the FAB
                 }
             }
         }
@@ -165,34 +203,81 @@ fun ConversationListScreen(
 
 @Composable
 private fun ConversationRow(conversation: Conversation, title: String, onClick: () -> Unit) {
+    val unread = conversation.unreadCount > 0
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Avatar(id = conversation.peerAccount, name = title)
+        Spacer(Modifier.width(14.dp))
+
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            conversation.lastMessageBody?.let {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                // An unread thread leans on weight rather than colour, so it
+                // still reads as unread to anyone who cannot see the accent.
+                fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = conversation.preview(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (unread) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        Spacer(Modifier.width(12.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            conversation.lastMessageAt?.let { at ->
                 Text(
-                    it.take(80),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = at.asListTime(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (unread) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
-        }
-        if (conversation.unreadCount > 0) {
-            Box(
-                Modifier
-                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(12.dp))
-                    .padding(horizontal = 8.dp, vertical = 2.dp),
-            ) {
-                Text(
-                    conversation.unreadCount.toString(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
+            if (unread) {
+                Spacer(Modifier.height(6.dp))
+                Box(
+                    Modifier
+                        .background(MaterialTheme.colorScheme.primary, CircleShape)
+                        .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        // A four-digit badge would stretch the row; nobody needs
+                        // the exact number past a hundred.
+                        text = if (conversation.unreadCount > 99) "99+" else "${conversation.unreadCount}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                }
             }
         }
     }
+}
+
+/** "You: …" for our own last message, so a thread reads without opening it. */
+private fun Conversation.preview(): String {
+    val body = lastMessageBody?.takeIf { it.isNotBlank() } ?: return "No messages yet"
+    return if (lastMessageIsOutgoing) "You: $body" else body
 }
 
 // ---------------------------------------------------------------------- chat
@@ -247,14 +332,14 @@ fun ChatScreen(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(messages, key = { it.id }) { MessageBubble(it, loadAttachment) }
             }
-            HorizontalDivider()
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Row(
-                Modifier.fillMaxWidth().padding(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom,
             ) {
                 IconButton(
                     onClick = {
@@ -265,18 +350,63 @@ fun ChatScreen(
                             ),
                         )
                     },
-                ) { Icon(Icons.Filled.Add, contentDescription = "Attach image") }
-                OutlinedTextField(
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "Attach image",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // A pill rather than an outlined field: it reads as a composer
+                // instead of a form, and it grows with the draft.
+                TextField(
                     value = draft,
                     onValueChange = { draft = it },
                     placeholder = { Text("Message") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 4,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(22.dp)),
+                    maxLines = 5,
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        // The underline is what makes a TextField look like a
+                        // form control; a pill does not want one.
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
                 )
-                TextButton(
-                    enabled = draft.isNotBlank(),
+                Spacer(Modifier.width(6.dp))
+                val canSend = draft.isNotBlank()
+                IconButton(
+                    enabled = canSend,
                     onClick = { onSend(draft.trim()); draft = "" },
-                ) { Text("Send") }
+                    modifier = Modifier
+                        .size(46.dp)
+                        .background(
+                            // Dimmed rather than hidden, so the target does not
+                            // move as you type the first character.
+                            if (canSend) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            CircleShape,
+                        ),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (canSend) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
         }
     }
@@ -288,27 +418,61 @@ private fun MessageBubble(
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
 ) {
     val outgoing = message.isOutgoing
+    // Deep -> band, not the logo's full gradient: white on the bright stop is
+    // only 3.0:1. Along this run it never drops below 4.7:1.
+    val outgoingFill = Brush.linearGradient(listOf(MagentaDeep, Magenta))
+    val incomingFill = SolidColor(MaterialTheme.colorScheme.surfaceVariant)
+
+    // The corner nearest the sender is squared off. It is what gives a thread a
+    // direction at a glance, without drawing tails.
+    val shape = RoundedCornerShape(
+        topStart = 18.dp,
+        topEnd = 18.dp,
+        bottomStart = if (outgoing) 18.dp else 4.dp,
+        bottomEnd = if (outgoing) 4.dp else 18.dp,
+    )
+    val ink = if (outgoing) Color.White else MaterialTheme.colorScheme.onSurface
+    val meta = if (outgoing) Color.White.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant
+
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
     ) {
         Column(
             Modifier
-                .widthIn(max = 280.dp)
-                .background(
-                    if (outgoing) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(16.dp),
-                )
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .widthIn(max = 300.dp)
+                .clip(shape)
+                .background(if (outgoing) outgoingFill else incomingFill)
+                .padding(horizontal = 14.dp, vertical = 9.dp),
         ) {
             message.replyTo?.let { quote ->
-                Text(
-                    quote.text.take(60),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(2.dp))
+                // A rule down the side, the way a pull-quote is marked, so the
+                // quoted text is not mistaken for part of the message.
+                Row(
+                    Modifier
+                        .padding(bottom = 6.dp)
+                        .background(
+                            if (outgoing) Color.White.copy(alpha = 0.16f)
+                            else MaterialTheme.colorScheme.surface,
+                            RoundedCornerShape(8.dp),
+                        )
+                        .height(IntrinsicSize.Min),
+                ) {
+                    Box(
+                        Modifier
+                            .width(3.dp)
+                            .fillMaxHeight()
+                            .background(if (outgoing) Color.White else MaterialTheme.colorScheme.primary),
+                    )
+                    Text(
+                        quote.text.take(80),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = meta,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    )
+                }
             }
             message.attachments.forEach { attachment ->
                 AttachmentImage(attachment, loadAttachment)
@@ -316,36 +480,51 @@ private fun MessageBubble(
             }
             if (message.body.isNotEmpty() || message.isDeleted) {
                 Text(
-                    if (message.isDeleted) "This message was deleted" else message.body,
+                    text = if (message.isDeleted) "This message was deleted" else message.body,
                     style = MaterialTheme.typography.bodyLarge,
+                    color = if (message.isDeleted) meta else ink,
+                    fontStyle = if (message.isDeleted) FontStyle.Italic else FontStyle.Normal,
                 )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // Metadata sits under the text and to the trailing edge, so it never
+            // competes with the message itself.
+            Row(
+                Modifier.align(Alignment.End).padding(top = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
-                    message.timestamp.asClockTime(),
+                    buildString {
+                        append(message.timestamp.asClockTime())
+                        if (message.editedAt != null) append(" · edited")
+                        if (outgoing) {
+                            message.status.indicator().takeIf { it.isNotEmpty() }
+                                ?.let { append(" · ").append(it) }
+                        }
+                    },
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (message.status == MessageStatus.FAILED) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        meta
+                    },
                 )
-                if (message.editedAt != null) {
-                    Text(
-                        " · edited",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (outgoing) {
-                    Text(
-                        " · ${message.status.indicator()}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
             if (message.reactions.isNotEmpty()) {
-                Text(
-                    message.reactions.joinToString(" ") { it.emoji },
-                    style = MaterialTheme.typography.labelMedium,
-                )
+                Box(
+                    Modifier
+                        .padding(top = 4.dp)
+                        .background(
+                            if (outgoing) Color.White.copy(alpha = 0.18f)
+                            else MaterialTheme.colorScheme.surface,
+                            CircleShape,
+                        )
+                        .padding(horizontal = 7.dp, vertical = 3.dp),
+                ) {
+                    Text(
+                        message.reactions.joinToString(" ") { it.emoji },
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
     }
@@ -423,5 +602,34 @@ private fun MessageStatus.indicator(): String = when (this) {
 }
 
 private val clockFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+private val weekdayFormat = SimpleDateFormat("EEE", Locale.getDefault())
+private val dateFormat = SimpleDateFormat("d MMM", Locale.getDefault())
 
 private fun Long.asClockTime(): String = clockFormat.format(Date(this))
+
+/**
+ * A conversation-list timestamp: the clock today, a weekday this week, a date
+ * before that.
+ *
+ * Compared by calendar day rather than by elapsed milliseconds — a message sent
+ * at 23:58 is "yesterday" at 00:02, not "two minutes ago".
+ */
+private fun Long.asListTime(): String {
+    val now = Calendar.getInstance()
+    val then = Calendar.getInstance().apply { timeInMillis = this@asListTime }
+
+    fun sameDay(a: Calendar, b: Calendar) =
+        a.get(Calendar.ERA) == b.get(Calendar.ERA) &&
+            a.get(Calendar.YEAR) == b.get(Calendar.YEAR) &&
+            a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
+
+    val yesterday = (now.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -1) }
+    val weekAgo = (now.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, -6) }
+
+    return when {
+        sameDay(then, now) -> clockFormat.format(Date(this))
+        sameDay(then, yesterday) -> "Yesterday"
+        then.after(weekAgo) -> weekdayFormat.format(Date(this))
+        else -> dateFormat.format(Date(this))
+    }
+}
