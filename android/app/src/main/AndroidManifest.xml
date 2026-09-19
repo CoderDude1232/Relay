@@ -28,6 +28,15 @@
       than let the user blame the other end; without the camera a video call
       quietly downgrades to audio.
     -->
+    <!--
+      Contact discovery. Addresses are blinded on-device before any lookup, so
+      the relay never learns who is in the address book.
+    -->
+    <!-- Contact exchange over a tag. Optional: most phones have no reader. -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -62,6 +71,31 @@
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              A contact link, however it arrived: scanned from a QR, tapped in
+              a message, or read off an NFC tag. All three carry the same URL,
+              so one filter covers them.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="https" android:host="relaymsg.app" android:pathPrefix="/add/" />
+                <data android:scheme="https" android:host="relaymsg.app" android:pathPrefix="/c/" />
+                <data android:scheme="https" android:host="relaymsg.app" android:pathPrefix="/g/" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="relay" android:host="add" />
             </intent-filter>
 
             <!--

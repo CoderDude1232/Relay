@@ -32,6 +32,8 @@ import app.relaymsg.ui.BlockedContactsScreen
 import app.relaymsg.ui.CallLogScreen
 import app.relaymsg.ui.AppearanceScreen
 import app.relaymsg.ui.AuthScreen
+import app.relaymsg.ui.ContactCardScreen
+import app.relaymsg.ui.ContactSyncScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
@@ -84,7 +86,7 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         // A cold start through the OAuth link: the browser tab handed back
         // before this activity existed.
-        intent?.data?.let(viewModel::onOAuthRedirect)
+        intent?.data?.let { handleLink(it) }
         setContent {
             RelayTheme {
                 Surface(
@@ -101,7 +103,15 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent.data?.let(viewModel::onOAuthRedirect)
+        intent.data?.let { handleLink(it) }
+        // A tag tapped while the app is open: same payload as a scanned code.
+        app.relaymsg.share.NfcContact.username(intent)?.let(viewModel::onScannedUsername)
+    }
+
+    /** OAuth first, then contact links — the two never overlap. */
+    private fun handleLink(uri: android.net.Uri) {
+        if (viewModel.onOAuthRedirect(uri)) return
+        viewModel.onContactLink(uri)
     }
 }
 
@@ -214,8 +224,28 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var verifyPeer by remember { mutableStateOf<String?>(null) }
     var galleryFor by remember { mutableStateOf<String?>(null) }
     var appearanceFor by remember { mutableStateOf<String?>(null) }
+    var showContactCard by remember { mutableStateOf(false) }
+    var showContactSync by remember { mutableStateOf(false) }
+
+    // A link or a scan resolves to a username; opening it lands in the thread.
+    val pendingContact by viewModel.pendingContact.collectAsState()
+    LaunchedEffect(pendingContact) {
+        val username = pendingContact ?: return@LaunchedEffect
+        viewModel.clearPendingContact()
+        viewModel.startConversation(
+            username,
+            onOpened = { id ->
+                showContactCard = false
+                showContactSync = false
+                viewModel.openConversation(id)
+                openConversationId = id
+            },
+            onError = { },
+        )
+    }
     val blockedAccounts by viewModel.blockedAccounts.collectAsState()
     val panicEnabled by viewModel.panicEnabled.collectAsState()
+    val profileForCard by viewModel.myProfile.collectAsState()
     val hiddenConversations by viewModel.hiddenConversations.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
@@ -320,6 +350,19 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     },
                 )
             }
+
+            showContactCard -> ContactCardScreen(
+                username = phase.service.username,
+                displayName = profileForCard.displayName,
+                accountId = phase.service.credentials.accountId,
+                onBack = { showContactCard = false },
+            )
+
+            showContactSync -> ContactSyncScreen(
+                onSync = { viewModel.discoverContacts(it) },
+                onStart = { username -> viewModel.onScannedUsername(username) },
+                onBack = { showContactSync = false },
+            )
 
             galleryFor != null -> {
                 val id = galleryFor!!
@@ -504,6 +547,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 onDisablePanic = viewModel::disablePanic,
                                 onCreateInvite = { viewModel.shareInvite(context) },
                                 onShowBlocked = { showBlocked = true },
+                                onShowContactCard = { showContactCard = true },
+                                onShowContactSync = { showContactSync = true },
                                 onEditProfile = { showProfile = true },
                                 onRemoveDevice = viewModel::removeDevice,
                             )

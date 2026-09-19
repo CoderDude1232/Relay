@@ -82,12 +82,13 @@ fun SettingsScreen(
     onDisablePanic: () -> Unit,
     onCreateInvite: () -> Unit,
     onShowBlocked: () -> Unit,
+    onShowContactCard: () -> Unit,
+    onShowContactSync: () -> Unit,
     onEditProfile: () -> Unit,
     onRemoveDevice: (Int) -> Unit,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     var confirmClearCalls by remember { mutableStateOf(false) }
-    var showQr by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf<Int?>(null) }
     var showLockTimeout by remember { mutableStateOf(false) }
     var showPanicPin by remember { mutableStateOf(false) }
@@ -107,9 +108,15 @@ fun SettingsScreen(
                     "once and then expires, so handing one out does not publish " +
                     "who you are to anyone who later finds it.",
             ) {
-                ActionRow("My QR code", publicLink.removePrefix("https://")) {
-                    showQr = true
+                ActionRow("My code", publicLink.removePrefix("https://")) {
+                    onShowContactCard()
                 }
+                RowDivider()
+                ActionRow(
+                    title = "Find contacts",
+                    detail = "Check your address book against the directory",
+                    onClick = onShowContactSync,
+                )
                 RowDivider()
                 ActionRow(
                     title = "Invite someone",
@@ -250,21 +257,6 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(32.dp))
         }
-    }
-
-    if (showQr) {
-        AlertDialog(
-            onDismissRequest = { showQr = false },
-            title = { Text("My QR code") },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    QrImage(publicLink, size = 220.dp)
-                    Spacer(Modifier.height(12.dp))
-                    Detail("Anyone who scans this can start a conversation with you.")
-                }
-            },
-            confirmButton = { TextButton(onClick = { showQr = false }) { Text("Done") } },
-        )
     }
 
     if (showPanicPin) {

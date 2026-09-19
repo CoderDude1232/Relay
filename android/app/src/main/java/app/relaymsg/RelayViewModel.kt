@@ -770,6 +770,56 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _recording.value = false
     }
 
+    private val _pendingContact = MutableStateFlow<String?>(null)
+
+    /** A username from a scanned code or a tapped link, waiting to be opened. */
+    val pendingContact: StateFlow<String?> = _pendingContact.asStateFlow()
+
+    /**
+     * Handles a contact link.
+     *
+     * Covers all three shapes: the https link a QR or an NFC tag carries, the
+     * legacy `relay://add/` scheme, and a one-time `/c/` invite. Returns false
+     * for anything else so the caller can leave other intents alone.
+     */
+    fun onContactLink(uri: android.net.Uri): Boolean {
+        val path = uri.toString()
+        val username = when {
+            path.contains("relaymsg.app/add/") -> path.substringAfterLast("/add/")
+            path.startsWith("relay://add/") -> path.removePrefix("relay://add/")
+            path.contains("relaymsg.app/c/") -> {
+                claimInvite(path.substringAfterLast("/c/").substringBefore('?'))
+                return true
+            }
+            else -> return false
+        }.trim().substringBefore('?').substringBefore('#')
+
+        if (username.isEmpty()) return false
+        _pendingContact.value = username
+        return true
+    }
+
+    private fun claimInvite(token: String) {
+        val service = service ?: return
+        if (token.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { service.claimInvite(token) }
+                .onSuccess { username -> _pendingContact.value = username }
+        }
+    }
+
+    /** A username from a scan, a tag or a contact-sync row. */
+    fun onScannedUsername(username: String) {
+        _pendingContact.value = username.trim().takeIf { it.isNotEmpty() }
+    }
+
+    fun clearPendingContact() {
+        _pendingContact.value = null
+    }
+
+    suspend fun discoverContacts(identifiers: List<String>) =
+        service?.discoverContacts(identifiers).orEmpty()
+
     fun attachmentsIn(conversationId: String) =
         service?.conversationAttachments(conversationId).orEmpty()
 

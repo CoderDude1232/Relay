@@ -797,6 +797,19 @@ class RelayService private constructor(
         "https://relaymsg.app/c/$token"
     }
 
+    /**
+     * Redeems a one-time invite, returning the username behind it.
+     *
+     * Single-use on the relay, so a link that has already been claimed fails
+     * here rather than silently opening a conversation with nobody.
+     */
+    suspend fun claimInvite(token: String): String = withContext(Dispatchers.IO) {
+        val (accountId, username) = api.claimContactInvite(token)
+        store.messages.conversation(accountId, username)
+        refreshConversations()
+        username
+    }
+
     /** The permanent link to this account. Safe to print on a card. */
     val publicLink: String get() = "https://relaymsg.app/add/$username"
 
@@ -1259,6 +1272,56 @@ class RelayService private constructor(
         val match = api.directoryResolve(listOf(token)).firstOrNull()
             ?: throw RelayApiException(404, "no such user")
         return match.accountId
+    }
+
+    /** One address-book entry that turned out to be on Relay. */
+    data class DiscoveredContact(
+        val identifier: String,
+        val accountId: String,
+        val username: String,
+    )
+
+    /**
+     * Looks up a batch of identifiers through the blinded directory.
+     *
+     * Batched in one round trip rather than one call per contact, which is both
+     * far faster over an address book and better for privacy: the relay sees a
+     * set of blinded elements at once and cannot time individual lookups.
+     *
+     * It never learns the addresses themselves — each is blinded here, the
+     * relay evaluates its OPRF over the blinded element, and only the resulting
+     * token is presented for matching.
+     */
+    suspend fun discoverContacts(
+        identifiers: List<String>,
+    ): List<DiscoveredContact> = withContext(Dispatchers.IO) {
+        val cleaned = identifiers.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (cleaned.isEmpty()) return@withContext emptyList()
+
+        val blinded = cleaned.mapNotNull { id ->
+            runCatching { id to discovery.blind(id) }.getOrNull()
+        }
+        if (blinded.isEmpty()) return@withContext emptyList()
+
+        val evaluated = runCatching { api.directoryEvaluate(blinded.map { it.second.element }) }
+            .getOrElse { return@withContext emptyList() }
+        if (evaluated.size != blinded.size) return@withContext emptyList()
+
+        // Tokens are kept alongside their identifier so a match can be reported
+        // back against the address-book entry it came from.
+        val tokens = blinded.mapIndexed { index, (identifier, blind) ->
+            identifier to discovery.token(blind, evaluated[index])
+        }
+        val matches = runCatching { api.directoryResolve(tokens.map { it.second }) }
+            .getOrElse { return@withContext emptyList() }
+
+        matches.mapNotNull { match ->
+            val identifier = tokens
+                .firstOrNull { it.second.contentEquals(match.token) }
+                ?.first
+                ?: return@mapNotNull null
+            DiscoveredContact(identifier, match.accountId, match.username)
+        }
     }
 
     suspend fun sendText(
