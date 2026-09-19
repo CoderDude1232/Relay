@@ -519,6 +519,47 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Opens (creating on first use) the conversation with your own account. */
+    fun openNoteToSelf(onOpened: (String) -> Unit) {
+        val service = service ?: return
+        val id = service.noteToSelfConversation()
+        openConversation(id)
+        onOpened(id)
+    }
+
+    /** Creates a group and opens it. */
+    fun createGroup(name: String, members: List<String>, onOpened: (String) -> Unit) {
+        val service = service ?: return
+        if (_busy.value) return
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { service.createGroup(name.trim(), members) }
+                // createGroup returns the conversation id, not the group id.
+                .onSuccess { conversationId ->
+                    service.refreshConversations()
+                    if (conversationId.isNotEmpty()) onOpened(conversationId)
+                }
+            _busy.value = false
+        }
+    }
+
+    /**
+     * Checks a batch of addresses against the blinded directory.
+     *
+     * One round trip for the whole address book rather than one per contact:
+     * faster, and the relay sees a set of blinded elements at once instead of
+     * being able to time them individually.
+     */
+    fun discover(
+        identifiers: List<String>,
+        onResult: (List<RelayService.DiscoveredContact>) -> Unit,
+    ) {
+        val service = service ?: return onResult(emptyList())
+        viewModelScope.launch {
+            onResult(runCatching { service.discoverContacts(identifiers) }.getOrDefault(emptyList()))
+        }
+    }
+
     // ----------------------------------------------------------------- calls
 
     @Suppress("OPT_IN_USAGE")

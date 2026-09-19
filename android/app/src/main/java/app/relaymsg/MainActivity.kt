@@ -49,6 +49,9 @@ import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
 import app.relaymsg.ui.MediaGalleryScreen
+import app.relaymsg.ui.FindByUsernameScreen
+import app.relaymsg.ui.NewConversationSheet
+import app.relaymsg.ui.NewGroupScreen
 import app.relaymsg.ui.NotepadScreen
 import app.relaymsg.ui.ScheduledMessagesScreen
 import app.relaymsg.ui.ProfileScreen
@@ -232,6 +235,9 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var showScanner by remember { mutableStateOf(false) }
     var showBlocked by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
+    var showNewChat by remember { mutableStateOf(false) }
+    var showNewGroup by remember { mutableStateOf(false) }
+    var findByUsername by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
     var showSecurity by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
@@ -274,7 +280,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     val onScreen = openConversationId != null || groupInfoFor != null || notepadFor != null ||
         showScheduled || galleryFor != null || appearanceFor != null || verifyPeer != null ||
         showProfile || showBlocked || showBackup || showScanner || showContactCard ||
-        showContactSync || showPrivacy || showSecurity || showDevices
+        showContactSync || showPrivacy || showSecurity || showDevices ||
+        showNewChat || showNewGroup || findByUsername
     BackHandler(enabled = onScreen) {
         when {
             // Innermost first: a sheet opened from inside a conversation closes
@@ -295,6 +302,9 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
             showPrivacy -> showPrivacy = false
             showSecurity -> showSecurity = false
             showDevices -> showDevices = false
+            findByUsername -> findByUsername = false
+            showNewGroup -> showNewGroup = false
+            showNewChat -> showNewChat = false
             showContactCard -> showContactCard = false
             showContactSync -> showContactSync = false
             showScanner -> showScanner = false
@@ -616,6 +626,66 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 )
             }
 
+            showNewChat -> {
+                NewConversationSheet(
+                    onCancel = { showNewChat = false },
+                    onFindByUsername = { showNewChat = false; findByUsername = true },
+                    onNewGroup = { showNewChat = false; showNewGroup = true },
+                    onNoteToSelf = {
+                        showNewChat = false
+                        viewModel.openNoteToSelf { id -> openConversationId = id }
+                    },
+                    onScanQr = { showNewChat = false; showScanner = true },
+                    onOpenUsername = { username ->
+                        viewModel.startConversation(
+                            username,
+                            onOpened = { id ->
+                                showNewChat = false
+                                viewModel.openConversation(id)
+                                openConversationId = id
+                            },
+                            onError = { },
+                        )
+                    },
+                    onInvite = viewModel::shareInvite,
+                    onDiscover = viewModel::discover,
+                )
+            }
+
+            showNewGroup -> {
+                NewGroupScreen(
+                    conversations = conversations,
+                    titleFor = viewModel::titleFor,
+                    busy = busy,
+                    onCreate = { name, members ->
+                        viewModel.createGroup(name, members) { id ->
+                            showNewGroup = false
+                            viewModel.openConversation(id)
+                            openConversationId = id
+                        }
+                    },
+                    onBack = { showNewGroup = false },
+                )
+            }
+
+            findByUsername -> {
+                FindByUsernameScreen(
+                    busy = busy,
+                    onStart = { username, onError ->
+                        viewModel.startConversation(
+                            username,
+                            onOpened = { id ->
+                                findByUsername = false
+                                viewModel.openConversation(id)
+                                openConversationId = id
+                            },
+                            onError = onError,
+                        )
+                    },
+                    onBack = { findByUsername = false },
+                )
+            }
+
             showPrivacy -> {
                 val privateCalls by viewModel.privateCallMode.collectAsState()
                 val pushContent by viewModel.pushIncludesContent.collectAsState()
@@ -693,7 +763,6 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             titleFor = viewModel::titleFor,
                             busy = busy,
                             onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
-                            onStartConversation = viewModel::startConversation,
                             onPin = viewModel::setConversationPinned,
                             onArchive = viewModel::setConversationArchived,
                             onMarkUnread = viewModel::markConversationUnread,
@@ -703,6 +772,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             onToggleHidden = viewModel::setConversationHidden,
                             searchResults = searchResults,
                             onSearch = viewModel::search,
+                            onNewConversation = { showNewChat = true },
                         )
 
                         Tab.CALLS -> {

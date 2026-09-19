@@ -1496,6 +1496,16 @@ class RelayService private constructor(
     // ------------------------------------------------------------------ sending
 
     /** Resolves a username to an account id and opens (or finds) the conversation. */
+    /**
+     * The conversation with yourself.
+     *
+     * Not a special case in storage — it is an ordinary conversation whose peer
+     * is this account, which is exactly what makes it work: a message sent here
+     * goes through the normal self-send path and lands on your other devices.
+     */
+    fun noteToSelfConversation(): String =
+        store.messages.conversation(credentials.accountId, username).also { refreshConversations() }
+
     suspend fun startConversation(username: String): String = withContext(Dispatchers.IO) {
         val accountId = resolveAccount(username)
         store.messages.conversation(accountId, username)

@@ -141,7 +141,6 @@ fun ConversationListScreen(
     titleFor: (Conversation) -> String,
     busy: Boolean,
     onOpen: (String) -> Unit,
-    onStartConversation: (String, (String) -> Unit, (String) -> Unit) -> Unit,
     onPin: (id: String, pinned: Boolean) -> Unit,
     onArchive: (id: String, archived: Boolean) -> Unit,
     onMarkUnread: (id: String) -> Unit,
@@ -151,14 +150,12 @@ fun ConversationListScreen(
     onToggleHidden: (id: String, hidden: Boolean) -> Unit,
     searchResults: List<SearchResult>,
     onSearch: (String) -> Unit,
+    onNewConversation: () -> Unit,
 ) {
-    var showNewChat by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var groupsOnly by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Conversation?>(null) }
     var confirmDelete by remember { mutableStateOf<Conversation?>(null) }
-    var newChatName by remember { mutableStateOf("") }
-    var newChatError by remember { mutableStateOf<String?>(null) }
 
     Scaffold { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -167,7 +164,7 @@ fun ConversationListScreen(
                 CircleAction(
                     icon = Icons.Filled.Edit,
                     contentDescription = "New conversation",
-                    onClick = { showNewChat = true },
+                    onClick = onNewConversation,
                 )
             }
 
@@ -214,37 +211,6 @@ fun ConversationListScreen(
             }
 
 
-            if (showNewChat) {
-                Column(Modifier.padding(horizontal = 16.dp)) {
-                    OutlinedTextField(
-                        value = newChatName,
-                        onValueChange = { newChatName = it; newChatError = null },
-                        label = { Text("Username to message") },
-                        singleLine = true,
-                        isError = newChatError != null,
-                        supportingText = newChatError?.let { { Text(it) } },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                        TextButton(onClick = { showNewChat = false; newChatError = null }) {
-                            Text("Cancel")
-                        }
-                        TextButton(
-                            enabled = newChatName.isNotBlank() && !busy,
-                            onClick = {
-                                onStartConversation(
-                                    newChatName,
-                                    { id -> showNewChat = false; newChatName = ""; onOpen(id) },
-                                    { message -> newChatError = message },
-                                )
-                            },
-                        ) { Text("Start") }
-                    }
-                }
-                HorizontalDivider()
-            }
-
             val trimmed = query.trim()
             val shown = if (groupsOnly) conversations.filter { it.groupId != null } else conversations
             if (trimmed.isNotEmpty()) {
@@ -278,7 +244,7 @@ fun ConversationListScreen(
                             textAlign = TextAlign.Center,
                         )
                         Spacer(Modifier.height(20.dp))
-                        Button(onClick = { showNewChat = true }) { Text("Start a conversation") }
+                        Button(onClick = onNewConversation) { Text("Start a conversation") }
                     }
                 }
             } else {
