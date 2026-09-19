@@ -528,10 +528,40 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val _inviteLink = MutableStateFlow<String?>(null)
+
+    /** The last invite created this session, so "share again" does not mint another. */
+    val inviteLink: StateFlow<String?> = _inviteLink.asStateFlow()
+
+    /**
+     * Creates a one-time invite link and opens the share sheet.
+     *
+     * Reuses the one already minted this session: each call to the relay burns a
+     * fresh single-use token, and leaving a trail of unused ones behind is
+     * pointless.
+     */
+    fun shareInvite(context: android.content.Context) {
+        val service = service ?: return
+        viewModelScope.launch {
+            val link = _inviteLink.value
+                ?: runCatching { service.createInviteLink() }.getOrNull()
+                ?: return@launch
+            _inviteLink.value = link
+            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(android.content.Intent.EXTRA_TEXT, "Message me on Relay: $link")
+            }
+            runCatching {
+                context.startActivity(android.content.Intent.createChooser(send, "Invite to Relay"))
+            }
+        }
+    }
+
     fun signOut() {
         val service = service ?: return
         service.signOut()
         pendingUsername = null
+        _inviteLink.value = null
         _authStep.value = AuthStep.WELCOME
         _phase.value = AppPhase.SignedOut
     }

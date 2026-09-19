@@ -81,7 +81,6 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationListScreen(
-    username: String,
     connection: ConnectionState,
     conversations: List<Conversation>,
     titleFor: (Conversation) -> String,
@@ -120,12 +119,6 @@ fun ConversationListScreen(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            Text(
-                "Signed in as $username",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
 
             if (showNewChat) {
                 Column(Modifier.padding(horizontal = 16.dp)) {

@@ -524,6 +524,21 @@ class RelayService private constructor(
         store.messages.kvPut(KV_PUSH_CONTENT, (if (include) "1" else "0").toByteArray())
     }
 
+    /**
+     * A one-time invite link.
+     *
+     * Single-use and expiring, unlike the permanent `/add/<username>` link:
+     * handing one out does not publish who you are to anyone who later finds
+     * the message it was sent in.
+     */
+    suspend fun createInviteLink(): String = withContext(Dispatchers.IO) {
+        val (token, _) = api.createContactInvite()
+        "https://relaymsg.app/c/$token"
+    }
+
+    /** The permanent link to this account. Safe to print on a card. */
+    val publicLink: String get() = "https://relaymsg.app/add/$username"
+
     /** Credentials and the wall-clock ms at which they stop being usable. */
     private var cachedTurn: Pair<TurnCredentials, Long>? = null
 

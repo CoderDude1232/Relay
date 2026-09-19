@@ -17,6 +17,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,9 +57,14 @@ fun SettingsScreen(
     onLinkDevice: () -> Unit,
     onClearCallLog: () -> Unit,
     onSignOut: () -> Unit,
+    publicLink: String,
+    inviteLink: String?,
+    appVersion: String,
+    onCreateInvite: () -> Unit,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     var confirmClearCalls by remember { mutableStateOf(false) }
+    var showQr by remember { mutableStateOf(false) }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
         Column(
@@ -68,74 +75,106 @@ fun SettingsScreen(
         ) {
             Profile(username, accountId, deviceId)
 
-            Section("Privacy")
-            SwitchRow(
-                title = "Private Call Mode",
-                detail = "Relay every call through the TURN server so the other " +
-                    "side never learns your IP address. Slower, and it falls back " +
-                    "automatically if no relay is available.",
-                checked = privateCallMode,
-                onCheckedChange = onPrivateCallMode,
-            )
-            SwitchRow(
-                title = "Faster notifications",
-                detail = "Put the encrypted message inside the push so it opens " +
-                    "instantly. Google then carries the ciphertext and its size, " +
-                    "instead of an empty wake-up. Off is the private default.",
-                checked = pushIncludesContent,
-                onCheckedChange = onPushIncludesContent,
-            )
-
-            Section("Devices")
-            devices.forEach { device ->
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            if (device.deviceId == deviceId) "This phone" else "Linked device",
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                        Text(
-                            "Device ${device.deviceId}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+            Section(
+                title = "Account",
+                footnote = "Your username link is permanent. An invite link works " +
+                    "once and then expires, so handing one out does not publish " +
+                    "who you are to anyone who later finds it.",
+            ) {
+                ActionRow("My QR code", publicLink.removePrefix("https://")) {
+                    showQr = true
                 }
+                RowDivider()
+                ActionRow(
+                    title = "Invite someone",
+                    detail = if (inviteLink != null) "Tap to share again" else "Create a one-time link",
+                    onClick = onCreateInvite,
+                )
+                RowDivider()
+                InfoRow("Server", server.removePrefix("https://"))
             }
-            if (devices.isEmpty()) {
-                Detail("Checking…", Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+
+            Section(
+                title = "Privacy & security",
+                footnote = "Relay never sees your messages. These control what it, " +
+                    "and the networks in between, can infer from around them.",
+            ) {
+                SwitchRow(
+                    title = "Private Call Mode",
+                    detail = "Relay every call through the TURN server so the other " +
+                        "side never learns your IP address. Slower, and it falls " +
+                        "back automatically if no relay is available.",
+                    checked = privateCallMode,
+                    onCheckedChange = onPrivateCallMode,
+                )
+                RowDivider()
+                SwitchRow(
+                    title = "Faster notifications",
+                    detail = "Put the encrypted message inside the push so it opens " +
+                        "instantly. Google then carries the ciphertext and its " +
+                        "size, instead of an empty wake-up. Off is the private " +
+                        "default.",
+                    checked = pushIncludesContent,
+                    onCheckedChange = onPushIncludesContent,
+                )
             }
-            ActionRow("Link a device", "Scan the code shown on your other phone", onLinkDevice)
 
-            Section("Calls")
-            ActionRow(
-                title = "Clear call history",
-                detail = "Removes the log from this device. It is not stored anywhere else.",
-                onClick = { confirmClearCalls = true },
-            )
+            Section(
+                title = "Devices",
+                footnote = "Linked devices share this account's identity, so your " +
+                    "safety numbers do not change when you add one.",
+            ) {
+                devices.forEach { device ->
+                    InfoRow(
+                        title = if (device.deviceId == deviceId) "This phone" else "Linked device",
+                        value = "Device ${device.deviceId}",
+                    )
+                    RowDivider()
+                }
+                if (devices.isEmpty()) {
+                    InfoRow("Devices", "Checking\u2026")
+                    RowDivider()
+                }
+                ActionRow("Link a device", "Scan the code shown on your other phone", onClick = onLinkDevice)
+            }
 
-            Section("Account")
-            InfoRow("Server", server.removePrefix("https://"))
-            ActionRow(
-                title = "Sign out",
-                detail = "Erases this device's keys and messages. Without a linked " +
-                    "device or a backup, they are gone.",
-                destructive = true,
-                onClick = { confirmSignOut = true },
-            )
+            Section("Calls") {
+                ActionRow(
+                    title = "Clear call history",
+                    detail = "The log is only on this phone.",
+                    onClick = { confirmClearCalls = true },
+                )
+            }
 
-            Spacer(Modifier.height(24.dp))
-            Text(
-                "Relay for Android · end-to-end encrypted",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
+            Section(
+                title = "Danger zone",
+                footnote = "Relay $appVersion",
+            ) {
+                ActionRow(
+                    title = "Sign out",
+                    detail = "Erases this device's keys and messages.",
+                    destructive = true,
+                    onClick = { confirmSignOut = true },
+                )
+            }
+
+            Spacer(Modifier.height(32.dp))
         }
+    }
+
+    if (showQr) {
+        AlertDialog(
+            onDismissRequest = { showQr = false },
+            title = { Text("My QR code") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    QrImage(publicLink, size = 220.dp)
+                    Spacer(Modifier.height(12.dp))
+                    Detail("Anyone who scans this can start a conversation with you.")
+                }
+            },
+            confirmButton = { TextButton(onClick = { showQr = false }) { Text("Done") } },
+        )
     }
 
     if (confirmSignOut) {
@@ -186,16 +225,41 @@ private fun Profile(username: String, accountId: String, deviceId: Int) {
     }
 }
 
+/**
+ * A titled group of rows, with an optional footnote underneath.
+ *
+ * Inset cards rather than full-bleed rows and dividers: it is how iOS's
+ * settings reads, and it lets each group carry its own explanation without the
+ * screen turning into a wall of small grey text.
+ */
 @Composable
-private fun Section(title: String) {
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+private fun Section(
+    title: String,
+    footnote: String? = null,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
     Text(
         text = title.uppercase(),
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 4.dp),
+        modifier = Modifier.padding(start = 32.dp, end = 20.dp, top = 24.dp, bottom = 7.dp),
     )
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+    ) {
+        Column(content = content)
+    }
+    footnote?.let {
+        Text(
+            text = it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 8.dp),
+        )
+    }
 }
 
 @Composable
@@ -209,7 +273,7 @@ private fun SwitchRow(
         Modifier
             .fillMaxWidth()
             .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -226,14 +290,14 @@ private fun SwitchRow(
 private fun ActionRow(
     title: String,
     detail: String,
-    onClick: () -> Unit,
     destructive: Boolean = false,
+    onClick: () -> Unit,
 ) {
     Column(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(
@@ -252,7 +316,7 @@ private fun ActionRow(
 @Composable
 private fun InfoRow(title: String, value: String) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
@@ -263,6 +327,13 @@ private fun InfoRow(title: String, value: String) {
         )
     }
 }
+
+/** Hairline between rows inside a card; inset so it does not touch the corners. */
+@Composable
+private fun RowDivider() = HorizontalDivider(
+    color = MaterialTheme.colorScheme.outlineVariant,
+    modifier = Modifier.padding(start = 16.dp),
+)
 
 @Composable
 private fun Detail(text: String, modifier: Modifier = Modifier) = Text(

@@ -43,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import app.relaymsg.ui.SettingsScreen
 import app.relaymsg.ui.theme.RelayTheme
@@ -222,7 +223,6 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 Box(Modifier.weight(1f)) {
                     when (tab) {
                         Tab.CHATS -> ConversationListScreen(
-                            username = phase.service.username,
                             connection = connection,
                             conversations = conversations,
                             titleFor = viewModel::titleFor,
@@ -244,6 +244,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             val privateCalls by viewModel.privateCallMode.collectAsState()
                             val pushContent by viewModel.pushIncludesContent.collectAsState()
                             val devices by viewModel.devices.collectAsState()
+                            val inviteLink by viewModel.inviteLink.collectAsState()
+                            val context = androidx.compose.ui.platform.LocalContext.current
                             // Read live each time the tab opens: another device
                             // may have been linked since it was last shown.
                             LaunchedEffect(Unit) { viewModel.refreshSettings() }
@@ -260,6 +262,10 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 onLinkDevice = { viewModel.resetScan(); showScanner = true },
                                 onClearCallLog = viewModel::clearCallLog,
                                 onSignOut = viewModel::signOut,
+                                publicLink = phase.service.publicLink,
+                                inviteLink = inviteLink,
+                                appVersion = remember { context.appVersion() },
+                                onCreateInvite = { viewModel.shareInvite(context) },
                             )
                         }
                     }
@@ -297,6 +303,11 @@ private fun RelayTabBar(selected: Tab, unread: Int, onSelect: (Tab) -> Unit) {
         }
     }
 }
+
+/** The installed version, read from the package rather than hard-coded. */
+private fun android.content.Context.appVersion(): String = runCatching {
+    packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
+}.getOrDefault("")
 
 private fun Tab.icon() = when (this) {
     Tab.CHATS -> Icons.AutoMirrored.Filled.Chat
