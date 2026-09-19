@@ -32,10 +32,6 @@
       Contact discovery. Addresses are blinded on-device before any lookup, so
       the relay never learns who is in the address book.
     -->
-    <!-- Contact exchange over a tag. Optional: most phones have no reader. -->
-    <uses-permission android:name="android.permission.NFC" />
-    <uses-feature android:name="android.hardware.nfc" android:required="false" />
-
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />

@@ -38,6 +38,8 @@ import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
 import app.relaymsg.ui.MediaGalleryScreen
+import app.relaymsg.ui.NotepadScreen
+import app.relaymsg.ui.ScheduledMessagesScreen
 import app.relaymsg.ui.ProfileScreen
 import app.relaymsg.ui.ScanLinkScreen
 import app.relaymsg.ui.VerificationScreen
@@ -104,8 +106,6 @@ class MainActivity : FragmentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         intent.data?.let { handleLink(it) }
-        // A tag tapped while the app is open: same payload as a scanned code.
-        app.relaymsg.share.NfcContact.username(intent)?.let(viewModel::onScannedUsername)
     }
 
     /** OAuth first, then contact links — the two never overlap. */
@@ -226,6 +226,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var appearanceFor by remember { mutableStateOf<String?>(null) }
     var showContactCard by remember { mutableStateOf(false) }
     var showContactSync by remember { mutableStateOf(false) }
+    var showScheduled by remember { mutableStateOf(false) }
+    var notepadFor by remember { mutableStateOf<String?>(null) }
 
     // A link or a scan resolves to a username; opening it lands in the thread.
     val pendingContact by viewModel.pendingContact.collectAsState()
@@ -310,6 +312,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     bubbleKey = appearance.second,
                     onShowGallery = { galleryFor = open },
                     onShowAppearance = { appearanceFor = open },
+                    onShowNotepad = { notepadFor = open },
+                    onSchedule = { body, at -> viewModel.scheduleMessage(open, body, at) },
                     recording = recording,
                     onStartRecording = {
                         if (hasMicrophone(context)) {
@@ -348,6 +352,31 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             }
                         }
                     },
+                )
+            }
+
+            notepadFor != null -> {
+                val id = notepadFor!!
+                NotepadScreen(
+                    title = conversations.firstOrNull { it.id == id }
+                        ?.let(viewModel::titleFor) ?: "this chat",
+                    initialContent = remember(id, messages) { viewModel.notepadContent(id) },
+                    busy = busy,
+                    onSave = { content -> viewModel.saveNotepad(id, content) },
+                    onBack = { notepadFor = null },
+                )
+            }
+
+            showScheduled -> {
+                val queued by viewModel.scheduled.collectAsState()
+                ScheduledMessagesScreen(
+                    messages = queued,
+                    titleFor = { id ->
+                        conversations.firstOrNull { it.id == id }
+                            ?.let(viewModel::titleFor) ?: "a conversation"
+                    },
+                    onCancel = viewModel::cancelScheduled,
+                    onBack = { showScheduled = false },
                 )
             }
 
@@ -513,6 +542,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             val inviteLink by viewModel.inviteLink.collectAsState()
                             val blocked by viewModel.blockedAccounts.collectAsState()
                             val profile by viewModel.myProfile.collectAsState()
+                            val scheduledCount by viewModel.scheduled.collectAsState()
                             val screenLock by viewModel.screenLock.collectAsState()
                             val lockTimeout by viewModel.lockTimeout.collectAsState()
                             val context = androidx.compose.ui.platform.LocalContext.current
@@ -549,6 +579,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 onShowBlocked = { showBlocked = true },
                                 onShowContactCard = { showContactCard = true },
                                 onShowContactSync = { showContactSync = true },
+                                scheduledCount = scheduledCount.size,
+                                onShowScheduled = { showScheduled = true },
                                 onEditProfile = { showProfile = true },
                                 onRemoveDevice = viewModel::removeDevice,
                             )

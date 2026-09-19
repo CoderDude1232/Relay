@@ -668,4 +668,17 @@ class MessageStore(private val db: RelayDatabase) {
         db.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", listOf(key, value))
 
     fun kvDelete(key: String) = db.run("DELETE FROM kv WHERE key = ?", listOf(key))
+
+    /**
+     * Every value whose key starts with [prefix].
+     *
+     * The kv table doubles as a small document store for things with no table
+     * of their own — scheduled messages, per-conversation settings — and those
+     * need to be read back as a set.
+     */
+    fun kvPrefix(prefix: String): List<Pair<String, ByteArray>> = db.query(
+        "SELECT key, value FROM kv WHERE key LIKE ? ESCAPE '\\'",
+        // Escaped, or a key containing % or _ would match far more than itself.
+        listOf(prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"),
+    ) { row -> row.string(0) to row.blob(1) }
 }

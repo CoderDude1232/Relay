@@ -747,6 +747,34 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _phase.value = AppPhase.SignedOut
     }
 
+    // ---------------------------------------------- scheduled + the notepad
+
+    @Suppress("OPT_IN_USAGE")
+    val scheduled: StateFlow<List<RelayService.ScheduledMessage>> = _phase
+        .flatMapLatest { (it as? AppPhase.Ready)?.service?.scheduled ?: flowOf(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun scheduleMessage(conversationId: String, body: String, atMillis: Long) {
+        // Seconds on the way in, because that is what iOS stores and a linked
+        // device reads the same queue.
+        service?.scheduleMessage(conversationId, body, atMillis / 1000.0)
+    }
+
+    fun cancelScheduled(id: String) = service?.cancelScheduled(id)
+
+    fun notepadContent(conversationId: String) =
+        service?.notepadContent(conversationId).orEmpty()
+
+    fun saveNotepad(conversationId: String, content: String) {
+        val service = service ?: return
+        if (_busy.value) return
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { service.saveNotepad(conversationId, content) }
+            _busy.value = false
+        }
+    }
+
     // ------------------------------------------------------- voice + media
 
     private val recorder by lazy { VoiceNoteRecorder(getApplication()) }

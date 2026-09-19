@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.FormatBold
@@ -111,6 +112,7 @@ import androidx.compose.ui.text.font.FontStyle
 import app.relaymsg.ui.theme.Magenta
 import app.relaymsg.ui.theme.MagentaDeep
 import app.relaymsg.core.ConnectionState
+import app.relaymsg.core.RelayService
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.MessageStatus
 import app.relaymsg.storage.StoredMessage
@@ -455,6 +457,8 @@ fun ChatScreen(
     bubbleKey: String? = null,
     onShowGallery: () -> Unit = {},
     onShowAppearance: () -> Unit = {},
+    onShowNotepad: () -> Unit = {},
+    onSchedule: ((body: String, atMillis: Long) -> Unit)? = null,
     recording: Boolean = false,
     onStartRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
@@ -476,6 +480,7 @@ fun ChatScreen(
     var composePoll by remember { mutableStateOf(false) }
     var showDisappearing by remember { mutableStateOf(false) }
     var showEmoji by remember { mutableStateOf(false) }
+    var showSchedule by remember { mutableStateOf(false) }
     var draftSelection by remember { mutableStateOf(0..0) }
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
@@ -518,6 +523,13 @@ fun ChatScreen(
                                         Icon(Icons.Filled.PhotoLibrary, contentDescription = null)
                                     },
                                     onClick = { overflow = false; onShowGallery() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Shared notes") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.EditNote, contentDescription = null)
+                                    },
+                                    onClick = { overflow = false; onShowNotepad() },
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Appearance") },
@@ -574,7 +586,12 @@ fun ChatScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(messages, key = { it.id }) { message ->
+                items(
+                    // The notepad rides on ordinary messages, so its revisions
+                    // would otherwise fill the thread with marker text.
+                    messages.filterNot { it.body.startsWith(RelayService.NOTEPAD_PREFIX) },
+                    key = { it.id },
+                ) { message ->
                     MessageBubble(
                         message = message,
                         loadAttachment = loadAttachment,
@@ -752,28 +769,39 @@ fun ChatScreen(
                     }
                     return@Row
                 }
-                IconButton(
-                    enabled = canSend,
-                    onClick = {
-                        val body = draft.trim()
-                        when (val current = mode) {
-                            is Compose.Edit -> onEdit(current.message.timestamp, body)
-                            is Compose.Reply -> onSend(body, current.quote)
-                            Compose.New -> onSend(body, null)
-                        }
-                        draft = ""
-                        mode = Compose.New
-                    },
-                    modifier = Modifier
+                @OptIn(ExperimentalFoundationApi::class)
+                Box(
+                    Modifier
                         .size(46.dp)
+                        .clip(CircleShape)
                         .background(
                             if (canSend) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.surfaceVariant
                             },
-                            CircleShape,
+                        )
+                        .combinedClickable(
+                            enabled = canSend,
+                            onLongClick = {
+                                // Long press, because scheduling is rare enough
+                                // that a permanent second button would be clutter.
+                                if (onSchedule != null && mode !is Compose.Edit) {
+                                    showSchedule = true
+                                }
+                            },
+                            onClick = {
+                                val body = draft.trim()
+                        when (val current = mode) {
+                            is Compose.Edit -> onEdit(current.message.timestamp, body)
+                            is Compose.Reply -> onSend(body, current.quote)
+                            Compose.New -> onSend(body, null)
+                        }
+                                draft = ""
+                                mode = Compose.New
+                            },
                         ),
+                    contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         if (mode is Compose.Edit) Icons.Filled.Check else Icons.AutoMirrored.Filled.Send,
@@ -839,6 +867,17 @@ fun ChatScreen(
         MessageInfo(message) { info = null }
     }
 
+    if (showSchedule && onSchedule != null) {
+        SchedulePicker(
+            onPick = { millis ->
+                onSchedule(draft.trim(), millis)
+                draft = ""
+                showSchedule = false
+            },
+            onDismiss = { showSchedule = false },
+        )
+    }
+
     if (showDisappearing && onSetDisappearing != null) {
         DisappearingPicker(
             current = disappearingSeconds,
@@ -855,6 +894,37 @@ fun ChatScreen(
                 composePoll = false
             },
         )
+    }
+}
+
+/** When to send a queued message. Relative offsets, which is how people think. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SchedulePicker(onPick: (Long) -> Unit, onDismiss: () -> Unit) {
+    val options = listOf(
+        60L * 60 to "In an hour",
+        60L * 60 * 3 to "In 3 hours",
+        60L * 60 * 8 to "In 8 hours",
+        60L * 60 * 24 to "Tomorrow",
+        60L * 60 * 24 * 7 to "Next week",
+    )
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "Send later",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        options.forEach { (seconds, label) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onPick(System.currentTimeMillis() + seconds * 1000) }
+                    .padding(horizontal = 24.dp, vertical = 14.dp),
+            ) {
+                Text(label, style = MaterialTheme.typography.bodyLarge)
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }
 
@@ -1341,6 +1411,9 @@ private fun MessageBubble(
                 Spacer(Modifier.height(4.dp))
             }
             val poll = remember(message.body) { PollPayload.fromBody(message.body) }
+            val link = remember(message.body) {
+                if (poll == null && !message.isDeleted) LinkPreview.firstUrl(message.body) else null
+            }
             if (poll != null && !message.isDeleted) {
                 PollBody(
                     poll = poll,
@@ -1361,6 +1434,8 @@ private fun MessageBubble(
                     fontStyle = if (message.isDeleted) FontStyle.Italic else FontStyle.Normal,
                 )
             }
+            link?.let { LinkPreviewCard(it, onBlack = outgoing) }
+
             // Metadata sits under the text and to the trailing edge, so it never
             // competes with the message itself.
             Row(

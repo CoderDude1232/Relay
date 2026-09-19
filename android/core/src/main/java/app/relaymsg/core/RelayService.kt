@@ -32,6 +32,7 @@ import app.relaymsg.storage.StoredCallOutcome
 import app.relaymsg.storage.StoredMessage
 import java.security.SecureRandom
 import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -134,6 +135,12 @@ class RelayService private constructor(
         private const val KV_SCREEN_LOCK_AFTER = "lock.afterSeconds"
         private const val KV_WALLPAPER = "chat.wallpaper."
         private const val KV_BUBBLE = "chat.bubbleTint."
+
+        /** iOS's key prefix, so a linked device reads the same queue. */
+        private const val KV_SCHEDULED = "sched:"
+
+        /** iOS's marker. A message body starting with this is the notepad. */
+        const val NOTEPAD_PREFIX = "__relay_notepad__"
         private const val KV_SUPABASE_REFRESH = "supabase.refresh"
         private const val KV_SUPABASE_USER = "supabase.user"
 
@@ -969,6 +976,7 @@ class RelayService private constructor(
      */
     private suspend fun sweepExpired() {
         while (true) {
+            runCatching { flushScheduled() }
             val removed = runCatching { store.messages.deleteExpiredMessages() }.getOrDefault(0)
             if (removed > 0) {
                 refreshActiveMessages()
@@ -1147,6 +1155,89 @@ class RelayService private constructor(
         )
     }
 
+    // -------------------------------------------------- scheduled messages
+
+    /** A message waiting for its moment. [scheduledAt] is seconds, as on iOS. */
+    data class ScheduledMessage(
+        val id: String,
+        val conversationId: String,
+        val body: String,
+        val scheduledAt: Double,
+    )
+
+    /**
+     * Queues a message to send later.
+     *
+     * Stored in kv under `sched:<id>` with iOS's own JSON field names, so a
+     * linked device reads the same queue rather than its own.
+     *
+     * The send still needs this device awake and connected: nothing wakes the
+     * app to deliver one, so a message scheduled for 3am goes out when the app
+     * next runs. iOS has the same limit.
+     */
+    fun scheduleMessage(conversationId: String, body: String, atSeconds: Double) {
+        val id = UUID.randomUUID().toString()
+        val json = JSONObject()
+            .put("id", id)
+            .put("conversationId", conversationId)
+            .put("body", body)
+            .put("scheduledAt", atSeconds)
+        store.messages.kvPut(KV_SCHEDULED + id, json.toString().toByteArray())
+        refreshScheduled()
+    }
+
+    private val _scheduled = MutableStateFlow<List<ScheduledMessage>>(emptyList())
+    val scheduled: StateFlow<List<ScheduledMessage>> = _scheduled.asStateFlow()
+
+    fun refreshScheduled() {
+        _scheduled.value = runCatching {
+            store.messages.kvPrefix(KV_SCHEDULED).mapNotNull { (_, value) ->
+                val json = JSONObject(value.decodeToString())
+                ScheduledMessage(
+                    id = json.getString("id"),
+                    conversationId = json.getString("conversationId"),
+                    body = json.getString("body"),
+                    scheduledAt = json.getDouble("scheduledAt"),
+                )
+            }.sortedBy { it.scheduledAt }
+        }.getOrDefault(emptyList())
+    }
+
+    fun cancelScheduled(id: String) {
+        store.messages.kvDelete(KV_SCHEDULED + id)
+        refreshScheduled()
+    }
+
+    /** Sends anything now due. Removed before sending, so a failure cannot loop. */
+    private suspend fun flushScheduled() {
+        val now = System.currentTimeMillis() / 1000.0
+        _scheduled.value.filter { it.scheduledAt <= now }.forEach { message ->
+            cancelScheduled(message.id)
+            runCatching { sendText(message.conversationId, message.body) }
+        }
+    }
+
+    // ---------------------------------------------------------- the notepad
+
+    /**
+     * A shared scratchpad per conversation.
+     *
+     * Not a separate channel: it is an ordinary encrypted message whose body
+     * carries a marker, so the relay cannot tell one from a chat message and
+     * the newest one simply wins. Marker matches iOS exactly.
+     */
+    fun notepadContent(conversationId: String): String =
+        store.messages.messages(conversationId, limit = 500)
+            .lastOrNull { it.body.startsWith(NOTEPAD_PREFIX) }
+            ?.body
+            ?.removePrefix(NOTEPAD_PREFIX)
+            .orEmpty()
+
+    suspend fun saveNotepad(
+        conversationId: String,
+        content: String,
+    ) = sendText(conversationId, NOTEPAD_PREFIX + content)
+
     fun searchMessages(query: String) = store.messages.searchMessages(query)
 
     fun starredMessages(conversationId: String) = store.messages.starredMessages(conversationId)
@@ -1165,6 +1256,7 @@ class RelayService private constructor(
         if (!started.compareAndSet(false, true)) return
         refreshConversations()
         refreshCallLog()
+        refreshScheduled()
         scope.launch { runConnectionLoop() }
         scope.launch { sweepExpired() }
         scope.launch {

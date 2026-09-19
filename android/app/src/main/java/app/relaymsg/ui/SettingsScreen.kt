@@ -84,6 +84,8 @@ fun SettingsScreen(
     onShowBlocked: () -> Unit,
     onShowContactCard: () -> Unit,
     onShowContactSync: () -> Unit,
+    scheduledCount: Int,
+    onShowScheduled: () -> Unit,
     onEditProfile: () -> Unit,
     onRemoveDevice: (Int) -> Unit,
 ) {
@@ -228,6 +230,12 @@ fun SettingsScreen(
                 footnote = "Blocking is local: nothing is sent, so a blocked " +
                     "account cannot tell.",
             ) {
+                ActionRow(
+                    title = "Scheduled messages",
+                    detail = if (scheduledCount == 0) "None" else "$scheduledCount waiting",
+                    onClick = onShowScheduled,
+                )
+                RowDivider()
                 ActionRow(
                     title = "Blocked contacts",
                     detail = if (blockedCount == 0) "None" else "$blockedCount blocked",
