@@ -1109,6 +1109,46 @@ format does not justify Play Services and a downloaded model.
 `historyKey` / `historyDigest` and Android sends all three as null, so a newly
 linked device starts with contacts but no messages.
 
+### 7.10 Backup format (cross-client, must not drift)
+
+A backup is an opaque blob. Both clients produce and consume the same bytes, so
+a backup taken on iOS restores on Android and the reverse. Reference:
+`../Relay/CloudBackupManager.swift`, `../Relay/BackupView.swift`,
+`core/.../BackupCrypto.kt`.
+
+**Recovery-key form** (iOS's iCloud backup):
+
+| Step | Value |
+| --- | --- |
+| Recovery Key | 32 random bytes, shown as 16 space-separated uppercase hex pairs |
+| KDF | HKDF-SHA256, salt `relay-icloud-backup`, info `v1`, 32-byte output |
+| Cipher | AES-256-GCM, 128-bit tag |
+| Layout | `nonce(12) ‖ ciphertext ‖ tag(16)` — CryptoKit's `combined` |
+
+**Password form** (iOS's "Export to Files"):
+
+| Step | Value |
+| --- | --- |
+| KDF | HKDF-SHA256, salt = the random 32 bytes written in front, **no info** |
+| Layout | `salt(32) ‖ nonce(12) ‖ ciphertext ‖ tag(16)` |
+
+The plaintext is the snapshot JSON, whose keys are iOS's `Codable` names:
+`version`, `conversations[{peerAccount, username, groupId, messages[{id, body,
+timestamp, isOutgoing, status, senderAccount, replyTimestamp, replyAuthor,
+replyText}]}]`, `groups[{id, name, distributionId, revision, members, admins,
+isAnnounceOnly}]`. Absent optionals are **omitted**, not written as null, because
+that is what Swift's encoder does; both decoders accept either.
+
+Encryption sessions are deliberately not in the snapshot — they are hardware-
+bound on both platforms. A restore brings back messages, and the safety number
+changes the way it does after a reinstall.
+
+**Android divergence: the transport, not the format.** iOS writes to CloudKit.
+Android has no CloudKit, and Drive's `appDataFolder` needs an OAuth client
+registered against the release signing certificate (owner-side console work), so
+the blob goes through the storage picker instead and the user chooses where —
+Drive included. Swapping in Drive later changes nothing above this line.
+
 ## 8. Proposed staged build plan
 
 Rules: **one stage at a time, owner check-in between each, no building ahead.** Each
