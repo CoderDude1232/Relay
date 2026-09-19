@@ -31,6 +31,7 @@ import app.relaymsg.storage.StoredCallKind
 import app.relaymsg.storage.StoredCallOutcome
 import app.relaymsg.storage.StoredMessage
 import java.security.SecureRandom
+import org.json.JSONArray
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -113,6 +114,9 @@ class RelayService private constructor(
         private const val KV_USERNAME = "account.username"
         private const val KV_PRIVATE_CALLS = "calls.private"
         private const val KV_PUSH_CONTENT = "push.includeContent"
+
+        /** iOS's key, so the list means the same thing on both clients. */
+        private const val KV_BLOCKED = "relay.blockedAccounts"
         private const val KV_SUPABASE_REFRESH = "supabase.refresh"
         private const val KV_SUPABASE_USER = "supabase.user"
 
@@ -380,6 +384,7 @@ class RelayService private constructor(
                 socket = RelayWebSocket(server, auth),
                 messenger = messenger,
                 pipeline = EnvelopePipeline(messenger, store.messages, credentials.accountId),
+
             )
         }
     }
@@ -497,11 +502,82 @@ class RelayService private constructor(
         get() = store.messages.kvGet(KV_PRIVATE_CALLS)?.decodeToString() != "0"
         set(value) = store.messages.kvPut(KV_PRIVATE_CALLS, (if (value) "1" else "0").toByteArray())
 
+    // ------------------------------------------------------------ block list
+
+    private val _blocked = MutableStateFlow<Set<String>>(emptySet())
+
+    init {
+        // The pipeline decrypts before it can know who sent it, so the check has
+        // to live there while the list belongs here. Wired at construction, not
+        // in start(): a push wake drains the queue without ever calling start().
+        // Declared after _blocked so the order is obvious rather than merely
+        // lucky.
+        pipeline.isBlocked = ::isBlocked
+        // Loaded here too, and for the same reason: a wake that drains the queue
+        // without start() would otherwise run with an empty block list and
+        // deliver exactly the messages the user asked not to see.
+        loadBlocked()
+    }
+
+    /** Accounts whose messages are dropped on arrival. */
+    val blockedAccounts: StateFlow<Set<String>> = _blocked.asStateFlow()
+
+    fun isBlocked(account: String): Boolean = account in _blocked.value
+
+    fun blockAccount(account: String) = setBlocked(_blocked.value + account)
+
+    fun unblockAccount(account: String) = setBlocked(_blocked.value - account)
+
+    private fun setBlocked(accounts: Set<String>) {
+        _blocked.value = accounts
+        // Same kv key and JSON shape iOS uses, so a shared backup would read on
+        // either client.
+        val array = JSONArray().apply { accounts.sorted().forEach(::put) }
+        runCatching { store.messages.kvPut(KV_BLOCKED, array.toString().toByteArray()) }
+        refreshConversations()
+    }
+
+    private fun loadBlocked() {
+        val raw = runCatching { store.messages.kvGet(KV_BLOCKED) }.getOrNull() ?: return
+        val parsed = runCatching {
+            val array = JSONArray(raw.decodeToString())
+            (0 until array.length()).map { array.getString(it) }.toSet()
+        }.getOrNull() ?: return
+        _blocked.value = parsed
+    }
+
+    /**
+     * Removes another device from this account.
+     *
+     * Refuses to remove the device it is running on: that would leave this
+     * phone holding keys it can no longer authenticate with, which looks like
+     * a broken app rather than a deliberate act. Signing out is that.
+     */
+    suspend fun removeDevice(deviceId: Int): Boolean = withContext(Dispatchers.IO) {
+        if (deviceId == credentials.deviceId) return@withContext false
+        runCatching {
+            val (_, version) = api.listDevices()
+            api.removeDevice(
+                deviceId = deviceId,
+                expectedVersion = version,
+                signerDeviceId = credentials.deviceId,
+                signature = authKey.sign(
+                    SignedPayloads.deviceMutation(
+                        accountId = credentials.accountId,
+                        expectedVersion = version,
+                        action = "remove",
+                        targetDeviceId = deviceId,
+                        // Empty for a removal; only add and link carry one.
+                        password = "",
+                    ),
+                ),
+            )
+        }.isSuccess
+    }
+
     /**
      * Every device on this account, newest id last.
      *
-     * Read-only for now: removing one is a signed device-list mutation like
-     * linking, and is not built.
      */
     suspend fun linkedDevices(): List<LinkedDevice> = withContext(Dispatchers.IO) {
         api.listDevices().first.sortedBy { it.deviceId }
@@ -960,6 +1036,18 @@ class RelayService private constructor(
         sendMessageAction(conversationId, System.currentTimeMillis()) { groupId ->
             messenger.buildDelete(targetTimestamp, groupId)
         }
+    }
+
+    /** Stars or unstars a message. Local only; iOS keeps its own stars too. */
+    fun setStarred(messageId: String, starred: Boolean) {
+        store.messages.setStarred(messageId, starred)
+        refreshActiveMessages()
+    }
+
+    /** Pins a message to the top of its conversation, replacing any previous pin. */
+    fun setPinned(conversationId: String, messageId: String, pinned: Boolean) {
+        store.messages.setPinned(conversationId, messageId, pinned)
+        refreshActiveMessages()
     }
 
     /**

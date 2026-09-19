@@ -363,6 +363,33 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteLocally(messageId: String) = service?.deleteMessageLocally(messageId)
 
+    fun setStarred(messageId: String, starred: Boolean) =
+        service?.setStarred(messageId, starred)
+
+    fun setPinned(conversationId: String, messageId: String, pinned: Boolean) =
+        service?.setPinned(conversationId, messageId, pinned)
+
+    // ------------------------------------------------------------ block list
+
+    @Suppress("OPT_IN_USAGE")
+    val blockedAccounts: StateFlow<Set<String>> = _phase
+        .flatMapLatest { (it as? AppPhase.Ready)?.service?.blockedAccounts ?: flowOf(emptySet()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    fun blockAccount(account: String) = service?.blockAccount(account)
+
+    fun unblockAccount(account: String) = service?.unblockAccount(account)
+
+    fun nameFor(account: String): String = service?.displayName(account) ?: account.take(8)
+
+    /** Removes another device. Returns via [refreshSettings] once the relay agrees. */
+    fun removeDevice(deviceId: Int) {
+        val service = service ?: return
+        viewModelScope.launch {
+            if (service.removeDevice(deviceId)) refreshSettings()
+        }
+    }
+
     /** Resolves a username and opens the conversation, invoking [onOpened] with its id. */
     fun startConversation(username: String, onOpened: (String) -> Unit, onError: (String) -> Unit) {
         val service = service ?: return

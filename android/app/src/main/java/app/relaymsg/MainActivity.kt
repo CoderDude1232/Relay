@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
 import app.relaymsg.call.GroupCallScreen
+import app.relaymsg.ui.BlockedContactsScreen
 import app.relaymsg.ui.CallLogScreen
 import app.relaymsg.ui.AuthScreen
 import app.relaymsg.ui.ChatScreen
@@ -175,6 +176,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
 
     var openConversationId by remember { mutableStateOf<String?>(null) }
     var showScanner by remember { mutableStateOf(false) }
+    var showBlocked by remember { mutableStateOf(false) }
+    val blockedAccounts by viewModel.blockedAccounts.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
     Box(Modifier.fillMaxSize()) {
@@ -198,6 +201,22 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     onEdit = { ts, body -> viewModel.editMessage(open, ts, body) },
                     onUnsend = { ts -> viewModel.unsend(open, ts) },
                     onDeleteLocally = viewModel::deleteLocally,
+                    onToggleStar = viewModel::setStarred,
+                    isBlocked = conversation?.peerAccount?.let { it in blockedAccounts } == true,
+                    // A group has no single account to block, so the action is
+                    // hidden rather than shown doing nothing.
+                    onToggleBlock = conversation
+                        ?.takeIf { it.groupId == null }
+                        ?.let { target ->
+                            {
+                                if (target.peerAccount in blockedAccounts) {
+                                    viewModel.unblockAccount(target.peerAccount)
+                                } else {
+                                    viewModel.blockAccount(target.peerAccount)
+                                }
+                            }
+                        },
+                    onTogglePin = { id, pinned -> viewModel.setPinned(open, id, pinned) },
                     loadAttachment = { viewModel.attachmentBytes(it) },
                     onBack = { viewModel.closeConversation(); openConversationId = null },
                     // A group conversation's "peer" is its group id, which rings
@@ -212,6 +231,16 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             }
                         }
                     },
+                )
+            }
+
+            showBlocked -> {
+                val blocked by viewModel.blockedAccounts.collectAsState()
+                BlockedContactsScreen(
+                    blocked = blocked.sorted(),
+                    nameFor = viewModel::nameFor,
+                    onUnblock = viewModel::unblockAccount,
+                    onBack = { showBlocked = false },
                 )
             }
 
@@ -254,6 +283,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             val pushContent by viewModel.pushIncludesContent.collectAsState()
                             val devices by viewModel.devices.collectAsState()
                             val inviteLink by viewModel.inviteLink.collectAsState()
+                            val blocked by viewModel.blockedAccounts.collectAsState()
                             val context = androidx.compose.ui.platform.LocalContext.current
                             // Read live each time the tab opens: another device
                             // may have been linked since it was last shown.
@@ -274,7 +304,10 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 publicLink = phase.service.publicLink,
                                 inviteLink = inviteLink,
                                 appVersion = remember { context.appVersion() },
+                                blockedCount = blocked.size,
                                 onCreateInvite = { viewModel.shareInvite(context) },
+                                onShowBlocked = { showBlocked = true },
+                                onRemoveDevice = viewModel::removeDevice,
                             )
                         }
                     }

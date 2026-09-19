@@ -34,6 +34,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarOutline
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ModalBottomSheet
@@ -303,10 +310,15 @@ fun ChatScreen(
     onEdit: (targetTimestamp: Long, newBody: String) -> Unit,
     onUnsend: (targetTimestamp: Long) -> Unit,
     onDeleteLocally: (messageId: String) -> Unit,
+    onToggleStar: (messageId: String, starred: Boolean) -> Unit,
+    onTogglePin: (messageId: String, pinned: Boolean) -> Unit,
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
     onBack: () -> Unit,
     /** Places a call; `true` for video. Null hides the buttons. */
     onCall: ((Boolean) -> Unit)? = null,
+    isBlocked: Boolean = false,
+    /** Null in a group: there is no single account to block. */
+    onToggleBlock: (() -> Unit)? = null,
 ) {
     val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
@@ -318,7 +330,9 @@ fun ChatScreen(
     var draft by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf<Compose>(Compose.New) }
     var selected by remember { mutableStateOf<StoredMessage?>(null) }
+    var info by remember { mutableStateOf<StoredMessage?>(null) }
     var attachMenu by remember { mutableStateOf(false) }
+    var overflow by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
 
@@ -345,6 +359,25 @@ fun ChatScreen(
                             Icon(Icons.Filled.Call, contentDescription = "Call")
                         }
                     }
+                    onToggleBlock?.let { toggle ->
+                        Box {
+                            IconButton(onClick = { overflow = true }) {
+                                Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(
+                                expanded = overflow,
+                                onDismissRequest = { overflow = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(if (isBlocked) "Unblock" else "Block") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Block, contentDescription = null)
+                                    },
+                                    onClick = { overflow = false; toggle() },
+                                )
+                            }
+                        }
+                    }
                 },
             )
         },
@@ -363,6 +396,21 @@ fun ChatScreen(
                         onLongPress = { selected = message },
                     )
                 }
+            }
+
+            if (isBlocked) {
+                // Said where it matters, not buried in settings: an unexplained
+                // silence in a thread is exactly what a stale block looks like.
+                Text(
+                    "You blocked this contact. Their messages are being discarded.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
             }
 
             ComposerBanner(
@@ -472,7 +520,6 @@ fun ChatScreen(
     selected?.let { message ->
         MessageActions(
             message = message,
-            authorOf = { it.senderAccount ?: if (it.isOutgoing) ownAccount else peerAccount },
             onDismiss = { selected = null },
             onReact = { emoji ->
                 onReact(
@@ -502,9 +549,63 @@ fun ChatScreen(
                 mode = Compose.Edit(message)
                 selected = null
             },
+            onToggleStar = { onToggleStar(message.id, !message.isStarred); selected = null },
+            onTogglePin = { onTogglePin(message.id, !message.isPinned); selected = null },
+            onInfo = { info = message; selected = null },
             onUnsend = { onUnsend(message.timestamp); selected = null },
             onDeleteLocally = { onDeleteLocally(message.id); selected = null },
         )
+    }
+
+
+    info?.let { message ->
+        MessageInfo(message) { info = null }
+    }
+}
+
+/**
+ * What the app actually knows about one message.
+ *
+ * Worth its own sheet because "Sent" and "Delivered" mean different things —
+ * the first is the relay accepting it, the second the recipient's device
+ * decrypting it — and that distinction is the only way to tell a slow network
+ * from a phone that never opened.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MessageInfo(message: StoredMessage, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "Message info",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        InfoLine("Sent", message.timestamp.asFullTime())
+        if (message.isOutgoing) InfoLine("Status", message.status.indicator().ifEmpty { "—" })
+        message.editedAt?.let { InfoLine("Edited", it.asFullTime()) }
+        if (message.attachments.isNotEmpty()) {
+            InfoLine("Attachments", "${message.attachments.size}")
+        }
+        if (message.reactions.isNotEmpty()) {
+            InfoLine("Reactions", message.reactions.joinToString(" ") { it.emoji })
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun InfoLine(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(110.dp),
+        )
+        Text(value, style = MaterialTheme.typography.bodyLarge)
     }
 }
 
@@ -571,12 +672,14 @@ private fun ComposerBanner(mode: Compose, onCancel: () -> Unit) {
 @Composable
 private fun MessageActions(
     message: StoredMessage,
-    authorOf: (StoredMessage) -> String,
     onDismiss: () -> Unit,
     onReact: (String) -> Unit,
     onReply: () -> Unit,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
+    onToggleStar: () -> Unit,
+    onTogglePin: () -> Unit,
+    onInfo: () -> Unit,
     onUnsend: () -> Unit,
     onDeleteLocally: () -> Unit,
 ) {
@@ -612,15 +715,36 @@ private fun MessageActions(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
 
+        // Order and wording follow iOS's menu, so the same action is in the
+        // same place on both.
         SheetAction("Reply", Icons.AutoMirrored.Filled.Reply, onReply)
-        if (hasText) SheetAction("Copy text", Icons.Filled.ContentCopy, onCopy)
-        if (message.isOutgoing && hasText) {
+        // iOS gates editing on having no attachments rather than on having
+        // text: an edit only carries a body, so a caption change would silently
+        // drop the picture.
+        if (message.isOutgoing && message.attachments.isEmpty() && !message.isDeleted) {
             SheetAction("Edit", Icons.Filled.Edit, onEdit)
         }
+        if (hasText) SheetAction("Copy", Icons.Filled.ContentCopy, onCopy)
+        SheetAction(
+            label = if (message.isStarred) "Unstar" else "Star",
+            icon = if (message.isStarred) Icons.Filled.StarOutline else Icons.Filled.Star,
+            onClick = onToggleStar,
+        )
+        SheetAction(
+            label = if (message.isPinned) "Unpin" else "Pin",
+            icon = Icons.Filled.PushPin,
+            onClick = onTogglePin,
+        )
+        SheetAction("Info", Icons.Filled.Info, onInfo)
         if (message.isOutgoing && !message.isDeleted) {
-            SheetAction("Delete for everyone", Icons.Filled.Delete, onUnsend, destructive = true)
+            SheetAction(
+                "Unsend for Everyone",
+                Icons.AutoMirrored.Filled.Undo,
+                onUnsend,
+                destructive = true,
+            )
         }
-        SheetAction("Delete for me", Icons.Filled.DeleteOutline, onDeleteLocally, destructive = true)
+        SheetAction("Delete", Icons.Filled.Delete, onDeleteLocally, destructive = true)
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -842,6 +966,10 @@ private fun MessageStatus.indicator(): String = when (this) {
 }
 
 private val clockFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+private val fullFormat = SimpleDateFormat("d MMM yyyy, HH:mm:ss", Locale.getDefault())
+
+private fun Long.asFullTime(): String = fullFormat.format(Date(this))
+
 private val weekdayFormat = SimpleDateFormat("EEE", Locale.getDefault())
 private val dateFormat = SimpleDateFormat("d MMM", Locale.getDefault())
 

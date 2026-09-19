@@ -39,6 +39,13 @@ class EnvelopePipeline(
      * that cannot be decrypted must still be **acked and dropped**, or it
      * redelivers forever (PROTOCOL.md §4.3).
      */
+    /**
+     * Whether a sender is blocked. Installed by [RelayService] after
+     * construction, because the block list lives with the account rather than
+     * the pipeline.
+     */
+    var isBlocked: (String) -> Boolean = { false }
+
     fun apply(envelope: IncomingEnvelope): Outcome {
         val decrypted = messenger.processEnvelope(envelope)
             ?: return Outcome(null, null, isDuplicate = true)
@@ -46,6 +53,14 @@ class EnvelopePipeline(
         val content = decrypted.content
         val sender = decrypted.senderAccount
         val groupId = content.groupId.ifEmpty { null }
+
+        // Blocked: decrypted and discarded, never stored and never notified.
+        // The decryption still had to happen — the ratchet advances either way,
+        // and skipping it would desynchronise the session for good. The caller
+        // acks regardless, so the relay stops redelivering it.
+        if (sender.isNotEmpty() && isBlocked(sender)) {
+            return Outcome(null, null)
+        }
 
         // A sync copy is our own message echoed to our other devices; it belongs
         // in the conversation with the ORIGINAL recipient, stored as outgoing.

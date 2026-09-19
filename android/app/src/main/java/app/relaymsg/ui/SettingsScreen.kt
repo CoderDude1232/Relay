@@ -60,11 +60,15 @@ fun SettingsScreen(
     publicLink: String,
     inviteLink: String?,
     appVersion: String,
+    blockedCount: Int,
     onCreateInvite: () -> Unit,
+    onShowBlocked: () -> Unit,
+    onRemoveDevice: (Int) -> Unit,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     var confirmClearCalls by remember { mutableStateOf(false) }
     var showQr by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf<Int?>(null) }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
         Column(
@@ -125,10 +129,28 @@ fun SettingsScreen(
                     "safety numbers do not change when you add one.",
             ) {
                 devices.forEach { device ->
-                    InfoRow(
-                        title = if (device.deviceId == deviceId) "This phone" else "Linked device",
-                        value = "Device ${device.deviceId}",
-                    )
+                    val isThis = device.deviceId == deviceId
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (isThis) "This phone" else "Linked device",
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Detail("Device ${device.deviceId}")
+                        }
+                        // No remove on the device you are holding: that would
+                        // leave this phone with keys it can no longer
+                        // authenticate with, which reads as a broken app.
+                        // Signing out is how you remove this one.
+                        if (!isThis) {
+                            TextButton(onClick = { confirmRemove = device.deviceId }) {
+                                Text("Remove", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
                     RowDivider()
                 }
                 if (devices.isEmpty()) {
@@ -136,6 +158,18 @@ fun SettingsScreen(
                     RowDivider()
                 }
                 ActionRow("Link a device", "Scan the code shown on your other phone", onClick = onLinkDevice)
+            }
+
+            Section(
+                title = "Chats",
+                footnote = "Blocking is local: nothing is sent, so a blocked " +
+                    "account cannot tell.",
+            ) {
+                ActionRow(
+                    title = "Blocked contacts",
+                    detail = if (blockedCount == 0) "None" else "$blockedCount blocked",
+                    onClick = onShowBlocked,
+                )
             }
 
             Section("Calls") {
@@ -174,6 +208,17 @@ fun SettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { showQr = false }) { Text("Done") } },
+        )
+    }
+
+    confirmRemove?.let { target ->
+        Confirm(
+            title = "Remove device $target?",
+            body = "It will no longer receive messages for this account, and " +
+                "whoever holds it will have to link again.",
+            confirmLabel = "Remove",
+            onConfirm = { confirmRemove = null; onRemoveDevice(target) },
+            onDismiss = { confirmRemove = null },
         )
     }
 

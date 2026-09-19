@@ -297,6 +297,28 @@ class MessageStore(private val db: RelayDatabase) {
         db.run("UPDATE messages SET starred = ? WHERE id = ?", listOf(if (starred) 1 else 0, id))
 
     /** Only the original author may edit; the recipient locates it by timestamp. */
+    /** Stars a message. Local only — nothing is sent, and iOS keeps its own. */
+    fun setStarred(messageId: String, starred: Boolean) = db.run(
+        "UPDATE messages SET starred = ? WHERE id = ?",
+        listOf(if (starred) 1 else 0, messageId),
+    )
+
+    /**
+     * Pins a message.
+     *
+     * One per conversation, so pinning clears the previous one first — a list
+     * of pins is a different feature, and `pinnedMessage` only reads one.
+     */
+    fun setPinned(conversationId: String, messageId: String, pinned: Boolean) = db.transaction {
+        if (pinned) {
+            db.run("UPDATE messages SET pinned = 0 WHERE conversation_id = ?", listOf(conversationId))
+        }
+        db.run(
+            "UPDATE messages SET pinned = ? WHERE id = ?",
+            listOf(if (pinned) 1 else 0, messageId),
+        )
+    }
+
     fun editMessage(conversationId: String, targetTimestamp: Long, newBody: String) = db.run(
         "UPDATE messages SET body = ?, edited_at = ? WHERE conversation_id = ? AND timestamp = ?",
         listOf(newBody, now(), conversationId, targetTimestamp),

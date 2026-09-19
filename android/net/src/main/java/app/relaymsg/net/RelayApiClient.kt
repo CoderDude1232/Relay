@@ -207,6 +207,38 @@ class RelayApiClient(
         return devices to json.optLong("deviceListVersion")
     }
 
+    /**
+     * Removes a device from this account.
+     *
+     * Signed like every other device-list change, and pinned to
+     * [expectedVersion] so a removal cannot race a concurrent link and silently
+     * drop the wrong device.
+     */
+    suspend fun removeDevice(
+        deviceId: Int,
+        expectedVersion: Long,
+        signerDeviceId: Int,
+        signature: ByteArray,
+    ) {
+        execute(
+            requestBuilder("v1/devices/$deviceId", "DELETE")
+                .delete(
+                    JSONObject()
+                        .put(
+                            "auth",
+                            JSONObject()
+                                .put("expectedVersion", expectedVersion)
+                                .put("signerDeviceId", signerDeviceId)
+                                .put("signature", signature.b64()),
+                        )
+                        .toString()
+                        .toRequestBody(JSON),
+                )
+                .signed("DELETE", "/v1/devices/$deviceId")
+                .build(),
+        ).close()
+    }
+
     /** Assigns this device a fresh opaque mailbox id. Clients rotate daily. */
     suspend fun rotateMailbox(): String =
         postJson("v1/devices/me/mailbox/rotate", null).getString("mailboxId")
