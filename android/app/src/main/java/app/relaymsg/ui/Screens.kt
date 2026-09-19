@@ -77,7 +77,6 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -154,74 +153,66 @@ fun ConversationListScreen(
     onSearch: (String) -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
-    var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
-    val searchFocus = remember { FocusRequester() }
-
-    // Opening search should put the caret in the field; otherwise it costs a
-    // second tap every time.
-    LaunchedEffect(searching) { if (searching) runCatching { searchFocus.requestFocus() } }
+    var groupsOnly by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Conversation?>(null) }
     var confirmDelete by remember { mutableStateOf<Conversation?>(null) }
     var newChatName by remember { mutableStateOf("") }
     var newChatError by remember { mutableStateOf<String?>(null) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    if (searching) {
-                        TextField(
-                            value = query,
-                            onValueChange = { query = it; onSearch(it) },
-                            placeholder = { Text("Search messages") },
-                            singleLine = true,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                            ),
-                            modifier = Modifier.fillMaxWidth().focusRequester(searchFocus),
-                        )
-                    } else {
-                        Text("Relay")
-                    }
-                },
-                actions = {
-                    if (searching) {
-                        IconButton(
-                            onClick = { searching = false; query = ""; onSearch("") },
-                        ) {
-                            Icon(Icons.Filled.Close, contentDescription = "Close search")
-                        }
-                    } else {
-                        Text(
-                            text = connection.label(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(end = 4.dp),
-                        )
-                        IconButton(onClick = { searching = true }) {
-                            Icon(Icons.Filled.Search, contentDescription = "Search")
-                        }
-                    }
-                },
-            )
-        },
-        floatingActionButton = {
-            if (!showNewChat && !searching) {
-                FloatingActionButton(
-                    onClick = { showNewChat = true },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "New conversation")
-                }
-            }
-        },
-    ) { padding ->
+    Scaffold { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+
+            LargeTitle("Chats") {
+                CircleAction(
+                    icon = Icons.Filled.Edit,
+                    contentDescription = "New conversation",
+                    onClick = { showNewChat = true },
+                )
+            }
+
+            // The old top bar carried the connection state at all times. iOS has
+            // nowhere for it, and "Connected" is the boring case — so it now
+            // shows only when something is wrong, where it is actually news.
+            if (connection != ConnectionState.CONNECTED) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier
+                            .size(7.dp)
+                            .background(MaterialTheme.colorScheme.error, CircleShape),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        text = connection.label(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
+            SearchField(
+                value = query,
+                onValueChange = { query = it; onSearch(it) },
+                placeholder = "Search messages",
+            )
+            Spacer(Modifier.height(12.dp))
+
+            // Only worth offering once there is a group to filter to.
+            if (conversations.any { it.groupId != null }) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    FilterChip("All", selected = !groupsOnly) { groupsOnly = false }
+                    FilterChip("Groups", selected = groupsOnly) { groupsOnly = true }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+
 
             if (showNewChat) {
                 Column(Modifier.padding(horizontal = 16.dp)) {
@@ -255,27 +246,27 @@ fun ConversationListScreen(
             }
 
             val trimmed = query.trim()
-            if (searching && trimmed.isNotEmpty()) {
+            val shown = if (groupsOnly) conversations.filter { it.groupId != null } else conversations
+            if (trimmed.isNotEmpty()) {
                 SearchList(
                     query = trimmed,
                     conversations = conversations,
                     titleFor = titleFor,
                     results = searchResults,
                     onOpen = { id ->
-                        searching = false
                         query = ""
                         onSearch("")
                         onOpen(id)
                     },
                 )
-            } else if (conversations.isEmpty()) {
+            } else if (shown.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.padding(horizontal = 40.dp),
                     ) {
                         Text(
-                            "No conversations yet",
+                            if (groupsOnly) "No groups yet" else "No conversations yet",
                             style = MaterialTheme.typography.titleLarge,
                         )
                         Spacer(Modifier.height(6.dp))
@@ -292,7 +283,7 @@ fun ConversationListScreen(
                 }
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
-                    items(conversations, key = { it.id }) { conversation ->
+                    items(shown, key = { it.id }) { conversation ->
                         ConversationRow(
                             conversation = conversation,
                             title = titleFor(conversation),
@@ -300,7 +291,8 @@ fun ConversationListScreen(
                             onLongClick = { menuFor = conversation },
                         )
                     }
-                    item { Spacer(Modifier.height(88.dp)) } // clearance for the FAB
+                    // Clearance for the floating tab bar, which sits over the list.
+                    item { Spacer(Modifier.height(96.dp)) }
                 }
             }
         }
@@ -432,7 +424,7 @@ private fun SearchResultRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(id = account, name = title)
+        Avatar(id = account, name = title, size = 56.dp)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -494,10 +486,15 @@ private fun ConversationRow(
         Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(id = conversation.peerAccount, name = title)
+        Avatar(
+            id = conversation.peerAccount,
+            name = title,
+            size = 56.dp,
+            isGroup = conversation.groupId != null,
+        )
         Spacer(Modifier.width(14.dp))
 
         Column(Modifier.weight(1f)) {

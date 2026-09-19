@@ -1,6 +1,8 @@
 package app.relaymsg.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,14 +18,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMade
 import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,21 +52,16 @@ fun CallLogScreen(
     onClear: () -> Unit,
     onCall: (peerAccount: String, isVideo: Boolean) -> Unit,
 ) {
-    Scaffold(
-        topBar = {
-            androidx.compose.material3.TopAppBar(
-                title = { Text("Calls") },
-                actions = {
-                    if (calls.isNotEmpty()) {
-                        TextButton(onClick = onClear) { Text("Clear") }
-                    }
-                },
-            )
-        },
-    ) { padding ->
+    Scaffold { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+        LargeTitle("Calls") {
+            if (calls.isNotEmpty()) {
+                PillButton("Clear", destructive = true, onClick = onClear)
+            }
+        }
         if (calls.isEmpty()) {
             Box(
-                Modifier.fillMaxSize().padding(padding),
+                Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(
@@ -83,14 +79,16 @@ fun CallLogScreen(
                     )
                 }
             }
-            return@Scaffold
+            return@Column
         }
 
-        LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+        LazyColumn(Modifier.fillMaxSize()) {
             items(calls, key = { it.id }) { call ->
                 CallRow(call, onCall)
-                HorizontalDivider()
             }
+            // Clearance for the floating tab bar, which sits over the list.
+            item { Spacer(Modifier.size(96.dp)) }
+        }
         }
     }
 }
@@ -101,10 +99,7 @@ private fun CallRow(call: StoredCall, onCall: (String, Boolean) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // Tapping redials in the same medium it was: a missed video call is
-            // most likely to be returned as a video call.
-            .clickable { onCall(call.peerAccount, call.kind == StoredCallKind.VIDEO) }
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Avatar(id = call.peerAccount, name = call.peerName, size = 44.dp)
@@ -141,14 +136,34 @@ private fun CallRow(call: StoredCall, onCall: (String, Boolean) -> Unit) {
                 )
             }
         }
-        if (call.kind == StoredCallKind.VIDEO) {
-            Icon(
-                Icons.Filled.Videocam,
-                contentDescription = "Video call",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
-        }
+        // Both mediums offered on every row, as iOS does: the most common reason
+        // to open this list is to call someone back, and often not in the
+        // medium they used.
+        CallAction(Icons.Filled.Call, "Call back") { onCall(call.peerAccount, false) }
+        Spacer(Modifier.size(8.dp))
+        CallAction(Icons.Filled.Videocam, "Video call back") { onCall(call.peerAccount, true) }
+    }
+}
+
+@Composable
+private fun CallAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(42.dp)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = contentDescription,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 

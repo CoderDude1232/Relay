@@ -15,6 +15,16 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -49,7 +59,7 @@ import app.relaymsg.ui.VerificationScreen
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
@@ -661,7 +671,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             )
                         }
 
-                        Tab.SETTINGS -> {
+                        Tab.PROFILE -> {
                             val privateCalls by viewModel.privateCallMode.collectAsState()
                             val pushContent by viewModel.pushIncludesContent.collectAsState()
                             val devices by viewModel.devices.collectAsState()
@@ -716,7 +726,12 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                         }
                     }
                 }
-                RelayTabBar(tab, unread = conversations.sumOf { it.unreadCount }) { tab = it }
+                RelayTabBar(
+                    selected = tab,
+                    unread = conversations.sumOf { it.unreadCount },
+                    avatarName = profileForCard.displayName.ifEmpty { phase.service.username },
+                    avatarData = profileForCard.avatar,
+                ) { tab = it }
             }
         }
 
@@ -724,29 +739,109 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     }
 }
 
-private enum class Tab(val label: String) { CHATS("Chats"), CALLS("Calls"), SETTINGS("Settings") }
+private enum class Tab(val label: String) { CHATS("Chats"), CALLS("Calls"), PROFILE("Profile") }
+
+/**
+ * The floating capsule iOS uses instead of a full-width bar.
+ *
+ * It sits over the list rather than under it, so screens leave clearance at the
+ * bottom of their own content. The selected tab gets a tinted pill behind it;
+ * the Profile tab shows the account's own avatar in place of an icon, which is
+ * how you tell at a glance whose account the app is signed in to.
+ */
+@Composable
+private fun RelayTabBar(
+    selected: Tab,
+    unread: Int,
+    avatarName: String,
+    avatarData: ByteArray?,
+    onSelect: (Tab) -> Unit,
+) {
+    Box(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            tonalElevation = 3.dp,
+            shadowElevation = 8.dp,
+        ) {
+            Row(
+                Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Tab.entries.forEach { entry ->
+                    TabPill(
+                        entry = entry,
+                        selected = entry == selected,
+                        unread = if (entry == Tab.CHATS) unread else 0,
+                        avatarName = avatarName,
+                        avatarData = avatarData,
+                        onClick = { onSelect(entry) },
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
-private fun RelayTabBar(selected: Tab, unread: Int, onSelect: (Tab) -> Unit) {
-    NavigationBar {
-        Tab.entries.forEach { entry ->
-            NavigationBarItem(
-                selected = entry == selected,
-                onClick = { onSelect(entry) },
-                icon = {
-                    if (entry == Tab.CHATS && unread > 0) {
-                        BadgedBox(
-                            badge = {
-                                Badge { Text(if (unread > 99) "99+" else "$unread") }
-                            },
-                        ) { Icon(entry.icon(), contentDescription = null) }
-                    } else {
-                        Icon(entry.icon(), contentDescription = null)
-                    }
+private fun TabPill(
+    entry: Tab,
+    selected: Boolean,
+    unread: Int,
+    avatarName: String,
+    avatarData: ByteArray?,
+    onClick: () -> Unit,
+) {
+    val tint = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Column(
+        Modifier
+            .clip(CircleShape)
+            .background(
+                if (selected) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                } else {
+                    androidx.compose.ui.graphics.Color.Transparent
                 },
-                label = { Text(entry.label) },
             )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        BadgedBox(
+            badge = {
+                if (unread > 0) Badge { Text(if (unread > 99) "99+" else "$unread") }
+            },
+        ) {
+            if (entry == Tab.PROFILE) {
+                app.relaymsg.ui.Avatar(
+                    id = avatarName,
+                    name = avatarName,
+                    size = 26.dp,
+                    imageData = avatarData,
+                )
+            } else {
+                Icon(
+                    entry.icon(),
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
         }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = entry.label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = tint,
+        )
     }
 }
 
@@ -773,7 +868,7 @@ private fun android.content.Context.appVersion(): String = runCatching {
 private fun Tab.icon() = when (this) {
     Tab.CHATS -> Icons.AutoMirrored.Filled.Chat
     Tab.CALLS -> Icons.Filled.Call
-    Tab.SETTINGS -> Icons.Filled.Settings
+    Tab.PROFILE -> Icons.Filled.Person
 }
 
 /**

@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Kotlin 2.x writes transient compiler logs here; build output, not source.
+.kotlin/

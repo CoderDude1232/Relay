@@ -2,6 +2,9 @@ package app.relaymsg.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
@@ -42,6 +45,29 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.PersonSearch
+import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.Dp
 import app.relaymsg.net.LinkedDevice
 
 /**
@@ -52,6 +78,22 @@ import app.relaymsg.net.LinkedDevice
  * this is where someone checks whether their privacy settings are what they
  * think they are.
  */
+/**
+ * The tints behind the settings glyphs.
+ *
+ * Apple's system colours again, matching the iOS screen row for row — the icon
+ * colour is how people find a row they have seen before without reading it.
+ */
+private val TileBlue = Color(0xFF007AFF)
+private val TilePurple = Color(0xFFAF52DE)
+private val TileMagenta = Color(0xFFC611D6)
+private val TileTeal = Color(0xFF30B0C7)
+private val TileGreen = Color(0xFF34C759)
+private val TileOrange = Color(0xFFFF9500)
+private val TileRed = Color(0xFFFF3B30)
+private val TileIndigo = Color(0xFF5856D6)
+private val TileGrey = Color(0xFF8E8E93)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -97,13 +139,17 @@ fun SettingsScreen(
     var showLockTimeout by remember { mutableStateOf(false) }
     var showPanicPin by remember { mutableStateOf(false) }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
+    // iOS groups settings as white cards on a grey page — the inverse of
+    // Material's grey cards on white, and the single biggest reason the two
+    // screens did not read as the same app.
+    Scaffold(containerColor = MaterialTheme.colorScheme.surfaceVariant) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
+            LargeTitle("Profile")
             Profile(username, displayName, avatar, accountId, deviceId, onEditProfile)
 
             Section(
@@ -112,23 +158,37 @@ fun SettingsScreen(
                     "once and then expires, so handing one out does not publish " +
                     "who you are to anyone who later finds it.",
             ) {
-                ActionRow("My code", publicLink.removePrefix("https://")) {
+                ActionRow(
+                    title = "My code",
+                    detail = publicLink.removePrefix("https://"),
+                    icon = Icons.Filled.QrCode,
+                    tint = TilePurple,
+                ) {
                     onShowContactCard()
                 }
                 RowDivider()
                 ActionRow(
                     title = "Find contacts",
                     detail = "Check your address book against the directory",
+                    icon = Icons.Filled.PersonSearch,
+                    tint = TileBlue,
                     onClick = onShowContactSync,
                 )
                 RowDivider()
                 ActionRow(
                     title = "Invite someone",
                     detail = if (inviteLink != null) "Tap to share again" else "Create a one-time link",
+                    icon = Icons.Filled.PersonAdd,
+                    tint = TileGreen,
                     onClick = onCreateInvite,
                 )
                 RowDivider()
-                InfoRow("Server", server.removePrefix("https://"))
+                InfoRow(
+                    title = "Server",
+                    value = server.removePrefix("https://"),
+                    icon = Icons.Filled.Dns,
+                    tint = TileGrey,
+                )
             }
 
             Section(
@@ -142,6 +202,8 @@ fun SettingsScreen(
                         "side never learns your IP address. Slower, and it falls " +
                         "back automatically if no relay is available.",
                     checked = privateCallMode,
+                    icon = Icons.Filled.Call,
+                    tint = TileGreen,
                     onCheckedChange = onPrivateCallMode,
                 )
                 RowDivider()
@@ -152,6 +214,8 @@ fun SettingsScreen(
                         "size, instead of an empty wake-up. Off is the private " +
                         "default.",
                     checked = pushIncludesContent,
+                    icon = Icons.Filled.Notifications,
+                    tint = TileOrange,
                     onCheckedChange = onPushIncludesContent,
                 )
             }
@@ -167,6 +231,8 @@ fun SettingsScreen(
                     title = "Screen lock",
                     detail = "Require fingerprint, face or PIN to open Relay.",
                     checked = screenLock,
+                    icon = Icons.Filled.Lock,
+                    tint = TileGreen,
                     onCheckedChange = onScreenLock,
                 )
                 if (screenLock) {
@@ -174,6 +240,8 @@ fun SettingsScreen(
                     ActionRow(
                         title = "Lock after",
                         detail = lockTimeout.lockLabel(),
+                        icon = Icons.Filled.Schedule,
+                        tint = TileGrey,
                         onClick = { showLockTimeout = true },
                     )
                 }
@@ -184,6 +252,8 @@ fun SettingsScreen(
                         "to hide it. Hidden chats are absent from the list, not " +
                         "marked as locked.",
                     checked = panicEnabled,
+                    icon = Icons.Filled.VisibilityOff,
+                    tint = TileIndigo,
                     onCheckedChange = { wanted ->
                         if (wanted) showPanicPin = true else onDisablePanic()
                     },
@@ -224,7 +294,13 @@ fun SettingsScreen(
                     InfoRow("Devices", "Checking\u2026")
                     RowDivider()
                 }
-                ActionRow("Link a device", "Scan the code shown on your other phone", onClick = onLinkDevice)
+                ActionRow(
+                    title = "Link a device",
+                    detail = "Scan the code shown on your other phone",
+                    icon = Icons.Filled.Devices,
+                    tint = TileBlue,
+                    onClick = onLinkDevice,
+                )
             }
 
             Section(
@@ -235,12 +311,16 @@ fun SettingsScreen(
                 ActionRow(
                     title = "Scheduled messages",
                     detail = if (scheduledCount == 0) "None" else "$scheduledCount waiting",
+                    icon = Icons.Filled.Schedule,
+                    tint = TileTeal,
                     onClick = onShowScheduled,
                 )
                 RowDivider()
                 ActionRow(
                     title = "Blocked contacts",
                     detail = if (blockedCount == 0) "None" else "$blockedCount blocked",
+                    icon = Icons.Filled.Block,
+                    tint = TileRed,
                     onClick = onShowBlocked,
                 )
             }
@@ -254,6 +334,8 @@ fun SettingsScreen(
                 ActionRow(
                     title = "Backup & restore",
                     detail = if (backupEnabled) "On" else "Off",
+                    icon = Icons.Filled.Backup,
+                    tint = TileMagenta,
                     onClick = onShowBackup,
                 )
             }
@@ -262,6 +344,8 @@ fun SettingsScreen(
                 ActionRow(
                     title = "Clear call history",
                     detail = "The log is only on this phone.",
+                    icon = Icons.Filled.Call,
+                    tint = TileGrey,
                     onClick = { confirmClearCalls = true },
                 )
             }
@@ -274,11 +358,14 @@ fun SettingsScreen(
                     title = "Sign out",
                     detail = "Erases this device's keys and messages.",
                     destructive = true,
+                    icon = Icons.Filled.Logout,
+                    tint = TileRed,
                     onClick = { confirmSignOut = true },
                 )
             }
 
-            Spacer(Modifier.height(32.dp))
+            // Clearance for the floating tab bar, which sits over the page.
+            Spacer(Modifier.height(112.dp))
         }
     }
 
@@ -399,40 +486,76 @@ private fun Profile(
             }.getOrNull()
         }
     }
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onEdit)
-            .padding(horizontal = 20.dp, vertical = 20.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
     ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = "Profile photo",
-                modifier = Modifier.size(64.dp).clip(CircleShape),
-                contentScale = ContentScale.Crop,
-            )
-        } else {
-            Avatar(id = accountId, name = displayName.ifEmpty { username }.ifEmpty { "?" }, size = 64.dp)
-        }
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = displayName.ifEmpty { username }.ifEmpty { "No username" },
-                style = MaterialTheme.typography.headlineSmall,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                // The first block of the account id: enough to tell two
-                // accounts apart when debugging, short enough to read out.
-                text = if (displayName.isNotEmpty() && username.isNotEmpty()) {
-                    "@$username · device $deviceId"
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onEdit)
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "Profile photo",
+                        modifier = Modifier.size(64.dp).clip(CircleShape),
+                        contentScale = ContentScale.Crop,
+                    )
                 } else {
-                    "${accountId.take(8)} · device $deviceId"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Avatar(
+                        id = accountId,
+                        name = displayName.ifEmpty { username }.ifEmpty { "?" },
+                        size = 64.dp,
+                    )
+                }
+                // The pencil badge iOS puts on the photo: without it nothing
+                // says the card is editable rather than just a header.
+                Box(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(24.dp)
+                        .background(MaterialTheme.colorScheme.primary, CircleShape)
+                        .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Edit,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(13.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = displayName.ifEmpty { username }.ifEmpty { "No username" },
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    // The first block of the account id: enough to tell two
+                    // accounts apart when debugging, short enough to read out.
+                    text = if (displayName.isNotEmpty() && username.isNotEmpty()) {
+                        "@$username · device $deviceId"
+                    } else {
+                        "${accountId.take(8)} · device $deviceId"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -452,14 +575,16 @@ internal fun Section(
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
     Text(
-        text = title.uppercase(),
-        style = MaterialTheme.typography.labelMedium,
+        // Sentence case, like iOS. Material shouts its section headers; next to
+        // the iOS screen that reads as a different app.
+        text = title,
+        style = MaterialTheme.typography.titleSmall,
         fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 32.dp, end = 20.dp, top = 24.dp, bottom = 7.dp),
     )
     Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(18.dp),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
     ) {
@@ -480,6 +605,8 @@ internal fun SwitchRow(
     title: String,
     detail: String,
     checked: Boolean,
+    icon: ImageVector? = null,
+    tint: Color = Color.Unspecified,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -487,8 +614,12 @@ internal fun SwitchRow(
             .fillMaxWidth()
             .clickable { onCheckedChange(!checked) }
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalAlignment = Alignment.Top,
     ) {
+        if (icon != null) {
+            Box(Modifier.padding(top = 2.dp)) { IconTile(icon, tint) }
+            Spacer(Modifier.width(14.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Spacer(Modifier.height(2.dp))
@@ -504,34 +635,62 @@ internal fun ActionRow(
     title: String,
     detail: String,
     destructive: Boolean = false,
+    icon: ImageVector? = null,
+    tint: Color = Color.Unspecified,
     onClick: () -> Unit,
 ) {
-    Column(
+    Row(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+        // Top, not centre: these rows carry a paragraph of explanation, and a
+        // tile floating halfway down one reads as belonging to nothing.
+        verticalAlignment = Alignment.Top,
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (destructive) {
-                MaterialTheme.colorScheme.error
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-        )
-        Detail(detail)
+        if (icon != null) {
+            Box(Modifier.padding(top = 2.dp)) { IconTile(icon, tint) }
+            Spacer(Modifier.width(14.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (destructive) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+            )
+            if (detail.isNotEmpty()) Detail(detail)
+        }
+        if (!destructive) {
+            Spacer(Modifier.width(10.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.padding(top = 4.dp).size(20.dp),
+            )
+        }
     }
 }
 
 @Composable
-internal fun InfoRow(title: String, value: String) {
+internal fun InfoRow(
+    title: String,
+    value: String,
+    icon: ImageVector? = null,
+    tint: Color = Color.Unspecified,
+) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (icon != null) {
+            IconTile(icon, tint)
+            Spacer(Modifier.width(14.dp))
+        }
         Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
         Text(
             value,
@@ -543,9 +702,9 @@ internal fun InfoRow(title: String, value: String) {
 
 /** Hairline between rows inside a card; inset so it does not touch the corners. */
 @Composable
-internal fun RowDivider() = HorizontalDivider(
+internal fun RowDivider(inset: Dp = 60.dp) = HorizontalDivider(
     color = MaterialTheme.colorScheme.outlineVariant,
-    modifier = Modifier.padding(start = 16.dp),
+    modifier = Modifier.padding(start = inset),
 )
 
 @Composable
