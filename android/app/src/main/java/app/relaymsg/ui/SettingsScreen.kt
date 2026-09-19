@@ -364,8 +364,7 @@ fun SettingsScreen(
                 )
             }
 
-            // Clearance for the floating tab bar, which sits over the page.
-            Spacer(Modifier.height(112.dp))
+            Spacer(Modifier.height(32.dp))
         }
     }
 

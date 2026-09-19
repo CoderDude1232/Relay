@@ -86,8 +86,7 @@ fun CallLogScreen(
             items(calls, key = { it.id }) { call ->
                 CallRow(call, onCall)
             }
-            // Clearance for the floating tab bar, which sits over the list.
-            item { Spacer(Modifier.size(96.dp)) }
+            item { Spacer(Modifier.size(16.dp)) }
         }
         }
     }

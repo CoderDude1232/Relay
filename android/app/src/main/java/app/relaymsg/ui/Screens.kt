@@ -291,8 +291,7 @@ fun ConversationListScreen(
                             onLongClick = { menuFor = conversation },
                         )
                     }
-                    // Clearance for the floating tab bar, which sits over the list.
-                    item { Spacer(Modifier.height(96.dp)) }
+                    item { Spacer(Modifier.height(16.dp)) }
                 }
             }
         }
