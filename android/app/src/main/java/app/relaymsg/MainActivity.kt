@@ -2,7 +2,7 @@ package app.relaymsg
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.activity.enableEdgeToEdge
@@ -52,9 +52,30 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import app.relaymsg.ui.SettingsScreen
 import app.relaymsg.ui.theme.RelayTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val viewModel: RelayViewModel by viewModels()
+
+    /**
+     * When the app last went to the background.
+     *
+     * The lock re-arms on time spent away, not on every glance at a
+     * notification — otherwise a two-second detour to the shade demands a
+     * fingerprint, and people turn the feature off.
+     */
+    private var backgroundedAt: Long? = null
+
+    override fun onStop() {
+        super.onStop()
+        backgroundedAt = System.currentTimeMillis()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val away = backgroundedAt?.let { System.currentTimeMillis() - it } ?: 0L
+        backgroundedAt = null
+        viewModel.onForeground(away, this)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,6 +107,13 @@ class MainActivity : ComponentActivity() {
 private fun RelayApp(viewModel: RelayViewModel) {
     val phase by viewModel.phase.collectAsState()
     val busy by viewModel.busy.collectAsState()
+
+    val locked by viewModel.locked.collectAsState()
+    if (locked) {
+        val activity = androidx.compose.ui.platform.LocalContext.current as FragmentActivity
+        LockedScreen { viewModel.unlock(activity) }
+        return
+    }
 
     when (val current = phase) {
         is AppPhase.Loading -> Centered { CircularProgressIndicator() }
@@ -183,6 +211,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var showProfile by remember { mutableStateOf(false) }
     var verifyPeer by remember { mutableStateOf<String?>(null) }
     val blockedAccounts by viewModel.blockedAccounts.collectAsState()
+    val panicEnabled by viewModel.panicEnabled.collectAsState()
+    val hiddenConversations by viewModel.hiddenConversations.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
     Box(Modifier.fillMaxSize()) {
@@ -366,6 +396,9 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             onArchive = viewModel::setConversationArchived,
                             onMarkUnread = viewModel::markConversationUnread,
                             onDelete = viewModel::deleteConversation,
+                            panicEnabled = panicEnabled,
+                            hiddenConversations = hiddenConversations,
+                            onToggleHidden = viewModel::setConversationHidden,
                         )
 
                         Tab.CALLS -> {
@@ -384,6 +417,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             val inviteLink by viewModel.inviteLink.collectAsState()
                             val blocked by viewModel.blockedAccounts.collectAsState()
                             val profile by viewModel.myProfile.collectAsState()
+                            val screenLock by viewModel.screenLock.collectAsState()
+                            val lockTimeout by viewModel.lockTimeout.collectAsState()
                             val context = androidx.compose.ui.platform.LocalContext.current
                             // Read live each time the tab opens: another device
                             // may have been linked since it was last shown.
@@ -407,6 +442,13 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 inviteLink = inviteLink,
                                 appVersion = remember { context.appVersion() },
                                 blockedCount = blocked.size,
+                                screenLock = screenLock,
+                                lockTimeout = lockTimeout,
+                                onScreenLock = { viewModel.screenLockEnabled = it },
+                                onLockTimeout = viewModel::setLockTimeout,
+                                panicEnabled = panicEnabled,
+                                onEnablePanic = viewModel::enablePanic,
+                                onDisablePanic = viewModel::disablePanic,
                                 onCreateInvite = { viewModel.shareInvite(context) },
                                 onShowBlocked = { showBlocked = true },
                                 onEditProfile = { showProfile = true },
@@ -533,6 +575,21 @@ private fun InCallOverlay(viewModel: RelayViewModel) {
         audioRoutes = viewModel::audioRoutes,
         onSelectRoute = viewModel::selectAudioRoute,
     )
+}
+
+/** What stands in for the app while it is locked. */
+@Composable
+private fun LockedScreen(onUnlock: () -> Unit) {
+    // Prompts on arrival; the button is for when the prompt was dismissed.
+    androidx.compose.runtime.LaunchedEffect(Unit) { onUnlock() }
+    Centered {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("Relay is locked", style = MaterialTheme.typography.headlineSmall)
+            Button(onClick = onUnlock, modifier = Modifier.padding(top = 16.dp)) {
+                Text("Unlock")
+            }
+        }
+    }
 }
 
 @Composable

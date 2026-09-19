@@ -22,6 +22,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.material3.Scaffold
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -69,6 +73,13 @@ fun SettingsScreen(
     inviteLink: String?,
     appVersion: String,
     blockedCount: Int,
+    screenLock: Boolean,
+    lockTimeout: Long,
+    onScreenLock: (Boolean) -> Unit,
+    onLockTimeout: (Long) -> Unit,
+    panicEnabled: Boolean,
+    onEnablePanic: (String) -> Unit,
+    onDisablePanic: () -> Unit,
     onCreateInvite: () -> Unit,
     onShowBlocked: () -> Unit,
     onEditProfile: () -> Unit,
@@ -78,6 +89,8 @@ fun SettingsScreen(
     var confirmClearCalls by remember { mutableStateOf(false) }
     var showQr by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf<Int?>(null) }
+    var showLockTimeout by remember { mutableStateOf(false) }
+    var showPanicPin by remember { mutableStateOf(false) }
 
     Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
         Column(
@@ -129,6 +142,40 @@ fun SettingsScreen(
                         "default.",
                     checked = pushIncludesContent,
                     onCheckedChange = onPushIncludesContent,
+                )
+            }
+
+            Section(
+                title = "Security",
+                footnote = "The lock uses your phone's own unlock. Relay does " +
+                    "not add a second PIN: the database key is already held in " +
+                    "hardware, and a weaker credential guarding the same data " +
+                    "would not help.",
+            ) {
+                SwitchRow(
+                    title = "Screen lock",
+                    detail = "Require fingerprint, face or PIN to open Relay.",
+                    checked = screenLock,
+                    onCheckedChange = onScreenLock,
+                )
+                if (screenLock) {
+                    RowDivider()
+                    ActionRow(
+                        title = "Lock after",
+                        detail = lockTimeout.lockLabel(),
+                        onClick = { showLockTimeout = true },
+                    )
+                }
+                RowDivider()
+                SwitchRow(
+                    title = "Hidden chats",
+                    detail = "Set a second PIN, then long-press a conversation " +
+                        "to hide it. Hidden chats are absent from the list, not " +
+                        "marked as locked.",
+                    checked = panicEnabled,
+                    onCheckedChange = { wanted ->
+                        if (wanted) showPanicPin = true else onDisablePanic()
+                    },
                 )
             }
 
@@ -217,6 +264,73 @@ fun SettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { showQr = false }) { Text("Done") } },
+        )
+    }
+
+    if (showPanicPin) {
+        var pin by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showPanicPin = false },
+            title = { Text("Set a PIN") },
+            text = {
+                Column {
+                    Text(
+                        "Four digits or more. There is no way to recover it — " +
+                            "forget it and the hidden chats stay hidden.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.size(12.dp))
+                    OutlinedTextField(
+                        value = pin,
+                        onValueChange = { pin = it.filter(Char::isDigit).take(12) },
+                        label = { Text("PIN") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = pin.length >= 4,
+                    onClick = { onEnablePanic(pin); showPanicPin = false },
+                ) { Text("Set PIN") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPanicPin = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showLockTimeout) {
+        val options = listOf(0L, 60L, 300L, 900L, 3_600L)
+        AlertDialog(
+            onDismissRequest = { showLockTimeout = false },
+            title = { Text("Lock after") },
+            text = {
+                Column {
+                    options.forEach { seconds ->
+                        TextButton(
+                            onClick = { onLockTimeout(seconds); showLockTimeout = false },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = seconds.lockLabel(),
+                                modifier = Modifier.fillMaxWidth(),
+                                fontWeight = if (seconds == lockTimeout) {
+                                    FontWeight.Bold
+                                } else {
+                                    FontWeight.Normal
+                                },
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLockTimeout = false }) { Text("Cancel") }
+            },
         )
     }
 
@@ -445,3 +559,11 @@ private fun Confirm(
     },
     dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
 )
+
+private fun Long.lockLabel(): String = when (this) {
+    0L -> "Immediately"
+    60L -> "After 1 minute"
+    300L -> "After 5 minutes"
+    900L -> "After 15 minutes"
+    else -> "After 1 hour"
+}

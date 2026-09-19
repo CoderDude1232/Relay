@@ -46,6 +46,8 @@ cameraX = "1.6.2"
 # is exactly what OAuth providers reject, and rightly: it would let the app read
 # the password being typed.
 browser = "1.10.0"
+# BiometricPrompt, for the screen lock. 1.1.0 is the last stable release.
+biometric = "1.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -60,6 +62,7 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
 androidx-browser = { group = "androidx.browser", name = "browser", version.ref = "browser" }
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

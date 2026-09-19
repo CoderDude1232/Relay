@@ -22,6 +22,7 @@ import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.storage.SqlCipherSignalStore
 import app.relaymsg.ui.AuthStep
+import app.relaymsg.ui.BiometricGate
 import app.relaymsg.ui.Verification
 import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
@@ -678,6 +679,9 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         val service = service ?: return
         _privateCallMode.value = service.privateCallMode
         _pushIncludesContent.value = service.pushIncludesContent
+        _screenLock.value = service.screenLockEnabled
+        _lockTimeout.value = service.screenLockTimeoutSeconds
+        refreshPanic()
         viewModelScope.launch {
             _devices.value = runCatching { service.linkedDevices() }.getOrDefault(emptyList())
         }
@@ -740,6 +744,85 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _inviteLink.value = null
         _authStep.value = AuthStep.WELCOME
         _phase.value = AppPhase.SignedOut
+    }
+
+    // ---------------------------------------------------------- panic mode
+
+    private val _panicEnabled = MutableStateFlow(false)
+    val panicEnabled: StateFlow<Boolean> = _panicEnabled.asStateFlow()
+
+    private val _hiddenConversations = MutableStateFlow<Set<String>>(emptySet())
+    val hiddenConversations: StateFlow<Set<String>> = _hiddenConversations.asStateFlow()
+
+    fun enablePanic(pin: String) {
+        service?.panic?.enable(pin)
+        refreshPanic()
+    }
+
+    fun disablePanic() {
+        service?.panic?.disable()
+        service?.refreshConversations()
+        refreshPanic()
+    }
+
+    /** Returns false on a wrong PIN, so the caller can say so. */
+    fun unlockPanic(pin: String): Boolean {
+        val ok = service?.panic?.unlock(pin) == true
+        if (ok) service?.refreshConversations()
+        return ok
+    }
+
+    fun setConversationHidden(id: String, hidden: Boolean) {
+        service?.setConversationHidden(id, hidden)
+        refreshPanic()
+    }
+
+    private fun refreshPanic() {
+        _panicEnabled.value = service?.panic?.isEnabled == true
+        _hiddenConversations.value = service?.panic?.hidden().orEmpty()
+    }
+
+    // ------------------------------------------------------------ app lock
+
+    private val _locked = MutableStateFlow(false)
+    val locked: StateFlow<Boolean> = _locked.asStateFlow()
+
+    var screenLockEnabled: Boolean
+        get() = service?.screenLockEnabled == true
+        set(value) {
+            service?.screenLockEnabled = value
+            _screenLock.value = value
+            // Turning it on locks immediately, so the setting is visibly in
+            // effect rather than waiting for the next trip to the background.
+            if (value) _locked.value = true
+        }
+
+    private val _screenLock = MutableStateFlow(false)
+    val screenLock: StateFlow<Boolean> = _screenLock.asStateFlow()
+
+    private val _lockTimeout = MutableStateFlow(0L)
+    val lockTimeout: StateFlow<Long> = _lockTimeout.asStateFlow()
+
+    fun setLockTimeout(seconds: Long) {
+        service?.screenLockTimeoutSeconds = seconds
+        _lockTimeout.value = seconds
+    }
+
+    /** Re-arms the lock if the app was away longer than the timeout allows. */
+    fun onForeground(awayMs: Long, activity: androidx.fragment.app.FragmentActivity) {
+        val service = service ?: return
+        if (!service.screenLockEnabled) return
+        if (awayMs >= service.screenLockTimeoutSeconds * 1000) {
+            _locked.value = true
+        }
+    }
+
+    fun unlock(activity: androidx.fragment.app.FragmentActivity) {
+        viewModelScope.launch {
+            if (BiometricGate.authenticate(activity, "Unlock to read your messages")) {
+                _locked.value = false
+            }
+        }
     }
 
     // -------------------------------------------------------- verification

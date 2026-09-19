@@ -130,6 +130,8 @@ class RelayService private constructor(
         private const val KV_MY_AVATAR_POINTER = "me:aptr"
         private const val KV_MY_AVATAR_POINTER_REV = "me:aptrrev"
         private const val KV_PROFILE_SENT = "pfsent:"
+        private const val KV_SCREEN_LOCK = "lock.enabled"
+        private const val KV_SCREEN_LOCK_AFTER = "lock.afterSeconds"
         private const val KV_SUPABASE_REFRESH = "supabase.refresh"
         private const val KV_SUPABASE_USER = "supabase.user"
 
@@ -961,6 +963,46 @@ class RelayService private constructor(
         }
     }
 
+    // ---------------------------------------------------------- panic mode
+
+    /**
+     * Hidden conversations, behind a second PIN.
+     *
+     * Separate from the screen lock: that keeps a stranger out of the app,
+     * this keeps a particular thread out of the list while someone you handed
+     * the phone to is scrolling.
+     */
+    val panic = PanicMode(
+        object : KeyValueStore {
+            override fun get(key: String) = store.messages.kvGet(key)
+            override fun put(key: String, value: ByteArray) = store.messages.kvPut(key, value)
+            override fun delete(key: String) = store.messages.kvDelete(key)
+        },
+    )
+
+    fun setConversationHidden(conversationId: String, hidden: Boolean) {
+        panic.setHidden(conversationId, hidden)
+        refreshConversations()
+    }
+
+    // ------------------------------------------------------------ app lock
+
+    /**
+     * Whether to require the device unlock before showing the app.
+     *
+     * Not a second secret: the database key is already wrapped by a Keystore
+     * key. This only decides whether to show the UI to whoever is holding an
+     * already-unlocked phone.
+     */
+    var screenLockEnabled: Boolean
+        get() = store.messages.kvGet(KV_SCREEN_LOCK)?.decodeToString() == "1"
+        set(value) = store.messages.kvPut(KV_SCREEN_LOCK, (if (value) "1" else "0").toByteArray())
+
+    /** Seconds in the background before the lock re-arms. 0 means immediately. */
+    var screenLockTimeoutSeconds: Long
+        get() = store.messages.kvGet(KV_SCREEN_LOCK_AFTER)?.decodeToString()?.toLongOrNull() ?: 0L
+        set(value) = store.messages.kvPut(KV_SCREEN_LOCK_AFTER, value.toString().toByteArray())
+
     // -------------------------------------------------------- verification
 
     /**
@@ -1745,7 +1787,12 @@ class RelayService private constructor(
     }
 
     fun refreshConversations() {
-        _conversations.value = runCatching { store.messages.conversations() }.getOrDefault(emptyList())
+        _conversations.value = runCatching { store.messages.conversations() }
+            .getOrDefault(emptyList())
+            // Filtered here rather than in the query, so every caller — the
+            // list, the widget, the share sheet, the shortcuts — drops them
+            // without each having to remember to.
+            .filterNot { panic.shouldHide(it.id) }
     }
 
     private fun refreshActiveMessages() {

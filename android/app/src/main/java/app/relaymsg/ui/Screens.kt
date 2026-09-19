@@ -41,6 +41,8 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Poll
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MarkEmailUnread
@@ -123,6 +125,9 @@ fun ConversationListScreen(
     onArchive: (id: String, archived: Boolean) -> Unit,
     onMarkUnread: (id: String) -> Unit,
     onDelete: (id: String) -> Unit,
+    panicEnabled: Boolean,
+    hiddenConversations: Set<String>,
+    onToggleHidden: (id: String, hidden: Boolean) -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Conversation?>(null) }
@@ -236,6 +241,12 @@ fun ConversationListScreen(
             onArchive = { onArchive(conversation.id, !conversation.archived); menuFor = null },
             onMarkUnread = { onMarkUnread(conversation.id); menuFor = null },
             onDelete = { confirmDelete = conversation; menuFor = null },
+            panicEnabled = panicEnabled,
+            isHidden = conversation.id in hiddenConversations,
+            onToggleHidden = {
+                onToggleHidden(conversation.id, conversation.id !in hiddenConversations)
+                menuFor = null
+            },
         )
     }
 
@@ -351,6 +362,9 @@ private fun ConversationActions(
     onArchive: () -> Unit,
     onMarkUnread: () -> Unit,
     onDelete: () -> Unit,
+    panicEnabled: Boolean,
+    isHidden: Boolean,
+    onToggleHidden: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Text(
@@ -372,6 +386,13 @@ private fun ConversationActions(
         // unread thread unread again does nothing visible.
         if (conversation.unreadCount == 0) {
             SheetAction("Mark as unread", Icons.Filled.MarkEmailUnread, onMarkUnread)
+        }
+        if (panicEnabled) {
+            SheetAction(
+                label = if (isHidden) "Unhide" else "Hide behind PIN",
+                icon = if (isHidden) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                onClick = onToggleHidden,
+            )
         }
         SheetAction("Delete conversation", Icons.Filled.Delete, onDelete, destructive = true)
         Spacer(Modifier.height(24.dp))
