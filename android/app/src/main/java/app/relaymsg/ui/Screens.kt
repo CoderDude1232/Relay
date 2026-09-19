@@ -33,6 +33,11 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.EmojiEmotions
+import androidx.compose.material.icons.filled.FormatBold
+import androidx.compose.material.icons.filled.FormatItalic
+import androidx.compose.material.icons.filled.StrikethroughS
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Info
@@ -458,6 +463,8 @@ fun ChatScreen(
     var overflow by remember { mutableStateOf(false) }
     var composePoll by remember { mutableStateOf(false) }
     var showDisappearing by remember { mutableStateOf(false) }
+    var showEmoji by remember { mutableStateOf(false) }
+    var draftSelection by remember { mutableStateOf(0..0) }
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
 
@@ -574,10 +581,55 @@ fun ChatScreen(
             )
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            // Only while there is something to format: an always-on toolbar
+            // takes a row of the screen to do nothing most of the time.
+            if (draft.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    listOf(
+                        "**" to Icons.Filled.FormatBold,
+                        "_" to Icons.Filled.FormatItalic,
+                        "~~" to Icons.Filled.StrikethroughS,
+                        "`" to Icons.Filled.Code,
+                    ).forEach { (marker, icon) ->
+                        IconButton(
+                            onClick = {
+                                val (updated, caret) =
+                                    MessageText.applyMarker(draft, draftSelection, marker)
+                                draft = updated
+                                draftSelection = caret..caret
+                            },
+                            modifier = Modifier.size(34.dp),
+                        ) {
+                            Icon(
+                                icon,
+                                contentDescription = marker,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
+                IconButton(onClick = { showEmoji = !showEmoji }) {
+                    Icon(
+                        Icons.Filled.EmojiEmotions,
+                        contentDescription = "Emoji",
+                        tint = if (showEmoji) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
                 Box {
                     IconButton(onClick = { attachMenu = true }) {
                         Icon(
@@ -673,6 +725,10 @@ fun ChatScreen(
                         modifier = Modifier.size(20.dp),
                     )
                 }
+            }
+
+            if (showEmoji) {
+                EmojiPicker(onPick = { emoji -> draft += emoji })
             }
         }
     }
@@ -1156,6 +1212,22 @@ private fun MessageBubble(
     val ink = if (outgoing) Color.White else MaterialTheme.colorScheme.onSurface
     val meta = if (outgoing) Color.White.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant
 
+    // A single 😂 in a full-width bubble reads as shouting. Short all-emoji
+    // messages render large and bare, the way iMessage and Signal do it.
+    if (Emoji.isJumbo(message.body) && message.attachments.isEmpty() && !message.isDeleted) {
+        Row(
+            Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onLongPress),
+            horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
+        ) {
+            Text(
+                text = message.body.trim(),
+                fontSize = 44.sp,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+        return
+    }
+
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
@@ -1200,7 +1272,7 @@ private fun MessageBubble(
                 }
             }
             message.attachments.forEach { attachment ->
-                AttachmentImage(attachment, loadAttachment)
+                AttachmentBody(attachment, onBlack = outgoing, load = loadAttachment)
                 Spacer(Modifier.height(4.dp))
             }
             val poll = remember(message.body) { PollPayload.fromBody(message.body) }
@@ -1214,7 +1286,11 @@ private fun MessageBubble(
                 )
             } else if (message.body.isNotEmpty() || message.isDeleted) {
                 Text(
-                    text = if (message.isDeleted) "This message was deleted" else message.body,
+                    text = if (message.isDeleted) {
+                        androidx.compose.ui.text.AnnotatedString("This message was deleted")
+                    } else {
+                        MessageText.format(message.body)
+                    },
                     style = MaterialTheme.typography.bodyLarge,
                     color = if (message.isDeleted) meta else ink,
                     fontStyle = if (message.isDeleted) FontStyle.Italic else FontStyle.Normal,
@@ -1261,55 +1337,6 @@ private fun MessageBubble(
                 }
             }
         }
-    }
-}
-
-/**
- * Renders an attachment once it has been fetched and decrypted.
- *
- * Decryption happens per-attachment and off the main thread; until it completes
- * (or if the digest check fails) a placeholder stands in rather than an empty gap.
- */
-@Composable
-private fun AttachmentImage(
-    attachment: app.relaymsg.storage.StoredAttachment,
-    loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
-) {
-    var bitmap by remember(attachment.id) {
-        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
-    }
-    var failed by remember(attachment.id) { mutableStateOf(false) }
-
-    LaunchedEffect(attachment.id) {
-        val bytes = loadAttachment(attachment)
-        if (bytes == null) {
-            failed = true
-        } else {
-            bitmap = android.graphics.BitmapFactory
-                .decodeByteArray(bytes, 0, bytes.size)
-                ?.asImageBitmap()
-            if (bitmap == null) failed = true
-        }
-    }
-
-    val image = bitmap
-    when {
-        image != null -> androidx.compose.foundation.Image(
-            bitmap = image,
-            contentDescription = attachment.filename ?: "Attachment",
-            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)),
-            contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
-        )
-        failed -> Text(
-            "Attachment unavailable",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-        else -> Box(
-            Modifier.fillMaxWidth().height(120.dp)
-                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp)),
-            contentAlignment = Alignment.Center,
-        ) { CircularProgressIndicator(Modifier.height(20.dp)) }
     }
 }
 

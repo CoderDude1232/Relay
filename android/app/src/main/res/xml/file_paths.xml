@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the attachments folder inside the app's own cache is shared, one file at
+  a time through a per-Intent grant. Nothing else in the app is reachable.
+-->
+<paths>
+    <cache-path name="attachments" path="attachments/" />
+</paths>

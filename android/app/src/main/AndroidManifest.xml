@@ -134,6 +134,21 @@
             android:foregroundServiceType="phoneCall|mediaProjection" />
 
         <!--
+          Hands a decrypted attachment to whichever app can open it. No external
+          player reads from memory, so the plaintext has to touch the filesystem;
+          this keeps it inside the app's cache and grants one file per Intent.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!--
           Home-screen widget: names and an unread count, never message text. A
           widget sits on a locked home screen where anyone can read it.
         -->
