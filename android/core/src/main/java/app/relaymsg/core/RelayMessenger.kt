@@ -245,6 +245,28 @@ class RelayMessenger(
         groupId?.let { this.groupId = it }
     }
 
+    /**
+     * A change to the conversation's disappearing timer.
+     *
+     * Rides on an empty text message, because `expires_after_ms` is a field on
+     * Content rather than a body of its own — the receiver applies the timer
+     * before storing whatever arrived with it.
+     */
+    fun buildDisappearing(
+        seconds: Long,
+        timestamp: Long,
+        groupId: String? = null,
+    ): Content = content {
+        text = textMessage {
+            body = ""
+            this.timestamp = timestamp
+        }
+        expiresAfterMs = seconds * 1000
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+        groupId?.let { this.groupId = it }
+    }
+
     fun buildPoll(
         question: String,
         options: List<String>,

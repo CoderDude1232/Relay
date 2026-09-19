@@ -105,6 +105,9 @@ class RelayService private constructor(
     companion object {
         const val DEFAULT_SERVER = "https://api.relaymsg.app"
 
+        /** Often enough that an open conversation clears within half a minute. */
+        private const val EXPIRY_SWEEP_MS = 30_000L
+
         /** The relay's sealed-sender trust root, baked in (PROTOCOL.md §1.6). */
         private const val TRUST_ROOT_BASE64 = "BUMHKPU9XPCdwHCVF8Eea8RxKLhbxq6BhpvYgBTo4IFU"
 
@@ -938,6 +941,73 @@ class RelayService private constructor(
     }
 
     /**
+     * Deletes messages whose disappearing timer has elapsed.
+     *
+     * Runs on a timer rather than only at startup: a conversation left open for
+     * an hour would otherwise keep showing messages that expired forty minutes
+     * ago, which is precisely the guarantee the feature makes.
+     */
+    private suspend fun sweepExpired() {
+        while (true) {
+            val removed = runCatching { store.messages.deleteExpiredMessages() }.getOrDefault(0)
+            if (removed > 0) {
+                refreshActiveMessages()
+                refreshConversations()
+            }
+            delay(EXPIRY_SWEEP_MS)
+        }
+    }
+
+    // --------------------------------------------------------- conversations
+
+    fun setConversationPinned(conversationId: String, pinned: Boolean) {
+        store.messages.setConversationPinned(conversationId, pinned)
+        refreshConversations()
+    }
+
+    fun setConversationArchived(conversationId: String, archived: Boolean) {
+        store.messages.setConversationArchived(conversationId, archived)
+        refreshConversations()
+    }
+
+    fun markConversationUnread(conversationId: String) {
+        store.messages.markConversationUnread(conversationId)
+        refreshConversations()
+    }
+
+    /** Deletes a conversation and everything in it, on this device only. */
+    fun deleteConversation(conversationId: String) {
+        if (activeConversationId == conversationId) closeConversation()
+        store.messages.deleteConversation(conversationId)
+        refreshConversations()
+    }
+
+    /**
+     * Sets how long messages live in a conversation, and tells the peer.
+     *
+     * The timer belongs to the conversation rather than the message, so both
+     * sides have to agree — sending the change is what keeps them in step, and
+     * the receiver applies it before storing whatever it arrived with.
+     */
+    suspend fun setDisappearing(
+        conversationId: String,
+        seconds: Long,
+    ) = withContext(Dispatchers.IO) {
+        store.messages.setDisappearingSeconds(conversationId, seconds)
+        refreshConversations()
+        val timestamp = System.currentTimeMillis()
+        sendMessageAction(conversationId, timestamp) { groupId ->
+            messenger.buildDisappearing(seconds, timestamp, groupId)
+        }
+    }
+
+    fun searchMessages(query: String) = store.messages.searchMessages(query)
+
+    fun starredMessages(conversationId: String) = store.messages.starredMessages(conversationId)
+
+    fun pinnedMessage(conversationId: String) = store.messages.pinnedMessage(conversationId)
+
+    /**
      * Connects and keeps reconnecting until [stop].
      *
      * Idempotent: the UI starts it when the app opens, and a background call
@@ -950,6 +1020,7 @@ class RelayService private constructor(
         refreshConversations()
         refreshCallLog()
         scope.launch { runConnectionLoop() }
+        scope.launch { sweepExpired() }
         scope.launch {
             // Keep the one-time prekey pool topped up; a depleted pool silently
             // degrades every new session to signed + Kyber only.
@@ -1271,13 +1342,13 @@ class RelayService private constructor(
 
     /** Stars or unstars a message. Local only; iOS keeps its own stars too. */
     fun setStarred(messageId: String, starred: Boolean) {
-        store.messages.setStarred(messageId, starred)
+        store.messages.setMessageStarred(messageId, starred)
         refreshActiveMessages()
     }
 
     /** Pins a message to the top of its conversation, replacing any previous pin. */
     fun setPinned(conversationId: String, messageId: String, pinned: Boolean) {
-        store.messages.setPinned(conversationId, messageId, pinned)
+        store.messages.setMessagePinned(conversationId, messageId, pinned)
         refreshActiveMessages()
     }
 

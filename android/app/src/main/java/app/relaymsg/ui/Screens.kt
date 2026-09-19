@@ -40,6 +40,8 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Poll
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.MarkEmailUnread
 import androidx.compose.material3.Switch
 import app.relaymsg.core.PollPayload
 import app.relaymsg.storage.StoredPollVote
@@ -115,8 +117,14 @@ fun ConversationListScreen(
     busy: Boolean,
     onOpen: (String) -> Unit,
     onStartConversation: (String, (String) -> Unit, (String) -> Unit) -> Unit,
+    onPin: (id: String, pinned: Boolean) -> Unit,
+    onArchive: (id: String, archived: Boolean) -> Unit,
+    onMarkUnread: (id: String) -> Unit,
+    onDelete: (id: String) -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
+    var menuFor by remember { mutableStateOf<Conversation?>(null) }
+    var confirmDelete by remember { mutableStateOf<Conversation?>(null) }
     var newChatName by remember { mutableStateOf("") }
     var newChatError by remember { mutableStateOf<String?>(null) }
 
@@ -204,22 +212,66 @@ fun ConversationListScreen(
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(conversations, key = { it.id }) { conversation ->
-                        ConversationRow(conversation, titleFor(conversation)) { onOpen(conversation.id) }
+                        ConversationRow(
+                            conversation = conversation,
+                            title = titleFor(conversation),
+                            onClick = { onOpen(conversation.id) },
+                            onLongClick = { menuFor = conversation },
+                        )
                     }
                     item { Spacer(Modifier.height(88.dp)) } // clearance for the FAB
                 }
             }
         }
     }
+
+    menuFor?.let { conversation ->
+        ConversationActions(
+            conversation = conversation,
+            title = titleFor(conversation),
+            onDismiss = { menuFor = null },
+            onPin = { onPin(conversation.id, conversation.pinnedAt == null); menuFor = null },
+            onArchive = { onArchive(conversation.id, !conversation.archived); menuFor = null },
+            onMarkUnread = { onMarkUnread(conversation.id); menuFor = null },
+            onDelete = { confirmDelete = conversation; menuFor = null },
+        )
+    }
+
+    confirmDelete?.let { conversation ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete ${titleFor(conversation)}?") },
+            text = {
+                Text(
+                    "Every message in this conversation is removed from this " +
+                        "phone. The other side keeps their copy.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onDelete(conversation.id); confirmDelete = null }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = null }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ConversationRow(conversation: Conversation, title: String, onClick: () -> Unit) {
+private fun ConversationRow(
+    conversation: Conversation,
+    title: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     val unread = conversation.unreadCount > 0
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -228,7 +280,7 @@ private fun ConversationRow(conversation: Conversation, title: String, onClick: 
 
         Column(Modifier.weight(1f)) {
             Text(
-                text = title,
+                text = if (conversation.pinnedAt != null) "\uD83D\uDCCC $title" else title,
                 style = MaterialTheme.typography.titleMedium,
                 // An unread thread leans on weight rather than colour, so it
                 // still reads as unread to anyone who cannot see the accent.
@@ -283,6 +335,44 @@ private fun ConversationRow(conversation: Conversation, title: String, onClick: 
                 }
             }
         }
+    }
+}
+
+/** What a long press on a conversation offers. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConversationActions(
+    conversation: Conversation,
+    title: String,
+    onDismiss: () -> Unit,
+    onPin: () -> Unit,
+    onArchive: () -> Unit,
+    onMarkUnread: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        SheetAction(
+            label = if (conversation.pinnedAt != null) "Unpin" else "Pin to top",
+            icon = Icons.Filled.PushPin,
+            onClick = onPin,
+        )
+        SheetAction(
+            label = if (conversation.archived) "Unarchive" else "Archive",
+            icon = Icons.Filled.Archive,
+            onClick = onArchive,
+        )
+        // Only offered when there is something to mark: marking an already
+        // unread thread unread again does nothing visible.
+        if (conversation.unreadCount == 0) {
+            SheetAction("Mark as unread", Icons.Filled.MarkEmailUnread, onMarkUnread)
+        }
+        SheetAction("Delete conversation", Icons.Filled.Delete, onDelete, destructive = true)
+        Spacer(Modifier.height(24.dp))
     }
 }
 

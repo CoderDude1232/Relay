@@ -321,6 +321,10 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             busy = busy,
                             onOpen = { id -> viewModel.openConversation(id); openConversationId = id },
                             onStartConversation = viewModel::startConversation,
+                            onPin = viewModel::setConversationPinned,
+                            onArchive = viewModel::setConversationArchived,
+                            onMarkUnread = viewModel::markConversationUnread,
+                            onDelete = viewModel::deleteConversation,
                         )
 
                         Tab.CALLS -> {

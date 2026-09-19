@@ -719,6 +719,40 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _phase.value = AppPhase.SignedOut
     }
 
+    // --------------------------------------------------------- conversations
+
+    fun setConversationPinned(id: String, pinned: Boolean) =
+        service?.setConversationPinned(id, pinned)
+
+    fun setConversationArchived(id: String, archived: Boolean) =
+        service?.setConversationArchived(id, archived)
+
+    fun markConversationUnread(id: String) = service?.markConversationUnread(id)
+
+    fun deleteConversation(id: String) = service?.deleteConversation(id)
+
+    fun setDisappearing(id: String, seconds: Long) {
+        val service = service ?: return
+        viewModelScope.launch { service.setDisappearing(id, seconds) }
+    }
+
+    private val _searchResults =
+        MutableStateFlow<List<app.relaymsg.storage.SearchResult>>(emptyList())
+
+    val searchResults: StateFlow<List<app.relaymsg.storage.SearchResult>> =
+        _searchResults.asStateFlow()
+
+    fun search(query: String) {
+        val service = service ?: return
+        // Two characters is where a search stops matching half the database;
+        // below that the result list is noise and the query is wasted work.
+        _searchResults.value = if (query.trim().length < 2) {
+            emptyList()
+        } else {
+            runCatching { service.searchMessages(query.trim()) }.getOrDefault(emptyList())
+        }
+    }
+
     fun titleFor(conversation: Conversation): String =
         service?.conversationTitle(conversation) ?: conversation.peerAccount.take(8)
 
