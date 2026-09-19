@@ -29,6 +29,8 @@ class EnvelopePipeline(
         val notificationBody: String? = null,
         val typingStarted: Boolean? = null,
         val callSignal: CallSignal? = null,
+        /** An avatar the caller should fetch and store against [peerAccount]. */
+        val profileAvatar: relay.content.ContentOuterClass.AttachmentPointer? = null,
         val isDuplicate: Boolean = false,
     )
 
@@ -94,6 +96,24 @@ class EnvelopePipeline(
                 messages.editMessage(conversationId, content.edit.targetTimestamp, content.edit.newBody)
                 Outcome(conversationId, sender)
             }
+            Content.BodyCase.PROFILE -> {
+                // The name lands now; the avatar is a pointer, so fetching it is
+                // the caller's job — this function is not suspending and a
+                // profile must not wait on a download to take effect.
+                messages.upsertProfile(
+                    account = sender,
+                    displayName = content.profile.displayName.ifEmpty { null },
+                    avatarId = content.profile.avatar.id.ifEmpty { null },
+                    avatarData = null,
+                    revision = content.profile.timestamp,
+                )
+                Outcome(
+                    conversationId = conversationId,
+                    peerAccount = sender,
+                    profileAvatar = if (content.profile.hasAvatar()) content.profile.avatar else null,
+                )
+            }
+
             Content.BodyCase.SENDER_KEY_DISTRIBUTION -> {
                 // A member handing us their sender key for the current epoch.
                 // Must be processed before any of their group messages can be

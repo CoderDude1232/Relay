@@ -117,6 +117,14 @@ class RelayService private constructor(
 
         /** iOS's key, so the list means the same thing on both clients. */
         private const val KV_BLOCKED = "relay.blockedAccounts"
+
+        // iOS's own key names, so a shared backup reads the same on both.
+        private const val KV_MY_NAME = "me:name"
+        private const val KV_MY_AVATAR = "me:avatar"
+        private const val KV_MY_REVISION = "me:rev"
+        private const val KV_MY_AVATAR_POINTER = "me:aptr"
+        private const val KV_MY_AVATAR_POINTER_REV = "me:aptrrev"
+        private const val KV_PROFILE_SENT = "pfsent:"
         private const val KV_SUPABASE_REFRESH = "supabase.refresh"
         private const val KV_SUPABASE_USER = "supabase.user"
 
@@ -502,6 +510,171 @@ class RelayService private constructor(
         get() = store.messages.kvGet(KV_PRIVATE_CALLS)?.decodeToString() != "0"
         set(value) = store.messages.kvPut(KV_PRIVATE_CALLS, (if (value) "1" else "0").toByteArray())
 
+    // -------------------------------------------------------------- profile
+
+    private val _myProfile = MutableStateFlow(MyProfile("", null))
+
+    /** This account's own display name and avatar, as peers will see them. */
+    val myProfile: StateFlow<MyProfile> = _myProfile.asStateFlow()
+
+    /** A profile others see. Kept per account, newest revision wins. */
+    data class MyProfile(val displayName: String, val avatar: ByteArray?) {
+        override fun equals(other: Any?): Boolean = this === other || (
+            other is MyProfile && displayName == other.displayName &&
+                avatar.contentEquals(other.avatar)
+            )
+
+        override fun hashCode(): Int = displayName.hashCode() * 31 + (avatar?.contentHashCode() ?: 0)
+    }
+
+    private fun loadMyProfile() {
+        _myProfile.value = MyProfile(
+            displayName = store.messages.kvGet(KV_MY_NAME)?.decodeToString().orEmpty(),
+            avatar = store.messages.kvGet(KV_MY_AVATAR),
+        )
+    }
+
+    /**
+     * Changes this account's profile and pushes it to everyone who knows us.
+     *
+     * The revision is bumped to now, which both orders it against whatever a
+     * peer already has and re-arms sending: `pfsent:<peer>` is compared against
+     * it, so every peer is re-sent exactly once per change.
+     */
+    suspend fun updateProfile(
+        displayName: String,
+        avatar: ByteArray?,
+    ) = withContext(Dispatchers.IO) {
+        store.messages.kvPut(KV_MY_NAME, displayName.toByteArray())
+        if (avatar == null) {
+            store.messages.kvDelete(KV_MY_AVATAR)
+        } else {
+            store.messages.kvPut(KV_MY_AVATAR, avatar)
+        }
+        // The cached upload belongs to the old revision; a new avatar must not
+        // be advertised with the previous pointer.
+        store.messages.kvDelete(KV_MY_AVATAR_POINTER)
+        store.messages.kvPut(KV_MY_REVISION, System.currentTimeMillis().toString().toByteArray())
+        loadMyProfile()
+        distributeProfile()
+    }
+
+    private val myRevision: Long
+        get() = store.messages.kvGet(KV_MY_REVISION)?.decodeToString()?.toLongOrNull() ?: 0L
+
+    /**
+     * Pushes the profile to every peer we know: direct contacts and every
+     * member of every group we are in, minus ourselves.
+     */
+    private suspend fun distributeProfile() {
+        val conversations = store.messages.conversations(includeArchived = true)
+        val direct = conversations.filter { it.groupId == null }.map { it.peerAccount }
+        val members = conversations.mapNotNull { it.groupId }
+            .mapNotNull { store.messages.group(it) }
+            .flatMap { it.members }
+        (direct + members).toSet()
+            .filter { it.isNotEmpty() && it != credentials.accountId }
+            .forEach { peer -> runCatching { sendProfileTo(peer) } }
+    }
+
+    /**
+     * Sends the profile to one peer if they do not already have this revision.
+     *
+     * Called when a conversation opens as well as on change, so a contact added
+     * later still learns the name without waiting for the next edit.
+     */
+    suspend fun sendProfileIfNeeded(peer: String) = withContext(Dispatchers.IO) {
+        val revision = myRevision
+        if (revision == 0L) return@withContext
+        val sent = store.messages.kvGet(KV_PROFILE_SENT + peer)
+            ?.decodeToString()?.toLongOrNull() ?: 0L
+        if (sent >= revision) return@withContext
+        runCatching { sendProfileTo(peer) }
+    }
+
+    private suspend fun sendProfileTo(peer: String) {
+        val revision = myRevision
+        if (revision == 0L) return
+        val content = messenger.buildProfile(
+            displayName = _myProfile.value.displayName,
+            avatar = myAvatarPointer(),
+            revision = revision,
+        )
+        val outcome = messenger.sendOverWebSocket(
+            socket = socket,
+            account = peer,
+            plaintext = content.toByteArray(),
+            clientTimestamp = revision,
+        )
+        if (outcome is SendOutcome.Ok) {
+            store.messages.kvPut(KV_PROFILE_SENT + peer, revision.toString().toByteArray())
+        }
+    }
+
+    /**
+     * Uploads the avatar once per revision and reuses the pointer.
+     *
+     * Without the cache a ten-person group would upload the same picture ten
+     * times, and each copy would be a separate blob on the relay.
+     */
+    private suspend fun myAvatarPointer(): relay.content.ContentOuterClass.AttachmentPointer? {
+        val avatar = _myProfile.value.avatar ?: return null
+        val revision = myRevision
+        val cachedRevision = store.messages.kvGet(KV_MY_AVATAR_POINTER_REV)
+            ?.decodeToString()?.toLongOrNull()
+        if (cachedRevision == revision) {
+            store.messages.kvGet(KV_MY_AVATAR_POINTER)?.let { raw ->
+                return runCatching {
+                    relay.content.ContentOuterClass.AttachmentPointer.parseFrom(raw)
+                }.getOrNull()
+            }
+        }
+
+        val sealed = AttachmentCipher.seal(avatar)
+        val id = runCatching { api.uploadAttachment(sealed.ciphertext) }.getOrNull() ?: return null
+        blobs.write(id, sealed.ciphertext)
+        val pointer = relay.content.attachmentPointer {
+            this.id = id
+            key = com.google.protobuf.ByteString.copyFrom(sealed.key)
+            digest = com.google.protobuf.ByteString.copyFrom(sealed.digest)
+            contentType = "image/jpeg"
+            size = sealed.ciphertext.size.toLong()
+        }
+        store.messages.kvPut(KV_MY_AVATAR_POINTER, pointer.toByteArray())
+        store.messages.kvPut(KV_MY_AVATAR_POINTER_REV, revision.toString().toByteArray())
+        return pointer
+    }
+
+    /** Fetches a peer's avatar after their profile arrived carrying a pointer. */
+    private suspend fun fetchPeerAvatar(
+        account: String,
+        pointer: relay.content.ContentOuterClass.AttachmentPointer,
+    ) {
+        val ciphertext = blobs.read(pointer.id)
+            ?: runCatching { api.downloadAttachment(pointer.id) }.getOrNull()
+                ?.also { blobs.write(pointer.id, it) }
+            ?: return
+        val bytes = runCatching {
+            AttachmentCipher.open(
+                ciphertext,
+                pointer.key.toByteArray(),
+                pointer.digest.toByteArray(),
+            )
+        }.getOrNull() ?: return
+
+        val existing = store.messages.peerProfile(account)
+        store.messages.upsertProfile(
+            account = account,
+            displayName = existing?.displayName,
+            avatarId = pointer.id,
+            avatarData = bytes,
+            // Same revision the name arrived with, or upsertProfile's
+            // newest-wins guard would reject the picture it belongs to.
+            revision = existing?.revision ?: 0L,
+        )
+        refreshConversations()
+    }
+
     // ------------------------------------------------------------ block list
 
     private val _blocked = MutableStateFlow<Set<String>>(emptySet())
@@ -517,6 +690,7 @@ class RelayService private constructor(
         // without start() would otherwise run with an empty block list and
         // deliver exactly the messages the user asked not to see.
         loadBlocked()
+        loadMyProfile()
     }
 
     /** Accounts whose messages are dropped on arrival. */
@@ -820,6 +994,9 @@ class RelayService private constructor(
             val outcome = pipeline.apply(envelope)
             // Before the store refreshes: a ringing phone is latency-sensitive.
             outcome.callSignal?.let { routeCallSignal(it) }
+            outcome.profileAvatar?.let { pointer ->
+                outcome.peerAccount?.let { fetchPeerAvatar(it, pointer) }
+            }
             outcome.deliveryReceiptFor?.let { timestamp ->
                 outcome.peerAccount?.let { peer -> sendDeliveryReceipt(peer, timestamp) }
             }
@@ -1117,6 +1294,9 @@ class RelayService private constructor(
                 if (!outcome.isDuplicate) applied += outcome
                 // The durable OFFER arrives this way after a call push wake.
                 outcome.callSignal?.let { routeCallSignal(it) }
+                outcome.profileAvatar?.let { pointer ->
+                    outcome.peerAccount?.let { fetchPeerAvatar(it, pointer) }
+                }
                 outcome.deliveryReceiptFor?.let { timestamp ->
                     outcome.peerAccount?.let { peer -> sendDeliveryReceipt(peer, timestamp) }
                 }
@@ -1148,7 +1328,10 @@ class RelayService private constructor(
 
     /** A display name for a peer account, falling back to a short id. */
     fun displayName(account: String): String =
-        conversations.value.firstOrNull { it.peerAccount == account }?.peerUsername
+        // Their own chosen name first: it is what they asked to be called, and
+        // the username is only a handle.
+        store.messages.peerProfile(account)?.displayName?.takeIf { it.isNotBlank() }
+            ?: conversations.value.firstOrNull { it.peerAccount == account }?.peerUsername
             ?: account.take(8)
 
     // ------------------------------------------------------------ attachments
@@ -1351,6 +1534,13 @@ class RelayService private constructor(
     // ------------------------------------------------------------------- reads
 
     fun openConversation(conversationId: String) {
+        // Same moment iOS picks: a contact added after the last edit still gets
+        // the name without waiting for the next one.
+        scope.launch {
+            store.messages.peerAccount(conversationId)
+                ?.takeIf { store.messages.group(it) == null }
+                ?.let { runCatching { sendProfileIfNeeded(it) } }
+        }
         activeConversationId = conversationId
         refreshActiveMessages()
         store.messages.markConversationRead(conversationId)

@@ -163,7 +163,28 @@ class RelayMessenger(
 
     // ---------------------------------------------------------------- sending
 
-    /** Builds a `Content` carrying a text message, stamped as this device. */
+    /**
+     * Our profile, for one peer.
+     *
+     * Sent pairwise and end-to-end encrypted like anything else — the relay
+     * never holds a display name or an avatar, so there is no directory to
+     * scrape. [revision] is a millisecond clock and newest wins, which is what
+     * lets two of our own devices disagree briefly without either losing.
+     */
+    fun buildProfile(
+        displayName: String,
+        avatar: relay.content.ContentOuterClass.AttachmentPointer?,
+        revision: Long,
+    ): Content = content {
+        profile = relay.content.profileUpdate {
+            this.displayName = displayName
+            timestamp = revision
+            avatar?.let { this.avatar = it }
+        }
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+    }
+
     /**
      * A reaction. Non-ephemeral, so it survives the recipient being offline.
      *
@@ -224,6 +245,7 @@ class RelayMessenger(
         groupId?.let { this.groupId = it }
     }
 
+    /** Builds a `Content` carrying a text message, stamped as this device. */
     fun buildTextContent(
         body: String,
         timestamp: Long,

@@ -369,6 +369,70 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     fun setPinned(conversationId: String, messageId: String, pinned: Boolean) =
         service?.setPinned(conversationId, messageId, pinned)
 
+    // -------------------------------------------------------------- profile
+
+    @Suppress("OPT_IN_USAGE")
+    val myProfile: StateFlow<RelayService.MyProfile> = _phase
+        .flatMapLatest {
+            (it as? AppPhase.Ready)?.service?.myProfile
+                ?: flowOf(RelayService.MyProfile("", null))
+        }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            RelayService.MyProfile("", null),
+        )
+
+    private val _pendingAvatar = MutableStateFlow<ByteArray?>(null)
+
+    /** A picked photo not yet saved, so the preview updates before the send. */
+    val pendingAvatar: StateFlow<ByteArray?> = _pendingAvatar.asStateFlow()
+
+    fun pickAvatar(uri: android.net.Uri) {
+        viewModelScope.launch {
+            _pendingAvatar.value = runCatching {
+                val resolver = getApplication<Application>().contentResolver
+                val raw = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return@launch
+                // Downscaled before it is ever sent: an avatar goes to every
+                // contact individually, so a 6 MB camera frame would be uploaded
+                // and re-downloaded by everyone who knows you.
+                scaleAvatar(raw)
+            }.getOrNull()
+        }
+    }
+
+    fun saveProfile(displayName: String, avatar: ByteArray?) {
+        val service = service ?: return
+        if (_busy.value) return
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { service.updateProfile(displayName, avatar) }
+            _pendingAvatar.value = null
+            _busy.value = false
+        }
+    }
+
+    /** Longest edge 512 px, JPEG quality 85 — plenty for a circle 112 dp wide. */
+    private fun scaleAvatar(raw: ByteArray): ByteArray {
+        val source = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size)
+            ?: return raw
+        val longest = maxOf(source.width, source.height)
+        val scaled = if (longest <= 512) {
+            source
+        } else {
+            val ratio = 512f / longest
+            android.graphics.Bitmap.createScaledBitmap(
+                source,
+                (source.width * ratio).toInt().coerceAtLeast(1),
+                (source.height * ratio).toInt().coerceAtLeast(1),
+                true,
+            )
+        }
+        return java.io.ByteArrayOutputStream().also { out ->
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+        }.toByteArray()
+    }
+
     // ------------------------------------------------------------ block list
 
     @Suppress("OPT_IN_USAGE")

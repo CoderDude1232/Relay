@@ -33,6 +33,7 @@ import app.relaymsg.ui.AuthScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
+import app.relaymsg.ui.ProfileScreen
 import app.relaymsg.ui.ScanLinkScreen
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -177,6 +178,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var openConversationId by remember { mutableStateOf<String?>(null) }
     var showScanner by remember { mutableStateOf(false) }
     var showBlocked by remember { mutableStateOf(false) }
+    var showProfile by remember { mutableStateOf(false) }
     val blockedAccounts by viewModel.blockedAccounts.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
@@ -234,6 +236,36 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 )
             }
 
+            showProfile -> {
+                val profile by viewModel.myProfile.collectAsState()
+                val pending by viewModel.pendingAvatar.collectAsState()
+                val pickAvatar = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+                ) { uri -> uri?.let(viewModel::pickAvatar) }
+                ProfileScreen(
+                    accountId = phase.service.credentials.accountId,
+                    username = phase.service.username,
+                    displayName = profile.displayName,
+                    // The picked photo wins until it is saved, so the preview
+                    // shows what pressing Save would actually publish.
+                    avatar = pending ?: profile.avatar,
+                    busy = busy,
+                    onPickAvatar = {
+                        pickAvatar.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                androidx.activity.result.contract.ActivityResultContracts
+                                    .PickVisualMedia.ImageOnly,
+                            ),
+                        )
+                    },
+                    onSave = { name, avatar ->
+                        viewModel.saveProfile(name, avatar)
+                        showProfile = false
+                    },
+                    onBack = { showProfile = false },
+                )
+            }
+
             showBlocked -> {
                 val blocked by viewModel.blockedAccounts.collectAsState()
                 BlockedContactsScreen(
@@ -284,12 +316,15 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             val devices by viewModel.devices.collectAsState()
                             val inviteLink by viewModel.inviteLink.collectAsState()
                             val blocked by viewModel.blockedAccounts.collectAsState()
+                            val profile by viewModel.myProfile.collectAsState()
                             val context = androidx.compose.ui.platform.LocalContext.current
                             // Read live each time the tab opens: another device
                             // may have been linked since it was last shown.
                             LaunchedEffect(Unit) { viewModel.refreshSettings() }
                             SettingsScreen(
                                 username = phase.service.username,
+                                displayName = profile.displayName,
+                                avatar = profile.avatar,
                                 accountId = phase.service.credentials.accountId,
                                 deviceId = phase.service.credentials.deviceId,
                                 server = phase.service.server,
@@ -307,6 +342,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 blockedCount = blocked.size,
                                 onCreateInvite = { viewModel.shareInvite(context) },
                                 onShowBlocked = { showBlocked = true },
+                                onEditProfile = { showProfile = true },
                                 onRemoveDevice = viewModel::removeDevice,
                             )
                         }

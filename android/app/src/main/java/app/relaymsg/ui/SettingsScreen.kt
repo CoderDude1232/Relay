@@ -1,10 +1,16 @@
 package app.relaymsg.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,6 +52,8 @@ import app.relaymsg.net.LinkedDevice
 @Composable
 fun SettingsScreen(
     username: String,
+    displayName: String,
+    avatar: ByteArray?,
     accountId: String,
     deviceId: Int,
     server: String,
@@ -63,6 +71,7 @@ fun SettingsScreen(
     blockedCount: Int,
     onCreateInvite: () -> Unit,
     onShowBlocked: () -> Unit,
+    onEditProfile: () -> Unit,
     onRemoveDevice: (Int) -> Unit,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
@@ -77,7 +86,7 @@ fun SettingsScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
-            Profile(username, accountId, deviceId)
+            Profile(username, displayName, avatar, accountId, deviceId, onEditProfile)
 
             Section(
                 title = "Account",
@@ -246,23 +255,53 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun Profile(username: String, accountId: String, deviceId: Int) {
+private fun Profile(
+    username: String,
+    displayName: String,
+    avatar: ByteArray?,
+    accountId: String,
+    deviceId: Int,
+    onEdit: () -> Unit,
+) {
+    val bitmap = remember(avatar) {
+        avatar?.let {
+            runCatching {
+                android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp),
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onEdit)
+            .padding(horizontal = 20.dp, vertical = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(id = accountId, name = username.ifEmpty { "?" }, size = 64.dp)
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "Profile photo",
+                modifier = Modifier.size(64.dp).clip(CircleShape),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Avatar(id = accountId, name = displayName.ifEmpty { username }.ifEmpty { "?" }, size = 64.dp)
+        }
         Spacer(Modifier.width(16.dp))
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(
-                text = username.ifEmpty { "No username" },
+                text = displayName.ifEmpty { username }.ifEmpty { "No username" },
                 style = MaterialTheme.typography.headlineSmall,
             )
             Spacer(Modifier.height(2.dp))
             Text(
                 // The first block of the account id: enough to tell two
                 // accounts apart when debugging, short enough to read out.
-                text = "${accountId.take(8)} · device $deviceId",
+                text = if (displayName.isNotEmpty() && username.isNotEmpty()) {
+                    "@$username · device $deviceId"
+                } else {
+                    "${accountId.take(8)} · device $deviceId"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
