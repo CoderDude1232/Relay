@@ -115,6 +115,9 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation(libs.androidx.browser)
     implementation(libs.androidx.biometric)
+    // Must outrank the fragment 1.2.5 that biometric 1.1.0 drags in; see
+    // the note in the version catalog.
+    implementation(libs.androidx.fragment.ktx)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     implementation(libs.kotlinx.coroutines.play.services)
