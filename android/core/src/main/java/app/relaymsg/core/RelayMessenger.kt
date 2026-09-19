@@ -245,6 +245,44 @@ class RelayMessenger(
         groupId?.let { this.groupId = it }
     }
 
+    fun buildPoll(
+        question: String,
+        options: List<String>,
+        multiSelect: Boolean,
+        timestamp: Long,
+        groupId: String? = null,
+    ): Content = content {
+        poll = relay.content.pollMessage {
+            this.question = question
+            this.options.addAll(options)
+            this.multiSelect = multiSelect
+            // Doubles as the poll's id: votes reference (author, timestamp).
+            this.timestamp = timestamp
+        }
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+        groupId?.let { this.groupId = it }
+    }
+
+    /** A vote. A later vote from the same account replaces the earlier one. */
+    fun buildPollVote(
+        pollAuthor: String,
+        pollTimestamp: Long,
+        selected: List<Int>,
+        timestamp: Long,
+        groupId: String? = null,
+    ): Content = content {
+        pollVote = relay.content.pollVote {
+            this.pollAuthor = pollAuthor
+            this.pollTimestamp = pollTimestamp
+            selectedOptions.addAll(selected)
+            this.timestamp = timestamp
+        }
+        senderAccountId = credentials.accountId
+        senderDeviceId = credentials.deviceId
+        groupId?.let { this.groupId = it }
+    }
+
     /** Builds a `Content` carrying a text message, stamped as this device. */
     fun buildTextContent(
         body: String,

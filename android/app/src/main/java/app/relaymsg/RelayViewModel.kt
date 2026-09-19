@@ -363,6 +363,47 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteLocally(messageId: String) = service?.deleteMessageLocally(messageId)
 
+    fun createPoll(
+        conversationId: String,
+        question: String,
+        options: List<String>,
+        multiSelect: Boolean,
+    ) {
+        val service = service ?: return
+        viewModelScope.launch { service.sendPoll(conversationId, question, options, multiSelect) }
+    }
+
+    /**
+     * Votes on a poll.
+     *
+     * A single-answer poll replaces the previous choice; a multi-answer one
+     * toggles, so tapping the same option again takes the vote back.
+     */
+    fun votePoll(
+        conversationId: String,
+        pollAuthor: String,
+        pollTimestamp: Long,
+        option: Int,
+        multiSelect: Boolean,
+    ) {
+        val service = service ?: return
+        viewModelScope.launch {
+            val current = service.pollVotes(conversationId, pollAuthor, pollTimestamp)
+                .firstOrNull { it.voterAccount == service.credentials.accountId }
+                ?.selectedOptions
+                .orEmpty()
+            val next = when {
+                !multiSelect -> listOf(option)
+                option in current -> current - option
+                else -> current + option
+            }
+            service.sendPollVote(conversationId, pollAuthor, pollTimestamp, next.sorted())
+        }
+    }
+
+    fun pollVotes(conversationId: String, pollAuthor: String, pollTimestamp: Long) =
+        service?.pollVotes(conversationId, pollAuthor, pollTimestamp).orEmpty()
+
     fun setStarred(messageId: String, starred: Boolean) =
         service?.setStarred(messageId, starred)
 

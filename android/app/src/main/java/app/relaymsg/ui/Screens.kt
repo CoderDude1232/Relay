@@ -39,6 +39,10 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Poll
+import androidx.compose.material3.Switch
+import app.relaymsg.core.PollPayload
+import app.relaymsg.storage.StoredPollVote
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarOutline
 import androidx.compose.material3.DropdownMenu
@@ -312,6 +316,9 @@ fun ChatScreen(
     onDeleteLocally: (messageId: String) -> Unit,
     onToggleStar: (messageId: String, starred: Boolean) -> Unit,
     onTogglePin: (messageId: String, pinned: Boolean) -> Unit,
+    onCreatePoll: (question: String, options: List<String>, multiSelect: Boolean) -> Unit,
+    onVote: (pollAuthor: String, pollTimestamp: Long, option: Int) -> Unit,
+    votesFor: (StoredMessage) -> List<StoredPollVote>,
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
     onBack: () -> Unit,
     /** Places a call; `true` for video. Null hides the buttons. */
@@ -333,6 +340,7 @@ fun ChatScreen(
     var info by remember { mutableStateOf<StoredMessage?>(null) }
     var attachMenu by remember { mutableStateOf(false) }
     var overflow by remember { mutableStateOf(false) }
+    var composePoll by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
 
@@ -394,6 +402,16 @@ fun ChatScreen(
                         message = message,
                         loadAttachment = loadAttachment,
                         onLongPress = { selected = message },
+                        ownAccount = ownAccount,
+                        votesFor = votesFor,
+                        onVote = { target, option ->
+                            onVote(
+                                target.senderAccount
+                                    ?: if (target.isOutgoing) ownAccount else peerAccount,
+                                target.timestamp,
+                                option,
+                            )
+                        },
                     )
                 }
             }
@@ -444,6 +462,11 @@ fun ChatScreen(
                                     ),
                                 )
                             },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Poll") },
+                            leadingIcon = { Icon(Icons.Filled.Poll, contentDescription = null) },
+                            onClick = { attachMenu = false; composePoll = true },
                         )
                         DropdownMenuItem(
                             text = { Text("File") },
@@ -560,6 +583,145 @@ fun ChatScreen(
 
     info?.let { message ->
         MessageInfo(message) { info = null }
+    }
+
+    if (composePoll) {
+        PollComposer(
+            onDismiss = { composePoll = false },
+            onCreate = { question, options, multi ->
+                onCreatePoll(question, options, multi)
+                composePoll = false
+            },
+        )
+    }
+}
+
+/**
+ * A poll inside a bubble.
+ *
+ * Tallies are computed here rather than stored: votes arrive independently of
+ * the poll and a stored count would drift the moment one was missed.
+ */
+@Composable
+private fun PollBody(
+    poll: PollPayload,
+    votes: List<StoredPollVote>,
+    ownAccount: String,
+    onBlack: Boolean,
+    onVote: (Int) -> Unit,
+) {
+    val ink = if (onBlack) Color.White else MaterialTheme.colorScheme.onSurface
+    val total = votes.size
+    val mine = votes.firstOrNull { it.voterAccount == ownAccount }?.selectedOptions.orEmpty()
+
+    Column {
+        Text(poll.question, style = MaterialTheme.typography.bodyLarge, color = ink)
+        Spacer(Modifier.height(8.dp))
+        poll.options.forEachIndexed { index, option ->
+            val count = votes.count { index in it.selectedOptions }
+            val share = if (total == 0) 0f else count.toFloat() / total
+            val chosen = index in mine
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onVote(index) }
+                    .padding(vertical = 5.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (chosen) "● $option" else "○ $option",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = ink,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "$count",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = ink.copy(alpha = 0.7f),
+                    )
+                }
+                Spacer(Modifier.height(3.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(ink.copy(alpha = 0.18f)),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(share)
+                            .height(4.dp)
+                            .background(if (onBlack) Color.White else MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = when {
+                total == 0 -> "No votes yet"
+                total == 1 -> "1 vote"
+                else -> "$total votes"
+            } + if (poll.multiSelect) " · pick any" else "",
+            style = MaterialTheme.typography.labelSmall,
+            color = ink.copy(alpha = 0.7f),
+        )
+    }
+}
+
+/** Question plus up to ten options; blanks are dropped on create. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PollComposer(
+    onDismiss: () -> Unit,
+    onCreate: (String, List<String>, Boolean) -> Unit,
+) {
+    var question by remember { mutableStateOf("") }
+    var options by remember { mutableStateOf(listOf("", "")) }
+    var multiSelect by remember { mutableStateOf(false) }
+    val filled = options.map { it.trim() }.filter { it.isNotEmpty() }
+    val valid = question.isNotBlank() && filled.size >= 2
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 24.dp)) {
+            Text("New poll", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = question,
+                onValueChange = { question = it.take(200) },
+                label = { Text("Question") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            options.forEachIndexed { index, value ->
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { text ->
+                        options = options.toMutableList().also { it[index] = text.take(100) }
+                    },
+                    label = { Text("Option ${index + 1}") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (options.size < 10) {
+                TextButton(onClick = { options = options + "" }) { Text("Add option") }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = multiSelect, onCheckedChange = { multiSelect = it })
+                Spacer(Modifier.width(12.dp))
+                Text("Allow multiple answers", style = MaterialTheme.typography.bodyMedium)
+            }
+            Spacer(Modifier.height(12.dp))
+            Button(
+                enabled = valid,
+                onClick = { onCreate(question.trim(), filled, multiSelect) },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Create poll") }
+        }
     }
 }
 
@@ -777,6 +939,9 @@ private fun MessageBubble(
     message: StoredMessage,
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
     onLongPress: () -> Unit,
+    ownAccount: String,
+    votesFor: (StoredMessage) -> List<StoredPollVote>,
+    onVote: (StoredMessage, Int) -> Unit,
 ) {
     val outgoing = message.isOutgoing
     // Deep -> band, not the logo's full gradient: white on the bright stop is
@@ -842,7 +1007,16 @@ private fun MessageBubble(
                 AttachmentImage(attachment, loadAttachment)
                 Spacer(Modifier.height(4.dp))
             }
-            if (message.body.isNotEmpty() || message.isDeleted) {
+            val poll = remember(message.body) { PollPayload.fromBody(message.body) }
+            if (poll != null && !message.isDeleted) {
+                PollBody(
+                    poll = poll,
+                    votes = votesFor(message),
+                    ownAccount = ownAccount,
+                    onBlack = outgoing,
+                    onVote = { option -> onVote(message, option) },
+                )
+            } else if (message.body.isNotEmpty() || message.isDeleted) {
                 Text(
                     text = if (message.isDeleted) "This message was deleted" else message.body,
                     style = MaterialTheme.typography.bodyLarge,

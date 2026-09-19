@@ -204,6 +204,28 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     onUnsend = { ts -> viewModel.unsend(open, ts) },
                     onDeleteLocally = viewModel::deleteLocally,
                     onToggleStar = viewModel::setStarred,
+                    onCreatePoll = { question, options, multi ->
+                        viewModel.createPoll(open, question, options, multi)
+                    },
+                    onVote = { author, ts, option ->
+                        val multi = messages
+                            .firstOrNull { it.timestamp == ts }
+                            ?.let { app.relaymsg.core.PollPayload.fromBody(it.body) }
+                            ?.multiSelect == true
+                        viewModel.votePoll(open, author, ts, option, multi)
+                    },
+                    votesFor = { message ->
+                        viewModel.pollVotes(
+                            open,
+                            message.senderAccount
+                                ?: if (message.isOutgoing) {
+                                    phase.service.credentials.accountId
+                                } else {
+                                    conversation?.peerAccount.orEmpty()
+                                },
+                            message.timestamp,
+                        )
+                    },
                     isBlocked = conversation?.peerAccount?.let { it in blockedAccounts } == true,
                     // A group has no single account to block, so the action is
                     // hidden rather than shown doing nothing.

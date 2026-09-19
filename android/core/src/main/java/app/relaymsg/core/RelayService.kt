@@ -1215,6 +1215,60 @@ class RelayService private constructor(
         }
     }
 
+    /**
+     * Creates a poll in a conversation.
+     *
+     * Stored locally as the same `__poll__:` message everyone else will store,
+     * so the author's thread and the recipients' agree without a special case.
+     */
+    suspend fun sendPoll(
+        conversationId: String,
+        question: String,
+        options: List<String>,
+        multiSelect: Boolean,
+    ) = withContext(Dispatchers.IO) {
+        val timestamp = System.currentTimeMillis()
+        store.messages.insertMessage(
+            id = UUID.randomUUID().toString(),
+            conversationId = conversationId,
+            isOutgoing = true,
+            body = PollPayload(question, options, multiSelect).encodeBody(),
+            timestamp = timestamp,
+            status = MessageStatus.SENDING,
+            senderAccount = credentials.accountId,
+        )
+        refreshActiveMessages(); refreshConversations()
+        sendMessageAction(conversationId, timestamp) { groupId ->
+            messenger.buildPoll(question, options, multiSelect, timestamp, groupId)
+        }
+    }
+
+    /** Casts or changes our vote. A later vote replaces the earlier one. */
+    suspend fun sendPollVote(
+        conversationId: String,
+        pollAuthor: String,
+        pollTimestamp: Long,
+        selected: List<Int>,
+    ) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        store.messages.upsertPollVote(
+            conversationId = conversationId,
+            pollAuthor = pollAuthor,
+            pollTimestamp = pollTimestamp,
+            voterAccount = credentials.accountId,
+            selectedOptions = selected,
+            votedAt = now,
+        )
+        refreshActiveMessages()
+        sendMessageAction(conversationId, now) { groupId ->
+            messenger.buildPollVote(pollAuthor, pollTimestamp, selected, now, groupId)
+        }
+    }
+
+    /** Every vote cast on one poll, for tallying. */
+    fun pollVotes(conversationId: String, pollAuthor: String, pollTimestamp: Long) =
+        store.messages.pollVotes(conversationId, pollAuthor, pollTimestamp)
+
     /** Stars or unstars a message. Local only; iOS keeps its own stars too. */
     fun setStarred(messageId: String, starred: Boolean) {
         store.messages.setStarred(messageId, starred)

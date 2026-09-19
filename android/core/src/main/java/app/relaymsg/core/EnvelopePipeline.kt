@@ -96,6 +96,44 @@ class EnvelopePipeline(
                 messages.editMessage(conversationId, content.edit.targetTimestamp, content.edit.newBody)
                 Outcome(conversationId, sender)
             }
+            Content.BodyCase.POLL -> {
+                // Stored as a message with iOS's `__poll__:` body, so it takes
+                // its place in the thread rather than needing a table of its own.
+                val payload = PollPayload(
+                    question = content.poll.question,
+                    options = content.poll.optionsList.toList(),
+                    multiSelect = content.poll.multiSelect,
+                )
+                messages.insertMessage(
+                    id = envelope.id,
+                    conversationId = conversationId,
+                    isOutgoing = isSync,
+                    body = payload.encodeBody(),
+                    // The poll's own timestamp is its id, so votes can reference
+                    // it; the envelope's would not match what the author sent.
+                    timestamp = content.poll.timestamp,
+                    status = MessageStatus.RECEIVED,
+                    senderAccount = sender,
+                )
+                Outcome(
+                    conversationId = conversationId,
+                    peerAccount = sender,
+                    notificationBody = if (isSync) null else content.poll.question,
+                )
+            }
+
+            Content.BodyCase.POLL_VOTE -> {
+                messages.upsertPollVote(
+                    conversationId = conversationId,
+                    pollAuthor = content.pollVote.pollAuthor,
+                    pollTimestamp = content.pollVote.pollTimestamp,
+                    voterAccount = sender,
+                    selectedOptions = content.pollVote.selectedOptionsList.map { it.toInt() },
+                    votedAt = content.pollVote.timestamp,
+                )
+                Outcome(conversationId, sender)
+            }
+
             Content.BodyCase.PROFILE -> {
                 // The name lands now; the avatar is a pointer, so fetching it is
                 // the caller's job — this function is not suspending and a
