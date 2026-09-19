@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -16,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.ScreenShare
@@ -26,10 +28,12 @@ import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
-import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.PhoneInTalk
+import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -50,6 +54,8 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.relaymsg.ui.Avatar
 import androidx.compose.ui.viewinterop.AndroidView
 import app.relaymsg.core.ActiveCall
 import app.relaymsg.core.AudioRoute
@@ -72,6 +78,8 @@ import org.webrtc.VideoTrack
 fun CallScreen(
     call: ActiveCall,
     peerName: String,
+    /** The peer's profile photo, if they have published one. */
+    peerAvatar: ByteArray? = null,
     remoteVideo: VideoTrack?,
     localVideo: VideoTrack?,
     /** Mirrored only while the front camera is selected. */
@@ -86,16 +94,16 @@ fun CallScreen(
     /** Queried when the user opens the picker: headsets come and go mid-call. */
     audioRoutes: () -> List<AudioRoute> = ::emptyList,
     onSelectRoute: (AudioRoute) -> Unit = {},
+    /** Null when there is nowhere to minimise to, which hides the chevron. */
+    onMinimise: (() -> Unit)? = null,
 ) {
     val hasVideo = call.isVideo && remoteVideo != null
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        // Video reads better against black; an audio call keeps the app's own
-        // surface so it does not look like a different application.
-        color = if (hasVideo) Color.Black else MaterialTheme.colorScheme.surface,
-    ) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
         Box(Modifier.fillMaxSize()) {
+            // A voice call is tinted by whoever is on it; video fills the frame
+            // itself and needs nothing behind it.
+            if (!hasVideo) CallBackdrop(peerName, peerAvatar)
             if (hasVideo) {
                 VideoSurface(
                     track = remoteVideo,
@@ -119,14 +127,35 @@ fun CallScreen(
                 }
             }
 
+            onMinimise?.let { minimise ->
+                IconButton(
+                    onClick = minimise,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 12.dp, top = 44.dp)
+                        .size(44.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = "Minimise call",
+                        tint = Color.White,
+                        modifier = Modifier.size(30.dp),
+                    )
+                }
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(32.dp),
+                    .padding(horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween,
             ) {
-                Header(call, peerName, onBlack = hasVideo)
+                if (hasVideo) {
+                    Header(call, peerName, onBlack = true)
+                } else {
+                    Identity(call, peerName, peerAvatar)
+                }
                 Controls(
                     call = call,
                     onAccept = onAccept,
@@ -140,6 +169,47 @@ fun CallScreen(
                     onSelectRoute = onSelectRoute,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Who you are talking to, on a voice call.
+ *
+ * Sized from iOS: a 160dp circle, a 30sp name, and the status underneath with a
+ * handset glyph. It sits in the upper half rather than centred, because the
+ * lower half belongs to the controls.
+ */
+@Composable
+private fun ColumnScope.Identity(call: ActiveCall, peerName: String, peerAvatar: ByteArray?) {
+    Column(
+        modifier = Modifier.weight(1f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Avatar(id = peerName, name = peerName, size = 160.dp, imageData = peerAvatar)
+        Spacer(Modifier.size(20.dp))
+        Text(
+            text = peerName,
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.size(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Filled.Call,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.60f),
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.size(6.dp))
+            Text(
+                text = statusLine(call),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.65f),
+            )
         }
     }
 }
@@ -186,8 +256,8 @@ private fun Controls(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Decline is the same action as hanging up; only the label differs.
-            CircleButton(Icons.Filled.CallEnd, "Decline", MaterialTheme.colorScheme.error, onHangUp)
-            CircleButton(Icons.Filled.Call, "Accept", AnswerGreen, onAccept)
+            CallButton(Icons.Filled.CallEnd, "Decline", EndRed, Color.White, onHangUp)
+            CallButton(Icons.Filled.Call, "Accept", AnswerGreen, Color.White, onAccept)
         }
         return
     }
@@ -195,25 +265,67 @@ private fun Controls(
     var routePicker by remember { mutableStateOf<List<AudioRoute>?>(null) }
 
     Column(
-        modifier = Modifier.fillMaxWidth().padding(bottom = 40.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // A video call needs its extra controls somewhere, and they do not fit
+        // on the row below without shrinking everything; they get their own.
+        if (call.isVideo) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CallButton(
+                    icon = if (call.isCameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+                    label = if (call.isCameraOn) "Camera" else "Camera off",
+                    background = if (call.isCameraOn) GlassOn else Glass,
+                    contentColor = Color.White,
+                    onClick = onToggleCamera,
+                )
+                CallButton(
+                    icon = Icons.Filled.FlipCameraAndroid,
+                    label = "Flip",
+                    background = Glass,
+                    contentColor = Color.White,
+                    onClick = onSwitchCamera,
+                )
+                CallButton(
+                    icon = if (call.isScreenSharing) {
+                        Icons.Filled.StopScreenShare
+                    } else {
+                        Icons.Filled.ScreenShare
+                    },
+                    label = if (call.isScreenSharing) "Stop" else "Share",
+                    background = if (call.isScreenSharing) GlassOn else Glass,
+                    contentColor = Color.White,
+                    onClick = onToggleScreenShare,
+                )
+            }
+            Spacer(Modifier.size(20.dp))
+        }
+
+        // iOS's three: Speaker, Mute, End. Mute inverts to a solid white circle
+        // when it is off rather than lighting up when it is on — the state worth
+        // shouting about is "they cannot hear you".
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CircleButton(
-                icon = if (call.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
-                label = if (call.isMuted) "Unmute" else "Mute",
-                background = MaterialTheme.colorScheme.surfaceVariant,
-                onClick = onToggleMute,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            CircleButton(
-                icon = call.audioRoute.icon(),
-                label = "Audio output: ${call.audioRoute.name.lowercase()}",
-                background = MaterialTheme.colorScheme.surfaceVariant,
+            CallButton(
+                // Not the route's own icon: that draws the earpiece as a
+                // crossed-out speaker, which on a call screen reads as "your
+                // audio is off" rather than "the speaker is not on". iOS shows
+                // a quieter speaker against a louder one, so this does too.
+                icon = if (call.audioRoute == AudioRouteKind.SPEAKER) {
+                    Icons.Filled.VolumeUp
+                } else {
+                    Icons.Filled.VolumeDown
+                },
+                label = "Speaker",
+                background = if (call.audioRoute == AudioRouteKind.SPEAKER) GlassOn else Glass,
+                contentColor = Color.White,
                 // With only the phone and the speaker to choose from, a picker
                 // would be two taps to do what one should. A headset makes it a
                 // real choice, so then it becomes one — which is how every phone
@@ -222,47 +334,22 @@ private fun Controls(
                     val routes = audioRoutes()
                     if (routes.size > 2) routePicker = routes else onToggleSpeaker()
                 },
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (call.isVideo) {
-                CircleButton(
-                    icon = if (call.isCameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                    label = if (call.isCameraOn) "Turn camera off" else "Turn camera on",
-                    background = MaterialTheme.colorScheme.surfaceVariant,
-                    onClick = onToggleCamera,
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                CircleButton(
-                    icon = Icons.Filled.FlipCameraAndroid,
-                    label = "Switch camera",
-                    background = MaterialTheme.colorScheme.surfaceVariant,
-                    onClick = onSwitchCamera,
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                CircleButton(
-                    icon = if (call.isScreenSharing) {
-                        Icons.Filled.StopScreenShare
-                    } else {
-                        Icons.Filled.ScreenShare
-                    },
-                    label = if (call.isScreenSharing) "Stop sharing" else "Share screen",
-                    background = if (call.isScreenSharing) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    },
-                    onClick = onToggleScreenShare,
-                    contentColor = if (call.isScreenSharing) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
+            CallButton(
+                icon = if (call.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                label = if (call.isMuted) "Unmute" else "Mute",
+                background = if (call.isMuted) Glass else Color.White,
+                contentColor = if (call.isMuted) Color.White else Color.Black,
+                onClick = onToggleMute,
+            )
+            CallButton(
+                icon = Icons.Filled.CallEnd,
+                label = "End",
+                background = EndRed,
+                contentColor = Color.White,
+                onClick = onHangUp,
+            )
         }
-
-        Spacer(Modifier.size(24.dp))
-        CircleButton(Icons.Filled.CallEnd, "Hang up", MaterialTheme.colorScheme.error, onHangUp)
     }
 
     routePicker?.let { routes ->
@@ -306,27 +393,61 @@ internal fun AudioRouteKind.icon() = when (this) {
     AudioRouteKind.SPEAKER -> Icons.Filled.VolumeUp
     AudioRouteKind.BLUETOOTH -> Icons.Filled.Bluetooth
     AudioRouteKind.WIRED -> Icons.Filled.Headset
-    AudioRouteKind.EARPIECE -> Icons.Filled.VolumeOff
+    // The handset, not a muted speaker: this names where the audio is going.
+    AudioRouteKind.EARPIECE -> Icons.Filled.PhoneInTalk
 }
 
+/**
+ * A call control: a 72dp circle with its label underneath, as iOS draws them.
+ *
+ * The label is text rather than only a content description — on a call screen
+ * with no other furniture, an unlabelled circle is a guess.
+ */
 @Composable
-internal fun CircleButton(
+internal fun CallButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     background: Color,
+    contentColor: Color,
     onClick: () -> Unit,
-    contentColor: Color = Color.White,
 ) {
-    androidx.compose.material3.IconButton(
-        onClick = onClick,
-        modifier = Modifier
-            .size(64.dp)
-            .clip(CircleShape)
-            .background(background),
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(88.dp),
     ) {
-        Icon(icon, contentDescription = label, tint = contentColor, modifier = Modifier.size(28.dp))
+        androidx.compose.material3.IconButton(
+            onClick = onClick,
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(background),
+        ) {
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = contentColor,
+                modifier = Modifier.size(30.dp),
+            )
+        }
+        Spacer(Modifier.size(10.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.White.copy(alpha = 0.82f),
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+        )
     }
 }
+
+/** The translucent white iOS uses for a control that is not lit. */
+internal val Glass = Color.White.copy(alpha = 0.18f)
+
+/** The same, lit. */
+internal val GlassOn = Color.White.copy(alpha = 0.35f)
+
+/** iOS's hang-up red, which is warmer than Material's error colour. */
+internal val EndRed = Color(0xFFEE4733)
 
 /**
  * What the call is doing, in words.

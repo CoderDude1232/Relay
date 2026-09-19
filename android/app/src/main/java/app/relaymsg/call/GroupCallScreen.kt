@@ -199,34 +199,34 @@ private fun Controls(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (call.isRinging) {
-            CircleButton(Icons.Filled.CallEnd, "Decline", MaterialTheme.colorScheme.error, onLeave)
-            CircleButton(Icons.Filled.Call, "Join", AnswerGreen, onJoin)
+            CallButton(Icons.Filled.CallEnd, "Decline", EndRed, Color.White, onLeave)
+            CallButton(Icons.Filled.Call, "Join", AnswerGreen, Color.White, onJoin)
             return@Row
         }
 
-        CircleButton(
+        CallButton(
             icon = if (call.isMuted) Icons.Filled.MicOff else Icons.Filled.Mic,
             label = if (call.isMuted) "Unmute" else "Mute",
-            background = MaterialTheme.colorScheme.surfaceVariant,
+            background = if (call.isMuted) Glass else Color.White,
+            contentColor = if (call.isMuted) Color.White else Color.Black,
             onClick = onToggleMute,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (call.isVideo) {
-            CircleButton(
+            CallButton(
                 icon = if (call.isCameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                label = if (call.isCameraOn) "Turn camera off" else "Turn camera on",
-                background = MaterialTheme.colorScheme.surfaceVariant,
+                label = if (call.isCameraOn) "Camera" else "Camera off",
+                background = if (call.isCameraOn) GlassOn else Glass,
+                contentColor = Color.White,
                 onClick = onToggleCamera,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            CircleButton(
+            CallButton(
                 icon = Icons.Filled.FlipCameraAndroid,
-                label = "Switch camera",
-                background = MaterialTheme.colorScheme.surfaceVariant,
+                label = "Flip",
+                background = Glass,
+                contentColor = Color.White,
                 onClick = onSwitchCamera,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        CircleButton(Icons.Filled.CallEnd, "Leave", MaterialTheme.colorScheme.error, onLeave)
+        CallButton(Icons.Filled.CallEnd, "Leave", EndRed, Color.White, onLeave)
     }
 }

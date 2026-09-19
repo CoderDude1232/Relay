@@ -7,7 +7,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -30,8 +32,12 @@ import androidx.compose.ui.unit.dp
 import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
 import app.relaymsg.call.CallService
+import app.relaymsg.core.CallState
 import app.relaymsg.call.GroupCallScreen
 import app.relaymsg.ui.BackupScreen
+import app.relaymsg.ui.DevicesSettingsScreen
+import app.relaymsg.ui.PrivacySettingsScreen
+import app.relaymsg.ui.SecuritySettingsScreen
 import app.relaymsg.ui.BlockedContactsScreen
 import app.relaymsg.ui.CallLogScreen
 import app.relaymsg.ui.AppearanceScreen
@@ -226,6 +232,9 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var showScanner by remember { mutableStateOf(false) }
     var showBlocked by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
+    var showPrivacy by remember { mutableStateOf(false) }
+    var showSecurity by remember { mutableStateOf(false) }
+    var showDevices by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var verifyPeer by remember { mutableStateOf<String?>(null) }
     var galleryFor by remember { mutableStateOf<String?>(null) }
@@ -265,7 +274,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     val onScreen = openConversationId != null || groupInfoFor != null || notepadFor != null ||
         showScheduled || galleryFor != null || appearanceFor != null || verifyPeer != null ||
         showProfile || showBlocked || showBackup || showScanner || showContactCard ||
-        showContactSync
+        showContactSync || showPrivacy || showSecurity || showDevices
     BackHandler(enabled = onScreen) {
         when {
             // Innermost first: a sheet opened from inside a conversation closes
@@ -283,6 +292,9 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
             showProfile -> showProfile = false
             showBlocked -> showBlocked = false
             showBackup -> showBackup = false
+            showPrivacy -> showPrivacy = false
+            showSecurity -> showSecurity = false
+            showDevices -> showDevices = false
             showContactCard -> showContactCard = false
             showContactSync -> showContactSync = false
             showScanner -> showScanner = false
@@ -604,6 +616,45 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                 )
             }
 
+            showPrivacy -> {
+                val privateCalls by viewModel.privateCallMode.collectAsState()
+                val pushContent by viewModel.pushIncludesContent.collectAsState()
+                PrivacySettingsScreen(
+                    privateCallMode = privateCalls,
+                    pushIncludesContent = pushContent,
+                    onPrivateCallMode = viewModel::setPrivateCallMode,
+                    onPushIncludesContent = viewModel::setPushIncludesContent,
+                    onBack = { showPrivacy = false },
+                )
+            }
+
+            showSecurity -> {
+                val screenLock by viewModel.screenLock.collectAsState()
+                val lockTimeout by viewModel.lockTimeout.collectAsState()
+                val panic by viewModel.panicEnabled.collectAsState()
+                SecuritySettingsScreen(
+                    screenLock = screenLock,
+                    lockTimeout = lockTimeout,
+                    panicEnabled = panic,
+                    onScreenLock = { viewModel.screenLockEnabled = it },
+                    onLockTimeout = viewModel::setLockTimeout,
+                    onEnablePanic = viewModel::enablePanic,
+                    onDisablePanic = viewModel::disablePanic,
+                    onBack = { showSecurity = false },
+                )
+            }
+
+            showDevices -> {
+                val devices by viewModel.devices.collectAsState()
+                DevicesSettingsScreen(
+                    devices = devices,
+                    thisDeviceId = phase.service.credentials.deviceId,
+                    onLinkDevice = { showDevices = false; showScanner = true },
+                    onRemoveDevice = viewModel::removeDevice,
+                    onBack = { showDevices = false },
+                )
+            }
+
             showBackup -> {
                 val backupEnabled by viewModel.backupEnabled.collectAsState()
                 val lastBackupAt by viewModel.lastBackupAt.collectAsState()
@@ -714,6 +765,9 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                                 onRemoveDevice = viewModel::removeDevice,
                                 onShowBackup = { showBackup = true },
                                 backupEnabled = backupEnabled,
+                                onShowPrivacy = { showPrivacy = true },
+                                onShowSecurity = { showSecurity = true },
+                                onShowDevices = { showDevices = true },
                             )
                         }
                     }
@@ -784,6 +838,34 @@ private fun RelayTabBar(
     }
 }
 
+
+/**
+ * The strip a minimised call leaves behind.
+ *
+ * Without it, minimising would hide a live call with no way back to it short of
+ * hanging up from the notification — which is how people end up on a call they
+ * think they left.
+ */
+@Composable
+private fun OngoingCallBar(label: String, onClick: () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        Surface(
+            color = app.relaymsg.call.AnswerGreen,
+            contentColor = androidx.compose.ui.graphics.Color.White,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 28.dp)
+                .clickable(onClick = onClick),
+        ) {
+            Text(
+                text = "Tap to return to call with $label",
+                style = MaterialTheme.typography.labelLarge,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            )
+        }
+    }
+}
 
 private fun hasLocation(context: android.content.Context): Boolean =
     listOf(
@@ -858,9 +940,26 @@ private fun InCallOverlay(viewModel: RelayViewModel) {
     val active = call ?: return
     if (fullScreenElsewhere) return
 
+    // Minimising keeps the call up but hands the app back; a bar stays on top so
+    // there is always a way in. Keyed on the call, so the next one opens full.
+    var minimised by remember(active.callId) { mutableStateOf(false) }
+    if (minimised) {
+        OngoingCallBar(
+            label = viewModel.callerName(active),
+            onClick = { minimised = false },
+        )
+        return
+    }
+
     CallScreen(
         call = active,
         peerName = viewModel.callerName(active),
+        peerAvatar = remember(active.callId) { viewModel.callerAvatar(active) },
+        // Not while it is ringing at you: the only two answers to an incoming
+        // call are accept and decline, and a third way out that leaves it
+        // ringing is how people miss calls they meant to take.
+        onMinimise = { minimised = true }
+            .takeIf { active.state != CallState.INCOMING_RINGING },
         remoteVideo = remoteVideo,
         localVideo = localVideo,
         localMirror = localMirror,

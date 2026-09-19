@@ -669,6 +669,9 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     fun callerName(call: ActiveCall): String =
         service?.displayName(call.peerAccount) ?: call.peerAccount.take(8)
 
+    /** The peer's photo, which tints the whole call screen. */
+    fun callerAvatar(call: ActiveCall): ByteArray? = service?.peerAvatar(call.peerAccount)
+
     // -------------------------------------------------------------- settings
 
     private val _privateCallMode = MutableStateFlow(true)

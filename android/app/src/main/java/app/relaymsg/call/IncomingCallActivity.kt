@@ -80,6 +80,12 @@ class IncomingCallActivity : ComponentActivity() {
                 CallScreen(
                     call = shown,
                     peerName = wake.displayName,
+                    // The same tint the in-app screen uses, so a call answered
+                    // from the lock screen does not change colour when the app
+                    // comes forward behind it.
+                    peerAvatar = remember(shown.peerAccount, relay) {
+                        relay?.peerAvatar(shown.peerAccount)
+                    },
                     remoteVideo = remoteVideo,
                     localVideo = localVideo,
                     localMirror = localMirror,

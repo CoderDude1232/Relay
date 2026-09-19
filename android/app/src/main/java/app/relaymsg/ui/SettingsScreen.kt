@@ -84,15 +84,15 @@ import app.relaymsg.net.LinkedDevice
  * Apple's system colours again, matching the iOS screen row for row — the icon
  * colour is how people find a row they have seen before without reading it.
  */
-private val TileBlue = Color(0xFF007AFF)
-private val TilePurple = Color(0xFFAF52DE)
-private val TileMagenta = Color(0xFFC611D6)
-private val TileTeal = Color(0xFF30B0C7)
-private val TileGreen = Color(0xFF34C759)
-private val TileOrange = Color(0xFFFF9500)
-private val TileRed = Color(0xFFFF3B30)
-private val TileIndigo = Color(0xFF5856D6)
-private val TileGrey = Color(0xFF8E8E93)
+internal val TileBlue = Color(0xFF007AFF)
+internal val TilePurple = Color(0xFFAF52DE)
+internal val TileMagenta = Color(0xFFC611D6)
+internal val TileTeal = Color(0xFF30B0C7)
+internal val TileGreen = Color(0xFF34C759)
+internal val TileOrange = Color(0xFFFF9500)
+internal val TileRed = Color(0xFFFF3B30)
+internal val TileIndigo = Color(0xFF5856D6)
+internal val TileGrey = Color(0xFF8E8E93)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,12 +132,12 @@ fun SettingsScreen(
     onRemoveDevice: (Int) -> Unit,
     onShowBackup: () -> Unit,
     backupEnabled: Boolean,
+    onShowPrivacy: () -> Unit,
+    onShowSecurity: () -> Unit,
+    onShowDevices: () -> Unit,
 ) {
     var confirmSignOut by remember { mutableStateOf(false) }
     var confirmClearCalls by remember { mutableStateOf(false) }
-    var confirmRemove by remember { mutableStateOf<Int?>(null) }
-    var showLockTimeout by remember { mutableStateOf(false) }
-    var showPanicPin by remember { mutableStateOf(false) }
 
     // iOS groups settings as white cards on a grey page — the inverse of
     // Material's grey cards on white, and the single biggest reason the two
@@ -192,118 +192,6 @@ fun SettingsScreen(
             }
 
             Section(
-                title = "Privacy & security",
-                footnote = "Relay never sees your messages. These control what it, " +
-                    "and the networks in between, can infer from around them.",
-            ) {
-                SwitchRow(
-                    title = "Private Call Mode",
-                    detail = "Relay every call through the TURN server so the other " +
-                        "side never learns your IP address. Slower, and it falls " +
-                        "back automatically if no relay is available.",
-                    checked = privateCallMode,
-                    icon = Icons.Filled.Call,
-                    tint = TileGreen,
-                    onCheckedChange = onPrivateCallMode,
-                )
-                RowDivider()
-                SwitchRow(
-                    title = "Faster notifications",
-                    detail = "Put the encrypted message inside the push so it opens " +
-                        "instantly. Google then carries the ciphertext and its " +
-                        "size, instead of an empty wake-up. Off is the private " +
-                        "default.",
-                    checked = pushIncludesContent,
-                    icon = Icons.Filled.Notifications,
-                    tint = TileOrange,
-                    onCheckedChange = onPushIncludesContent,
-                )
-            }
-
-            Section(
-                title = "Security",
-                footnote = "The lock uses your phone's own unlock. Relay does " +
-                    "not add a second PIN: the database key is already held in " +
-                    "hardware, and a weaker credential guarding the same data " +
-                    "would not help.",
-            ) {
-                SwitchRow(
-                    title = "Screen lock",
-                    detail = "Require fingerprint, face or PIN to open Relay.",
-                    checked = screenLock,
-                    icon = Icons.Filled.Lock,
-                    tint = TileGreen,
-                    onCheckedChange = onScreenLock,
-                )
-                if (screenLock) {
-                    RowDivider()
-                    ActionRow(
-                        title = "Lock after",
-                        detail = lockTimeout.lockLabel(),
-                        icon = Icons.Filled.Schedule,
-                        tint = TileGrey,
-                        onClick = { showLockTimeout = true },
-                    )
-                }
-                RowDivider()
-                SwitchRow(
-                    title = "Hidden chats",
-                    detail = "Set a second PIN, then long-press a conversation " +
-                        "to hide it. Hidden chats are absent from the list, not " +
-                        "marked as locked.",
-                    checked = panicEnabled,
-                    icon = Icons.Filled.VisibilityOff,
-                    tint = TileIndigo,
-                    onCheckedChange = { wanted ->
-                        if (wanted) showPanicPin = true else onDisablePanic()
-                    },
-                )
-            }
-
-            Section(
-                title = "Devices",
-                footnote = "Linked devices share this account's identity, so your " +
-                    "safety numbers do not change when you add one.",
-            ) {
-                devices.forEach { device ->
-                    val isThis = device.deviceId == deviceId
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                if (isThis) "This phone" else "Linked device",
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
-                            Detail("Device ${device.deviceId}")
-                        }
-                        // No remove on the device you are holding: that would
-                        // leave this phone with keys it can no longer
-                        // authenticate with, which reads as a broken app.
-                        // Signing out is how you remove this one.
-                        if (!isThis) {
-                            TextButton(onClick = { confirmRemove = device.deviceId }) {
-                                Text("Remove", color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    }
-                    RowDivider()
-                }
-                if (devices.isEmpty()) {
-                    InfoRow("Devices", "Checking\u2026")
-                    RowDivider()
-                }
-                ActionRow(
-                    title = "Link a device",
-                    detail = "Scan the code shown on your other phone",
-                    icon = Icons.Filled.Devices,
-                    tint = TileBlue,
-                    onClick = onLinkDevice,
-                )
-            }
-
-            Section(
                 title = "Chats",
                 footnote = "Blocking is local: nothing is sent, so a blocked " +
                     "account cannot tell.",
@@ -322,6 +210,37 @@ fun SettingsScreen(
                     icon = Icons.Filled.Block,
                     tint = TileRed,
                     onClick = onShowBlocked,
+                )
+            }
+
+            Section(
+                title = "Privacy & security",
+                footnote = "Each of these opens its own page. Putting them on one " +
+                    "scroll meant the screen lock sat below the fold and nobody " +
+                    "found it.",
+            ) {
+                ActionRow(
+                    title = "Privacy",
+                    detail = "What the relay and the networks around it can infer",
+                    icon = Icons.Filled.Shield,
+                    tint = TileBlue,
+                    onClick = onShowPrivacy,
+                )
+                RowDivider()
+                ActionRow(
+                    title = "Security",
+                    detail = if (screenLock) "Screen lock on" else "Screen lock off",
+                    icon = Icons.Filled.Lock,
+                    tint = TileGreen,
+                    onClick = onShowSecurity,
+                )
+                RowDivider()
+                ActionRow(
+                    title = "Linked devices",
+                    detail = if (devices.isEmpty()) "Checking\u2026" else "${devices.size} on this account",
+                    icon = Icons.Filled.Devices,
+                    tint = TileIndigo,
+                    onClick = onShowDevices,
                 )
             }
 
@@ -366,84 +285,6 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(32.dp))
         }
-    }
-
-    if (showPanicPin) {
-        var pin by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { showPanicPin = false },
-            title = { Text("Set a PIN") },
-            text = {
-                Column {
-                    Text(
-                        "Four digits or more. There is no way to recover it — " +
-                            "forget it and the hidden chats stay hidden.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.size(12.dp))
-                    OutlinedTextField(
-                        value = pin,
-                        onValueChange = { pin = it.filter(Char::isDigit).take(12) },
-                        label = { Text("PIN") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = pin.length >= 4,
-                    onClick = { onEnablePanic(pin); showPanicPin = false },
-                ) { Text("Set PIN") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showPanicPin = false }) { Text("Cancel") }
-            },
-        )
-    }
-
-    if (showLockTimeout) {
-        val options = listOf(0L, 60L, 300L, 900L, 3_600L)
-        AlertDialog(
-            onDismissRequest = { showLockTimeout = false },
-            title = { Text("Lock after") },
-            text = {
-                Column {
-                    options.forEach { seconds ->
-                        TextButton(
-                            onClick = { onLockTimeout(seconds); showLockTimeout = false },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(
-                                text = seconds.lockLabel(),
-                                modifier = Modifier.fillMaxWidth(),
-                                fontWeight = if (seconds == lockTimeout) {
-                                    FontWeight.Bold
-                                } else {
-                                    FontWeight.Normal
-                                },
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showLockTimeout = false }) { Text("Cancel") }
-            },
-        )
-    }
-
-    confirmRemove?.let { target ->
-        Confirm(
-            title = "Remove device $target?",
-            body = "It will no longer receive messages for this account, and " +
-                "whoever holds it will have to link again.",
-            confirmLabel = "Remove",
-            onConfirm = { confirmRemove = null; onRemoveDevice(target) },
-            onDismiss = { confirmRemove = null },
-        )
     }
 
     if (confirmSignOut) {
@@ -733,7 +574,7 @@ private fun Confirm(
     dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
 )
 
-private fun Long.lockLabel(): String = when (this) {
+internal fun Long.lockLabel(): String = when (this) {
     0L -> "Immediately"
     60L -> "After 1 minute"
     300L -> "After 5 minutes"
