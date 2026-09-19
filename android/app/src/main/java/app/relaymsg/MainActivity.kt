@@ -35,6 +35,7 @@ import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
 import app.relaymsg.ui.ProfileScreen
 import app.relaymsg.ui.ScanLinkScreen
+import app.relaymsg.ui.VerificationScreen
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Call
@@ -179,6 +180,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var showScanner by remember { mutableStateOf(false) }
     var showBlocked by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
+    var verifyPeer by remember { mutableStateOf<String?>(null) }
     val blockedAccounts by viewModel.blockedAccounts.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.CHATS) }
 
@@ -227,6 +229,12 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                         )
                     },
                     isBlocked = conversation?.peerAccount?.let { it in blockedAccounts } == true,
+                    // A group has no single identity key, so no safety number.
+                    onVerify = conversation
+                        ?.takeIf { it.groupId == null }
+                        ?.let { target -> { verifyPeer = target.peerAccount } },
+                    disappearingSeconds = conversation?.disappearingSeconds ?: 0,
+                    onSetDisappearing = { seconds -> viewModel.setDisappearing(open, seconds) },
                     // A group has no single account to block, so the action is
                     // hidden rather than shown doing nothing.
                     onToggleBlock = conversation
@@ -256,6 +264,38 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                         }
                     },
                 )
+            }
+
+            verifyPeer != null -> {
+                val account = verifyPeer!!
+                val safety = remember(account) { viewModel.safetyNumber(account) }
+                val scanResult by viewModel.scanResult.collectAsState()
+                var scanning by remember { mutableStateOf(false) }
+
+                if (scanning) {
+                    ScanLinkScreen(
+                        status = null,
+                        error = null,
+                        onScanned = { code ->
+                            viewModel.verifyScanned(account, code)
+                            scanning = false
+                        },
+                        onBack = { scanning = false },
+                    )
+                } else {
+                    VerificationScreen(
+                        peerName = viewModel.nameFor(account),
+                        numeric = safety?.numeric,
+                        scannableBase64 = safety?.scannable
+                            ?.let { java.util.Base64.getEncoder().encodeToString(it) },
+                        state = viewModel.verification(account),
+                        onSetVerified = { viewModel.setVerified(account, it) },
+                        onScan = { scanning = true },
+                        scanResult = scanResult,
+                        onDismissResult = viewModel::dismissScanResult,
+                        onBack = { viewModel.dismissScanResult(); verifyPeer = null },
+                    )
+                }
             }
 
             showProfile -> {

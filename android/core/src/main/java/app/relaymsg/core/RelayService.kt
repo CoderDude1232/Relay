@@ -101,6 +101,8 @@ class RelayService private constructor(
     private val socket: RelayWebSocket,
     private val messenger: RelayMessenger,
     private val pipeline: EnvelopePipeline,
+    /** Held for safety numbers; everything else goes through [messenger]. */
+    private val engine: app.relaymsg.crypto.CryptoEngine,
 ) {
     companion object {
         const val DEFAULT_SERVER = "https://api.relaymsg.app"
@@ -395,6 +397,7 @@ class RelayService private constructor(
                 socket = RelayWebSocket(server, auth),
                 messenger = messenger,
                 pipeline = EnvelopePipeline(messenger, store.messages, credentials.accountId),
+                engine = engine,
 
             )
         }
@@ -956,6 +959,39 @@ class RelayService private constructor(
             }
             delay(EXPIRY_SWEEP_MS)
         }
+    }
+
+    // -------------------------------------------------------- verification
+
+    /**
+     * The 60 digits for a peer, or null when no session exists yet.
+     *
+     * Derived from the two identity keys and the two account ids, so both sides
+     * compute the same number without either sending anything — which is the
+     * whole point: a relay that wanted to lie would have to produce a matching
+     * number for a key it does not hold.
+     */
+    fun safetyNumber(account: String) = engine.safetyNumber(account)
+
+    fun verificationState(account: String) = store.signalStore.verificationState(account)
+
+    fun setVerified(account: String, verified: Boolean) {
+        store.signalStore.setVerified(verified, account)
+        refreshConversations()
+    }
+
+    /**
+     * Checks a scanned code against the local number.
+     *
+     * The code carries the peer's own fingerprint encoding, so a match proves
+     * the two devices agree about both identity keys. A mismatch means someone
+     * is between them, and is worth saying loudly.
+     */
+    fun verifyScanned(account: String, scannedBase64: String): Boolean {
+        val bytes = runCatching {
+            java.util.Base64.getDecoder().decode(scannedBase64.trim())
+        }.getOrNull() ?: return false
+        return runCatching { engine.verifyScannedSafetyNumber(bytes, account) }.getOrDefault(false)
     }
 
     // --------------------------------------------------------- conversations

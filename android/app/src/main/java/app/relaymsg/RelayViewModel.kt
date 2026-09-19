@@ -18,7 +18,9 @@ import app.relaymsg.net.SupabaseAuth
 import app.relaymsg.push.RelayRuntime
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.QuotedMessage
+import app.relaymsg.storage.SqlCipherSignalStore
 import app.relaymsg.ui.AuthStep
+import app.relaymsg.ui.Verification
 import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
 import kotlinx.coroutines.Job
@@ -717,6 +719,34 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _inviteLink.value = null
         _authStep.value = AuthStep.WELCOME
         _phase.value = AppPhase.SignedOut
+    }
+
+    // -------------------------------------------------------- verification
+
+    private val _scanResult = MutableStateFlow<Boolean?>(null)
+    val scanResult: StateFlow<Boolean?> = _scanResult.asStateFlow()
+
+    fun safetyNumber(account: String) = service?.safetyNumber(account)
+
+    fun verification(account: String): Verification = when (service?.verificationState(account)) {
+        SqlCipherSignalStore.VerificationState.VERIFIED -> Verification.VERIFIED
+        SqlCipherSignalStore.VerificationState.CHANGED -> Verification.CHANGED
+        SqlCipherSignalStore.VerificationState.UNVERIFIED -> Verification.UNVERIFIED
+        null -> Verification.UNKNOWN
+    }
+
+    fun setVerified(account: String, verified: Boolean) = service?.setVerified(account, verified)
+
+    /** Checks a scanned code and, on a match, marks the peer verified. */
+    fun verifyScanned(account: String, scanned: String) {
+        val service = service ?: return
+        val matched = service.verifyScanned(account, scanned)
+        if (matched) service.setVerified(account, true)
+        _scanResult.value = matched
+    }
+
+    fun dismissScanResult() {
+        _scanResult.value = null
     }
 
     // --------------------------------------------------------- conversations

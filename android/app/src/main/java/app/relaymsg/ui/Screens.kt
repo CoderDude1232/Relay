@@ -39,6 +39,8 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Poll
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.MarkEmailUnread
@@ -416,6 +418,9 @@ fun ChatScreen(
     isBlocked: Boolean = false,
     /** Null in a group: there is no single account to block. */
     onToggleBlock: (() -> Unit)? = null,
+    onVerify: (() -> Unit)? = null,
+    disappearingSeconds: Long = 0,
+    onSetDisappearing: ((Long) -> Unit)? = null,
 ) {
     val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
@@ -431,6 +436,7 @@ fun ChatScreen(
     var attachMenu by remember { mutableStateOf(false) }
     var overflow by remember { mutableStateOf(false) }
     var composePoll by remember { mutableStateOf(false) }
+    var showDisappearing by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val clipboard = LocalClipboardManager.current
 
@@ -457,7 +463,7 @@ fun ChatScreen(
                             Icon(Icons.Filled.Call, contentDescription = "Call")
                         }
                     }
-                    onToggleBlock?.let { toggle ->
+                    if (onToggleBlock != null || onVerify != null) {
                         Box {
                             IconButton(onClick = { overflow = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -466,13 +472,33 @@ fun ChatScreen(
                                 expanded = overflow,
                                 onDismissRequest = { overflow = false },
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text(if (isBlocked) "Unblock" else "Block") },
-                                    leadingIcon = {
-                                        Icon(Icons.Filled.Block, contentDescription = null)
-                                    },
-                                    onClick = { overflow = false; toggle() },
-                                )
+                                onVerify?.let { verify ->
+                                    DropdownMenuItem(
+                                        text = { Text("Verify safety number") },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Shield, contentDescription = null)
+                                        },
+                                        onClick = { overflow = false; verify() },
+                                    )
+                                }
+                                onSetDisappearing?.let { set ->
+                                    DropdownMenuItem(
+                                        text = { Text("Disappearing messages") },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Timer, contentDescription = null)
+                                        },
+                                        onClick = { overflow = false; showDisappearing = true },
+                                    )
+                                }
+                                onToggleBlock?.let { toggle ->
+                                    DropdownMenuItem(
+                                        text = { Text(if (isBlocked) "Unblock" else "Block") },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Block, contentDescription = null)
+                                        },
+                                        onClick = { overflow = false; toggle() },
+                                    )
+                                }
                             }
                         }
                     }
@@ -675,6 +701,14 @@ fun ChatScreen(
         MessageInfo(message) { info = null }
     }
 
+    if (showDisappearing && onSetDisappearing != null) {
+        DisappearingPicker(
+            current = disappearingSeconds,
+            onPick = { onSetDisappearing(it); showDisappearing = false },
+            onDismiss = { showDisappearing = false },
+        )
+    }
+
     if (composePoll) {
         PollComposer(
             onDismiss = { composePoll = false },
@@ -683,6 +717,57 @@ fun ChatScreen(
                 composePoll = false
             },
         )
+    }
+}
+
+/** How long new messages in this conversation should live. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DisappearingPicker(current: Long, onPick: (Long) -> Unit, onDismiss: () -> Unit) {
+    // Signal's ladder, which is the one people recognise.
+    val options = listOf(
+        0L to "Off",
+        30L to "30 seconds",
+        300L to "5 minutes",
+        3_600L to "1 hour",
+        28_800L to "8 hours",
+        86_400L to "1 day",
+        604_800L to "1 week",
+        2_419_200L to "4 weeks",
+    )
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "Disappearing messages",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        Text(
+            "Applies to messages sent from now on, on both sides. Older ones stay.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 24.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        options.forEach { (seconds, label) ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onPick(seconds) }
+                    .padding(horizontal = 24.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = if (seconds == current) "● $label" else "○ $label",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (seconds == current) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }
 
