@@ -23,6 +23,7 @@ import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.storage.SqlCipherSignalStore
 import app.relaymsg.ui.AuthStep
 import app.relaymsg.ui.BiometricGate
+import app.relaymsg.ui.VoiceNoteRecorder
 import app.relaymsg.ui.Verification
 import app.relaymsg.storage.StoredCall
 import app.relaymsg.storage.StoredMessage
@@ -744,6 +745,39 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _inviteLink.value = null
         _authStep.value = AuthStep.WELCOME
         _phase.value = AppPhase.SignedOut
+    }
+
+    // ------------------------------------------------------- voice + media
+
+    private val recorder by lazy { VoiceNoteRecorder(getApplication()) }
+
+    private val _recording = MutableStateFlow(false)
+    val recording: StateFlow<Boolean> = _recording.asStateFlow()
+
+    fun startRecording(): Boolean = recorder.start().also { _recording.value = it }
+
+    /** Stops and sends. A mis-tap too short to be speech is dropped silently. */
+    fun finishRecording(conversationId: String) {
+        val service = service ?: return
+        val bytes = recorder.finish()
+        _recording.value = false
+        if (bytes == null) return
+        viewModelScope.launch { runCatching { service.sendVoiceNote(conversationId, bytes) } }
+    }
+
+    fun cancelRecording() {
+        recorder.cancel()
+        _recording.value = false
+    }
+
+    fun attachmentsIn(conversationId: String) =
+        service?.conversationAttachments(conversationId).orEmpty()
+
+    fun appearance(conversationId: String) =
+        service?.appearance(conversationId) ?: (null to null)
+
+    fun setAppearance(conversationId: String, wallpaperId: String?, bubbleKey: String?) {
+        service?.setAppearance(conversationId, wallpaperId, bubbleKey)
     }
 
     // ---------------------------------------------------------- panic mode

@@ -132,6 +132,8 @@ class RelayService private constructor(
         private const val KV_PROFILE_SENT = "pfsent:"
         private const val KV_SCREEN_LOCK = "lock.enabled"
         private const val KV_SCREEN_LOCK_AFTER = "lock.afterSeconds"
+        private const val KV_WALLPAPER = "chat.wallpaper."
+        private const val KV_BUBBLE = "chat.bubbleTint."
         private const val KV_SUPABASE_REFRESH = "supabase.refresh"
         private const val KV_SUPABASE_USER = "supabase.user"
 
@@ -1081,6 +1083,55 @@ class RelayService private constructor(
         sendMessageAction(conversationId, timestamp) { groupId ->
             messenger.buildDisappearing(seconds, timestamp, groupId)
         }
+    }
+
+    /**
+     * Per-conversation appearance. Local only — nothing is sent, so two people
+     * in one conversation can and will see different colours.
+     */
+    fun appearance(conversationId: String): Pair<String?, String?> {
+        val wallpaper = store.messages.kvGet(KV_WALLPAPER + conversationId)?.decodeToString()
+        val bubble = store.messages.kvGet(KV_BUBBLE + conversationId)?.decodeToString()
+        return wallpaper to bubble
+    }
+
+    fun setAppearance(conversationId: String, wallpaperId: String?, bubbleKey: String?) {
+        if (wallpaperId == null) {
+            store.messages.kvDelete(KV_WALLPAPER + conversationId)
+        } else {
+            store.messages.kvPut(KV_WALLPAPER + conversationId, wallpaperId.toByteArray())
+        }
+        if (bubbleKey == null) {
+            store.messages.kvDelete(KV_BUBBLE + conversationId)
+        } else {
+            store.messages.kvPut(KV_BUBBLE + conversationId, bubbleKey.toByteArray())
+        }
+    }
+
+    /** Every attachment in a conversation, newest first, for the gallery. */
+    fun conversationAttachments(conversationId: String): List<StoredAttachment> =
+        store.messages.messages(conversationId, limit = 2_000)
+            .flatMap { it.attachments }
+            .reversed()
+
+    /** Sends a recorded voice note. */
+    suspend fun sendVoiceNote(
+        conversationId: String,
+        bytes: ByteArray,
+    ) = withContext(Dispatchers.IO) {
+        sendAttachments(
+            conversationId = conversationId,
+            body = "",
+            attachments = listOf(
+                OutgoingAttachment(
+                    bytes = bytes,
+                    // The type iOS records, so its player picks it up without
+                    // guessing from the extension.
+                    contentType = "audio/m4a",
+                    filename = "voice-note.m4a",
+                ),
+            ),
+        )
     }
 
     fun searchMessages(query: String) = store.messages.searchMessages(query)

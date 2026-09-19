@@ -30,10 +30,12 @@ import app.relaymsg.call.CallService
 import app.relaymsg.call.GroupCallScreen
 import app.relaymsg.ui.BlockedContactsScreen
 import app.relaymsg.ui.CallLogScreen
+import app.relaymsg.ui.AppearanceScreen
 import app.relaymsg.ui.AuthScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
+import app.relaymsg.ui.MediaGalleryScreen
 import app.relaymsg.ui.ProfileScreen
 import app.relaymsg.ui.ScanLinkScreen
 import app.relaymsg.ui.VerificationScreen
@@ -210,6 +212,8 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var showBlocked by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var verifyPeer by remember { mutableStateOf<String?>(null) }
+    var galleryFor by remember { mutableStateOf<String?>(null) }
+    var appearanceFor by remember { mutableStateOf<String?>(null) }
     val blockedAccounts by viewModel.blockedAccounts.collectAsState()
     val panicEnabled by viewModel.panicEnabled.collectAsState()
     val hiddenConversations by viewModel.hiddenConversations.collectAsState()
@@ -222,6 +226,12 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
             // bar would only offer a way to walk out of the middle of something.
             open != null -> {
                 val conversation = conversations.firstOrNull { it.id == open }
+                val appearance = remember(open, appearanceFor) { viewModel.appearance(open) }
+                val recording by viewModel.recording.collectAsState()
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val microphone = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+                ) { granted -> if (granted) viewModel.startRecording() }
                 ChatScreen(
                     title = conversation?.let(viewModel::titleFor) ?: "Conversation",
                     messages = messages,
@@ -266,6 +276,20 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                         ?.let { target -> { verifyPeer = target.peerAccount } },
                     disappearingSeconds = conversation?.disappearingSeconds ?: 0,
                     onSetDisappearing = { seconds -> viewModel.setDisappearing(open, seconds) },
+                    wallpaperId = appearance.first,
+                    bubbleKey = appearance.second,
+                    onShowGallery = { galleryFor = open },
+                    onShowAppearance = { appearanceFor = open },
+                    recording = recording,
+                    onStartRecording = {
+                        if (hasMicrophone(context)) {
+                            viewModel.startRecording()
+                        } else {
+                            microphone.launch(android.Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    onFinishRecording = { viewModel.finishRecording(open) },
+                    onCancelRecording = viewModel::cancelRecording,
                     // A group has no single account to block, so the action is
                     // hidden rather than shown doing nothing.
                     onToggleBlock = conversation
@@ -294,6 +318,35 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                             }
                         }
                     },
+                )
+            }
+
+            galleryFor != null -> {
+                val id = galleryFor!!
+                MediaGalleryScreen(
+                    title = conversations.firstOrNull { it.id == id }
+                        ?.let(viewModel::titleFor) ?: "conversation",
+                    attachments = remember(id) { viewModel.attachmentsIn(id) },
+                    load = { viewModel.attachmentBytes(it) },
+                    onBack = { galleryFor = null },
+                )
+            }
+
+            appearanceFor != null -> {
+                val id = appearanceFor!!
+                // Read once per entry and held locally, so each tap repaints
+                // the preview without a round trip through the store.
+                var chosen by remember(id) { mutableStateOf(viewModel.appearance(id)) }
+                AppearanceScreen(
+                    title = conversations.firstOrNull { it.id == id }
+                        ?.let(viewModel::titleFor) ?: "this chat",
+                    wallpaperId = chosen.first,
+                    bubbleKey = chosen.second,
+                    onPick = { wallpaper, bubble ->
+                        chosen = wallpaper to bubble
+                        viewModel.setAppearance(id, wallpaper, bubble)
+                    },
+                    onBack = { appearanceFor = null },
                 )
             }
 
@@ -490,6 +543,12 @@ private fun RelayTabBar(selected: Tab, unread: Int, onSelect: (Tab) -> Unit) {
         }
     }
 }
+
+private fun hasMicrophone(context: android.content.Context): Boolean =
+    androidx.core.content.ContextCompat.checkSelfPermission(
+        context,
+        android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
 /** The installed version, read from the package rather than hard-coded. */
 private fun android.content.Context.appVersion(): String = runCatching {

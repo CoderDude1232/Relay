@@ -41,6 +41,10 @@ import androidx.compose.material.icons.filled.StrikethroughS
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
@@ -447,6 +451,14 @@ fun ChatScreen(
     onVerify: (() -> Unit)? = null,
     disappearingSeconds: Long = 0,
     onSetDisappearing: ((Long) -> Unit)? = null,
+    wallpaperId: String? = null,
+    bubbleKey: String? = null,
+    onShowGallery: () -> Unit = {},
+    onShowAppearance: () -> Unit = {},
+    recording: Boolean = false,
+    onStartRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
+    onCancelRecording: () -> Unit = {},
 ) {
     val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
@@ -491,7 +503,7 @@ fun ChatScreen(
                             Icon(Icons.Filled.Call, contentDescription = "Call")
                         }
                     }
-                    if (onToggleBlock != null || onVerify != null) {
+                    run {
                         Box {
                             IconButton(onClick = { overflow = true }) {
                                 Icon(Icons.Filled.MoreVert, contentDescription = "More")
@@ -500,6 +512,20 @@ fun ChatScreen(
                                 expanded = overflow,
                                 onDismissRequest = { overflow = false },
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Media, files and links") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.PhotoLibrary, contentDescription = null)
+                                    },
+                                    onClick = { overflow = false; onShowGallery() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Appearance") },
+                                    leadingIcon = {
+                                        Icon(Icons.Filled.Palette, contentDescription = null)
+                                    },
+                                    onClick = { overflow = false; onShowAppearance() },
+                                )
                                 onVerify?.let { verify ->
                                     DropdownMenuItem(
                                         text = { Text("Verify safety number") },
@@ -534,7 +560,14 @@ fun ChatScreen(
             )
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+        val wallpaper = ChatAppearance.wallpaper(wallpaperId).brush
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .then(if (wallpaper != null) Modifier.background(wallpaper) else Modifier)
+                .imePadding(),
+        ) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -547,6 +580,7 @@ fun ChatScreen(
                         loadAttachment = loadAttachment,
                         onLongPress = { selected = message },
                         ownAccount = ownAccount,
+                        bubbleKey = bubbleKey,
                         votesFor = votesFor,
                         onVote = { target, option ->
                             onVote(
@@ -691,6 +725,33 @@ fun ChatScreen(
                 )
                 Spacer(Modifier.width(6.dp))
                 val canSend = draft.isNotBlank()
+                if (!canSend && mode !is Compose.Edit) {
+                    IconButton(
+                        onClick = { if (recording) onFinishRecording() else onStartRecording() },
+                        modifier = Modifier
+                            .size(46.dp)
+                            .background(
+                                if (recording) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                },
+                                CircleShape,
+                            ),
+                    ) {
+                        Icon(
+                            if (recording) Icons.Filled.Stop else Icons.Filled.Mic,
+                            contentDescription = if (recording) "Send voice note" else "Record",
+                            tint = if (recording) {
+                                MaterialTheme.colorScheme.onError
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    return@Row
+                }
                 IconButton(
                     enabled = canSend,
                     onClick = {
@@ -1192,13 +1253,17 @@ private fun MessageBubble(
     loadAttachment: suspend (app.relaymsg.storage.StoredAttachment) -> ByteArray?,
     onLongPress: () -> Unit,
     ownAccount: String,
+    bubbleKey: String?,
     votesFor: (StoredMessage) -> List<StoredPollVote>,
     onVote: (StoredMessage, Int) -> Unit,
 ) {
     val outgoing = message.isOutgoing
     // Deep -> band, not the logo's full gradient: white on the bright stop is
     // only 3.0:1. Along this run it never drops below 4.7:1.
-    val outgoingFill = Brush.linearGradient(listOf(MagentaDeep, Magenta))
+    // A chosen tint, or the brand's own deep -> band run.
+    val outgoingFill = Brush.linearGradient(
+        ChatAppearance.bubbleTint(bubbleKey) ?: listOf(MagentaDeep, Magenta),
+    )
     val incomingFill = SolidColor(MaterialTheme.colorScheme.surfaceVariant)
 
     // The corner nearest the sender is squared off. It is what gives a thread a
