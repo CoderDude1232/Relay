@@ -559,11 +559,13 @@ class RelayMessenger(
         admins: List<String> = emptyList(),
         target: String = "",
         distributionId: String = "",
+        announceOnly: Boolean = false,
     ): Content = content {
         groupUpdate = relay.content.groupUpdate {
             this.action = action
             this.revision = revision
             this.actor = credentials.accountId
+            this.announceOnly = announceOnly
             if (name.isNotEmpty()) this.name = name
             if (target.isNotEmpty()) this.target = target
             if (distributionId.isNotEmpty()) this.distributionId = distributionId

@@ -34,6 +34,7 @@ import app.relaymsg.ui.AppearanceScreen
 import app.relaymsg.ui.AuthScreen
 import app.relaymsg.ui.ContactCardScreen
 import app.relaymsg.ui.ContactSyncScreen
+import app.relaymsg.ui.GroupInfoScreen
 import app.relaymsg.ui.ChatScreen
 import app.relaymsg.ui.ConversationListScreen
 import app.relaymsg.ui.LinkDeviceScreen
@@ -228,6 +229,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
     var showContactSync by remember { mutableStateOf(false) }
     var showScheduled by remember { mutableStateOf(false) }
     var notepadFor by remember { mutableStateOf<String?>(null) }
+    var groupInfoFor by remember { mutableStateOf<String?>(null) }
 
     // A link or a scan resolves to a username; opening it lands in the thread.
     val pendingContact by viewModel.pendingContact.collectAsState()
@@ -313,6 +315,7 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                     onShowGallery = { galleryFor = open },
                     onShowAppearance = { appearanceFor = open },
                     onShowNotepad = { notepadFor = open },
+                    onShowGroupInfo = conversation?.groupId?.let { id -> { groupInfoFor = id } },
                     onSchedule = { body, at -> viewModel.scheduleMessage(open, body, at) },
                     recording = recording,
                     onStartRecording = {
@@ -353,6 +356,36 @@ private fun SignedIn(viewModel: RelayViewModel, phase: AppPhase.Ready) {
                         }
                     },
                 )
+            }
+
+            groupInfoFor != null -> {
+                val id = groupInfoFor!!
+                // Re-read on every conversation change, so a roster edit shows
+                // immediately rather than after backing out and returning.
+                val group = remember(id, conversations, busy) { viewModel.group(id) }
+                if (group == null) {
+                    groupInfoFor = null
+                } else {
+                    GroupInfoScreen(
+                        group = group,
+                        ownAccount = phase.service.credentials.accountId,
+                        nameFor = viewModel::nameFor,
+                        busy = busy,
+                        onRename = { viewModel.renameGroup(id, it) },
+                        onAddMember = { viewModel.addGroupMember(id, it) },
+                        onRemoveMember = { viewModel.removeGroupMember(id, it) },
+                        onSetAdmin = { account, admin ->
+                            viewModel.setGroupAdmin(id, account, admin)
+                        },
+                        onSetAnnounceOnly = { viewModel.setGroupAnnounceOnly(id, it) },
+                        onLeave = {
+                            viewModel.leaveGroup(id)
+                            groupInfoFor = null
+                            openConversationId = null
+                        },
+                        onBack = { groupInfoFor = null },
+                    )
+                }
             }
 
             notepadFor != null -> {

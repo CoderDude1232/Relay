@@ -448,18 +448,23 @@ class MessageStore(private val db: RelayDatabase) {
         revision: Long,
         members: List<String>,
         admins: List<String>,
+        isAnnounceOnly: Boolean = false,
     ) = db.transaction {
         db.run(
             """
-            INSERT INTO group_state (id, name, distribution_id, revision, admins)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO group_state (id, name, distribution_id, revision, admins, is_announce_only)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 distribution_id = excluded.distribution_id,
                 revision = excluded.revision,
-                admins = excluded.admins
+                admins = excluded.admins,
+                is_announce_only = excluded.is_announce_only
             """,
-            listOf(id, name, distributionId, revision, JSONArray(admins).toString()),
+            listOf(
+                id, name, distributionId, revision,
+                JSONArray(admins).toString(), if (isAnnounceOnly) 1 else 0,
+            ),
         )
         db.run("DELETE FROM group_members WHERE group_id = ?", listOf(id))
         members.forEach {

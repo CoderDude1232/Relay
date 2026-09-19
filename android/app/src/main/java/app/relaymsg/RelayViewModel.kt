@@ -747,6 +747,37 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         _phase.value = AppPhase.SignedOut
     }
 
+    // -------------------------------------------------------------- groups
+
+    fun group(groupId: String) = service?.group(groupId)
+
+    private fun groupAction(block: suspend (RelayService) -> Boolean) {
+        val service = service ?: return
+        if (_busy.value) return
+        _busy.value = true
+        viewModelScope.launch {
+            runCatching { block(service) }
+            _busy.value = false
+        }
+    }
+
+    fun renameGroup(groupId: String, name: String) =
+        groupAction { it.renameGroup(groupId, name) }
+
+    fun addGroupMember(groupId: String, username: String) =
+        groupAction { it.addGroupMember(groupId, username) }
+
+    fun removeGroupMember(groupId: String, account: String) =
+        groupAction { it.removeGroupMember(groupId, account) }
+
+    fun setGroupAdmin(groupId: String, account: String, admin: Boolean) =
+        groupAction { it.setGroupAdmin(groupId, account, admin) }
+
+    fun setGroupAnnounceOnly(groupId: String, announceOnly: Boolean) =
+        groupAction { it.setGroupAnnounceOnly(groupId, announceOnly) }
+
+    fun leaveGroup(groupId: String) = groupAction { it.leaveGroup(groupId) }
+
     // ---------------------------------------------- scheduled + the notepad
 
     @Suppress("OPT_IN_USAGE")

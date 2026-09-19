@@ -1935,6 +1935,147 @@ class RelayService private constructor(
             store.messages.groupConversationId(groupId).orEmpty()
         }
 
+    /**
+     * Applies a group change locally and announces it.
+     *
+     * The relay stores no group state, so `GroupUpdate` **is** the group: every
+     * member's copy is built from the updates they have seen, and an update
+     * that is stored but not sent leaves this device believing something none
+     * of the others do. Both halves happen here, in that order, so a send
+     * failure leaves a roster that is ahead rather than one that is behind.
+     *
+     * Announced to the roster *before* the change where someone is being
+     * removed — they are told they are out, which they could not be told after.
+     */
+    private suspend fun mutateGroup(
+        groupId: String,
+        action: relay.content.ContentOuterClass.GroupUpdate.Action,
+        name: String = "",
+        target: String = "",
+        transform: (app.relaymsg.storage.StoredGroup) -> app.relaymsg.storage.StoredGroup,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val group = store.messages.group(groupId) ?: return@withContext false
+        val updated = transform(group)
+        val revision = group.revision + 1
+
+        // Removing someone rotates the distribution id, which forces fresh
+        // sender keys they cannot derive — otherwise they could still read the
+        // group with the key they already hold.
+        val rotate = action == relay.content.ContentOuterClass.GroupUpdate.Action.REMOVE
+        val distributionId = if (rotate) UUID.randomUUID().toString() else updated.distributionId
+
+        store.messages.upsertGroup(
+            id = groupId,
+            name = updated.name,
+            distributionId = distributionId,
+            revision = revision,
+            members = updated.members,
+            admins = updated.admins,
+            isAnnounceOnly = updated.isAnnounceOnly,
+        )
+
+        val update = messenger.buildGroupUpdate(
+            groupId = groupId,
+            action = action,
+            revision = revision,
+            name = name,
+            members = updated.members,
+            admins = updated.admins,
+            target = target,
+            distributionId = distributionId,
+            announceOnly = updated.isAnnounceOnly,
+        )
+        // The old roster, so a removed member learns they were removed.
+        val audience = (group.members + updated.members).distinct()
+        runCatching {
+            messenger.sendToGroupMembers(
+                socket, audience, update.toByteArray(), System.currentTimeMillis(),
+            )
+        }
+        refreshConversations()
+        true
+    }
+
+    suspend fun addGroupMember(groupId: String, username: String): Boolean {
+        val account = runCatching { resolveAccount(username.trim()) }.getOrNull() ?: return false
+        val group = store.messages.group(groupId) ?: return false
+        if (account in group.members) return true
+        return mutateGroup(
+            groupId,
+            relay.content.ContentOuterClass.GroupUpdate.Action.ADD,
+            target = account,
+        ) { it.copy(members = it.members + account) }
+    }
+
+    suspend fun removeGroupMember(groupId: String, account: String): Boolean = mutateGroup(
+        groupId,
+        relay.content.ContentOuterClass.GroupUpdate.Action.REMOVE,
+        target = account,
+    ) { group ->
+        group.copy(
+            members = group.members - account,
+            // Removing an admin removes their admin rights with them.
+            admins = group.admins - account,
+        )
+    }
+
+    suspend fun renameGroup(groupId: String, name: String): Boolean = mutateGroup(
+        groupId,
+        relay.content.ContentOuterClass.GroupUpdate.Action.RENAME,
+        name = name.trim(),
+    ) { it.copy(name = name.trim()) }
+
+    suspend fun setGroupAdmin(groupId: String, account: String, admin: Boolean): Boolean =
+        mutateGroup(
+            groupId,
+            // Distinct actions rather than one "admins changed": the receiver
+            // applies the whole list either way, but iOS reads the action to
+            // phrase what it shows in the thread.
+            if (admin) {
+                relay.content.ContentOuterClass.GroupUpdate.Action.PROMOTE_ADMIN
+            } else {
+                relay.content.ContentOuterClass.GroupUpdate.Action.DEMOTE_ADMIN
+            },
+            target = account,
+        ) { group ->
+            group.copy(
+                admins = if (admin) (group.admins + account).distinct() else group.admins - account,
+            )
+        }
+
+    /** Only an admin may set this, and the relay cannot enforce it — the roster is ours. */
+    suspend fun setGroupAnnounceOnly(groupId: String, announceOnly: Boolean): Boolean =
+        mutateGroup(
+            groupId,
+            relay.content.ContentOuterClass.GroupUpdate.Action.SET_ANNOUNCE_ONLY,
+        ) { it.copy(isAnnounceOnly = announceOnly) }
+
+    /**
+     * Leaves a group: announce first, then drop the local copy.
+     *
+     * LEAVE rather than REMOVE, because the two mean different things to the
+     * people still in the group, and it does not rotate the distribution id —
+     * nobody was ejected, so there is no key to keep away from anyone.
+     */
+    suspend fun leaveGroup(groupId: String): Boolean {
+        val left = mutateGroup(
+            groupId,
+            relay.content.ContentOuterClass.GroupUpdate.Action.LEAVE,
+            target = credentials.accountId,
+        ) { group ->
+            group.copy(
+                members = group.members - credentials.accountId,
+                admins = group.admins - credentials.accountId,
+            )
+        }
+        if (left) {
+            store.messages.groupConversationId(groupId)?.let { deleteConversation(it) }
+        }
+        return left
+    }
+
+    fun group(groupId: String) = store.messages.group(groupId)
+
     /** Sends a message to a group, encrypted once under our sender key. */
     private suspend fun sendGroupText(conversationId: String, groupId: String, body: String) {
         val group = store.messages.group(groupId) ?: return

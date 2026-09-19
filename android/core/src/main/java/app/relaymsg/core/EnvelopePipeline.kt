@@ -6,6 +6,7 @@ import app.relaymsg.storage.MessageStore
 import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.storage.StoredAttachment
 import relay.content.ContentOuterClass.Content
+import relay.content.ContentOuterClass.GroupUpdate
 import relay.content.ContentOuterClass.ReceiptMessage
 import java.util.UUID
 import relay.content.ContentOuterClass.TypingMessage
@@ -227,6 +228,11 @@ class EnvelopePipeline(
             revision = maxOf(update.revision, existing?.revision ?: 0),
             members = members,
             admins = admins,
+            isAnnounceOnly = if (update.action == GroupUpdate.Action.SET_ANNOUNCE_ONLY) {
+                update.announceOnly
+            } else {
+                existing?.isAnnounceOnly == true
+            },
         )
         if (update.description.isNotEmpty()) messages.setGroupDescription(id, update.description)
         if (update.hasAvatar() || update.announceOnly != (existing?.isAnnounceOnly ?: false)) {

@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.FormatBold
@@ -458,6 +459,8 @@ fun ChatScreen(
     onShowGallery: () -> Unit = {},
     onShowAppearance: () -> Unit = {},
     onShowNotepad: () -> Unit = {},
+    /** Null in a 1:1 conversation, which has no roster. */
+    onShowGroupInfo: (() -> Unit)? = null,
     onSchedule: ((body: String, atMillis: Long) -> Unit)? = null,
     recording: Boolean = false,
     onStartRecording: () -> Unit = {},
@@ -517,6 +520,15 @@ fun ChatScreen(
                                 expanded = overflow,
                                 onDismissRequest = { overflow = false },
                             ) {
+                                onShowGroupInfo?.let { show ->
+                                    DropdownMenuItem(
+                                        text = { Text("Group info") },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Groups, contentDescription = null)
+                                        },
+                                        onClick = { overflow = false; show() },
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Media, files and links") },
                                     leadingIcon = {
