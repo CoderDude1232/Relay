@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares the share target that dynamic sharing shortcuts point at. Without
+  this, shortcuts publish but never appear in the share sheet: the system needs
+  to know which activity handles them and what it accepts.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="app.relaymsg.share.ShareTargetActivity">
+        <data android:mimeType="*/*" />
+        <category android:name="app.relaymsg.category.SHARE_TARGET" />
+    </share-target>
+</shortcuts>

@@ -28,6 +28,7 @@ data class ActiveCall(
     val isMuted: Boolean = false,
     val audioRoute: AudioRouteKind = AudioRouteKind.EARPIECE,
     val isCameraOn: Boolean = true,
+    val isScreenSharing: Boolean = false,
 )
 
 /**
@@ -98,6 +99,18 @@ interface CallTransport {
     fun switchCamera()
 
     /**
+     * Shares the screen in place of the camera.
+     *
+     * [permission] is the result of the system screen-capture consent dialog.
+     * Only possible in a call that already carries video: the track is reused so
+     * nothing is renegotiated, and adding video to an audio call would need a
+     * mid-call offer, which iOS answers with BUSY.
+     */
+    fun startScreenShare(permission: Any): Boolean
+
+    fun stopScreenShare()
+
+    /**
      * Stops or resumes sending video.
      *
      * A track-level enable, like mute: the peer sees a frozen last frame rather
@@ -131,6 +144,8 @@ class NoMediaTransport : CallTransport {
     override fun audioRoutes(): List<AudioRoute> = emptyList()
     override fun selectAudioRoute(route: AudioRoute) = Unit
     override fun switchCamera() = Unit
+    override fun startScreenShare(permission: Any) = false
+    override fun stopScreenShare() = Unit
     override fun setCameraEnabled(enabled: Boolean) = Unit
     override fun close() = Unit
 }
@@ -390,6 +405,21 @@ class CallManager(
                 ?: routes.firstOrNull { it.kind == AudioRouteKind.EARPIECE }
         }
         wanted?.let(::selectAudioRoute)
+    }
+
+    /** Starts sharing the screen. Video calls only; see [CallTransport]. */
+    fun startScreenShare(permission: Any): Boolean {
+        val current = _call.value ?: return false
+        if (!current.isVideo) return false
+        val started = transport?.startScreenShare(permission) ?: false
+        if (started) _call.value = current.copy(isScreenSharing = true)
+        return started
+    }
+
+    fun stopScreenShare() {
+        val current = _call.value ?: return
+        transport?.stopScreenShare()
+        _call.value = current.copy(isScreenSharing = false)
     }
 
     /** Flips the camera. Local only — nothing is signalled. */

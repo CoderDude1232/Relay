@@ -59,6 +59,8 @@ class WebRtcCallTransport(
      * share, because Camera2 only lets a process open a camera once.
      */
     private val sharedMedia: WebRtc.LocalMedia? = null,
+    /** Fired when the system revokes the projection from its own UI. */
+    private val onScreenShareStopped: () -> Unit = {},
     /** iOS labels group legs `grp` and 1:1 streams `stream0`. Cosmetic, matched anyway. */
     private val streamId: String = STREAM_ID,
 ) : CallTransport {
@@ -170,6 +172,15 @@ class WebRtcCallTransport(
 
     override fun switchCamera() {
         media?.switchCamera(onCameraFacing)
+    }
+
+    override fun startScreenShare(permission: Any): Boolean {
+        val intent = permission as? android.content.Intent ?: return false
+        return media?.startScreenCapture(context, intent, onScreenShareStopped) ?: false
+    }
+
+    override fun stopScreenShare() {
+        media?.stopScreenCapture(context)
     }
 
     override fun setCameraEnabled(enabled: Boolean) {

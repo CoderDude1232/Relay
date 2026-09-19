@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.relaymsg.call.CallMedia
 import app.relaymsg.call.CallScreen
+import app.relaymsg.call.CallService
 import app.relaymsg.call.GroupCallScreen
 import app.relaymsg.ui.BlockedContactsScreen
 import app.relaymsg.ui.CallLogScreen
@@ -494,6 +495,15 @@ private fun InCallOverlay(viewModel: RelayViewModel) {
         return
     }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val projection = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        result.data
+            ?.takeIf { result.resultCode == android.app.Activity.RESULT_OK }
+            ?.let(viewModel::startScreenShare)
+    }
+
     val active = call ?: return
     if (fullScreenElsewhere) return
 
@@ -509,6 +519,17 @@ private fun InCallOverlay(viewModel: RelayViewModel) {
         onToggleSpeaker = viewModel::toggleSpeaker,
         onSwitchCamera = viewModel::switchCamera,
         onToggleCamera = viewModel::toggleCamera,
+        onToggleScreenShare = {
+            if (active.isScreenSharing) {
+                viewModel.stopScreenShare()
+            } else {
+                CallService.prepareProjection(context)
+                projection.launch(
+                    (context.getSystemService(android.media.projection.MediaProjectionManager::class.java))
+                        .createScreenCaptureIntent(),
+                )
+            }
+        },
         audioRoutes = viewModel::audioRoutes,
         onSelectRoute = viewModel::selectAudioRoute,
     )

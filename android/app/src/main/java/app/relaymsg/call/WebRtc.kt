@@ -10,7 +10,10 @@ import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SurfaceTextureHelper
+import org.webrtc.VideoCapturer
+import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 import org.webrtc.audio.JavaAudioDeviceModule
 
@@ -52,9 +55,64 @@ object WebRtc {
     class LocalMedia internal constructor(
         val audioTrack: AudioTrack,
         val videoTrack: VideoTrack?,
-        private val capturer: CameraVideoCapturer?,
+        private val camera: CameraVideoCapturer?,
         private val helper: SurfaceTextureHelper?,
+        private val source: VideoSource?,
     ) {
+        /** The screen capturer, while sharing. Null when the camera is live. */
+        private var screen: VideoCapturer? = null
+
+        val isScreenSharing: Boolean get() = screen != null
+
+        /**
+         * Swaps the camera for the screen, feeding the **same** video source.
+         *
+         * The track never changes, so there is nothing to renegotiate — which
+         * matters, because iOS answers a mid-call offer with BUSY. It also means
+         * screen share only works in a call that already carries video; adding
+         * video to an audio call would need exactly that renegotiation.
+         */
+        fun startScreenCapture(
+            context: Context,
+            permission: android.content.Intent,
+            onStopped: () -> Unit,
+        ): Boolean {
+            val source = source ?: return false
+            val helper = helper ?: return false
+            if (screen != null) return true
+
+            val capturer = ScreenCapturerAndroid(
+                permission,
+                object : android.media.projection.MediaProjection.Callback() {
+                    // The user can revoke the projection from the system UI at
+                    // any moment; the call carries on with the camera.
+                    override fun onStop() = onStopped()
+                },
+            )
+            return runCatching {
+                runCatching { camera?.stopCapture() }
+                capturer.initialize(helper, context, source.capturerObserver)
+                val metrics = context.resources.displayMetrics
+                capturer.startCapture(metrics.widthPixels, metrics.heightPixels, SCREEN_FPS)
+                screen = capturer
+            }.isSuccess
+        }
+
+        /** Stops sharing and brings the camera back. */
+        fun stopScreenCapture(context: Context) {
+            val capturer = screen ?: return
+            runCatching { capturer.stopCapture() }
+            runCatching { capturer.dispose() }
+            screen = null
+
+            val source = source ?: return
+            val helper = helper ?: return
+            runCatching {
+                camera?.initialize(helper, context, source.capturerObserver)
+                camera?.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
+            }
+        }
+
         fun setMicrophoneEnabled(enabled: Boolean) = audioTrack.setEnabled(enabled)
 
         fun setCameraEnabled(enabled: Boolean) {
@@ -62,7 +120,7 @@ object WebRtc {
         }
 
         fun switchCamera(onDone: (isFront: Boolean) -> Unit) {
-            capturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+            camera?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
                 override fun onCameraSwitchDone(isFrontCamera: Boolean) = onDone(isFrontCamera)
                 override fun onCameraSwitchError(error: String?) {
                     Log.w(TAG, "camera switch failed: $error")
@@ -71,8 +129,11 @@ object WebRtc {
         }
 
         fun close() {
-            runCatching { capturer?.stopCapture() }
-            capturer?.dispose()
+            runCatching { screen?.stopCapture() }
+            screen?.dispose()
+            screen = null
+            runCatching { camera?.stopCapture() }
+            camera?.dispose()
             helper?.dispose()
             videoTrack?.dispose()
             audioTrack.dispose()
@@ -97,14 +158,14 @@ object WebRtc {
             AUDIO_TRACK_ID,
             factory.createAudioSource(MediaConstraints()),
         )
-        if (!isVideo) return LocalMedia(audio, null, null, null)
+        if (!isVideo) return LocalMedia(audio, null, null, null, null)
 
         val enumerator = Camera2Enumerator(context)
         val device = enumerator.deviceNames.firstOrNull(enumerator::isFrontFacing)
             ?: enumerator.deviceNames.firstOrNull()
         if (device == null) {
             Log.w(TAG, "no camera available; continuing audio-only")
-            return LocalMedia(audio, null, null, null)
+            return LocalMedia(audio, null, null, null, null)
         }
 
         val source = factory.createVideoSource(false)
@@ -114,13 +175,13 @@ object WebRtc {
             helper.dispose()
             source.dispose()
             Log.w(TAG, "could not open camera; continuing audio-only")
-            return LocalMedia(audio, null, null, null)
+            return LocalMedia(audio, null, null, null, null)
         }
 
         capturer.initialize(helper, context, source.capturerObserver)
         capturer.startCapture(VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
         onCameraFacing(enumerator.isFrontFacing(device))
-        return LocalMedia(audio, factory.createVideoTrack(VIDEO_TRACK_ID, source), capturer, helper)
+        return LocalMedia(audio, factory.createVideoTrack(VIDEO_TRACK_ID, source), capturer, helper, source)
     }
 
     private fun build(context: Context): PeerConnectionFactory {
@@ -155,4 +216,7 @@ object WebRtc {
     private const val VIDEO_WIDTH = 1280
     private const val VIDEO_HEIGHT = 720
     private const val VIDEO_FPS = 30
+
+    /** A shared screen is mostly still; 15 is plenty and halves the bitrate. */
+    private const val SCREEN_FPS = 15
 }

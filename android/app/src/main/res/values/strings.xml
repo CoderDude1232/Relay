@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Relay</string>
+    <string name="widget_description">Recent conversations and unread count.</string>
 </resources>

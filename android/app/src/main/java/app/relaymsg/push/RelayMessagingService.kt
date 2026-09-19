@@ -12,6 +12,7 @@ import android.util.Base64
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 import app.relaymsg.MainActivity
 import app.relaymsg.call.CallWake
 import app.relaymsg.call.CallService
@@ -87,16 +88,28 @@ class RelayMessagingService : FirebaseMessagingService() {
                     else -> service.drainQueue()
                 }
 
-            outcomes.mapNotNull { outcome ->
-                outcome.notificationBody?.let { body ->
-                    val sender = outcome.peerAccount?.let(service::displayName) ?: "New message"
-                    sender to body
-                }
-            }.forEach { (sender, body) -> notify(sender, body) }
+            outcomes.forEach { outcome ->
+                val body = outcome.notificationBody ?: return@forEach
+                val account = outcome.peerAccount
+                notify(
+                    sender = account?.let(service::displayName) ?: "New message",
+                    body = body,
+                    avatar = account?.let(service::peerAvatar),
+                    conversationId = outcome.conversationId,
+                )
+            }
         }
     }
 
-    private fun notify(sender: String, body: String) {
+    /**
+     * Posts a message notification in MessagingStyle.
+     *
+     * The Android analogue of the iOS Notification Content extension: rather
+     * than a custom view, the system renders sender, avatar and a conversation
+     * thread itself — which also gets Relay into the notification shade's
+     * Conversations section, where people expect messaging apps to be.
+     */
+    private fun notify(sender: String, body: String, avatar: ByteArray?, conversationId: String?) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -115,18 +128,35 @@ class RelayMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
+        val person = androidx.core.app.Person.Builder()
+            .setName(sender)
+            .setKey(conversationId ?: sender)
+            .apply {
+                avatar?.let { bytes ->
+                    runCatching {
+                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    }.getOrNull()?.let { setIcon(IconCompat.createWithBitmap(it)) }
+                }
+            }
+            .build()
+
+        val style = NotificationCompat.MessagingStyle(person)
+            .addMessage(body, System.currentTimeMillis(), person)
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle(sender)
-            .setContentText(body)
+            .setStyle(style)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(open)
+            // Ties the notification to its Direct Share shortcut, which is what
+            // promotes it into the shade's Conversations section.
+            .apply { conversationId?.let { setShortcutId(it) } }
             .build()
 
         NotificationManagerCompat.from(this)
-            .notify(sender.hashCode(), notification)
+            .notify(conversationId?.hashCode() ?: sender.hashCode(), notification)
     }
 
     private fun ensureChannel() {

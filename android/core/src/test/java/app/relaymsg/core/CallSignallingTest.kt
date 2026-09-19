@@ -66,6 +66,9 @@ class CallSignallingTest {
         override fun audioRoutes() = routes
         override fun selectAudioRoute(route: AudioRoute) { this.route = route }
         override fun switchCamera() { switches++ }
+        var sharing = false
+        override fun startScreenShare(permission: Any): Boolean { sharing = true; return true }
+        override fun stopScreenShare() { sharing = false }
         override fun setCameraEnabled(enabled: Boolean) { cameraOn = enabled }
         override fun close() { closed = true }
     }

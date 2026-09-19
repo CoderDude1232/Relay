@@ -16,6 +16,8 @@ import app.relaymsg.net.LinkedDevice
 import app.relaymsg.net.PkcePair
 import app.relaymsg.net.SupabaseAuth
 import app.relaymsg.push.RelayRuntime
+import app.relaymsg.share.SharingShortcuts
+import app.relaymsg.widget.RelayWidget
 import app.relaymsg.storage.Conversation
 import app.relaymsg.storage.QuotedMessage
 import app.relaymsg.storage.SqlCipherSignalStore
@@ -583,6 +585,21 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         service?.calls?.switchCamera()
     }
 
+    /**
+     * Hands the screen-capture consent result to the call.
+     *
+     * The consent dialog is the system's, so the activity collects it; the
+     * foreground service must already carry the mediaProjection type by then,
+     * which is why it is promoted before the dialog is shown.
+     */
+    fun startScreenShare(permission: android.content.Intent) {
+        service?.calls?.startScreenShare(permission)
+    }
+
+    fun stopScreenShare() {
+        service?.calls?.stopScreenShare()
+    }
+
     fun toggleCamera() {
         val service = service ?: return
         service.calls.setCameraEnabled(!(call.value?.isCameraOn ?: true))
@@ -715,6 +732,10 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
     fun signOut() {
         val service = service ?: return
         service.signOut()
+        // Shortcuts live in the system's store, outside the encrypted database,
+        // so wiping the account has to clear them explicitly.
+        SharingShortcuts.clear(getApplication())
+        RelayWidget.refresh(getApplication())
         pendingUsername = null
         _inviteLink.value = null
         _authStep.value = AuthStep.WELCOME
@@ -794,6 +815,15 @@ class RelayViewModel(application: Application) : AndroidViewModel(application) {
         start()
         RelayRuntime.attach(getApplication(), this)
         viewModelScope.launch { registerCurrentPushToken(this@startUp) }
+        viewModelScope.launch {
+            // The share sheet and the home screen both read from here, and both
+            // are outside the app, so they are refreshed whenever the list moves
+            // rather than only when the app is opened.
+            conversations.collect { list ->
+                SharingShortcuts.publish(getApplication(), list, ::titleFor)
+                RelayWidget.refresh(getApplication())
+            }
+        }
     }
 
     /**

@@ -2,4 +2,16 @@
 <resources>
 
     <style name="Theme.Relay" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- One row of the home-screen widget. -->
+    <style name="WidgetRow">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textColor">#F6EFF3</item>
+        <item name="android:paddingTop">5dp</item>
+        <item name="android:paddingBottom">5dp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+    </style>
 </resources>

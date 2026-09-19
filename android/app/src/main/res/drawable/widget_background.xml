@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The brand's own black, so the widget reads as Relay on any wallpaper. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#12090F" />
+    <corners android:radius="20dp" />
+</shape>

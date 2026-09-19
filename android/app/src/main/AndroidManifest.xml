@@ -31,6 +31,12 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!--
+      Screen sharing. From Android 14 a foreground service with the
+      mediaProjection type must already be running before the projection may
+      start, so CallService re-promotes itself with the extra type first.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <!-- A phone with no camera can still place and take audio calls. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
@@ -78,6 +84,31 @@
         </activity>
 
         <!--
+          Android's Share Extension: anything shared from another app lands
+          here. Also the target dynamic sharing shortcuts point at, which is
+          what puts recent conversations at the top of the share sheet.
+        -->
+        <activity
+            android:name=".share.ShareTargetActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.Relay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="*/*" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!--
           The screen a call's full-screen intent raises. It lives in its own task
           and outside recents: it is a transient interruption, not somewhere the
           user navigates back to.
@@ -100,7 +131,23 @@
         <service
             android:name=".call.CallService"
             android:exported="false"
-            android:foregroundServiceType="phoneCall" />
+            android:foregroundServiceType="phoneCall|mediaProjection" />
+
+        <!--
+          Home-screen widget: names and an unread count, never message text. A
+          widget sits on a locked home screen where anyone can read it.
+        -->
+        <receiver
+            android:name=".widget.RelayWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/relay_widget_info" />
+        </receiver>
 
         <!--
           Receives contentless FCM wakes. The payload never carries message text

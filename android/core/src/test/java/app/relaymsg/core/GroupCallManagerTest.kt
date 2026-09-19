@@ -37,6 +37,8 @@ class GroupCallManagerTest {
         override fun audioRoutes() = emptyList<AudioRoute>()
         override fun selectAudioRoute(route: AudioRoute) {}
         override fun switchCamera() {}
+        override fun startScreenShare(permission: Any) = false
+        override fun stopScreenShare() {}
         override fun setCameraEnabled(enabled: Boolean) {}
         override fun close() { closed = true }
     }

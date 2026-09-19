@@ -18,6 +18,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.ScreenShare
+import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.FlipCameraAndroid
@@ -80,6 +82,7 @@ fun CallScreen(
     onToggleSpeaker: () -> Unit,
     onSwitchCamera: () -> Unit = {},
     onToggleCamera: () -> Unit = {},
+    onToggleScreenShare: () -> Unit = {},
     /** Queried when the user opens the picker: headsets come and go mid-call. */
     audioRoutes: () -> List<AudioRoute> = ::emptyList,
     onSelectRoute: (AudioRoute) -> Unit = {},
@@ -132,6 +135,7 @@ fun CallScreen(
                     onToggleSpeaker = onToggleSpeaker,
                     onSwitchCamera = onSwitchCamera,
                     onToggleCamera = onToggleCamera,
+                    onToggleScreenShare = onToggleScreenShare,
                     audioRoutes = audioRoutes,
                     onSelectRoute = onSelectRoute,
                 )
@@ -171,6 +175,7 @@ private fun Controls(
     onToggleSpeaker: () -> Unit,
     onSwitchCamera: () -> Unit,
     onToggleCamera: () -> Unit,
+    onToggleScreenShare: () -> Unit,
     audioRoutes: () -> List<AudioRoute>,
     onSelectRoute: (AudioRoute) -> Unit,
 ) {
@@ -233,6 +238,25 @@ private fun Controls(
                     background = MaterialTheme.colorScheme.surfaceVariant,
                     onClick = onSwitchCamera,
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                CircleButton(
+                    icon = if (call.isScreenSharing) {
+                        Icons.Filled.StopScreenShare
+                    } else {
+                        Icons.Filled.ScreenShare
+                    },
+                    label = if (call.isScreenSharing) "Stop sharing" else "Share screen",
+                    background = if (call.isScreenSharing) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    onClick = onToggleScreenShare,
+                    contentColor = if (call.isScreenSharing) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }

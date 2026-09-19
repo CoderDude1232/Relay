@@ -61,6 +61,7 @@ class CallService : Service() {
             ACTION_DECLINE -> decline()
             ACTION_ACCEPT -> accept()
             ACTION_ONGOING -> ongoing(intent)
+            ACTION_PROJECTION -> promoteForProjection()
             else -> ring(intent)
         }
         // Never restart with a null intent: a call that has already been missed
@@ -221,6 +222,28 @@ class CallService : Service() {
      * the call is still real, so the answer is to ring anyway and accept that the
      * process may be frozen sooner — not to swallow the call.
      */
+    /**
+     * Re-promotes with the mediaProjection type.
+     *
+     * From Android 14 the projection is refused unless a foreground service
+     * already declares that type, and the type cannot be declared speculatively
+     * at call start — so it is added at the moment the user asks to share.
+     */
+    private fun promoteForProjection() {
+        val notification = wake?.let { CallNotifications.ongoing(this, it) }
+            ?: CallNotifications.incoming(this, UNKNOWN_CALLER)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    CallNotifications.NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+                )
+            }
+        }.onFailure { Log.w(TAG, "could not add the mediaProjection type", it) }
+    }
+
     private fun goForeground(notification: Notification) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -258,6 +281,7 @@ class CallService : Service() {
 
         const val ACTION_RING = "app.relaymsg.call.RING"
         const val ACTION_ONGOING = "app.relaymsg.call.ONGOING"
+        const val ACTION_PROJECTION = "app.relaymsg.call.PROJECTION"
         const val ACTION_ACCEPT = "app.relaymsg.call.ACCEPT"
         const val ACTION_DECLINE = "app.relaymsg.call.DECLINE"
 
@@ -289,6 +313,15 @@ class CallService : Service() {
          */
         fun ongoing(context: Context, wake: CallWake) {
             start(context, wake, ACTION_ONGOING) {}
+        }
+
+        /** Adds the mediaProjection type before a screen share begins. */
+        fun prepareProjection(context: Context) {
+            runCatching {
+                context.startService(
+                    Intent(context, CallService::class.java).setAction(ACTION_PROJECTION),
+                )
+            }
         }
 
         private inline fun start(

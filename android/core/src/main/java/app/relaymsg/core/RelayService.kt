@@ -975,6 +975,10 @@ class RelayService private constructor(
 
     fun verificationState(account: String) = store.signalStore.verificationState(account)
 
+    /** A peer's avatar bytes, for a notification or a row. Null if they have none. */
+    fun peerAvatar(account: String): ByteArray? =
+        runCatching { store.messages.peerProfile(account)?.avatarData }.getOrNull()
+
     fun setVerified(account: String, verified: Boolean) {
         store.signalStore.setVerified(verified, account)
         refreshConversations()
@@ -1585,6 +1589,33 @@ class RelayService private constructor(
         }
         store.messages.updateStatus(localId, status)
         refreshActiveMessages(); refreshConversations()
+    }
+
+    /**
+     * Sends a file another app handed us, resolving its bytes and type.
+     *
+     * Reads the whole stream into memory, which is what the attachment cipher
+     * needs anyway — it seals in one pass, and a share large enough to trouble
+     * the heap would fail the relay's size limit first.
+     */
+    suspend fun sendSharedFile(
+        context: Context,
+        conversationId: String,
+        uri: android.net.Uri,
+    ) = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: return@withContext
+        sendAttachments(
+            conversationId = conversationId,
+            body = "",
+            attachments = listOf(
+                OutgoingAttachment(
+                    bytes = bytes,
+                    contentType = resolver.getType(uri) ?: "application/octet-stream",
+                    filename = uri.lastPathSegment,
+                ),
+            ),
+        )
     }
 
     /**

@@ -28,8 +28,11 @@ import kotlinx.coroutines.sync.withLock
 object RelayRuntime {
     private val lock = Mutex()
 
-    /** Outlives any one call: local candidates keep arriving after connect. */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /**
+     * Outlives any one screen: local ICE candidates keep arriving after connect,
+     * and a share has to finish sending after its activity has gone.
+     */
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
     private var service: RelayService? = null
