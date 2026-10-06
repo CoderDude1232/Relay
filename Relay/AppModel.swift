@@ -344,7 +344,7 @@ final class AppModel {
         switch outcome {
         case .usernameRequired:
             throw NeedsUsernameError()
-        case .signedIn(let credentials, let resolvedUsername, _):
+        case .signedIn(let credentials, let resolvedUsername, let created):
             let service: MessagingService
             do {
                 service = try await makeService(credentials: credentials, serverURL: serverURL, username: resolvedUsername)
@@ -365,6 +365,11 @@ final class AppModel {
             try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
             service.start()
             phase = .ready(service)
+            if created {
+                service.noteAccountCreated(username: resolvedUsername)
+            } else {
+                service.noteSignedIn(username: resolvedUsername)
+            }
             uploadPushTokenIfReady()
             publishDeviceAuthorizationKeyIfReady()
             publishAccessKeyIfReady()
@@ -401,7 +406,9 @@ final class AppModel {
             )
             try? keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
         }
+        let oldUsername = service.username
         service.username = newUsername
+        service.noteUsernameChanged(from: oldUsername, to: newUsername)
     }
 
     enum UsernameAvailability: Equatable {
@@ -477,6 +484,7 @@ final class AppModel {
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
         service.start()
         phase = .ready(service)
+        service.noteAccountCreated(username: username)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
@@ -533,6 +541,7 @@ final class AppModel {
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
         service.start()
         phase = .ready(service)
+        service.noteAccountRecovered(username: username)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()

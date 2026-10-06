@@ -97,6 +97,8 @@ final class CloudBackupManager {
     // MARK: - Backup
 
     /// Encrypts the current snapshot and writes it to CloudKit. Best-effort.
+    private static let failureNoticedKey = "relay.backup.failureNoticed"
+
     func backupNow(service: MessagingService) async {
         guard isEnabled else { return }
         status = .working
@@ -134,11 +136,20 @@ final class CloudBackupManager {
             // Best effort: remove a pre-v2 record that was named after the account id.
             let legacyID = CKRecord.ID(recordName: Self.legacyRecordName(service.credentials.accountId))
             _ = try? await database.modifyRecords(saving: [], deleting: [legacyID])
+            let isFirstBackup = lastBackup == nil
             lastBackup = now
             UserDefaults.standard.set(digest, forKey: Self.lastDigestKey)
             status = .success(now)
+            UserDefaults.standard.set(false, forKey: Self.failureNoticedKey)
+            if isFirstBackup { service.noteFirstBackup() }
         } catch {
-            status = .failed(Self.friendly(error))
+            let reason = Self.friendly(error)
+            status = .failed(reason)
+            // One notice per run of failures, not one per retry.
+            if !UserDefaults.standard.bool(forKey: Self.failureNoticedKey) {
+                UserDefaults.standard.set(true, forKey: Self.failureNoticedKey)
+                service.noteBackupFailing(reason)
+            }
         }
     }
 
@@ -240,6 +251,7 @@ final class CloudBackupManager {
             isEnabled = true
             lastBackup = updatedAt
             status = .success(Date())
+            service.noteBackupRestored(from: updatedAt)
         } catch {
             status = .failed(Self.friendly(error))
             throw error

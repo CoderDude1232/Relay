@@ -2252,8 +2252,14 @@ private struct MessageBubble: View {
             let target = "@\(username)"
             let raw = String(base.characters)
             var searchIdx = raw.startIndex
+            // Whole mentions only: "@test2" must not light up inside "@test2ax"
+            // or "me@test2".
+            func isNameChar(_ c: Character) -> Bool { c.isLetter || c.isNumber || c == "_" }
             while let found = raw.range(of: target, options: .caseInsensitive, range: searchIdx..<raw.endIndex) {
-                if let lower = AttributedString.Index(found.lowerBound, within: base),
+                let endsWord = found.upperBound == raw.endIndex || !isNameChar(raw[found.upperBound])
+                let startsWord = found.lowerBound == raw.startIndex || !isNameChar(raw[raw.index(before: found.lowerBound)])
+                if endsWord, startsWord,
+                   let lower = AttributedString.Index(found.lowerBound, within: base),
                    let upper = AttributedString.Index(found.upperBound, within: base) {
                     base[lower..<upper].foregroundColor = .orange
                 }

@@ -307,7 +307,7 @@ class NotificationService: UNNotificationServiceExtension {
         // Like the app, an @mention of us still surfaces in a muted conversation.
         if RelayStore.isConversationMuted(notification.conversationId, defaults: defaults) {
             let mentioned = account.username.map {
-                !$0.isEmpty && notification.body.localizedCaseInsensitiveContains("@\($0)")
+                Mentions.contains(notification.body, username: $0)
             } ?? false
             if !mentioned { return .suppress }
         }

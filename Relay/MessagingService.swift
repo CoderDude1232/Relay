@@ -581,7 +581,7 @@ final class MessagingService {
                 // so the user still sees they were called out.
                 if let body = result.notification?.body,
                    let me = username,
-                   body.localizedCaseInsensitiveContains("@\(me)"),
+                   Mentions.contains(body, username: me),
                    isConversationMuted(conversationId),
                    activeConversationId != conversationId
                 {
@@ -3798,7 +3798,7 @@ final class MessagingService {
         if !UserDefaults.standard.bool(forKey: "relay.official.welcomed") {
             UserDefaults.standard.set(true, forKey: "relay.official.welcomed")
             insertRelayMessage(
-                "Welcome to Relay 👋\n\nI'll let you know about important account activity here — like when a new device is linked to your account. You can't reply to this chat.",
+                "Welcome to Relay 👋\n\nI'll let you know about important account activity here — new devices, sign-ins, username changes, account recovery and backups. You can't reply to this chat.",
                 conversationId: id)
         }
         // Not pinned. Earlier builds auto-pinned it on creation; undo that
