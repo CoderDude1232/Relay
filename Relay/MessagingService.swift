@@ -120,7 +120,7 @@ final class MessagingService {
     /// Called when a verified nuke command is received. The closure must wipe local storage.
     var onNukeReceived: (() async -> Void)?
 
-    private let storage: SecureStore
+    let storage: SecureStore
     private let keychain: KeychainSecureStore
     private let engine: CryptoEngine
     private let processor: EnvelopeProcessor
@@ -337,8 +337,16 @@ final class MessagingService {
         }
     }
 
+    private var didSweepInterruptedSends = false
+
     func start() {
         guard connectionTask == nil else { return }
+        if !didSweepInterruptedSends {
+            // Only on the first start of this process: nothing can be mid-send
+            // yet, so anything still "sending" was interrupted by a kill.
+            didSweepInterruptedSends = true
+            failInterruptedSends()
+        }
         connectionTask = Task { await runConnectionLoop() }
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
         startPathMonitor()
@@ -373,6 +381,11 @@ final class MessagingService {
         pathMonitor = nil
         expireTask?.cancel()
         expireTask = nil
+        // Reflect that nothing is running, so a background refresh knows to
+        // start() the service again.
+        connectionState = .disconnected
+        socketLive = false
+        isDrainingQueue = false
         let socket = socket
         self.socket = nil
         guard let socket else { return }
@@ -418,6 +431,9 @@ final class MessagingService {
                 log.warning("relay auth/connectivity preflight failed: \(PrivacyRedactor.localizedError(error))")
                 connectionState = .connecting
             }
+            // Apply group/profile changes the notification extension stored
+            // while we were backgrounded, before newer queued envelopes land.
+            await drainPendingControlMessages(sendReceipts: false)
             let socket = RelayWebSocket(baseURL: serverURL, credentials: credentials, session: session)
             self.socket = socket
             for await event in await socket.connect() {
@@ -429,6 +445,9 @@ final class MessagingService {
                     backoffSeconds = 1.0
                     // One batch refresh after draining all queued messages.
                     refreshConversations()
+                    // Now the socket is live, also send the delivery receipts
+                    // the extension deferred.
+                    await drainPendingControlMessages()
                     if !didRepublishKeysThisLaunch {
                         didRepublishKeysThisLaunch = true
                         do {
@@ -500,19 +519,34 @@ final class MessagingService {
         }
     }
 
+    /// Tail of the envelope-processing chain. Both the WebSocket loop and the
+    /// REST poll loop deliver envelopes; each `handleEnvelope` call waits for
+    /// the previous one, so ratchet state for a sender is only ever advanced by
+    /// one decrypt at a time even when the two loops overlap.
+    private var envelopeChain: Task<Void, Never>?
+
     private func handleEnvelope(_ envelope: IncomingEnvelope) async {
+        let previous = envelopeChain
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.processEnvelope(envelope)
+        }
+        envelopeChain = task
+        await task.value
+    }
+
+    private func processEnvelope(_ envelope: IncomingEnvelope) async {
         // Ack unconditionally once processing finishes: an envelope that
         // fails to decrypt would otherwise redeliver forever. Dedup and
         // ratchet state make retrying it pointless anyway.
         defer {
             Task { await self.ackEnvelope(envelope.id) }
         }
-        // Drop messages from blocked accounts (still ACK so the server removes them).
-        guard !isBlocked(envelope.senderAccount) else { return }
+        // Blocked senders are still decrypted (so the ratchet stays in step)
+        // and then dropped by `process(_:blockedAccounts:)`.
         do {
             // Run crypto + DB write off the main thread. Serialization is
-            // maintained by the caller: the connection loop awaits each call
-            // before delivering the next envelope, so ratchet state advances
+            // maintained by `handleEnvelope`'s chain, so ratchet state advances
             // one message at a time even though the work runs on a bg thread.
             let proc = processor
             let blocked = blockedAccounts
@@ -522,14 +556,17 @@ final class MessagingService {
 
             if let timestamp = result.sideEffects.deliveryReceiptTimestamp {
                 let groupId = result.conversationId.flatMap { group(for: $0)?.id }
-                await sendReceipt(.delivery, timestamps: [timestamp], toPeer: envelope.senderAccount, groupId: groupId)
+                // Sealed envelopes carry no sender on the outside — receipt the
+                // identity authenticated by decryption.
+                await sendReceipt(.delivery, timestamps: [timestamp], toPeer: result.peerAccount ?? envelope.senderAccount, groupId: groupId)
             }
             if let account = result.sideEffects.backfillUsernameForAccount,
                let conversationId = result.conversationId {
                 backfillUsernameIfNeeded(conversationId: conversationId, account: account)
             }
             if let typingStarted = result.typingStarted {
-                applyPeerTyping(started: typingStarted, peerAccount: result.peerAccount)
+                applyPeerTyping(started: typingStarted, peerAccount: result.peerAccount,
+                                groupConversationId: result.conversationId)
             }
             if result.outcome == .stored, let conversationId = result.conversationId {
                 clearPeerTyping(for: conversationId) // a real message ends typing
@@ -553,8 +590,9 @@ final class MessagingService {
                     Task { await markVisibleMessagesRead(in: conversationId) }
                 }
                 // Intercept special-prefix messages for notepad and location.
-                if let lastMsg = activeMessages.last, result.outcome == .stored {
-                    let body = lastMsg.body
+                // Read the body of *this* envelope — `activeMessages` is
+                // refreshed asynchronously and still holds the previous message.
+                if result.outcome == .stored, let body = result.notification?.body {
                     if body.hasPrefix(notepadPrefix) {
                         let content = String(body.dropFirst(notepadPrefix.count))
                         setNotepadContent(content, for: conversationId)
@@ -772,118 +810,203 @@ final class MessagingService {
         replyTo: QuotedMessage? = nil,
         attachments pending: [PendingAttachment] = []
     ) async {
-        if let group = try? groupForConversation(conversationId) {
+        let group = try? groupForConversation(conversationId)
+        if let group {
             // Announce-only: only admins may send.
             if group.isAnnounceOnly && !group.admins.contains(credentials.accountId) { return }
-            await sendGroupMessage(text, in: conversationId, group: group, replyTo: replyTo, attachments: pending)
-            return
-        }
-        guard let peer = try? peerAccount(for: conversationId) else { return }
+        } else {
+            guard let peer = try? peerAccount(for: conversationId) else { return }
+            // Blocked peer: the chat UI replaces the composer, so this is a guard.
+            if isBlocked(peer) { return }
 
-        // Blocked peer: silently drop.
-        if isBlocked(peer) { return }
-
-        // Note to Self: Signal can't establish a session with its own address
-        // (sender == receiver breaks the Double Ratchet). Store locally instead —
-        // attachments are sealed and kept on-device only.
-        if peer == noteToSelfAccount {
-            let ts = Int64(Date().timeIntervalSince1970 * 1000)
-            var localAttachments: [StoredAttachment] = []
-            for item in pending {
-                guard let sealed = try? AttachmentCipher.seal(item.data) else { continue }
-                let attachId = UUID().uuidString
-                try? attachmentStore.write(sealed.ciphertext, for: attachId)
-                localAttachments.append(StoredAttachment(
-                    id: attachId, key: sealed.key, digest: sealed.digest,
-                    contentType: item.contentType, size: Int64(sealed.ciphertext.count),
-                    filename: item.filename, width: item.width, height: item.height,
-                    isDownloaded: true
-                ))
+            // Note to Self: Signal can't establish a session with its own address
+            // (sender == receiver breaks the Double Ratchet). Store locally instead —
+            // attachments are sealed and kept on-device only.
+            if peer == noteToSelfAccount {
+                let ts = Int64(Date().timeIntervalSince1970 * 1000)
+                var localAttachments: [StoredAttachment] = []
+                for item in pending {
+                    guard let sealed = try? AttachmentCipher.seal(item.data) else { continue }
+                    let attachId = UUID().uuidString
+                    try? attachmentStore.write(sealed.ciphertext, for: attachId)
+                    localAttachments.append(StoredAttachment(
+                        id: attachId, key: sealed.key, digest: sealed.digest,
+                        contentType: item.contentType, size: Int64(sealed.ciphertext.count),
+                        filename: item.filename, width: item.width, height: item.height,
+                        isDownloaded: true
+                    ))
+                }
+                _ = try? storage.messages.insertMessage(
+                    id: UUID().uuidString, conversationId: conversationId,
+                    isOutgoing: true, body: text, timestamp: ts, status: .read,
+                    replyTo: replyTo, attachments: localAttachments
+                )
+                refreshConversations()
+                refreshActiveMessages(ifShowing: conversationId)
+                return
             }
-            _ = try? storage.messages.insertMessage(
-                id: UUID().uuidString, conversationId: conversationId,
-                isOutgoing: true, body: text, timestamp: ts, status: .read,
-                replyTo: replyTo, attachments: localAttachments
-            )
-            refreshConversations()
-            refreshActiveMessages(ifShowing: conversationId)
-            return
         }
 
-        // Ensure profile is current before sending (no-op if already up to date).
-        Task { await sendMyProfileIfNeeded(toPeer: peer) }
-
+        // Store the message (with its sealed attachments cached locally) before
+        // any network work, so a failed upload or send leaves a retryable
+        // "Not Delivered" bubble instead of losing what the user typed.
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let localId = UUID().uuidString
+        let stored: [StoredAttachment]
         do {
-            // Encrypt each attachment with a fresh key, upload the ciphertext,
-            // and cache it locally so the sender can view it without a fetch.
-            var storedAttachments: [StoredAttachment] = []
-            var pointers: [Relay_Content_AttachmentPointer] = []
-            for item in pending {
-                let sealed = try AttachmentCipher.seal(item.data)
-                let id = try await api.uploadAttachment(sealed.ciphertext)
-                try? attachmentStore.write(sealed.ciphertext, for: id)
-                storedAttachments.append(StoredAttachment(
-                    id: id, key: sealed.key, digest: sealed.digest,
-                    contentType: item.contentType, size: Int64(sealed.ciphertext.count),
-                    filename: item.filename, width: item.width, height: item.height,
-                    isDownloaded: true
-                ))
-                var pointer = Relay_Content_AttachmentPointer()
-                pointer.id = id
-                pointer.key = sealed.key
-                pointer.digest = sealed.digest
-                pointer.contentType = item.contentType
-                pointer.size = UInt64(sealed.ciphertext.count)
-                if let filename = item.filename { pointer.filename = filename }
-                pointer.width = UInt32(item.width)
-                pointer.height = UInt32(item.height)
-                pointers.append(pointer)
-            }
-
+            stored = try sealLocally(pending)
             try storage.messages.insertMessage(
-                id: localId,
-                conversationId: conversationId,
-                isOutgoing: true,
-                body: text,
-                timestamp: timestamp,
-                status: .sending,
-                replyTo: replyTo,
-                attachments: storedAttachments
+                id: localId, conversationId: conversationId, isOutgoing: true,
+                body: text, timestamp: timestamp, status: .sending,
+                replyTo: replyTo, attachments: stored,
+                senderAccount: group == nil ? nil : credentials.accountId
             )
-            refreshConversations()
-            refreshActiveMessages(ifShowing: conversationId)
+        } catch {
+            log.error("send: could not store outgoing message: \(PrivacyRedactor.error(error))")
+            sendErrorMessage = (error as? MessagingError)?.errorDescription
+                ?? "This message couldn't be prepared. Please try again."
+            return
+        }
+        refreshConversations()
+        refreshActiveMessages(ifShowing: conversationId)
 
+        // Opt-in cover-traffic delay: the message already shows locally as
+        // "sending"; hold the wire transmission for a short random interval.
+        await applySendJitter()
+        await transmit(
+            messageId: localId, conversationId: conversationId, body: text,
+            timestamp: timestamp, replyTo: replyTo, attachments: stored
+        )
+    }
+
+    /// Re-sends a message that previously failed. Keeps the original timestamp
+    /// (receipts and quotes reference it), and for groups skips members an
+    /// earlier attempt already reached.
+    func retrySend(_ message: StoredMessage) async {
+        guard message.isOutgoing, message.status == .failed else { return }
+        try? storage.messages.updateStatus(messageId: message.id, status: .sending)
+        refreshActiveMessages(ifShowing: message.conversationId)
+        await transmit(
+            messageId: message.id, conversationId: message.conversationId, body: message.body,
+            timestamp: message.timestamp, replyTo: message.replyTo, attachments: message.attachments
+        )
+    }
+
+    /// Set when a send can't even be queued (e.g. an oversized attachment);
+    /// the chat shows it as an alert and clears it.
+    var sendErrorMessage: String?
+
+    /// Prefix for attachment ids that exist only on this device: sealed and
+    /// cached, not yet uploaded. `uploadAttachments` swaps in the relay's id.
+    private static let localAttachmentPrefix = "local-"
+
+    /// Seals each pending attachment and caches the ciphertext under a local id.
+    private func sealLocally(_ pending: [PendingAttachment]) throws -> [StoredAttachment] {
+        // 25 MB plaintext limit — the server enforces 26 MB on the ciphertext
+        // side, and AES-GCM overhead is negligible.
+        let maxPlaintextBytes = 25 * 1024 * 1024
+        return try pending.map { item in
+            guard item.data.count <= maxPlaintextBytes else { throw MessagingError.attachmentTooLarge }
+            let sealed = try AttachmentCipher.seal(item.data)
+            let id = Self.localAttachmentPrefix + UUID().uuidString
+            try attachmentStore.write(sealed.ciphertext, for: id)
+            return StoredAttachment(
+                id: id, key: sealed.key, digest: sealed.digest, contentType: item.contentType,
+                size: Int64(sealed.ciphertext.count), filename: item.filename,
+                width: item.width, height: item.height, isDownloaded: true
+            )
+        }
+    }
+
+    /// Uploads any attachments still held only locally, renaming the stored row
+    /// and cache entry to the relay's blob id, and returns the wire pointers.
+    /// Already-uploaded attachments (a retry after a later failure) are reused.
+    private func uploadAttachments(_ attachments: [StoredAttachment]) async throws -> [Relay_Content_AttachmentPointer] {
+        var pointers: [Relay_Content_AttachmentPointer] = []
+        for attachment in attachments {
+            var id = attachment.id
+            if id.hasPrefix(Self.localAttachmentPrefix) {
+                let ciphertext = try attachmentStore.read(id)
+                let remoteId = try await api.uploadAttachment(ciphertext)
+                try attachmentStore.write(ciphertext, for: remoteId)
+                try storage.database.run(
+                    "UPDATE attachments SET id = ? WHERE id = ?", [.text(remoteId), .text(id)]
+                )
+                attachmentStore.delete(id)
+                id = remoteId
+            }
+            var pointer = Relay_Content_AttachmentPointer()
+            pointer.id = id
+            pointer.key = attachment.key
+            pointer.digest = attachment.digest
+            pointer.contentType = attachment.contentType
+            pointer.size = UInt64(attachment.size)
+            if let filename = attachment.filename { pointer.filename = filename }
+            pointer.width = UInt32(attachment.width)
+            pointer.height = UInt32(attachment.height)
+            pointers.append(pointer)
+        }
+        return pointers
+    }
+
+    /// Uploads, encrypts and sends a stored outgoing message, then marks it
+    /// sent — or failed, leaving it for `retrySend`.
+    private func transmit(
+        messageId: String, conversationId: String, body: String, timestamp: Int64,
+        replyTo: QuotedMessage?, attachments: [StoredAttachment]
+    ) async {
+        do {
             var content = Relay_Content_Content()
-            content.text.body = text
+            content.text.body = body
             content.text.timestamp = timestamp
             if let replyTo {
                 content.text.quote.targetTimestamp = replyTo.targetTimestamp
                 content.text.quote.author = replyTo.author
                 content.text.quote.text = replyTo.text
             }
-            content.text.attachments = pointers
+            content.text.attachments = try await uploadAttachments(attachments)
             content.senderAccountID = credentials.accountId
             content.senderDeviceID = credentials.deviceId
             let disappearSecs = conversations.first(where: { $0.id == conversationId })?.disappearingSeconds ?? 0
             if disappearSecs > 0 { content.expiresAfterMs = disappearSecs * 1000 }
-            // Opt-in cover-traffic delay: the message already shows locally as
-            // "sending"; hold the wire transmission for a short random interval.
-            await applySendJitter()
-            try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp)
-            try storage.messages.updateStatus(messageId: localId, status: .sent)
-            donateInteraction(peerAccount: peer, conversationId: conversationId)
-            // Send a sync copy to own other devices so they show this as sent.
-            await sendSyncToOwnDevices(content: content, peer: peer, timestamp: timestamp)
+
+            if let group = try? groupForConversation(conversationId) {
+                content.groupID = group.id
+                try await transmitToGroup(content, group: group, messageId: messageId, timestamp: timestamp)
+                try storage.messages.updateStatus(messageId: messageId, status: .sent)
+                // Mirror to our own other devices (the fan-out excludes our
+                // account) so the group thread stays in sync across devices.
+                await sendSyncToOwnDevices(content: content, peer: group.id, timestamp: timestamp)
+            } else {
+                guard let peer = try peerAccount(for: conversationId) else {
+                    throw GroupError.notFound
+                }
+                // Ensure profile is current before sending (no-op if up to date).
+                Task { await sendMyProfileIfNeeded(toPeer: peer) }
+                try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp)
+                try storage.messages.updateStatus(messageId: messageId, status: .sent)
+                donateInteraction(peerAccount: peer, conversationId: conversationId)
+                // Send a sync copy to own other devices so they show this as sent.
+                await sendSyncToOwnDevices(content: content, peer: peer, timestamp: timestamp)
+            }
         } catch {
             log.error("send failed: \(PrivacyRedactor.error(error))")
-            try? storage.messages.updateStatus(messageId: localId, status: .failed)
+            try? storage.messages.updateStatus(messageId: messageId, status: .failed)
             if let safetyError = error as? SafetyNumberChangedError {
                 noteBlockedSafetyWarning(peer: safetyError.peer)
             }
         }
+        refreshConversations()
         refreshActiveMessages(ifShowing: conversationId)
+    }
+
+    /// Marks outgoing messages left in "sending" by a previous run (the app was
+    /// killed mid-send) as failed, so they show Retry instead of a clock forever.
+    private func failInterruptedSends() {
+        try? storage.database.run(
+            "UPDATE messages SET status = ? WHERE is_outgoing = 1 AND status = ?",
+            [.text(MessageStatus.failed.rawValue), .text(MessageStatus.sending.rawValue)]
+        )
     }
 
     /// Sends a copy of the given content to own other devices so they can store
@@ -1115,13 +1238,15 @@ final class MessagingService {
         let dmPeers = conversations
             .filter { !$0.isGroup }
             .compactMap { $0.peerAccount.isEmpty ? nil : $0.peerAccount }
-        // Group members (flatten, deduplicate, exclude self)
+        // Group members (flatten, deduplicate). group_state is keyed by group
+        // id, not conversation id.
         let groupMembers: [String] = conversations
-            .filter { $0.isGroup }
-            .compactMap { try? storage.messages.group(id: $0.id) }
+            .compactMap { $0.groupId }
+            .compactMap { try? storage.messages.group(id: $0) }
             .flatMap { $0.members }
-            .filter { $0 != credentials.accountId }
-        let allPeers = Array(Set(dmPeers + groupMembers))
+        let excluded: Set<String> = [credentials.accountId, relayOfficialAccount]
+        let allPeers = Set(dmPeers + groupMembers)
+            .filter { !excluded.contains($0) && !isBlocked($0) }
         guard !allPeers.isEmpty else { return }
         Task {
             for peer in allPeers {
@@ -1188,7 +1313,7 @@ final class MessagingService {
     /// Stores a peer's incoming profile (newest-wins), downloading + decrypting
     /// a changed avatar via the blob pipeline. No-op if we already have a
     /// newer revision.
-    private func applyPeerProfile(_ profile: ProfileInfo) async {
+    func applyPeerProfile(_ profile: ProfileInfo) async {
         let existing = (try? storage.messages.peerProfile(account: profile.account)) ?? nil
         if let existing, existing.revision >= profile.revision { return }
 
@@ -1476,7 +1601,7 @@ final class MessagingService {
     }
 
     /// Inserts a centered "system" line into any conversation (DM or group).
-    private func insertSystemLine(_ text: String, conversationId: String) {
+    func insertSystemLine(_ text: String, conversationId: String) {
         _ = try? storage.messages.insertMessage(
             id: UUID().uuidString, conversationId: conversationId, isOutgoing: false,
             body: text, timestamp: Int64(Date().timeIntervalSince1970 * 1000),
@@ -2119,88 +2244,55 @@ final class MessagingService {
         }
     }
 
-    private func sendGroupMessage(
-        _ text: String, in conversationId: String, group: StoredGroup,
-        replyTo: QuotedMessage?, attachments pending: [PendingAttachment]
-    ) async {
-        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-        let localId = UUID().uuidString
-        guard let distributionId = UUID(uuidString: group.distributionId) else { return }
-        var messageInserted = false
-        do {
-            // Sealed groups fan out as pairwise sealed messages (below), which
-            // don't use sender keys — so skip SKDM distribution entirely.
-            if !sealedSenderEnabled {
-                try await distributeSenderKeyIfNeeded(group: group)
-            }
-            await distributeProfileToGroupMembersIfNeeded(group: group)
-            let (storedAttachments, pointers) = try await encryptAttachments(pending)
+    /// Fans a group message out to every member. A member that fails doesn't
+    /// stop the others; the members already reached are remembered (per
+    /// message) so a retry only re-sends to the rest and nobody gets a duplicate.
+    private func transmitToGroup(
+        _ content: Relay_Content_Content, group: StoredGroup, messageId: String, timestamp: Int64
+    ) async throws {
+        // Sealed groups fan out as pairwise sealed messages, which don't use
+        // sender keys — so skip SKDM distribution entirely.
+        if !sealedSenderEnabled {
+            try await distributeSenderKeyIfNeeded(group: group)
+        }
+        await distributeProfileToGroupMembersIfNeeded(group: group)
 
-            try storage.messages.insertMessage(
-                id: localId, conversationId: conversationId, isOutgoing: true,
-                body: text, timestamp: timestamp, status: .sending,
-                replyTo: replyTo, attachments: storedAttachments,
-                senderAccount: credentials.accountId
-            )
-            messageInserted = true
-            refreshConversations()
-            refreshActiveMessages(ifShowing: conversationId)
-
-            var content = Relay_Content_Content()
-            content.text.body = text
-            content.text.timestamp = timestamp
-            if let replyTo {
-                content.text.quote.targetTimestamp = replyTo.targetTimestamp
-                content.text.quote.author = replyTo.author
-                content.text.quote.text = replyTo.text
-            }
-            content.text.attachments = pointers
-            content.groupID = group.id
-            content.senderAccountID = credentials.accountId
-            content.senderDeviceID = credentials.deviceId
-            let disappearSecs = conversations.first(where: { $0.id == conversationId })?.disappearingSeconds ?? 0
-            if disappearSecs > 0 { content.expiresAfterMs = disappearSecs * 1000 }
-
-            // Opt-in cover-traffic delay before the wire send (message already
-            // shows locally as "sending").
-            await applySendJitter()
-            if sealedSenderEnabled {
-                // Sealed groups: fan out as individual pairwise sealed messages.
-                // The group id inside the encrypted content still routes each copy
-                // to the group conversation on the recipient, but the relay learns
-                // neither the sender nor that these deliveries form one group send.
-                // (Sender-key broadcast can't be per-recipient sealed without
-                // multi-recipient sealing; pairwise is simpler and fully private —
-                // fine for the small groups Relay targets.)
-                let payload = try content.serializedData()
-                for member in group.members where member != credentials.accountId {
-                    try await sendContent(payload, toPeer: member, clientTimestamp: timestamp)
-                }
-            } else {
-                // Encrypt once with our sender key, fan the same ciphertext out.
-                let sealed = try engine.groupEncrypt(try ContentPadding.pad(content.serializedData()), distributionId: distributionId)
-                for member in group.members where member != credentials.accountId {
-                    try await sendEncrypted(sealed, toPeer: member, clientTimestamp: timestamp)
-                }
-            }
-            try storage.messages.updateStatus(messageId: localId, status: .sent)
-            // Mirror to our own other devices (the fan-out above excludes our
-            // account) so the group thread stays in sync across linked devices.
-            await sendSyncToOwnDevices(content: content, peer: group.id, timestamp: timestamp)
-        } catch {
-            log.error("group send failed: \(PrivacyRedactor.error(error))")
-            if messageInserted {
+        let deliveredKey = "groupsent:\(messageId)"
+        var delivered = Set(loadStringArray(deliveredKey))
+        let targets = group.members.filter { $0 != credentials.accountId && !delivered.contains($0) }
+        var firstError: Error?
+        if sealedSenderEnabled {
+            // Sealed groups: individual pairwise sealed messages. The group id
+            // inside the encrypted content still routes each copy to the group
+            // conversation, but the relay learns neither the sender nor that
+            // these deliveries form one group send.
+            let payload = try content.serializedData()
+            for member in targets {
                 do {
-                    try storage.messages.updateStatus(messageId: localId, status: .failed)
+                    try await sendContent(payload, toPeer: member, clientTimestamp: timestamp)
+                    delivered.insert(member)
                 } catch {
-                    log.error("group send: could not mark message failed: \(PrivacyRedactor.error(error))")
+                    firstError = firstError ?? error
                 }
             }
-            if let safetyError = error as? SafetyNumberChangedError {
-                noteBlockedSafetyWarning(peer: safetyError.peer)
+        } else {
+            // Encrypt once with our sender key, fan the same ciphertext out.
+            guard let distributionId = UUID(uuidString: group.distributionId) else { throw GroupError.notFound }
+            let sealed = try engine.groupEncrypt(try ContentPadding.pad(content.serializedData()), distributionId: distributionId)
+            for member in targets {
+                do {
+                    try await sendEncrypted(sealed, toPeer: member, clientTimestamp: timestamp)
+                    delivered.insert(member)
+                } catch {
+                    firstError = firstError ?? error
+                }
             }
         }
-        refreshActiveMessages(ifShowing: conversationId)
+        if let firstError {
+            saveStringArray(deliveredKey, Array(delivered))
+            throw firstError
+        }
+        try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(deliveredKey)])
     }
 
     /// Sends our SKDM (pairwise-encrypted) to any members who don't yet have
@@ -2306,7 +2398,7 @@ final class MessagingService {
     /// messaging layer already verified sent this (sealed-sender certificate or
     /// ratchet), which we use as the source of truth for authorization — the
     /// encryption already proves who sent it, so no extra signature is needed.
-    private func handleGroupUpdate(_ info: GroupUpdateInfo, authenticatedSender: String?) async {
+    func handleGroupUpdate(_ info: GroupUpdateInfo, authenticatedSender: String?) async {
         let existing = try? storage.messages.group(id: info.groupId)
 
         // 1. The claimed `actor` must match who actually sent the (encrypted)
@@ -2610,41 +2702,6 @@ final class MessagingService {
         (try? storage.messages.pollVotes(conversationId: conversationId, pollAuthor: pollAuthor, pollTimestamp: pollTimestamp)) ?? []
     }
 
-    private func encryptAttachments(
-        _ pending: [PendingAttachment]
-    ) async throws -> ([StoredAttachment], [Relay_Content_AttachmentPointer]) {
-        // 25 MB plaintext limit — the server enforces 26 MB on the ciphertext side,
-        // and AES-GCM overhead is negligible, so this check avoids wasting time
-        // encrypting something that will be rejected.
-        let maxPlaintextBytes = 25 * 1024 * 1024
-        var stored: [StoredAttachment] = []
-        var pointers: [Relay_Content_AttachmentPointer] = []
-        for item in pending {
-            guard item.data.count <= maxPlaintextBytes else {
-                throw MessagingError.attachmentTooLarge
-            }
-            let sealed = try AttachmentCipher.seal(item.data)
-            let id = try await api.uploadAttachment(sealed.ciphertext)
-            try? attachmentStore.write(sealed.ciphertext, for: id)
-            stored.append(StoredAttachment(
-                id: id, key: sealed.key, digest: sealed.digest, contentType: item.contentType,
-                size: Int64(sealed.ciphertext.count), filename: item.filename,
-                width: item.width, height: item.height, isDownloaded: true
-            ))
-            var pointer = Relay_Content_AttachmentPointer()
-            pointer.id = id
-            pointer.key = sealed.key
-            pointer.digest = sealed.digest
-            pointer.contentType = item.contentType
-            pointer.size = UInt64(sealed.ciphertext.count)
-            if let filename = item.filename { pointer.filename = filename }
-            pointer.width = UInt32(item.width)
-            pointer.height = UInt32(item.height)
-            pointers.append(pointer)
-        }
-        return (stored, pointers)
-    }
-
     private func loadStringArray(_ key: String) -> [String] {
         guard let data = try? storage.database.query(
             "SELECT value FROM kv WHERE key = ?", [.text(key)]
@@ -2718,7 +2775,7 @@ final class MessagingService {
         return try? AttachmentCipher.open(ciphertext, key: attachment.key, digest: attachment.digest)
     }
 
-    private func sendReceipt(
+    func sendReceipt(
         _ type: Relay_Content_ReceiptMessage.TypeEnum,
         timestamps: [Int64],
         toPeer account: String,
@@ -2748,7 +2805,6 @@ final class MessagingService {
         clientTimestamp: Int64,
         ephemeral: Bool = false
     ) async throws {
-        guard socket != nil else { throw RelayWebSocketError.notConnected }
         if !ephemeral {
             try requireAcknowledgedIdentity(forPeer: account)
         }
@@ -2766,6 +2822,9 @@ final class MessagingService {
             )
             return
         }
+        // Sealed sends above go over REST; only the authenticated path needs
+        // the live socket.
+        guard socket != nil else { throw RelayWebSocketError.notConnected }
         var devices = try await knownMailboxDevices(ofPeer: account)
         // Track all device IDs addressed in round 1 so the retry doesn't re-send to
         // devices that already received the message. The server always reports ALL
@@ -3027,6 +3086,13 @@ final class MessagingService {
         cachedActiveGroup = group(for: conversationId)  // cache to avoid per-message DB queries
         refreshActiveMessages(ifShowing: conversationId)
         Task { await markVisibleMessagesRead(in: conversationId) }
+        // The official Relay chat and Note to Self have no real peer to poll,
+        // pre-warm a session with, or send a profile to.
+        let localOnlyPeers: Set<String> = [relayOfficialAccount, noteToSelfAccount]
+        if let peer = resolvedPeerAccount(for: conversationId), localOnlyPeers.contains(peer) {
+            stopPresencePolling()
+            return
+        }
         if cachedActiveGroup == nil, let peer = resolvedPeerAccount(for: conversationId) {
             startPresencePolling(peer: peer)
         } else {
@@ -3109,14 +3175,20 @@ final class MessagingService {
         guard let messages = try? storage.messages.messages(in: conversationId) else { return }
         let unread = messages.filter { !$0.isOutgoing && $0.status == .received }
         guard !unread.isEmpty else { return }
+        // Local system lines and the official Relay chat have nobody to
+        // receipt; they're only marked read locally.
+        let receiptable = unread.filter { $0.senderAccount != Self.systemSender }
+        let peer = try? peerAccount(for: conversationId)
+        let hasRealPeer = peer != relayOfficialAccount && peer != noteToSelfAccount
 
-        if sendReadReceipts {
+        if sendReadReceipts, hasRealPeer, !receiptable.isEmpty {
+            let unread = receiptable
             if let group = group(for: conversationId) {
                 let byAuthor = Dictionary(grouping: unread) { $0.senderAccount ?? "" }
                 for (author, msgs) in byAuthor where !author.isEmpty && author != credentials.accountId {
                     await sendReceipt(.read, timestamps: msgs.map(\.timestamp), toPeer: author, groupId: group.id)
                 }
-            } else if let peer = try? peerAccount(for: conversationId) {
+            } else if let peer {
                 await sendReceipt(.read, timestamps: unread.map(\.timestamp), toPeer: peer)
             }
         }
@@ -3414,9 +3486,9 @@ final class MessagingService {
         let recipients: [String]
         if let group = group(for: conversationId) {
             content.groupID = group.id
-            recipients = group.members.filter { $0 != credentials.accountId }
+            recipients = group.members.filter { $0 != credentials.accountId && !isBlocked($0) }
         } else {
-            recipients = conv.peerAccount.isEmpty ? [] : [conv.peerAccount]
+            recipients = conv.peerAccount.isEmpty || isBlocked(conv.peerAccount) ? [] : [conv.peerAccount]
         }
         guard let data = try? content.serializedData() else { return }
         Task {
@@ -3562,7 +3634,9 @@ final class MessagingService {
                 "Welcome to Relay 👋\n\nI'll let you know about important account activity here — like when a new device is linked to your account. You can't reply to this chat.",
                 conversationId: id)
         }
-        if let conv = conversations.first(where: { $0.id == id }), !conv.isPinned {
+        // Pin it once, when first created — after that it's the user's choice.
+        if !UserDefaults.standard.bool(forKey: "relay.official.pinned") {
+            UserDefaults.standard.set(true, forKey: "relay.official.pinned")
             setConversationPinned(id, pinned: true)
         }
         refreshConversations()
@@ -3632,7 +3706,7 @@ final class MessagingService {
 
     /// Conversations created by an incoming message know only the sender's
     /// account id; resolve the human-readable username from the relay.
-    private func backfillUsernameIfNeeded(conversationId: String, account: String) {
+    func backfillUsernameIfNeeded(conversationId: String, account: String) {
         let existing = try? storage.database.query(
             "SELECT peer_username FROM conversations WHERE id = ?", [.text(conversationId)]
         ).first?.first?.string
@@ -3719,10 +3793,13 @@ final class MessagingService {
 
     private func guardIdentityReplacement(_ identityData: Data, peer: String, address: ProtocolAddress) throws {
         let incomingIdentity = try IdentityKey(bytes: identityData)
-        guard let knownIdentity = try storage.signalStore.identity(for: address, context: NullContext()),
-              knownIdentity != incomingIdentity else {
-            return
-        }
+        // The store decides: same key for a known device, or — for a device we
+        // haven't seen — one of the keys this account already uses. Anything
+        // else (including a brand-new device with a new key, which is what a
+        // compromised relay would inject) is a safety-number change.
+        guard try !storage.signalStore.isTrustedIdentity(
+            incomingIdentity, for: address, direction: .sending, context: NullContext()
+        ) else { return }
 
         _ = try storage.signalStore.saveIdentity(incomingIdentity, for: address, context: NullContext())
         refreshConversations()
@@ -3735,42 +3812,43 @@ final class MessagingService {
         }
     }
 
+    /// True when the peer has any identity key (across all their devices) that
+    /// the user hasn't acknowledged — a changed key or an unexpected device.
     private func isIdentityChangeAwaitingAcknowledgement(forPeer peer: String) throws -> Bool {
-        guard let currentIdentity = try currentIdentityData(forPeer: peer) else { return false }
-        guard let acknowledgedIdentity = try acknowledgedIdentityData(forPeer: peer) else {
-            try acknowledgeCurrentIdentity(forPeer: peer, identity: currentIdentity)
+        let current = Set(try storage.signalStore.identityKeys(address: peer))
+        guard !current.isEmpty else { return false }
+        guard let acknowledged = try acknowledgedIdentities(forPeer: peer) else {
+            // First contact (TOFU): acknowledge what we see.
+            try acknowledgeIdentities(current, forPeer: peer)
             return false
         }
-        return acknowledgedIdentity != currentIdentity
+        return !current.isSubset(of: acknowledged)
     }
 
     private func acknowledgeCurrentIdentity(forPeer peer: String) throws {
-        guard let identity = try currentIdentityData(forPeer: peer) else { return }
-        try acknowledgeCurrentIdentity(forPeer: peer, identity: identity)
+        let current = Set(try storage.signalStore.identityKeys(address: peer))
+        guard !current.isEmpty else { return }
+        try acknowledgeIdentities(current, forPeer: peer)
     }
 
-    private func acknowledgeCurrentIdentity(forPeer peer: String, identity: Data) throws {
+    private func acknowledgeIdentities(_ identities: Set<Data>, forPeer peer: String) throws {
+        let value = try JSONEncoder().encode(identities.sorted { $0.lexicographicallyPrecedes($1) })
         try storage.database.run(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
-            [.text(Self.identityAcknowledgementKey(forPeer: peer)), .blob(identity)]
+            [.text(Self.identityAcknowledgementKey(forPeer: peer)), .blob(value)]
         )
     }
 
-    private func acknowledgedIdentityData(forPeer peer: String) throws -> Data? {
-        try storage.database.query(
+    /// The acknowledged key set. Older builds stored a single raw key blob.
+    private func acknowledgedIdentities(forPeer peer: String) throws -> Set<Data>? {
+        guard let stored = try storage.database.query(
             "SELECT value FROM kv WHERE key = ?",
             [.text(Self.identityAcknowledgementKey(forPeer: peer))]
-        ).first?.first?.data
-    }
-
-    private func currentIdentityData(forPeer peer: String) throws -> Data? {
-        // Identities are now keyed by (address, device_id); the account-level
-        // safety-number acknowledgement tracks the canonical (lowest device id)
-        // identity, which under shared identity is the same across devices.
-        try storage.database.query(
-            "SELECT identity_key FROM remote_identities WHERE address = ? ORDER BY device_id LIMIT 1",
-            [.text(peer)]
-        ).first?.first?.data
+        ).first?.first?.data else { return nil }
+        if let keys = try? JSONDecoder().decode([Data].self, from: stored) {
+            return Set(keys)
+        }
+        return [stored]
     }
 
     private func noteBlockedSafetyWarning(peer: String) {
@@ -3784,10 +3862,47 @@ final class MessagingService {
     /// Applies `emoji` to `message`, or retracts it if the user already
     /// reacted with that same emoji (tap-to-toggle, like Signal). Stores
     /// locally immediately and best-effort delivers to the peer.
+    /// Delivers a control message (reaction, edit, unsend, typing) to whoever
+    /// is on the other side of a conversation: the peer of a 1:1 chat, or every
+    /// other member of a group (with the group id set so it lands in the group
+    /// thread). Non-ephemeral content is mirrored to our own other devices.
+    private func sendToConversation(
+        _ content: Relay_Content_Content, conversationId: String,
+        timestamp: Int64, ephemeral: Bool = false
+    ) async {
+        var content = content
+        let recipients: [String]
+        let syncPeer: String
+        if let group = group(for: conversationId) {
+            content.groupID = group.id
+            recipients = group.members.filter { $0 != credentials.accountId && !isBlocked($0) }
+            syncPeer = group.id
+        } else if let peer = resolvedPeerAccount(for: conversationId),
+                  peer != noteToSelfAccount, peer != relayOfficialAccount {
+            recipients = [peer]
+            syncPeer = peer
+        } else {
+            return
+        }
+        guard let data = try? content.serializedData() else { return }
+        for recipient in recipients {
+            do {
+                try await sendContent(data, toPeer: recipient, clientTimestamp: timestamp, ephemeral: ephemeral)
+            } catch {
+                log.debug("control send skipped: \(PrivacyRedactor.error(error))")
+            }
+        }
+        if !ephemeral {
+            await sendSyncToOwnDevices(content: content, peer: syncPeer, timestamp: timestamp)
+        }
+    }
+
     func toggleReaction(_ emoji: String, on message: StoredMessage) {
         let conversationId = message.conversationId
         guard let peer = resolvedPeerAccount(for: conversationId) else { return }
-        let targetAuthor = message.isOutgoing ? credentials.accountId : peer
+        // In a group the target's author is the member who sent it, not the
+        // conversation's "peer" (which is the group id).
+        let targetAuthor = message.isOutgoing ? credentials.accountId : (message.senderAccount ?? peer)
         let remove = message.reactions.first(where: \.isOutgoing)?.emoji == emoji
 
         do {
@@ -3811,16 +3926,7 @@ final class MessagingService {
             content.reaction.targetTimestamp = message.timestamp
             content.reaction.remove = remove
             content.reaction.timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-            do {
-                try await sendContent(
-                    try content.serializedData(),
-                    toPeer: peer,
-                    clientTimestamp: content.reaction.timestamp
-                )
-            } catch {
-                log.error("reaction send failed: \(PrivacyRedactor.error(error))")
-            }
-            await sendSyncToOwnDevices(content: content, peer: peer, timestamp: content.reaction.timestamp)
+            await sendToConversation(content, conversationId: conversationId, timestamp: content.reaction.timestamp)
         }
     }
 
@@ -3865,7 +3971,7 @@ final class MessagingService {
     /// peer is currently offline.
     func unsend(_ message: StoredMessage) {
         let conversationId = message.conversationId
-        guard canUnsend(message), let peer = resolvedPeerAccount(for: conversationId) else { return }
+        guard canUnsend(message) else { return }
         do {
             reapAttachmentBlobs(messageId: message.id)
             try storage.messages.markDeleted(
@@ -3882,12 +3988,7 @@ final class MessagingService {
             content.delete.targetTimestamp = message.timestamp
             content.delete.targetAuthor = credentials.accountId
             let ts = Int64(Date().timeIntervalSince1970 * 1000)
-            do {
-                try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: ts)
-            } catch {
-                log.error("unsend send failed: \(PrivacyRedactor.error(error))")
-            }
-            await sendSyncToOwnDevices(content: content, peer: peer, timestamp: ts)
+            await sendToConversation(content, conversationId: conversationId, timestamp: ts)
         }
     }
 
@@ -3908,56 +4009,50 @@ final class MessagingService {
             log.error("local message edit failed: \(PrivacyRedactor.error(error))")
             return
         }
-        guard let peer = resolvedPeerAccount(for: conversationId) else { return }
         Task {
             var content = Relay_Content_Content()
             content.edit.targetTimestamp = message.timestamp
             content.edit.newBody = newBody
-            do {
-                try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: now)
-            } catch {
-                log.error("edit message send failed: \(PrivacyRedactor.error(error))")
-            }
-            await sendSyncToOwnDevices(content: content, peer: peer, timestamp: now)
+            await sendToConversation(content, conversationId: conversationId, timestamp: now)
         }
     }
 
     // MARK: - Typing indicators (ephemeral)
 
     func sendTyping(_ action: Relay_Content_TypingMessage.Action, in conversationId: String) {
-        guard let peer = resolvedPeerAccount(for: conversationId) else { return }
         Task {
             var content = Relay_Content_Content()
             content.typing.action = action
             content.typing.timestamp = Int64(Date().timeIntervalSince1970 * 1000)
-            do {
-                try await sendContent(
-                    try content.serializedData(),
-                    toPeer: peer,
-                    clientTimestamp: content.typing.timestamp,
-                    ephemeral: true
-                )
-            } catch {
-                log.debug("typing send skipped: \(PrivacyRedactor.error(error))")
-            }
+            await sendToConversation(
+                content, conversationId: conversationId,
+                timestamp: content.typing.timestamp, ephemeral: true
+            )
         }
     }
 
-    private func applyPeerTyping(started: Bool, peerAccount: String?) {
+    /// Who is typing in each conversation currently showing an indicator —
+    /// lets a group chat name the member.
+    private(set) var typingSenders: [String: String] = [:]
+
+    private func applyPeerTyping(started: Bool, peerAccount: String?, groupConversationId: String? = nil) {
         guard let peerAccount,
-              let conversationId = existingConversation(withPeer: peerAccount) else { return }
+              let conversationId = groupConversationId ?? existingConversation(withPeer: peerAccount) else { return }
         typingResetTasks[conversationId]?.cancel()
         typingResetTasks.removeValue(forKey: conversationId)
         if !started {
             typingConversations.remove(conversationId)
+            typingSenders.removeValue(forKey: conversationId)
             return
         }
         typingConversations.insert(conversationId)
+        typingSenders[conversationId] = peerAccount
         // Self-heal if the "stopped" frame is lost (ephemeral, never queued).
         typingResetTasks[conversationId] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(6))
             guard !Task.isCancelled else { return }
             self?.typingConversations.remove(conversationId)
+            self?.typingSenders.removeValue(forKey: conversationId)
             self?.typingResetTasks.removeValue(forKey: conversationId)
         }
     }
@@ -3966,6 +4061,7 @@ final class MessagingService {
         typingResetTasks[conversationId]?.cancel()
         typingResetTasks.removeValue(forKey: conversationId)
         typingConversations.remove(conversationId)
+        typingSenders.removeValue(forKey: conversationId)
     }
 
     private func existingConversation(withPeer account: String) -> String? {
@@ -4090,15 +4186,23 @@ final class MessagingService {
         ).first?.first?.string
     }
 
-    private func refreshConversations() {
+    private var conversationsRefreshDirty = false
+
+    func refreshConversations() {
         // Suppress per-envelope refreshes during the initial queue drain; the
         // connection loop fires one batch refresh at queueDrained instead.
         guard !isDrainingQueue else { return }
         // Coalesce rapid-fire calls into one deferred update so a burst of
         // envelopes doesn't trigger a re-render storm. The DB query runs on a
         // background thread to keep the main thread free.
-        guard !conversationsRefreshScheduled else { return }
+        guard !conversationsRefreshScheduled else {
+            // The in-flight query may already have read the DB before this
+            // change landed — remember to run once more when it finishes.
+            conversationsRefreshDirty = true
+            return
+        }
         conversationsRefreshScheduled = true
+        conversationsRefreshDirty = false
         conversationsRefreshVersion &+= 1
         let version = conversationsRefreshVersion
         let messageStore = storage.messages
@@ -4111,6 +4215,10 @@ final class MessagingService {
             let indexItems: [SpotlightIndexer.IndexItem] = await MainActor.run { [weak self] in
                 guard let self, self.conversationsRefreshVersion == version else { return [] }
                 self.conversationsRefreshScheduled = false
+                if self.conversationsRefreshDirty {
+                    self.conversationsRefreshDirty = false
+                    self.refreshConversations()
+                }
                 // If the DB query threw, leave conversations unchanged so
                 // synchronously-injected entries (e.g. Note to Self) stay visible.
                 guard case .success(let convs) = result else { return [] }

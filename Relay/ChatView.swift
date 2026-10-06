@@ -31,6 +31,7 @@ struct ChatView: View {
 
     @Environment(ChatAppearance.self) private var appearance
     @Environment(CallManager.self) private var callManager
+    @State private var isOnScreen = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var draft = ""
@@ -73,7 +74,23 @@ struct ChatView: View {
 
     private var isGroup: Bool { conversation?.isGroup == true }
     private var isNoteToSelf: Bool { conversation?.peerAccount == service.noteToSelfAccount }
+    /// In a group, the member who is typing; in a 1:1 chat, the peer.
+    private var typingName: String {
+        guard isGroup, let account = service.typingSenders[conversationId] else { return peerName }
+        return service.displayName(forAccount: account)
+    }
+    private var typingAvatar: Data? {
+        guard isGroup, let account = service.typingSenders[conversationId] else { return peerAvatar }
+        return service.peerAvatarData(forAccount: account)
+    }
     private var isRelayOfficial: Bool { conversation?.peerAccount == service.relayOfficialAccount }
+    /// The 1:1 peer when the user has blocked them — the composer is replaced
+    /// with an unblock bar, since sends to a blocked peer are dropped.
+    private var blockedPeer: String? {
+        guard let conversation, !conversation.isGroup,
+              service.isBlocked(conversation.peerAccount) else { return nil }
+        return conversation.peerAccount
+    }
     private var callControlsDisabled: Bool {
         if case .idle = callManager.state { return false }
         return true
@@ -194,7 +211,7 @@ struct ChatView: View {
                         }
                     }
                     if service.typingConversations.contains(conversationId) {
-                        TypingIndicatorView(peerName: peerName, imageData: peerAvatar)
+                        TypingIndicatorView(peerName: typingName, imageData: typingAvatar)
                             .id(Self.typingAnchor)
                             .transition(.opacity)
                     }
@@ -285,18 +302,34 @@ struct ChatView: View {
         .allowsHitTesting(false)
     }
 
-    var body: some View {
-        rawScrollView
-        .hiddenInScreenshots(service.effectiveScreenHidden(conversationId))
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
-            service.sendScreenshotAlert(conversationId: conversationId)
-        }
-        .background { appearance.background.ignoresSafeArea(.all) }
-        .environment(\.openURL, OpenURLAction { url in
+    private var linkOpener: OpenURLAction {
+        OpenURLAction { url in
             guard url.scheme == "https" || url.scheme == "http" else { return .systemAction }
             safariURL = url
             return .handled
-        })
+        }
+    }
+
+    var body: some View {
+        rawScrollView
+        // The screenshot-hidden container re-hosts its content in a separate
+        // UIHostingController, which does not inherit this view's environment —
+        // re-inject everything the message rows read, or they trap on a missing
+        // @Environment object.
+        .environment(appearance)
+        .environment(callManager)
+        .environment(\.openURL, linkOpener)
+        .hiddenInScreenshots(service.effectiveScreenHidden(conversationId), fillsProposal: true)
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
+            // Only the chat actually on screen reports a screenshot — ChatViews
+            // still alive under a sheet or in another tab must stay quiet.
+            guard isOnScreen, UIApplication.shared.applicationState == .active else { return }
+            service.sendScreenshotAlert(conversationId: conversationId)
+        }
+        .onAppear { isOnScreen = true }
+        .onDisappear { isOnScreen = false }
+        .background { appearance.background.ignoresSafeArea(.all) }
+        .environment(\.openURL, linkOpener)
         .sheet(item: $safariURL) { url in
             SafariView(url: url).ignoresSafeArea()
         }
@@ -531,6 +564,17 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                         .background(.ultraThinMaterial)
+                } else if let blockedPeer {
+                    HStack(spacing: 12) {
+                        Label("You blocked \(peerName)", systemImage: "hand.raised.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button("Unblock") { service.unblockAccount(blockedPeer) }
+                            .font(.footnote.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(.ultraThinMaterial)
                 } else if isAnnounceOnlyBlocked {
                     Label("Only admins can send messages", systemImage: "megaphone.fill")
                         .font(.footnote)
@@ -546,6 +590,17 @@ struct ChatView: View {
             }
             .animation(.spring(duration: 0.2), value: isAtBottom)
             .animation(.spring(duration: 0.3), value: newMessageBanner != nil)
+        }
+        .alert(
+            "Message Not Sent",
+            isPresented: Binding(
+                get: { service.sendErrorMessage != nil },
+                set: { if !$0 { service.sendErrorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(service.sendErrorMessage ?? "")
         }
         .sheet(isPresented: $showingVerification, onDismiss: refreshVerification) {
             NavigationStack { VerificationView(service: service, conversationId: conversationId, peerName: peerName) }
@@ -1812,6 +1867,11 @@ private struct MessageRow: View {
     /// The action-menu contents (reactions are the separate bar, not in here).
     private var menuActions: [MessageActionSpec] {
         var items: [MessageActionSpec] = []
+        if message.isOutgoing && message.status == .failed {
+            items.append(.init(label: "Retry", icon: "arrow.clockwise") {
+                Task { await service.retrySend(message) }
+            })
+        }
         items.append(.init(label: "Reply", icon: "arrowshape.turn.up.left") { onReply() })
         if message.isOutgoing && message.attachments.isEmpty {
             items.append(.init(label: "Edit", icon: "pencil") { onEdit() })
@@ -2175,9 +2235,13 @@ private struct MessageBubble: View {
         case .failed:
             HStack(spacing: 3) {
                 Image(systemName: "exclamationmark.circle.fill")
-                Text("Not Delivered")
+                Text("Not Delivered · Tap to Retry")
             }
             .foregroundStyle(.red)
+            .contentShape(.rect)
+            .onTapGesture { Task { await service.retrySend(message) } }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Not delivered. Retry")
         case .received:
             EmptyView()
         }

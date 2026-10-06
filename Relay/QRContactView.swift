@@ -307,13 +307,19 @@ extension View {
     /// normally on screen and stays interactive, but iOS omits that layer from
     /// screenshots and screen recordings. Used to keep editing chrome out of a
     /// shared screenshot of the QR card.
+    ///
+    /// The content is re-hosted in its own UIHostingController, so it does NOT
+    /// inherit custom environment values or `@Environment` objects — callers
+    /// must re-inject what the content reads. Pass `fillsProposal` for content
+    /// that should take the space offered (e.g. a ScrollView) rather than its
+    /// ideal height.
     @ViewBuilder
-    func hiddenInScreenshots(_ active: Bool = true) -> some View {
+    func hiddenInScreenshots(_ active: Bool = true, fillsProposal: Bool = false) -> some View {
         if active {
             // Reparents content into a secure UITextField canvas (omitted from
             // screenshots). Only apply when actually protecting — otherwise the
             // reparenting itself clips/letterboxes the content.
-            ScreenshotHiddenContainer(active: true) { self }
+            ScreenshotHiddenContainer(active: true, fillsProposal: fillsProposal) { self }
         } else {
             self
         }
@@ -322,14 +328,23 @@ extension View {
 
 private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
     var active: Bool
+    var fillsProposal: Bool
     var content: Content
 
-    init(active: Bool = true, @ViewBuilder content: () -> Content) {
+    init(active: Bool = true, fillsProposal: Bool = false, @ViewBuilder content: () -> Content) {
         self.active = active
+        self.fillsProposal = fillsProposal
         self.content = content()
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(rootView: content) }
+    func makeCoordinator() -> Coordinator {
+        let coord = Coordinator(rootView: content)
+        // The outer SwiftUI layout already placed this view inside the safe
+        // area (and above the keyboard); letting the inner host apply them
+        // again would double the insets.
+        if fillsProposal { coord.hosting.safeAreaRegions = [] }
+        return coord
+    }
 
     func makeUIView(context: Context) -> UIView {
         let coord = context.coordinator
@@ -379,6 +394,9 @@ private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
+        if fillsProposal, let width = proposal.width, let height = proposal.height {
+            return CGSize(width: width, height: height)
+        }
         let width = proposal.width ?? 320
         return context.coordinator.hosting.sizeThatFits(
             in: CGSize(width: width, height: .greatestFiniteMagnitude)

@@ -176,6 +176,7 @@ struct LinkNewDeviceView: View {
     @State private var status: String = "Preparing…"
     @State private var errorMessage: String?
     @State private var started = false
+    @State private var linkTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -195,7 +196,7 @@ struct LinkNewDeviceView: View {
                         ProgressView()
                         Text(status).font(.footnote).foregroundStyle(.secondary)
                     }
-                    Text("On your existing device: Settings → Linked Devices → Link a New Device, then scan this code.")
+                    Text("On your existing device: Profile → Linked Devices → Link a New Device, then scan this code.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -219,7 +220,10 @@ struct LinkNewDeviceView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        linkTask?.cancel()
+                        dismiss()
+                    }
                 }
             }
             .task {
@@ -227,21 +231,31 @@ struct LinkNewDeviceView: View {
                 started = true
                 start()
             }
+            // Stop polling the relay for the link payload once the user leaves —
+            // otherwise a late approval could still flip the app into the account.
+            .onDisappear { linkTask?.cancel() }
         }
     }
 
     private func start() {
+        linkTask?.cancel()
         errorMessage = nil
         qrImage = nil
         status = "Preparing…"
-        Task {
+        linkTask = Task {
             do {
                 let (qr, sessionId, ephemeral) = try await model.beginDeviceLinking()
+                try Task.checkCancellation()
                 qrImage = makeQRImage(qr)
                 status = "Waiting for your other device…"
                 try await model.completeDeviceLinking(sessionId: sessionId, ephemeral: ephemeral)
                 // On success the model flips phase to .ready and onboarding dismisses.
+            } catch is CancellationError {
+                // The user cancelled; nothing to show.
             } catch {
+                guard !Task.isCancelled else { return }
+                // Drop the QR so the error state (and Try Again) is visible.
+                qrImage = nil
                 errorMessage = error.localizedDescription
             }
         }

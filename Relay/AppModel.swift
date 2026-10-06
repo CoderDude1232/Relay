@@ -384,17 +384,30 @@ final class AppModel {
         service.username = newUsername
     }
 
-    /// Returns true if no relay account exists with this username yet.
-    func checkUsernameAvailable(_ username: String) async -> Bool {
+    enum UsernameAvailability: Equatable {
+        case available
+        case taken
+        /// The relay couldn't be reached — say so rather than claiming it's free.
+        case unknown
+    }
+
+    /// Whether a relay account already uses this username.
+    func checkUsername(_ username: String) async -> UsernameAvailability {
         let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
         do {
             _ = try await api.lookupAccount(username: username)
-            return false  // 200 = exists
+            return .taken      // 200 = exists
         } catch RelayAPIError.http(let status, _) where status == 404 {
-            return true   // not found = available
+            return .available  // not found = available
         } catch {
-            return true   // network trouble — let registration gate it
+            return .unknown    // network trouble — registration still gates it
         }
+    }
+
+    /// Returns true if no relay account exists with this username yet (or the
+    /// relay couldn't be reached). Prefer `checkUsername(_:)` for UI.
+    func checkUsernameAvailable(_ username: String) async -> Bool {
+        await checkUsername(username) != .taken
     }
 
     /// 32 cryptographically-random bytes, hex-encoded (256-bit entropy).
@@ -584,7 +597,10 @@ final class AppModel {
         // Install the shared account identity BEFORE opening storage/service, so
         // the Keychain never auto-generates a fresh identity for this device.
         do {
-            try keychain.installProvisionedIdentity(payload.identityKeyPair)
+            // Replace any identity left by an earlier install: Keychain items
+            // survive sign-out and app deletion, and this device is now
+            // joining a different (or the same) account as a linked device.
+            try keychain.installProvisionedIdentity(payload.identityKeyPair, replacingExisting: true)
         } catch {
             throw SetupError(step: "Install account identity", underlying: error)
         }
@@ -638,6 +654,9 @@ final class AppModel {
         if case .ready(let service) = phase {
             service.stop()
         }
+        // The identity key outlives app deletion in the Keychain; drop it so
+        // the next account (registered or linked) starts clean.
+        try? keychain.wipeIdentity()
         Task { await SupabaseAuth.shared.signOut() }
         try? keychain.deleteSecret(for: Self.accountSecretName)
         for suffix in ["", "-wal", "-shm"] {
@@ -658,6 +677,7 @@ final class AppModel {
         if case .ready(let service) = phase {
             service.stop()
         }
+        try? keychain.wipeIdentity()
         try? keychain.deleteSecret(for: Self.accountSecretName)
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: Self.databaseURL(suffix: suffix))
