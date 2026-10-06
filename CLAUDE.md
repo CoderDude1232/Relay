@@ -5,9 +5,10 @@ client may come later — keep the wire format language-neutral). We own **every
 layer**: the Go relay server, the protobuf wire schema, and the iOS app. There is
 no external spec to match; the source of truth for the protocol is this repo.
 
-Owner: Ethan (ethandaly525@gmail.com), Apple team `2P24M8G2CJ` — **free tier**
-(no paid Developer Program): no APNs push, no registered devices in the portal;
-device testing via cable + 7-day profiles only.
+Owner: Ethan (ethandaly525@gmail.com). Targets sign with Apple team
+`HK396F3767` (paid Developer Program — APNs, TestFlight); the project-level
+setting still names the old free team `2P24M8G2CJ`. Bundle id `app.relaymsg`.
+Production relay: `https://api.relaymsg.app` (VPS, PostgreSQL).
 
 ## Build order and status
 
@@ -39,8 +40,8 @@ with the same wire contract. Wire-affecting changes land in `proto/` +
 - `proto/relay.proto` — server-visible wire format (envelopes, WS frames).
   `proto/content.proto` — client-only plaintext structure (text/receipt/typing),
   encrypted before it ever hits the wire. Server never parses Content.
-- `server/` — Go relay (`go build ./...` from `server/`). SQLite (modernc, no
-  cgo), gorilla/websocket, bcrypt. Tests: `go test ./...`. API contract
+- `server/` — Go relay (`go build ./...` from `server/`). PostgreSQL (pgx;
+  `-dsn`), gorilla/websocket, bcrypt. Store tests need `RELAY_TEST_DSN`. Tests: `go test ./...`. API contract
   documented in `server/README.md` — **keep it in sync with the code**.
 - `CryptoCore/` — Swift package wrapping libsignal. One entry type,
   `CryptoEngine`: prekey publication, PQXDH session establishment
@@ -76,7 +77,7 @@ with the same wire contract. Wire-affecting changes land in `proto/` +
   impossible). Prebuilt Rust ffi linked via per-SDK `LIBRARY_SEARCH_PATHS` on
   the app target; test bundles pass `-L` via `unsafeFlags` in each Package.swift.
 - SQLCipher-encrypted DB in the **App Group container**
-  (`group.com.relayapp.Relay` — group id ≠ bundle id on purpose, don't "fix").
+  (`group.app.relaymsg`).
   Master key: 32 bytes, ECIES-wrapped by a Secure Enclave P-256 key, wrapped
   blob in Keychain, `AfterFirstUnlockThisDeviceOnly`, App Group access group.
   Simulator fallback: Keychain-only (separate item name).
@@ -118,12 +119,13 @@ device-verified.)
   `~/sdk/swift-protobuf/.build/release/`. None on default PATH — export per
   shell. Codegen: `server/scripts/genproto.sh` (Go); Swift protos are generated
   manually into RelayKit and checked in.
-- Dev relay: `~/.relay-dev/relayd -addr 0.0.0.0:8089 -db ~/.relay-dev/relay.db`
+- Dev relay (stale — predates the PostgreSQL move; a local relay now needs a
+  Postgres and `-dsn`): `~/.relay-dev/relayd -addr 0.0.0.0:8089 -db ~/.relay-dev/relay.db`
   (**never /tmp** — macOS wipes it on reboot, which orphans app credentials;
   Settings → Sign Out is the recovery path). `0.0.0.0` because the user's
   iPhone connects over LAN (`http://<mac-LAN-ip>:8089`; `ipconfig getifaddr en0`).
-  App Info.plist has `NSAllowsLocalNetworking` + `NSLocalNetworkUsageDescription`
-  (dev-only; remove when the relay gets TLS).
+  The shipping app talks only to the HTTPS relay (`RelayConfig.serverURL`); the
+  dev ATS exception was removed, so a LAN relay needs a temporary local change.
 - Package tests run via xcodebuild against a simulator (prebuilt ffi has no
   macOS slice — `swift test` won't work):
   `cd <Package> && xcodebuild test -scheme <Package> -destination "id=<sim-udid>"`.
