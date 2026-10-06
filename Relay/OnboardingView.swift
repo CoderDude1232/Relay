@@ -401,7 +401,9 @@ private struct WelcomeView: View {
             }
             Task { await handleGoogleCallback(callbackURL) }
         }
-        ws.prefersEphemeralWebBrowserSession = false
+        // Ephemeral: no shared Safari cookies in or out, so Relay sign-in never
+        // links to (or leaves traces in) the user's browser session.
+        ws.prefersEphemeralWebBrowserSession = true
         ws.presentationContextProvider = OAuthWindowContext.shared
         ws.start()
         googleWebSession = ws
