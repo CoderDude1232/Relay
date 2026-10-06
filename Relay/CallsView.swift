@@ -9,9 +9,15 @@ import SecureStorage
 import SwiftUI
 
 struct CallsView: View {
+    /// UserDefaults key (Double, ms since epoch): missed calls at or before this
+    /// instant have been seen and no longer badge the Calls tab.
+    nonisolated static let missedCallsSeenAtKey = "relay.missedCallsSeenAt"
+
     let service: MessagingService
+    @Environment(AppModel.self) private var model
     @Environment(CallManager.self) private var callManager
     @State private var showingClearConfirm = false
+    @AppStorage(CallsView.missedCallsSeenAtKey) private var missedCallsSeenAt: Double = 0
 
     /// Call history grouped into day sections (most recent first), so the log
     /// reads like a timeline instead of one flat run of rows.
@@ -30,8 +36,35 @@ struct CallsView: View {
         return result
     }
 
-    private var missedCount: Int {
-        service.callHistory.filter { $0.outcome == .missed }.count
+    private func markMissedCallsSeen() {
+        let newest = service.callHistory.map { Double($0.startedAt) }.max() ?? 0
+        missedCallsSeenAt = max(missedCallsSeenAt, newest, Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// The existing 1:1 chat with this call's peer, if any.
+    private func conversationId(for call: StoredCall) -> String? {
+        service.conversations.first { !$0.isGroup && $0.peerAccount == call.peerAccount }?.id
+    }
+
+    private func callBack(_ call: StoredCall, kind: CallKind) {
+        guard case .idle = callManager.state else { return }
+        Task {
+            await callManager.startCall(
+                peerAccount: call.peerAccount,
+                peerName: service.displayName(forAccount: call.peerAccount),
+                kind: kind
+            )
+        }
+    }
+
+    /// Row tap: open the chat with that person (reusing the notification-tap
+    /// path, which switches to Chats); with no chat yet, call them back.
+    private func handleTap(_ call: StoredCall) {
+        if let id = conversationId(for: call) {
+            model.pendingNotificationConversationId = id
+        } else {
+            callBack(call, kind: call.kind == .video ? .video : .audio)
+        }
     }
 
     private static func sectionTitle(_ date: Date, cal: Calendar) -> String {
@@ -58,13 +91,29 @@ struct CallsView: View {
                             Section {
                                 ForEach(section.calls) { call in
                                     CallHistoryRow(call: call, service: service) { kind in
-                                        guard case .idle = callManager.state else { return }
-                                        Task {
-                                            await callManager.startCall(
-                                                peerAccount: call.peerAccount,
-                                                peerName: service.displayName(forAccount: call.peerAccount),
-                                                kind: kind
-                                            )
+                                        callBack(call, kind: kind)
+                                    }
+                                    .onTapGesture { handleTap(call) }
+                                    .accessibilityAction(named: conversationId(for: call) != nil ? "Open chat" : "Call back") {
+                                        handleTap(call)
+                                    }
+                                    .contextMenu {
+                                        if let id = conversationId(for: call) {
+                                            Button {
+                                                model.pendingNotificationConversationId = id
+                                            } label: {
+                                                Label("Open Chat", systemImage: "bubble.left")
+                                            }
+                                        }
+                                        Button {
+                                            callBack(call, kind: .audio)
+                                        } label: {
+                                            Label("Audio Call", systemImage: "phone")
+                                        }
+                                        Button {
+                                            callBack(call, kind: .video)
+                                        } label: {
+                                            Label("Video Call", systemImage: "video")
                                         }
                                     }
                                     .listRowSeparator(.hidden)
@@ -79,7 +128,10 @@ struct CallsView: View {
                 }
             }
             .navigationTitle("Calls")
-            .onAppear { service.refreshCallHistory() }
+            .onAppear {
+                service.refreshCallHistory()
+                markMissedCallsSeen()
+            }
             .toolbar {
                 if !service.callHistory.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {

@@ -7,10 +7,12 @@
 //
 
 import PhotosUI
+import RelayKit
 import SecureStorage
 import SwiftUI
 
-/// Name a new group and list member usernames; creates it on the relay.
+/// Name a new group and pick members — from existing 1:1 chats and/or by
+/// typing usernames. Creates it client-side (see MessagingService.createGroup).
 struct NewGroupView: View {
     let service: MessagingService
     let onCreated: (String) -> Void
@@ -18,8 +20,39 @@ struct NewGroupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var members: [String] = [""]
+    /// Peer accounts picked from existing 1:1 chats.
+    @State private var pickedAccounts: Set<String> = []
     @State private var creating = false
     @State private var error: String?
+
+    /// 1:1 chats whose peer has a known username (createGroup resolves members
+    /// by username), excluding Note to Self, the official Relay chat and
+    /// blocked contacts.
+    private struct ChatCandidate: Identifiable {
+        let account: String
+        let username: String
+        let name: String
+        var id: String { account }
+    }
+
+    private var chatCandidates: [ChatCandidate] {
+        var seen = Set<String>()
+        return service.conversations.compactMap { c in
+            guard !c.isGroup,
+                  c.peerAccount != service.noteToSelfAccount,
+                  c.peerAccount != service.relayOfficialAccount,
+                  !service.isBlocked(c.peerAccount),
+                  seen.insert(c.peerAccount).inserted,
+                  let username = service.username(forAccount: c.peerAccount),
+                  !username.isEmpty
+            else { return nil }
+            return ChatCandidate(
+                account: c.peerAccount,
+                username: username,
+                name: service.displayName(forAccount: c.peerAccount)
+            )
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -27,7 +60,49 @@ struct NewGroupView: View {
                 Section("Group name") {
                     TextField("Name", text: $name)
                 }
-                Section("Members (usernames)") {
+                let candidates = chatCandidates
+                if !candidates.isEmpty {
+                    Section {
+                        ForEach(candidates) { candidate in
+                            let picked = pickedAccounts.contains(candidate.account)
+                            Button {
+                                if picked {
+                                    pickedAccounts.remove(candidate.account)
+                                } else {
+                                    pickedAccounts.insert(candidate.account)
+                                }
+                            } label: {
+                                HStack(spacing: 12) {
+                                    AvatarView(
+                                        name: candidate.name,
+                                        size: 32,
+                                        imageData: service.peerAvatarData(forAccount: candidate.account)
+                                    )
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(candidate.name).foregroundStyle(.primary)
+                                        Text("@\(candidate.username)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: picked ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(picked ? Color.accentColor : Color.secondary)
+                                        .font(.title3)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
+                        }
+                    } header: {
+                        Text("From your chats")
+                    } footer: {
+                        if !pickedAccounts.isEmpty {
+                            Text("\(pickedAccounts.count) selected")
+                        }
+                    }
+                }
+                Section("Add by username") {
                     ForEach(members.indices, id: \.self) { index in
                         TextField("Username", text: $members[index])
                             .autocorrectionDisabled()
@@ -54,18 +129,49 @@ struct NewGroupView: View {
         }
     }
 
+    private var typedUsernames: [String] {
+        members
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     private var canCreate: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && members.contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            && (!typedUsernames.isEmpty || !pickedAccounts.isEmpty)
     }
 
     private func create() {
-        let usernames = members
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let typed = typedUsernames
+        let candidates = chatCandidates
+        let picked = candidates
+            .filter { pickedAccounts.contains($0.account) }
+            .map { $0.username }
         creating = true
         error = nil
         Task {
+            defer { creating = false }
+            // Resolve typed usernames individually first so a typo can be
+            // named instead of failing the whole group with a generic error.
+            var missing: [String] = []
+            for username in typed {
+                do {
+                    _ = try await service.resolveAccount(username: username)
+                } catch RelayAPIError.http(status: 404, _) {
+                    missing.append(username)
+                } catch {
+                    self.error = "Couldn't create the group: \(error.localizedDescription)"
+                    return
+                }
+            }
+            if !missing.isEmpty {
+                let list = missing.map { "@\($0)" }.joined(separator: ", ")
+                self.error = missing.count == 1
+                    ? "\(list) isn't on Relay. Check the username and try again."
+                    : "These usernames aren't on Relay: \(list). Check them and try again."
+                return
+            }
+            var seen = Set<String>()
+            let usernames = (picked + typed).filter { seen.insert($0.lowercased()).inserted }
             do {
                 let conversationId = try await service.createGroup(
                     name: name.trimmingCharacters(in: .whitespaces),
@@ -74,9 +180,8 @@ struct NewGroupView: View {
                 dismiss()
                 onCreated(conversationId)
             } catch {
-                self.error = "Couldn't create the group. Check the usernames and try again."
+                self.error = "Couldn't create the group: \(error.localizedDescription)"
             }
-            creating = false
         }
     }
 }
@@ -105,6 +210,17 @@ struct GroupInfoView: View {
 
     private var group: StoredGroup? { service.group(for: conversationId) }
 
+    /// Mirrors MessagingService.requireGroupAdmin: legacy groups with no
+    /// recorded admins are open to every member.
+    private var isAdmin: Bool {
+        guard let group else { return false }
+        return group.admins.isEmpty || group.admins.contains(ownAccountId)
+    }
+
+    private var conversation: Conversation? {
+        service.conversations.first { $0.id == conversationId }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -112,17 +228,22 @@ struct GroupInfoView: View {
                     // Avatar + name header
                     Section {
                         HStack(spacing: 16) {
-                            Button {
-                                showingAvatarPicker = true
-                            } label: {
+                            if isAdmin {
+                                Button {
+                                    showingAvatarPicker = true
+                                } label: {
+                                    GroupAvatarView(data: group.avatarData, name: group.name, size: 64)
+                                        .overlay(alignment: .bottomTrailing) {
+                                            AvatarEditBadge(systemImage: "pencil", diameter: 24)
+                                                .offset(x: 4, y: 4)
+                                        }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Change group photo")
+                            } else {
                                 GroupAvatarView(data: group.avatarData, name: group.name, size: 64)
-                                    .overlay(alignment: .bottomTrailing) {
-                                        AvatarEditBadge(systemImage: "pencil", diameter: 24)
-                                            .offset(x: 4, y: 4)
-                                    }
+                                    .accessibilityHidden(true)
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Change group photo")
 
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(group.name)
@@ -132,26 +253,38 @@ struct GroupInfoView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button {
-                                draftName = group.name
-                                editingName = true
-                            } label: {
-                                Image(systemName: "pencil")
-                                    .foregroundStyle(.blue)
+                            if isAdmin {
+                                Button {
+                                    draftName = group.name
+                                    editingName = true
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .foregroundStyle(.blue)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Rename group")
                             }
-                            .buttonStyle(.plain)
                         }
                         .padding(.vertical, 4)
+                    } footer: {
+                        if !isAdmin {
+                            Text("Only admins can change group info.")
+                        }
                     }
 
                     // Description
                     Section("Description") {
                         if group.description.isEmpty {
-                            Button("Add a description…") {
-                                draftDescription = ""
-                                editingDescription = true
+                            if isAdmin {
+                                Button("Add a description…") {
+                                    draftDescription = ""
+                                    editingDescription = true
+                                }
+                                .foregroundStyle(.secondary)
+                            } else {
+                                Text("No description")
+                                    .foregroundStyle(.secondary)
                             }
-                            .foregroundStyle(.secondary)
                         } else {
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack(alignment: .top) {
@@ -159,14 +292,17 @@ struct GroupInfoView: View {
                                         .foregroundStyle(.primary)
                                         .lineLimit(descriptionExpanded ? nil : 3)
                                     Spacer()
-                                    Button {
-                                        draftDescription = group.description
-                                        editingDescription = true
-                                    } label: {
-                                        Image(systemName: "pencil")
-                                            .foregroundStyle(.blue)
+                                    if isAdmin {
+                                        Button {
+                                            draftDescription = group.description
+                                            editingDescription = true
+                                        } label: {
+                                            Image(systemName: "pencil")
+                                                .foregroundStyle(.blue)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("Edit description")
                                     }
-                                    .buttonStyle(.plain)
                                 }
                                 if group.description.count > 80 {
                                     Button(descriptionExpanded ? "Read Less" : "Read More") {
@@ -179,18 +315,37 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    // Invite link
-                    Section("Invite") {
-                        Button {
-                            run {
-                                let url = try await service.createGroupInviteLink(groupId: group.id)
-                                await MainActor.run {
-                                    inviteURL = url
-                                    showingShareSheet = true
+                    // Invite link (admin-only)
+                    if isAdmin {
+                        Section("Invite") {
+                            Button {
+                                run {
+                                    let url = try await service.createGroupInviteLink(groupId: group.id)
+                                    await MainActor.run {
+                                        inviteURL = url
+                                        showingShareSheet = true
+                                    }
                                 }
+                            } label: {
+                                Label("Create Invite Link", systemImage: "link.badge.plus")
                             }
-                        } label: {
-                            Label("Create Invite Link", systemImage: "link.badge.plus")
+                        }
+                    }
+
+                    // Per-chat settings: mute, disappearing messages, Face ID lock…
+                    Section("Chat") {
+                        Toggle(isOn: Binding(
+                            get: { service.isConversationMuted(conversationId) },
+                            set: { service.setConversationMuted(conversationId, muted: $0) }
+                        )) {
+                            Label("Mute Notifications", systemImage: "bell.slash")
+                        }
+                        if let conversation {
+                            NavigationLink {
+                                ChatPrivacySettingsView(service: service, conversation: conversation)
+                            } label: {
+                                Label("Chat Settings", systemImage: "gearshape")
+                            }
                         }
                     }
 
@@ -231,17 +386,18 @@ struct GroupInfoView: View {
                                     }
                                 }
                                 Spacer()
-                                if member != ownAccountId {
+                                if isAdmin && member != ownAccountId {
                                     Button(role: .destructive) {
                                         memberToRemove = member
                                     } label: {
                                         Image(systemName: "minus.circle")
                                     }
                                     .buttonStyle(.borderless)
+                                    .accessibilityLabel("Remove \(service.displayName(forAccount: member))")
                                 }
                             }
                             .contextMenu {
-                                if group.admins.contains(ownAccountId) && member != ownAccountId {
+                                if isAdmin && member != ownAccountId {
                                     if isAdmin {
                                         Button(role: .destructive) {
                                             run { try await service.demoteAdmin(in: group.id, account: member) }
@@ -266,6 +422,7 @@ struct GroupInfoView: View {
                         }
                     }
 
+                    if isAdmin {
                     Section("Add member") {
                         HStack {
                             TextField("Username", text: $newMember)
@@ -289,6 +446,7 @@ struct GroupInfoView: View {
                                 .foregroundStyle(.red)
                         }
                     }
+                    } // end admin-only add member
 
                     Section {
                         Button("Leave Group", role: .destructive) {
@@ -394,7 +552,9 @@ struct GroupInfoView: View {
                 errorMessage = error.localizedDescription
             }
             working = false
-            if dismissAfter { dismiss() }
+            // Only dismiss when the action actually succeeded — on failure the
+            // error stays visible in the sheet.
+            if dismissAfter && errorMessage == nil { dismiss() }
         }
     }
 }

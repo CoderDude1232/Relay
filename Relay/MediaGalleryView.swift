@@ -16,6 +16,15 @@ struct MediaGalleryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mediaMessages: [StoredMessage] = []
     @State private var fullScreenImage: UIImage?
+    /// False until the per-chat "Require Face ID for media" gate is passed
+    /// (or immediately true when the chat doesn't require it).
+    @State private var unlocked = false
+    @State private var isAuthenticating = false
+
+    /// Mirrors ChatView: unknown conversation → require auth (fail closed).
+    private var requiresBiometric: Bool {
+        service.conversations.first { $0.id == conversationId }?.mediaRequiresBiometric ?? true
+    }
 
     private let columns = [
         GridItem(.flexible(), spacing: 2),
@@ -25,7 +34,17 @@ struct MediaGalleryView: View {
 
     var body: some View {
         Group {
-            if mediaMessages.isEmpty {
+            if !unlocked {
+                ContentUnavailableView {
+                    Label("Media Locked", systemImage: "lock.fill")
+                } description: {
+                    Text("This chat requires Face ID to view media.")
+                } actions: {
+                    Button("Unlock") { Task { await unlock() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isAuthenticating)
+                }
+            } else if mediaMessages.isEmpty {
                 ContentUnavailableView(
                     "No Media",
                     systemImage: "photo.stack",
@@ -36,7 +55,7 @@ struct MediaGalleryView: View {
                     LazyVGrid(columns: columns, spacing: 2) {
                         ForEach(mediaMessages) { message in
                             ForEach(message.attachments.filter { $0.isImage }) { attachment in
-                                GalleryThumbnail(attachment: attachment, service: service) { image in
+                                GalleryThumbnail(attachment: attachment, service: service, conversationId: conversationId) { image in
                                     fullScreenImage = image
                                 }
                             }
@@ -48,7 +67,7 @@ struct MediaGalleryView: View {
         }
         .navigationTitle("Media")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { loadMedia() }
+        .task { await unlock() }
         .fullScreenCover(item: Binding(
             get: { fullScreenImage.map { IdentifiableImage(image: $0) } },
             set: { if $0 == nil { fullScreenImage = nil } }
@@ -65,7 +84,24 @@ struct MediaGalleryView: View {
         } else {
             source = (try? service.allMessages(in: conversationId)) ?? []
         }
-        mediaMessages = source.filter { !$0.attachments.filter { $0.isImage }.isEmpty }
+        // View-once media is only viewable once, inline in the chat — never
+        // surface it in the gallery.
+        mediaMessages = source.filter {
+            !$0.body.hasPrefix(MessagingService.viewOncePrefix)
+                && $0.attachments.contains { $0.isImage }
+        }
+    }
+
+    private func unlock() async {
+        guard !unlocked, !isAuthenticating else { return }
+        if requiresBiometric {
+            isAuthenticating = true
+            let ok = await BiometricGate.authenticate(reason: "View media in this chat.")
+            isAuthenticating = false
+            guard ok else { return }
+        }
+        unlocked = true
+        loadMedia()
     }
 }
 
@@ -79,6 +115,7 @@ private struct IdentifiableImage: Identifiable {
 private struct GalleryThumbnail: View {
     let attachment: StoredAttachment
     let service: MessagingService
+    let conversationId: String
     let onTap: (UIImage) -> Void
 
     @State private var image: UIImage?
@@ -111,8 +148,15 @@ private struct GalleryThumbnail: View {
         guard image == nil else { return }
         isLoading = true
         defer { isLoading = false }
-        if let data = service.attachmentPlaintext(attachment),
-           let ui = UIImage(data: data) {
+        var data = service.attachmentPlaintext(attachment)
+        if data == nil {
+            // Not cached yet (never downloaded, or cleared by "Clear cached
+            // media") — fetch it, then decrypt. downloadAttachment is idempotent
+            // and honours the Wi-Fi-only setting.
+            await service.downloadAttachment(attachment, in: conversationId)
+            data = service.attachmentPlaintext(attachment)
+        }
+        if let data, let ui = UIImage(data: data) {
             withAnimation { image = ui }
         }
     }

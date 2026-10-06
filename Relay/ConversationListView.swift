@@ -8,6 +8,7 @@ import MessageUI
 import RelayKit
 import SecureStorage
 import SwiftUI
+import UIKit
 
 struct ConversationListView: View {
     let service: MessagingService
@@ -33,6 +34,14 @@ struct ConversationListView: View {
     // Without this, setting selectedConversationId back after auth triggers
     // onChange again, re-prompting indefinitely.
     @State private var sessionUnlocked: Set<String> = []
+    @State private var showingPanicPINError = false
+    @State private var qrStartError: String?
+    @State private var confirmBulkDelete = false
+    @State private var deleteError: String?
+    /// Message to scroll to when a global-search message hit opens its chat.
+    /// Hook for ChatView — see the detail column below. Survives the Face ID
+    /// re-selection dance; cleared when a different chat is opened.
+    @State private var searchTarget: (conversationId: String, messageId: String)?
 
     private static let availableLabels = ["Personal", "Work", "Family", "Unread", "Groups"]
 
@@ -53,7 +62,7 @@ struct ConversationListView: View {
     }
 
     private var archivedConversations: [Conversation] {
-        service.conversations.filter { $0.archived }
+        service.conversations.filter { $0.archived && !panicMode.isHidden($0.id) }
     }
 
     private var usedLabels: [String] {
@@ -111,6 +120,7 @@ struct ConversationListView: View {
                         Button { showingNewChatSheet = true } label: {
                             Image(systemName: "square.and.pencil")
                         }
+                        .accessibilityLabel("New Chat")
                     }
                 }
             }
@@ -128,6 +138,7 @@ struct ConversationListView: View {
                             Image(systemName: panicMode.isActive ? "lock.open.fill" : "lock.fill")
                                 .foregroundStyle(panicMode.isActive ? .orange : .secondary)
                         }
+                        .accessibilityLabel(panicMode.isActive ? "Lock chats" : "Unlock chats")
                     }
                     ConnectionBadge(state: service.connectionState)
                 }
@@ -135,28 +146,87 @@ struct ConversationListView: View {
             .confirmationDialog("Mute notifications for…", isPresented: Binding(
                 get: { mutingConversationId != nil },
                 set: { if !$0 { mutingConversationId = nil } }
-            ), titleVisibility: .visible) {
-                Button("1 Hour")  { service.setMuteDuration(mutingConversationId!, seconds: 3600) }
-                Button("8 Hours") { service.setMuteDuration(mutingConversationId!, seconds: 8 * 3600) }
-                Button("1 Week")  { service.setMuteDuration(mutingConversationId!, seconds: 7 * 24 * 3600) }
-                Button("Forever") { service.setMuteDuration(mutingConversationId!, seconds: -1) }
+            ), titleVisibility: .visible, presenting: mutingConversationId) { id in
+                Button("1 Hour")  { service.setMuteDuration(id, seconds: 3600) }
+                Button("8 Hours") { service.setMuteDuration(id, seconds: 8 * 3600) }
+                Button("1 Week")  { service.setMuteDuration(id, seconds: 7 * 24 * 3600) }
+                Button("Forever") { service.setMuteDuration(id, seconds: -1) }
                 Button("Cancel", role: .cancel) {}
             }
-            .confirmationDialog("Delete this conversation?", isPresented: Binding(
+            .confirmationDialog(deleteDialogTitle, isPresented: Binding(
                 get: { conversationToDelete != nil },
                 set: { if !$0 { conversationToDelete = nil } }
-            ), titleVisibility: .visible) {
-                Button("Delete", role: .destructive) {
-                    if let id = conversationToDelete { service.deleteConversation(id) }
-                    conversationToDelete = nil
+            ), titleVisibility: .visible, presenting: conversationToDelete) { id in
+                if let groupId = activeGroupId(for: id) {
+                    Button("Leave Group & Delete", role: .destructive) {
+                        leaveAndDelete(conversationId: id, groupId: groupId)
+                    }
+                    Button("Delete for Me", role: .destructive) {
+                        service.deleteConversation(id)
+                    }
+                } else {
+                    Button("Delete", role: .destructive) {
+                        service.deleteConversation(id)
+                    }
                 }
-                Button("Cancel", role: .cancel) { conversationToDelete = nil }
+                Button("Cancel", role: .cancel) {}
+            } message: { id in
+                if activeGroupId(for: id) != nil {
+                    Text("“Delete for Me” removes the chat from this device but keeps you in the group.")
+                }
+            }
+            .confirmationDialog(
+                "Delete \(selectedIds.count) \(selectedIds.count == 1 ? "chat" : "chats")?",
+                isPresented: $confirmBulkDelete,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    service.bulkDelete(selectedIds)
+                    finishEditing()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Messages in these chats will be removed from this device.")
             }
             .alert("Enter Panic PIN", isPresented: $showingPanicPIN) {
                 SecureField("PIN", text: $panicPINInput)
                     .keyboardType(.numberPad)
-                Button("Unlock") { panicMode.activate(pin: panicPINInput) }
+                Button("Unlock") {
+                    let ok = panicMode.activate(pin: panicPINInput)
+                    panicPINInput = ""
+                    if !ok {
+                        UINotificationFeedbackGenerator().notificationOccurred(.error)
+                        // Let the PIN alert finish dismissing before presenting the next one.
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(350))
+                            showingPanicPINError = true
+                        }
+                    }
+                }
                 Button("Cancel", role: .cancel) { panicPINInput = "" }
+            }
+            .alert("Incorrect PIN", isPresented: $showingPanicPINError) {
+                Button("Try Again") {
+                    panicPINInput = ""
+                    showingPanicPIN = true
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Couldn't Start Chat", isPresented: Binding(
+                get: { qrStartError != nil },
+                set: { if !$0 { qrStartError = nil } }
+            )) {
+                Button("OK", role: .cancel) { qrStartError = nil }
+            } message: {
+                Text(qrStartError ?? "")
+            }
+            .alert("Couldn't Leave Group", isPresented: Binding(
+                get: { deleteError != nil },
+                set: { if !$0 { deleteError = nil } }
+            )) {
+                Button("OK", role: .cancel) { deleteError = nil }
+            } message: {
+                Text(deleteError ?? "")
             }
             .sheet(isPresented: $showingNewGroup) {
                 NewGroupView(service: service) { conversationId in
@@ -167,8 +237,13 @@ struct ConversationListView: View {
                 ContactQRScanner { username in
                     showingQRScanner = false
                     Task {
-                        if let conversationId = try? await service.startConversation(username: username) {
-                            selectedConversationId = conversationId
+                        do {
+                            let conversationId = try await service.startConversation(username: username)
+                            openConversation(conversationId)
+                        } catch RelayAPIError.http(status: 404, _) {
+                            qrStartError = "Couldn't find that user on Relay."
+                        } catch {
+                            qrStartError = "Couldn't reach Relay: \(error.localizedDescription)"
                         }
                     }
                 }
@@ -194,7 +269,12 @@ struct ConversationListView: View {
             .navigationSplitViewColumnWidth(min: 300, ideal: 360)
         } detail: {
             if let conversationId = selectedConversationId {
-                ChatView(service: service, conversationId: conversationId, onClose: { selectedConversationId = nil })
+                // A global search hit lands on the matched message.
+                ChatView(
+                    service: service, conversationId: conversationId,
+                    onClose: { selectedConversationId = nil },
+                    initialMessageId: searchTarget?.conversationId == conversationId ? searchTarget?.messageId : nil
+                )
                     .id(conversationId)
             } else {
                 ContentUnavailableView(
@@ -208,6 +288,7 @@ struct ConversationListView: View {
             // Drive conversation open/close here so it fires reliably regardless of
             // NavigationSplitView lifecycle ordering on compact (iPhone) mode.
             if let oldId, oldId != newId { service.closeConversation(id: oldId) }
+            if let newId, searchTarget?.conversationId != newId { searchTarget = nil }
             if let newId { service.openConversation(newId) }
 
             // Re-lock when navigating back to the list.
@@ -279,8 +360,7 @@ struct ConversationListView: View {
                     finishEditing()
                 }
                 conversationSelectionButton("trash", label: "Delete", role: .destructive) {
-                    service.bulkDelete(selectedIds)
-                    finishEditing()
+                    confirmBulkDelete = true
                 }
             }
             .padding(.horizontal, 12)
@@ -445,15 +525,13 @@ struct ConversationListView: View {
                 } // end else (not editing)
             } // end ForEach
 
-            if !isEditing {
+            if !isEditing && !archivedConversations.isEmpty {
                 NavigationLink(destination: ArchivedChatsView(service: service, selectedConversationId: $selectedConversationId)) {
                     HStack {
                         Label("Archived Chats", systemImage: "archivebox")
                             .foregroundStyle(.secondary)
                         Spacer()
-                        if !archivedConversations.isEmpty {
-                            CountBadge(count: archivedConversations.count, tint: .secondary.opacity(0.6))
-                        }
+                        CountBadge(count: archivedConversations.count, tint: .secondary.opacity(0.6))
                     }
                 }
                 .listRowSeparator(.hidden)
@@ -467,9 +545,12 @@ struct ConversationListView: View {
             get: { selectedConversationId },
             set: { selectedConversationId = $0 }
         )) {
+            // Panic-hidden chats must never surface through search.
             let matchingConversations = service.conversations.filter { conversation in
-                displayName(for: conversation).localizedCaseInsensitiveContains(searchText)
+                !panicMode.isHidden(conversation.id)
+                    && displayName(for: conversation).localizedCaseInsensitiveContains(searchText)
             }
+            let messageResults = searchResults.filter { !panicMode.isHidden($0.conversationId) }
             if !matchingConversations.isEmpty {
                 Section("Conversations") {
                     ForEach(matchingConversations) { conversation in
@@ -478,15 +559,20 @@ struct ConversationListView: View {
                     }
                 }
             }
-            if !searchResults.isEmpty {
+            if !messageResults.isEmpty {
                 Section("Messages") {
-                    ForEach(searchResults) { result in
-                        SearchResultRow(result: result, service: service, query: searchText)
-                            .tag(result.conversationId as String?)
+                    ForEach(messageResults) { result in
+                        Button {
+                            searchTarget = (result.conversationId, result.messageId)
+                            openConversation(result.conversationId)
+                        } label: {
+                            SearchResultRow(result: result, service: service, query: searchText)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
-            if matchingConversations.isEmpty && searchResults.isEmpty {
+            if matchingConversations.isEmpty && messageResults.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             }
         }
@@ -501,6 +587,32 @@ struct ConversationListView: View {
     private func openConversation(_ conversationId: String) {
         selectedConversationId = conversationId
         // onChange(of: selectedConversationId) handles biometric check and searchText clearing
+    }
+
+    private var deleteDialogTitle: String {
+        guard let id = conversationToDelete, activeGroupId(for: id) != nil else {
+            return "Delete this conversation?"
+        }
+        return "Delete this group chat?"
+    }
+
+    /// The group id when `conversationId` is a group we're still a member of
+    /// (so "Leave Group" makes sense); nil for 1:1 chats or groups already left.
+    private func activeGroupId(for conversationId: String) -> String? {
+        guard let group = service.group(for: conversationId),
+              group.members.contains(service.credentials.accountId) else { return nil }
+        return group.id
+    }
+
+    private func leaveAndDelete(conversationId: String, groupId: String) {
+        Task {
+            do {
+                try await service.leaveGroup(groupId)
+                service.deleteConversation(conversationId)
+            } catch {
+                deleteError = error.localizedDescription
+            }
+        }
     }
 
 }
@@ -522,6 +634,10 @@ private struct NewChatSheet: View {
     @State private var showingUsernameSearch = false
     @State private var startingContactEmail: String?
     @State private var invitePayload: InvitePayload?
+    @State private var addError: String?
+    /// Set when the "who's on Relay" lookup failed (503 / offline) — contacts
+    /// are then shown without Invite buttons rather than all as "not on Relay".
+    @State private var discoveryError: String?
 
     private var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
@@ -578,6 +694,11 @@ private struct NewChatSheet: View {
                         Section {
                             Label("Allow Contacts access in Settings → Relay to see who's on Relay.", systemImage: "person.slash")
                                 .font(.subheadline).foregroundStyle(.secondary)
+                            Button("Open Settings") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                            }
                         }
                     } else if isLoadingContacts {
                         Section {
@@ -585,6 +706,7 @@ private struct NewChatSheet: View {
                                 .listRowSeparator(.hidden)
                         }
                     } else if isSearching {
+                        if let discoveryError { discoveryErrorSection(discoveryError) }
                         if filtered.isEmpty {
                             Section {
                                 Text("No results for \"\(searchText)\".")
@@ -596,6 +718,7 @@ private struct NewChatSheet: View {
                             }
                         }
                     } else {
+                        if let discoveryError { discoveryErrorSection(discoveryError) }
                         ForEach(sections, id: \.letter) { section in
                             Section(header: Text(section.letter).font(.subheadline.weight(.semibold))) {
                                 ForEach(section.entries) { entry in contactRow(entry) }
@@ -611,6 +734,8 @@ private struct NewChatSheet: View {
                             withAnimation(.easeInOut(duration: 0.15)) { proxy.scrollTo(letter, anchor: .top) }
                         }
                         .padding(.trailing, 4)
+                        // Section headers already give VoiceOver users the index.
+                        .accessibilityHidden(true)
                     }
                 }
             }
@@ -627,8 +752,33 @@ private struct NewChatSheet: View {
                 MessageComposeView(recipients: payload.recipients, body: payload.body)
                     .ignoresSafeArea()
             }
+            .alert("Couldn't Start Chat", isPresented: Binding(
+                get: { addError != nil },
+                set: { if !$0 { addError = nil } }
+            )) {
+                Button("OK", role: .cancel) { addError = nil }
+            } message: {
+                Text(addError ?? "")
+            }
         }
         .task { await loadContacts() }
+    }
+
+    @ViewBuilder
+    private func discoveryErrorSection(_ message: String) -> some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Couldn't check which contacts are on Relay", systemImage: "exclamationmark.triangle")
+                    .font(.subheadline.weight(.semibold))
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("Retry") { Task { await checkRelayStatus() } }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+            .padding(.vertical, 4)
+        }
     }
 
     @ViewBuilder
@@ -675,6 +825,7 @@ private struct NewChatSheet: View {
                 onConversationStarted(convId)
             } catch {
                 startingContactEmail = nil
+                addError = error.localizedDescription
             }
         }
     }
@@ -719,26 +870,37 @@ private struct NewChatSheet: View {
             return isNew
         }
 
-        var entries = deduped.map { ContactEntry(name: $0.name, emails: $0.emails, phones: $0.phones, avatar: $0.avatar) }
-        await MainActor.run { contacts = entries; isLoadingContacts = false }
+        let entries = deduped.map { ContactEntry(name: $0.name, emails: $0.emails, phones: $0.phones, avatar: $0.avatar) }
+        contacts = entries
+        isLoadingContacts = false
+        await checkRelayStatus()
+    }
 
-        // Check every email address for each contact against the Relay server in parallel.
-        await withTaskGroup(of: (Int, ContactEntry.RelayStatus).self) { group in
-            for (i, entry) in entries.enumerated() {
-                group.addTask {
-                    for email in entry.emails {
-                        if (try? await service.resolveAccount(username: email)) != nil {
-                            return (i, .onRelay(email: email))
-                        }
-                    }
-                    return (i, .notOnRelay)
+    /// Privately matches every contact email against the directory in one
+    /// blinded batch. A lookup failure (503 / offline) is surfaced as an error
+    /// with Retry — never as "not on Relay", which would offer Invite to
+    /// people who are already here.
+    private func checkRelayStatus() async {
+        discoveryError = nil
+        for i in contacts.indices { contacts[i].relayStatus = .checking }
+        let emails = contacts.flatMap(\.emails)
+        guard !emails.isEmpty else {
+            for i in contacts.indices { contacts[i].relayStatus = .notOnRelay }
+            return
+        }
+        do {
+            let matches = try await service.discoverContacts(emails: emails)
+            let matched = Set(matches.map { $0.email })
+            for i in contacts.indices {
+                if let email = contacts[i].emails.first(where: { matched.contains($0) }) {
+                    contacts[i].relayStatus = .onRelay(email: email)
+                } else {
+                    contacts[i].relayStatus = .notOnRelay
                 }
             }
-            for await (i, status) in group {
-                entries[i].relayStatus = status
-                let snapshot = entries
-                await MainActor.run { contacts = snapshot }
-            }
+        } catch {
+            for i in contacts.indices { contacts[i].relayStatus = .unknown }
+            discoveryError = error.localizedDescription
         }
     }
 }
@@ -758,6 +920,8 @@ private struct ContactEntry: Identifiable {
         case checking
         case onRelay(email: String)
         case notOnRelay
+        /// The lookup failed; we don't know (no Add, no Invite).
+        case unknown
     }
 }
 
@@ -810,6 +974,8 @@ private struct ContactRow: View {
             .buttonStyle(.bordered)
             .controlSize(.mini)
             .tint(.secondary)
+        case .unknown:
+            EmptyView()
         }
     }
 }
@@ -1280,11 +1446,20 @@ private struct ArchivedChatsView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var archivedConversations: [Conversation] {
-        service.conversations.filter { $0.archived }
+        service.conversations.filter { $0.archived && !PanicModeManager.shared.isHidden($0.id) }
     }
 
     var body: some View {
         List {
+            if archivedConversations.isEmpty {
+                ContentUnavailableView(
+                    "No Archived Chats",
+                    systemImage: "archivebox",
+                    description: Text("Swipe left on a chat and tap Archive to move it here.")
+                )
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
             ForEach(archivedConversations) { conversation in
                 Button {
                     selectedConversationId = conversation.id

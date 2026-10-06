@@ -12,15 +12,19 @@ import Contacts
 import RelayKit
 import SecureStorage
 import SwiftUI
+import UIKit
 
 struct ContactSyncView: View {
     let service: MessagingService
 
+    @Environment(AppModel.self) private var model
     @State private var status: SyncStatus = .idle
     @State private var matches: [ContactMatch] = []
     @State private var denied = false
+    @State private var startingAccountId: String?
+    @State private var messageError: String?
 
-    enum SyncStatus { case idle, loading, done }
+    enum SyncStatus: Equatable { case idle, loading, done, failed(String) }
 
     struct ContactMatch: Identifiable {
         let id: String          // accountId
@@ -49,7 +53,22 @@ struct ContactSyncView: View {
                     Label("Contacts access denied. Allow it in Settings → Relay.", systemImage: "person.slash")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
+                    Button("Open Settings") { openAppSettings() }
                 }
+            }
+
+            if case .failed(let message) = status {
+                Section {
+                    ContentUnavailableView {
+                        Label("Couldn't Check Contacts", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(message)
+                    } actions: {
+                        Button("Retry") { Task { await sync() } }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                .listRowBackground(Color.clear)
             }
 
             if status == .done && matches.isEmpty && !denied {
@@ -76,11 +95,14 @@ struct ContactSyncView: View {
                             if match.hasConversation {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                             } else {
-                                Button("Message") {
-                                    Task { _ = try? await service.startConversation(username: match.username) }
+                                if startingAccountId == match.id {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Button("Message") { startConversation(match) }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .disabled(startingAccountId != nil)
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
                             }
                         }
                     }
@@ -96,6 +118,37 @@ struct ContactSyncView: View {
             }
         }
         .task { await sync() }
+        .alert("Couldn't Start Chat", isPresented: Binding(
+            get: { messageError != nil },
+            set: { if !$0 { messageError = nil } }
+        )) {
+            Button("OK", role: .cancel) { messageError = nil }
+        } message: {
+            Text(messageError ?? "")
+        }
+    }
+
+    private func startConversation(_ match: ContactMatch) {
+        guard startingAccountId == nil else { return }
+        startingAccountId = match.id
+        Task {
+            defer { startingAccountId = nil }
+            do {
+                let conversationId = try await service.startConversation(username: match.username)
+                if let i = matches.firstIndex(where: { $0.id == match.id }) {
+                    matches[i].hasConversation = true
+                }
+                // Same path as a notification tap: switches to Chats and opens it.
+                model.pendingNotificationConversationId = conversationId
+            } catch {
+                messageError = error.localizedDescription
+            }
+        }
+    }
+
+    private func openAppSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 
     private func sync() async {
@@ -141,7 +194,16 @@ struct ContactSyncView: View {
         var found: [ContactMatch] = []
         let entryByEmail = Dictionary(deduped.map { ($0.email, $0) }, uniquingKeysWith: { a, _ in a })
 
-        let discovered = (try? await service.discoverContacts(emails: deduped.map { $0.email })) ?? []
+        let discovered: [(email: String, accountId: String, username: String)]
+        do {
+            discovered = try await service.discoverContacts(emails: deduped.map { $0.email })
+        } catch {
+            // A 503 / network failure is not "none of your contacts are on
+            // Relay" — say so and offer a retry instead of an empty result.
+            matches = []
+            status = .failed(error.localizedDescription)
+            return
+        }
         for match in discovered {
             let entry = entryByEmail[match.email]
             found.append(ContactMatch(

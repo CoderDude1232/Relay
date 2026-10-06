@@ -40,11 +40,21 @@ struct RelayApp: App {
                         appDelegate.coldStartConversationId = nil
                     }
                     await model.boot()
-                    if model.isReady { wireCallManager() }
-                    appDelegate.requestPushAuthorization()
+                    if model.isReady {
+                        wireCallManager()
+                        // Only ask for notification permission once there is an
+                        // account to notify for — never over the Welcome screen.
+                        // For already-registered users this is a no-op prompt-wise
+                        // and re-registers for remote notifications each launch.
+                        appDelegate.requestPushAuthorization()
+                    }
                 }
                 .onChange(of: model.isReady) { _, isReady in
-                    if isReady { wireCallManager() }
+                    if isReady {
+                        wireCallManager()
+                        // First time through: right after registration/sign-in.
+                        appDelegate.requestPushAuthorization()
+                    }
                 }
                 .onOpenURL { url in
                     guard url.scheme == "relay" else { return }
@@ -280,12 +290,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     // Deliver notifications even when the app is in the foreground (e.g. a message
     // arrives while a different conversation is open). The banner lets the user tap
-    // to navigate without leaving the app first.
+    // to navigate without leaving the app first. A banner for the conversation the
+    // user is already looking at is suppressed — the message is right there.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        let conversationId = notification.request.content.userInfo["conversationId"] as? String ?? ""
+        if !conversationId.isEmpty,
+           let model, case .ready(let service) = model.phase,
+           service.activeConversationId == conversationId,
+           UIApplication.shared.applicationState == .active {
+            completionHandler([])
+            return
+        }
         completionHandler([.banner, .sound, .badge])
     }
 

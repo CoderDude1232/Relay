@@ -28,6 +28,9 @@ struct ChatView: View {
     let service: MessagingService
     let conversationId: String
     var onClose: (() -> Void)? = nil
+    /// A message to land on when the chat opens (e.g. a global search hit)
+    /// instead of the bottom of the thread.
+    var initialMessageId: String? = nil
 
     @Environment(ChatAppearance.self) private var appearance
     @Environment(CallManager.self) private var callManager
@@ -228,7 +231,12 @@ struct ChatView: View {
                 // Scroll first (queued for next layout pass), then reveal the view
                 // so the user never sees the top-to-bottom jump.
                 DispatchQueue.main.async {
-                    scrollToBottom(proxy, animated: false)
+                    if let target = initialMessageId,
+                       service.activeMessages.contains(where: { $0.id == target }) {
+                        proxy.scrollTo(target, anchor: .center)
+                    } else {
+                        scrollToBottom(proxy, animated: false)
+                    }
                     DispatchQueue.main.async { initialScrollDone = true }
                 }
             }

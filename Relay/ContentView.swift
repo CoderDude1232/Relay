@@ -142,6 +142,11 @@ struct MainTabView: View {
     @State private var deepLinkError: String?
     @State private var selectedTab = 0
     @State private var joinGroupError: String?
+    @State private var inviteError: String?
+    /// Missed calls at or before this instant (ms since epoch) have been seen;
+    /// only newer ones count toward the Calls tab badge. Written by CallsView
+    /// on appear and here whenever the Calls tab is selected.
+    @AppStorage(CallsView.missedCallsSeenAtKey) private var missedCallsSeenAt: Double = 0
 
     private var isCallActive: Bool {
         switch callManager.state {
@@ -174,6 +179,63 @@ struct MainTabView: View {
         service.conversations.filter { !$0.archived }.reduce(0) { $0 + $1.unreadCount }
     }
 
+    private var unseenMissedCalls: Int {
+        service.callHistory.filter {
+            $0.outcome == .missed && Double($0.startedAt) > missedCallsSeenAt
+        }.count
+    }
+
+    private func markMissedCallsSeen() {
+        let newest = service.callHistory.map { Double($0.startedAt) }.max() ?? 0
+        missedCallsSeenAt = max(missedCallsSeenAt, newest, Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// Resolves any pending username / contact-invite / group-invite link and
+    /// opens the resulting chat through the notification-tap path
+    /// (ConversationListView consumes pendingNotificationConversationId).
+    private func handlePendingLinks() {
+        if let username = model.pendingDeepLinkUsername {
+            model.pendingDeepLinkUsername = nil
+            Task {
+                do {
+                    let conversationId = try await service.startConversation(username: username)
+                    selectedTab = 0
+                    model.pendingNotificationConversationId = conversationId
+                } catch {
+                    deepLinkError = "@\(username) was not found on Relay."
+                }
+            }
+        }
+        if let token = model.pendingContactInviteToken {
+            model.pendingContactInviteToken = nil
+            Task {
+                do {
+                    let username = try await service.claimContactInvite(token: token)
+                    let conversationId = try await service.startConversation(username: username)
+                    selectedTab = 0
+                    model.pendingNotificationConversationId = conversationId
+                } catch {
+                    inviteError = "This invite link is invalid or has already been used."
+                }
+            }
+        }
+        if let raw = model.pendingGroupInviteToken {
+            model.pendingGroupInviteToken = nil
+            let parts = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            let token = String(parts[0])
+            let fragment = parts.count > 1 ? String(parts[1]) : ""
+            Task {
+                do {
+                    let conversationId = try await service.joinGroupByInvite(token: token, fragment: fragment)
+                    selectedTab = 0
+                    model.pendingNotificationConversationId = conversationId
+                } catch {
+                    joinGroupError = "Invite link is invalid or has already been used."
+                }
+            }
+        }
+    }
+
     private var profileName: String {
         service.myDisplayName ?? service.username ?? "?"
     }
@@ -189,7 +251,7 @@ struct MainTabView: View {
                 Tab("Calls", systemImage: "phone.fill", value: 1) {
                     CallsView(service: service)
                 }
-                .badge(service.callHistory.filter { $0.outcome == .missed }.count)
+                .badge(unseenMissedCalls)
 
                 Tab(value: 2) {
                     SettingsView(service: service)
@@ -255,46 +317,19 @@ struct MainTabView: View {
             guard id != nil else { return }
             selectedTab = 0
         }
-        .onChange(of: model.pendingDeepLinkUsername) { _, username in
-            guard let username else { return }
-            model.pendingDeepLinkUsername = nil
-            Task {
-                do {
-                    _ = try await service.startConversation(username: username)
-                } catch {
-                    deepLinkError = "@\(username) was not found on Relay."
-                }
-            }
+        .onChange(of: selectedTab) { _, tab in
+            if tab == 1 { markMissedCallsSeen() }
         }
-        .onChange(of: model.pendingContactInviteToken) { _, token in
-            guard let token else { return }
-            model.pendingContactInviteToken = nil
-            Task {
-                do {
-                    let username = try await service.claimContactInvite(token: token)
-                    _ = try await service.startConversation(username: username)
-                    selectedTab = 0
-                } catch {
-                    deepLinkError = "This invite link is invalid or has already been used."
-                }
-            }
+        .onChange(of: service.callHistory.count) { _, _ in
+            // A call logged while the Calls tab is on screen is seen immediately.
+            if selectedTab == 1 { markMissedCallsSeen() }
         }
-        .onChange(of: model.pendingGroupInviteToken) { _, raw in
-            guard let raw else { return }
-            model.pendingGroupInviteToken = nil
-            let parts = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-            let token = String(parts[0])
-            let fragment = parts.count > 1 ? String(parts[1]) : ""
-            Task {
-                do {
-                    let conversationId = try await service.joinGroupByInvite(token: token, fragment: fragment)
-                    model.pendingNotificationConversationId = conversationId
-                    selectedTab = 0
-                } catch {
-                    joinGroupError = "Invite link is invalid or has already been used."
-                }
-            }
-        }
+        .onChange(of: model.pendingDeepLinkUsername) { _, _ in handlePendingLinks() }
+        .onChange(of: model.pendingContactInviteToken) { _, _ in handlePendingLinks() }
+        .onChange(of: model.pendingGroupInviteToken) { _, _ in handlePendingLinks() }
+        // Links opened on a cold start (or during onboarding) are set before this
+        // view exists, so onChange never sees them — drain them on appear.
+        .onAppear { handlePendingLinks() }
         .alert("User Not Found", isPresented: Binding(
             get: { deepLinkError != nil },
             set: { if !$0 { deepLinkError = nil } }
@@ -302,6 +337,14 @@ struct MainTabView: View {
             Button("OK", role: .cancel) { deepLinkError = nil }
         } message: {
             Text(deepLinkError ?? "")
+        }
+        .alert("Invite Link Not Valid", isPresented: Binding(
+            get: { inviteError != nil },
+            set: { if !$0 { inviteError = nil } }
+        )) {
+            Button("OK", role: .cancel) { inviteError = nil }
+        } message: {
+            Text(inviteError ?? "")
         }
         .alert("Invalid Invite", isPresented: Binding(
             get: { joinGroupError != nil },
@@ -400,9 +443,9 @@ private struct MinimizedCallBar: View {
     private var statusText: String {
         switch callManager.state {
         case .outgoing:
-            "Ringing..."
+            "Ringing\u{2026}"
         case .connecting:
-            "Connecting audio..."
+            "Connecting audio\u{2026}"
         case .active(_, let start):
             formatCallDuration(Date().timeIntervalSince(start))
         default:
@@ -438,6 +481,7 @@ private struct MinimizedCallBar: View {
                         .background(.red, in: .circle)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("End call")
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 10)

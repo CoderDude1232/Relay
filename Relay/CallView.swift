@@ -63,6 +63,7 @@ struct CallView: View {
                                     .foregroundStyle(.white)
                                     .frame(width: 44, height: 44)
                             }
+                            .accessibilityLabel("Minimize call")
                         }
                         Spacer()
                     }
@@ -206,6 +207,8 @@ struct CallView: View {
                     .frame(width: 44, height: 44)
                     .background(.black.opacity(0.25), in: .circle)
             }
+            .accessibilityLabel("Minimize call")
+            .accessibilityHidden(onMinimize == nil)
             .opacity(onMinimize != nil ? 1 : 0)
 
             Spacer()
@@ -287,6 +290,7 @@ struct CallView: View {
                             .foregroundStyle(.white)
                             .glassCompat(in: .circle)
                     }
+                    .accessibilityLabel("Flip camera")
                     .padding(8)
                 }
             }
