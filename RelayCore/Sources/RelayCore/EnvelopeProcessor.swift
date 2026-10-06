@@ -319,6 +319,9 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     /// 33-byte serialized public key of the sealed-sender trust root. Required
     /// to decrypt sealed messages (empty envelope sender); nil disables them.
     private let sealedSenderTrustRoot: Data?
+    /// The relay drops queued envelopes after 14 days.
+    static let maxQueueAgeMs: Int64 = 14 * 24 * 60 * 60 * 1000
+
     static func isRelayBlobId(_ id: String) -> Bool {
         id.count == 32 && id.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
     }
@@ -372,10 +375,14 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 throw EnvelopeProcessorError.sealedSenderUnavailable
             }
             // Validate the certificate at the time the relay accepted the
-            // message (its cert was valid then, even if delivery was delayed).
-            let validationTime: UInt64 = envelope.serverTimestamp > 0
-                ? UInt64(envelope.serverTimestamp)
-                : UInt64(Date().timeIntervalSince1970 * 1000)
+            // message (its cert was valid then, even if delivery was delayed) —
+            // but that time comes from the relay, so clamp it to the window a
+            // queued message can really be that old (the relay's queue TTL) and
+            // never later than now. A relay can't stretch an expired cert far.
+            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            let oldestPlausibleMs = nowMs - Self.maxQueueAgeMs
+            let claimedMs = envelope.serverTimestamp > 0 ? envelope.serverTimestamp : nowMs
+            let validationTime = UInt64(min(max(claimedMs, oldestPlausibleMs), nowMs))
             let result = try engine.sealedDecrypt(
                 envelope.message.data,
                 trustRoot: trustRoot,
