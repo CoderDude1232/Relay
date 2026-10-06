@@ -1958,7 +1958,11 @@ private struct MessageBubble: View {
     var embedsAlignment: Bool = true
 
     @Environment(ChatAppearance.self) private var appearance
+    /// The chat-level opener (in-app Safari for http/https) — used after the
+    /// user confirms a link from a received message.
+    @Environment(\.openURL) private var parentOpenURL
     @State private var reactionDetailEmoji: String?
+    @State private var pendingLinkURL: URL?
 
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
@@ -2032,6 +2036,38 @@ private struct MessageBubble: View {
                 service: service
             )
             .presentationDetents([.fraction(0.4)])
+        }
+        // Links in RECEIVED messages never open directly: markdown lets a
+        // sender show one URL and link another, so the real destination host
+        // is shown for confirmation first. Our own messages open as before.
+        .environment(\.openURL, OpenURLAction { url in
+            guard !message.isOutgoing else { return .systemAction }
+            pendingLinkURL = url
+            return .handled
+        })
+        .confirmationDialog(
+            pendingLinkURL.map { "Open link to \(LinkConfirmation.displayHost(for: $0))?" } ?? "",
+            isPresented: Binding(
+                get: { pendingLinkURL != nil },
+                set: { if !$0 { pendingLinkURL = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let url = pendingLinkURL {
+                Button("Open") {
+                    pendingLinkURL = nil
+                    parentOpenURL(url)
+                }
+                Button("Copy Link") {
+                    pendingLinkURL = nil
+                    SecurePasteboard.copy(url.absoluteString)
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingLinkURL = nil }
+        } message: {
+            if let url = pendingLinkURL {
+                Text(LinkConfirmation.message(for: url))
+            }
         }
     }
 
@@ -3228,18 +3264,44 @@ private struct LocationBubble: View {
         }
     }
 
+    /// Received locations don't load map tiles until the user asks: fetching
+    /// tiles tells Apple's map servers (with our IP) where the sender is.
+    @State private var mapRevealed = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Map(position: $position) {
-                Marker("", coordinate: coordinate)
-                    .tint(.red)
+            if isOutgoing || mapRevealed {
+                Map(position: $position) {
+                    Marker("", coordinate: coordinate)
+                        .tint(.red)
+                }
+                .frame(height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .disabled(true)
+                // Recenter as a live share moves.
+                .onChange(of: payload.lat) { _, _ in recenter() }
+                .onChange(of: payload.lng) { _, _ in recenter() }
+            } else {
+                Button {
+                    mapRevealed = true
+                } label: {
+                    VStack(spacing: 6) {
+                        Image(systemName: "map.fill")
+                            .font(.title2)
+                        Text("Tap to show map")
+                            .font(.caption.weight(.semibold))
+                        Text("Loads map tiles from Apple Maps")
+                            .font(.caption2)
+                            .opacity(0.7)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Shared location. Tap to show map.")
             }
-            .frame(height: 150)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .disabled(true)
-            // Recenter as a live share moves.
-            .onChange(of: payload.lat) { _, _ in recenter() }
-            .onChange(of: payload.lng) { _, _ in recenter() }
 
             HStack(spacing: 4) {
                 Image(systemName: payload.stop || payload.isExpired ? "location.slash.fill" : "location.fill")
