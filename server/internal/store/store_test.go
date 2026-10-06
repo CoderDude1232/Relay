@@ -44,11 +44,11 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 	s := openTestStore(t)
 
 	victimName := uniqueName("victim")
-	victim, _, err := s.CreateAccount(victimName, []byte(uniqueName("emailtok")), "device-pw-1", "recovery-pw-1")
+	victim, _, err := s.CreateAccount(victimName, []byte(uniqueName("emailtok")), "", "device-pw-1", "recovery-pw-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, _, err := s.CreateAccount(uniqueName("other"), nil, "device-pw-2", "")
+	other, _, err := s.CreateAccount(uniqueName("other"), nil, "", "device-pw-2", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 	if _, err := s.LookupAccountID(victimName); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("username still resolves after delete: %v", err)
 	}
-	if _, _, err := s.CreateAccount(victimName, nil, "device-pw-3", ""); err != nil {
+	if _, _, err := s.CreateAccount(victimName, nil, "", "device-pw-3", ""); err != nil {
 		t.Fatalf("re-register freed username: %v", err)
 	}
 	// Deleting again is a clean not-found.

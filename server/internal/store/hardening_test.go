@@ -29,7 +29,7 @@ func testKeys(t *testing.T, s *Store, account string, device uint32) {
 // its id must never be handed out again.
 func TestRemoveDeviceWithPrekeysAndNoIDReuse(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("rm"), nil, "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("rm"), nil, "", "device-pw-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRemoveDeviceWithPrekeysAndNoIDReuse(t *testing.T) {
 
 func TestDeviceCapOnEveryAddPath(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("cap"), nil, "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("cap"), nil, "", "device-pw-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestDeviceCapOnEveryAddPath(t *testing.T) {
 
 func TestLinkTokenStoresNoPassword(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("link"), nil, "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("link"), nil, "", "device-pw-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestLinkTokenStoresNoPassword(t *testing.T) {
 
 func TestQueuePaging(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("page"), nil, "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("page"), nil, "", "device-pw-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestQueuePaging(t *testing.T) {
 
 func TestPurgeExpiredAndCoarseTimestamps(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("purge"), nil, "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("purge"), nil, "", "device-pw-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}

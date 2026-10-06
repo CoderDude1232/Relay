@@ -457,20 +457,25 @@ func TestGroupLifecycle(t *testing.T) {
 
 // TestOAuthAccountProvisioning covers the social-login flow: first sign-in
 // creates the account, a later sign-in from a "new device" (no local creds)
-// recovers the same account instead of colliding on the email, and an existing
-// password-created account is adopted by email and back-filled with the
-// Supabase user id.
+// recovers the same account (bumping the device list), an account registered
+// with a confirmed email is adopted by email from another Supabase identity,
+// and an UNconfirmed email never adopts anything.
 func TestOAuthAccountProvisioning(t *testing.T) {
 	env := newTestEnv(t)
-	// Stub Supabase verification: the token is "userID|email".
+	// Stub Supabase verification: the token is "userID|email"; user ids starting
+	// with "nc-" have an unconfirmed email.
 	env.api.SetSupabaseAuth("https://stub.supabase.co", "anon")
-	env.api.verifySupabaseToken = func(_ context.Context, token string) (string, string, error) {
+	env.api.verifySupabaseToken = func(_ context.Context, token string) (supabaseUser, error) {
 		id, email, ok := strings.Cut(token, "|")
 		if !ok || id == "" {
-			return "", "", fmt.Errorf("bad stub token")
+			return supabaseUser{}, fmt.Errorf("bad stub token")
 		}
-		return id, email, nil
+		return supabaseUser{ID: id, Email: email, EmailConfirmed: !strings.HasPrefix(id, "nc-")}, nil
 	}
+	sfx := uniqueUsername("")
+	alice, bob := "alice"+sfx, "bob"+sfx
+	u1, u2, u3 := "u1"+sfx, "u2"+sfx, "u3"+sfx
+	emailA, emailB := "a"+sfx+"@x.com", "b"+sfx+"@x.com"
 
 	type oauthResp struct {
 		AccountID string `json:"accountId"`
@@ -481,47 +486,72 @@ func TestOAuthAccountProvisioning(t *testing.T) {
 
 	// Missing username on first sign-in → 404 (client should prompt).
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u1|a@x.com", "password": "device-pw-123"},
+		map[string]string{"accessToken": u1 + "|" + emailA, "password": "device-pw-123"},
 		http.StatusNotFound, nil)
 
 	// First sign-in with a username → creates the account (201).
 	var first oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u1|a@x.com", "username": "alice", "password": "device-pw-123"},
+		map[string]string{"accessToken": u1 + "|" + emailA, "username": alice, "password": "device-pw-123"},
 		http.StatusCreated, &first)
-	if !first.Created || first.Username != "alice" || first.DeviceID != 1 {
+	if !first.Created || first.Username != alice || first.DeviceID != 1 {
 		t.Fatalf("first sign-in: %+v", first)
 	}
 
-	// Second sign-in from a fresh device (no username) → recovers same account,
-	// provisions a new device, does NOT collide on email.
+	// Second sign-in from a fresh device (no username) → same account, new device.
 	var second oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u1|a@x.com", "password": "device-pw-456"},
+		map[string]string{"accessToken": u1 + "|" + emailA, "password": "device-pw-456"},
 		http.StatusOK, &second)
 	if second.Created || second.AccountID != first.AccountID || second.DeviceID != 2 {
 		t.Fatalf("second sign-in did not recover account: %+v (first=%+v)", second, first)
 	}
 
-	// An account created the old way (password path, same email, different user
-	// id) is adopted by email and back-filled with the Supabase user id.
+	// Registration never accepts a raw email.
 	env.doJSON("POST", "/v1/accounts", "", "",
-		map[string]string{"username": "bob", "password": "bob-pw-1234", "email": "b@x.com"},
+		map[string]string{"username": bob, "password": "bob-pw-1234", "email": emailB},
+		http.StatusBadRequest, nil)
+	// Register with a Supabase token whose email is confirmed → email linked.
+	env.doJSON("POST", "/v1/accounts", "", "",
+		map[string]string{"username": bob, "password": "bob-pw-1234", "supabaseAccessToken": u2 + "|" + emailB},
 		http.StatusCreated, nil)
+
+	// An unconfirmed email never adopts the account (no id match → username required).
+	env.doJSON("POST", "/v1/accounts/oauth", "", "",
+		map[string]string{"accessToken": "nc-" + u3 + "|" + emailB, "password": "device-pw-000"},
+		http.StatusNotFound, nil)
+
+	// Another Supabase identity with the same CONFIRMED email signs in to bob.
 	var adopt oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u2|b@x.com", "password": "device-pw-789"},
+		map[string]string{"accessToken": u3 + "|" + emailB, "password": "device-pw-789"},
 		http.StatusOK, &adopt)
-	if adopt.Created || adopt.Username != "bob" || adopt.DeviceID != 2 {
+	if adopt.Created || adopt.Username != bob || adopt.DeviceID != 2 {
 		t.Fatalf("email adoption failed: %+v", adopt)
 	}
-	// A subsequent sign-in now matches by Supabase user id directly.
+	// u2's sign-in still matches by its (kept) Supabase user id link.
 	var again oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u2|b@x.com", "password": "device-pw-999"},
+		map[string]string{"accessToken": u2 + "|" + emailB, "password": "device-pw-999"},
 		http.StatusOK, &again)
 	if again.AccountID != adopt.AccountID || again.DeviceID != 3 {
-		t.Fatalf("id match after backfill failed: %+v", again)
+		t.Fatalf("id match failed: %+v", again)
+	}
+
+	// Case-variant usernames collide.
+	env.doJSON("POST", "/v1/accounts", "", "",
+		map[string]string{"username": strings.ToUpper(bob), "password": "pw-12345678"},
+		http.StatusConflict, nil)
+	var avail struct {
+		Available bool `json:"available"`
+	}
+	env.doJSON("GET", "/v1/usernames/"+strings.ToUpper(alice)+"/available", "", "", nil, http.StatusOK, &avail)
+	if avail.Available {
+		t.Fatal("case-variant of a taken username reported available")
+	}
+	env.doJSON("GET", "/v1/usernames/free"+sfx+"/available", "", "", nil, http.StatusOK, &avail)
+	if !avail.Available {
+		t.Fatal("unused username reported taken")
 	}
 }
 
