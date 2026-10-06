@@ -111,18 +111,27 @@ enum RelaySignature {
     }
 }
 
-/// Remembers, per process, which devices already tried the automatic Basic
-/// bootstrap of their auth key, so a signed request that fails for another
-/// reason (e.g. clock skew) doesn't resend the device password every time.
+/// Runs the automatic Basic bootstrap of a device's auth key at most once per
+/// process, so a signed request that fails for another reason (e.g. clock
+/// skew) doesn't resend the device password every time. Concurrent callers —
+/// right after sign-up several signed requests race before the key exists —
+/// all await the same attempt instead of only the first one recovering.
 final class AuthKeyBootstrapLedger: @unchecked Sendable {
     static let shared = AuthKeyBootstrapLedger()
     private let lock = NSLock()
-    private var attempted: Set<String> = []
+    private var attempts: [String: Task<Void, Never>] = [:]
 
-    /// True the first time it is asked about a given device.
-    func firstAttempt(for credentials: RelayCredentials) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return attempted.insert("\(credentials.accountId).\(credentials.deviceId)").inserted
+    /// Starts `bootstrap` for this device if no attempt exists yet, then waits
+    /// for that (single) attempt to finish, whatever its outcome.
+    func runOnce(for credentials: RelayCredentials,
+                 _ bootstrap: @escaping @Sendable () async -> Void) async {
+        let key = "\(credentials.accountId).\(credentials.deviceId)"
+        let task = lock.withLock {
+            if let existing = attempts[key] { return existing }
+            let started = Task { await bootstrap() }
+            attempts[key] = started
+            return started
+        }
+        await task.value
     }
 }

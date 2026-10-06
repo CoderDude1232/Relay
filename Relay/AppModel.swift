@@ -13,6 +13,7 @@ import UserNotifications
 import CoreSpotlight
 import Intents
 import Observation
+import OSLog
 import RelayCore
 import RelayKit
 import SecureStorage
@@ -259,7 +260,18 @@ final class AppModel {
                 key = Data(bytes)
                 try? keychain.storeSecret(key, for: Self.accessKeySecretName)
             }
-            try? await service.apiClient.setAccessKey(key)
+            // Without this key no one can send to us privately (sealed sends
+            // fail closed), so don't let a transient failure go unnoticed.
+            for attempt in 1...3 {
+                do {
+                    try await service.apiClient.setAccessKey(key)
+                    return
+                } catch {
+                    Logger(subsystem: "app.relaymsg", category: "account")
+                        .error("access key upload failed (attempt \(attempt)): \(PrivacyRedactor.error(error))")
+                    try? await Task.sleep(for: .seconds(2 * attempt))
+                }
+            }
         }
     }
 

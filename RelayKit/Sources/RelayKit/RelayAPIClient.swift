@@ -453,7 +453,20 @@ public struct RelayAPIClient: Sendable {
                 body: DeviceAuthorizationKeyRequest(publicKey: publicKey.base64EncodedString())
             )
         } catch RelayAPIError.http(status: 401, _) where signer != nil {
-            guard try await bootstrapAuthKey(publicKey) else {
+            // Share the one Basic bootstrap with any signed request racing us,
+            // then re-assert the key signed: succeeds once the relay holds it.
+            guard let credentials else { throw RelayAPIError.http(status: 401, message: "no device credentials") }
+            let client = self
+            await AuthKeyBootstrapLedger.shared.runOnce(for: credentials) {
+                _ = try? await client.bootstrapAuthKey(publicKey)
+            }
+            do {
+                try await requestExpectingNoContent(
+                    "PUT",
+                    "v1/devices/auth-key",
+                    body: DeviceAuthorizationKeyRequest(publicKey: publicKey.base64EncodedString())
+                )
+            } catch RelayAPIError.http(status: 401, _) {
                 throw RelayAPIError.http(status: 401, message: "device authorization key rejected")
             }
         }
@@ -769,13 +782,17 @@ public struct RelayAPIClient: Sendable {
         do {
             return try await perform(try signed(request, credentials: credentials, signer: signer), on: session)
         } catch RelayAPIError.http(status: 401, let message) {
-            // Bootstrap: only if the relay holds no key for this device yet (the
-            // Basic upload is refused otherwise), then retry once, freshly signed.
+            // Bootstrap: the relay may hold no key for this device yet. Register
+            // it via Basic at most once per process (concurrent callers share the
+            // attempt), then retry once, freshly signed — even if our Basic upload
+            // was refused, another path may have registered the key meanwhile.
             guard request.url?.path(percentEncoded: false).hasSuffix("/v1/devices/auth-key") == false,
-                  AuthKeyBootstrapLedger.shared.firstAttempt(for: credentials),
-                  let publicKey = signer.relayAuthPublicKey(),
-                  try await bootstrapAuthKey(publicKey)
+                  let publicKey = signer.relayAuthPublicKey()
             else { throw RelayAPIError.http(status: 401, message: message) }
+            let client = self
+            await AuthKeyBootstrapLedger.shared.runOnce(for: credentials) {
+                _ = try? await client.bootstrapAuthKey(publicKey)
+            }
             return try await perform(try signed(request, credentials: credentials, signer: signer), on: session)
         }
     }
