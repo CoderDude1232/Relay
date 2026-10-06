@@ -269,7 +269,8 @@ func (s *Server) Handler() http.Handler {
 }
 
 // ---------------------------------------------------------------------------
-// Auth: HTTP Basic with username "<accountID>.<deviceID>".
+// Auth: Relay-Sig (see sigauth.go), or HTTP Basic "<accountID>.<deviceID>"
+// only for a device that has not registered an auth key yet.
 // ---------------------------------------------------------------------------
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Device)
@@ -284,8 +285,7 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			return
 		}
 		// Preferred: signature auth (proves possession of the device's auth private
-		// key without sending a reusable secret). Falls through to Basic during the
-		// transition so existing clients keep working.
+		// key without sending a reusable secret).
 		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
 			dev, err := s.authenticateSignature(r)
 			if err != nil {
@@ -298,31 +298,33 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 		}
 		user, pass, ok := r.BasicAuth()
 		if !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="relay"`)
 			httpError(w, http.StatusUnauthorized, "missing credentials")
 			return
 		}
-		accountID, devStr, ok := strings.Cut(user, ".")
-		if !ok {
-			httpError(w, http.StatusUnauthorized, "auth username must be <accountID>.<deviceID>")
-			return
-		}
-		devID, err := strconv.ParseUint(devStr, 10, 32)
+		accountID, devID, err := parseCredential(user)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
-			httpError(w, http.StatusUnauthorized, "bad device id")
+			httpError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
-		deviceKey := accountID + "." + devStr
+		deviceKey := accountID + "." + strconv.FormatUint(uint64(devID), 10)
 		if authFailDeviceLimiter.exhausted(deviceKey) {
 			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
 			return
 		}
-		dev, err := s.store.Authenticate(accountID, uint32(devID), pass)
+		dev, err := s.store.Authenticate(accountID, devID, pass)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
 			authFailDeviceLimiter.allow(deviceKey)
 			httpError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
+		// Basic is a bootstrap credential only: once a device has registered an
+		// auth key it must sign every request, so a leaked device password alone
+		// can no longer act as the device (or swap its auth key — rotating the key
+		// therefore requires a Relay-Sig request signed by the old key).
+		if len(dev.AuthPublicKey) > 0 {
+			httpError(w, http.StatusUnauthorized, "this device must use Relay-Sig authentication")
 			return
 		}
 		next(w, r, dev)

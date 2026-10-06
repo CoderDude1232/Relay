@@ -33,6 +33,9 @@ type testEnv struct {
 	t   *testing.T
 	srv *httptest.Server
 	api *Server
+	// clients by "<accountID>.<deviceID>" so doJSON can sign requests for a
+	// device that has registered an auth key (Basic is refused after that).
+	clients map[string]*client
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -53,7 +56,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	apiServer := New(st, hub.New(st), blobs, "", "")
 	srv := httptest.NewServer(apiServer.Handler())
 	t.Cleanup(srv.Close)
-	return &testEnv{t: t, srv: srv, api: apiServer}
+	return &testEnv{t: t, srv: srv, api: apiServer, clients: map[string]*client{}}
 }
 
 type client struct {
@@ -72,6 +75,7 @@ func (e *testEnv) register(username, password string) *client {
 	}
 	e.doJSON("POST", "/v1/accounts", "", "", map[string]string{"username": username, "password": password}, http.StatusCreated, &resp)
 	c := &client{env: e, accountID: resp.AccountID, deviceID: resp.DeviceID, password: password}
+	e.clients[c.authUser()] = c
 	c.uploadDeviceAuthKey()
 	return c
 }
@@ -82,12 +86,17 @@ func (e *testEnv) doJSON(method, path, user, pass string, body any, wantStatus i
 	if body != nil {
 		json.NewEncoder(&buf).Encode(body)
 	}
-	req, err := http.NewRequest(method, e.srv.URL+path, &buf)
+	bodyBytes := buf.Bytes()
+	req, err := http.NewRequest(method, e.srv.URL+path, bytes.NewReader(bodyBytes))
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	if user != "" {
-		req.SetBasicAuth(user, pass)
+		if c := e.clients[user]; c != nil && c.authKey != nil {
+			c.sign(req, bodyBytes)
+		} else {
+			req.SetBasicAuth(user, pass)
+		}
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -179,9 +188,9 @@ type wsConn struct {
 func (c *client) connectWS() *wsConn {
 	c.env.t.Helper()
 	url := "ws" + strings.TrimPrefix(c.env.srv.URL, "http") + "/v1/ws"
-	hdr := http.Header{}
-	hdr.Set("Authorization", "Basic "+basicAuth(c.authUser(), c.password))
-	conn, _, err := websocket.DefaultDialer.Dial(url, hdr)
+	probe, _ := http.NewRequest("GET", c.env.srv.URL+"/v1/ws", nil)
+	c.sign(probe, nil)
+	conn, _, err := websocket.DefaultDialer.Dial(url, probe.Header)
 	if err != nil {
 		c.env.t.Fatal(err)
 	}
@@ -199,12 +208,6 @@ func (c *client) connectWS() *wsConn {
 			c.env.t.Fatalf("unexpected frame during drain: %T", p)
 		}
 	}
-}
-
-func basicAuth(user, pass string) string {
-	req, _ := http.NewRequest("GET", "http://x", nil)
-	req.SetBasicAuth(user, pass)
-	return strings.TrimPrefix(req.Header.Get("Authorization"), "Basic ")
 }
 
 func (w *wsConn) readFrame() *relaypb.ServerFrame {
