@@ -179,6 +179,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
 	mux.HandleFunc("POST /v1/devices/link-invitations", s.auth(s.handleCreateDeviceLinkInvitation))
 	mux.HandleFunc("POST /v1/devices/link-claims", s.handleClaimDeviceLink)
+	// Reversed device linking (shared account identity). The new device creates
+	// a blind provisioning session and shows a QR; the primary scans it, creates
+	// the device, and drops an encrypted payload the new device polls for.
+	// Top-level path (NOT under /v1/devices/) so the `{id}` wildcard doesn't
+	// collide with GET /v1/devices/{id}/auth-key — Go 1.22's mux rejects such
+	// ambiguous patterns at registration.
+	mux.HandleFunc("POST /v1/provisioning-sessions", s.handleCreateProvisioningSession)     // unauthenticated (new device)
+	mux.HandleFunc("GET /v1/provisioning-sessions/{id}", s.handleFetchProvisioning)         // unauthenticated (new device polls)
+	mux.HandleFunc("PUT /v1/provisioning-sessions/{id}", s.auth(s.handleStoreProvisioning)) // primary stores ciphertext
+	mux.HandleFunc("POST /v1/devices/link", s.auth(s.handleLinkDevice))                     // primary creates the device
 	mux.HandleFunc("GET /v1/devices", s.auth(s.handleListDevices))
 	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.handleRemoveDevice))
 	mux.HandleFunc("PUT /v1/devices/auth-key", s.auth(s.handleSetDeviceAuthKey))
@@ -884,6 +894,110 @@ func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleCreateProvisioningSession mints a blind mailbox for the reversed
+// linking flow. Unauthenticated: the new device has no account yet.
+func (s *Server) handleCreateProvisioningSession(w http.ResponseWriter, r *http.Request) {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !provisioningLimiter.allow(ip) {
+		httpError(w, http.StatusTooManyRequests, "too many device-linking attempts; try again later")
+		return
+	}
+	sessionID, expiresAt, err := s.store.CreateProvisioningSession()
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"sessionId": sessionID,
+		"expiresAt": expiresAt,
+	})
+}
+
+// handleFetchProvisioning lets the new device poll for the primary's encrypted
+// payload. 204 while it's not there yet, 404 once expired/consumed.
+func (s *Server) handleFetchProvisioning(w http.ResponseWriter, r *http.Request) {
+	blob, err := s.store.FetchProvisioningBlob(r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "provisioning session expired or unknown")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	if blob == nil {
+		w.WriteHeader(http.StatusNoContent) // not provisioned yet; keep polling
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"blob": blob})
+}
+
+// handleStoreProvisioning lets the primary deposit the encrypted payload for a
+// session. Authenticated so only a real account device can write; the payload
+// itself is end-to-end encrypted to the new device's ephemeral key.
+func (s *Server) handleStoreProvisioning(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxProvisioningBlobBytes)
+	var req struct {
+		Blob b64 `json:"blob"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Blob) == 0 {
+		httpError(w, http.StatusBadRequest, "blob required")
+		return
+	}
+	if len(req.Blob) > maxProvisioningBlobBytes {
+		httpError(w, http.StatusRequestEntityTooLarge, "provisioning blob too large")
+		return
+	}
+	err := s.store.StoreProvisioningBlob(r.PathValue("id"), req.Blob)
+	if errors.Is(err, store.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "provisioning session expired, unknown, or already used")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleLinkDevice creates a new device row for the primary's account using a
+// primary-supplied password, bound into the device-mutation signature. The
+// reversed-flow replacement for the invitation/claim round-trip: the QR scan is
+// the trust anchor, so there is no separate verification code.
+func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Password   string             `json:"password"`
+		DeviceName string             `json:"deviceName"`
+		Auth       deviceMutationAuth `json:"auth"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
+		httpError(w, http.StatusBadRequest, "password and device mutation signature required")
+		return
+	}
+	if err := verifyDeviceMutation(dev, req.Auth, "link", 0, req.Password); err != nil {
+		httpError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	name := req.DeviceName
+	if len(name) > maxDeviceNameBytes {
+		name = name[:maxDeviceNameBytes]
+	}
+	deviceID, err := s.store.AllocateLinkedDevice(dev.AccountID, req.Password, name, req.Auth.ExpectedVersion)
+	if errors.Is(err, store.ErrDeviceListVersionMismatch) {
+		httpError(w, http.StatusConflict, "device list changed; refresh and try again")
+		return
+	}
+	if errors.Is(err, store.ErrDeviceLimit) {
+		httpError(w, http.StatusConflict, "linked device limit reached; unlink a device first")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"deviceId": deviceID})
+}
+
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	devices, err := s.store.ListDevices(dev.AccountID)
 	if err != nil {
@@ -893,10 +1007,12 @@ func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request, dev *
 	type jsonDevice struct {
 		DeviceID  uint32 `json:"deviceId"`
 		MailboxID string `json:"mailboxId,omitempty"`
+		Name      string `json:"name,omitempty"`
+		CreatedAt int64  `json:"createdAt,omitempty"`
 	}
 	out := make([]jsonDevice, len(devices))
 	for i, d := range devices {
-		out[i] = jsonDevice{DeviceID: d.DeviceID, MailboxID: d.MailboxID}
+		out[i] = jsonDevice{DeviceID: d.DeviceID, MailboxID: d.MailboxID, Name: d.Name, CreatedAt: d.CreatedAt}
 	}
 	version, err := s.store.DeviceListVersion(dev.AccountID)
 	if err != nil {
@@ -1311,6 +1427,10 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		SignedPreKey   jsonSignedPreKey    `json:"signedPreKey"`
 		KyberPreKey    jsonSignedPreKey    `json:"kyberPreKey"`
 		OneTimePreKeys []jsonOneTimePreKey `json:"oneTimePreKeys"`
+		// When true, the device's existing one-time pool is deleted before this
+		// batch is stored (fresh install/restore or desync heal). Defaults false
+		// so ordinary top-ups keep appending.
+		ReplaceOneTimePreKeys bool `json:"replaceOneTimePreKeys"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "malformed body: "+err.Error())
@@ -1339,7 +1459,7 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 	for _, k := range req.OneTimePreKeys {
 		otks = append(otks, store.OneTimePreKey{KeyID: k.KeyID, PublicKey: k.PublicKey})
 	}
-	if err := s.store.SetKeys(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks); err != nil {
+	if err := s.store.SetKeys(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks, req.ReplaceOneTimePreKeys); err != nil {
 		internalError(w, err)
 		return
 	}
@@ -1641,6 +1761,7 @@ func (s *Server) PruneStaleLimiterKeys() {
 		sealedSendIPLimiter,
 		sealedSendMailboxLimiter,
 		directoryLimiter,
+		provisioningLimiter,
 	} {
 		now := time.Now()
 		l.mu.Lock()
@@ -1662,6 +1783,12 @@ func (s *Server) PruneStaleLimiterKeys() {
 }
 
 const (
+	// maxDeviceNameBytes caps the linked-device label length.
+	maxDeviceNameBytes = 64
+	// maxProvisioningBlobBytes caps the sealed device-linking payload. The blob
+	// is identity + credentials + up to ~50 conversation stubs — a few KiB — so
+	// 64 KiB is generous while preventing a huge-blob DoS on the session table.
+	maxProvisioningBlobBytes = 64 * 1024
 	// maxGroupNameBytes caps group name length at 512 UTF-8 bytes.
 	maxGroupNameBytes = 512
 	// maxGroupDescriptionBytes caps group descriptions at 4 KiB.
@@ -1716,6 +1843,9 @@ var directoryLimiter = newSlidingWindowLimiter(200, time.Hour)
 
 // 100 key uploads per account per hour.
 var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)
+
+// 10 new provisioning (device-linking) sessions per source IP per 10 minutes.
+var provisioningLimiter = newSlidingWindowLimiter(10, 10*time.Minute)
 
 // ipRateLimiter kept for backward compatibility with existing call site.
 type ipRateLimiter = slidingWindowLimiter

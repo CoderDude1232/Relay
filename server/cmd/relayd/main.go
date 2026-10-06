@@ -60,7 +60,7 @@ func main() {
 	apnsKey := flag.String("apns-key", "", "path to APNs .p8 auth key (enables push)")
 	apnsKeyID := flag.String("apns-key-id", "", "APNs key id")
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
-	apnsTopic := flag.String("apns-topic", "com.morgandaly.RelayMessenger", "APNs topic (app bundle id)")
+	apnsTopic := flag.String("apns-topic", "app.relaymsg", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
 	fcmServiceAccount := flag.String("fcm-service-account", "", "path to a Firebase service-account JSON key (enables FCM push for Android devices)")
 	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")

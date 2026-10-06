@@ -111,7 +111,11 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 | `GET /v1/devices` | sig | → `{devices:[{deviceId, mailboxId}], deviceListVersion}` |
 | `DELETE /v1/devices/{id}` | sig | `{auth{…}}` → `204`. Broadcasts `DEVICE_REMOVED`. |
 | `POST /v1/devices/link-invitations` | sig | `{auth{…}}` → `201 {linkToken, verificationCode, expiresAt}` |
-| `POST /v1/devices/link-claims` | none | `{linkToken, verificationCode}` → `200 {accountId, deviceId, password, username}`. `404` expired/used, `409` device list changed. |
+| `POST /v1/devices/link-claims` | none | `{linkToken, verificationCode}` → `200 {accountId, deviceId, password, username}`. `404` expired/used, `409` device list changed. Legacy forward-QR flow; superseded by the provisioning-session flow below. |
+| `POST /v1/provisioning-sessions` | none | → `201 {sessionId, expiresAt}`. New device mints a blind mailbox for reversed linking; shows `{sessionId, ephemeralPublicKey}` in a QR (ephemeral key never touches the server). 10-min expiry. Rate-limited to 10 sessions / source IP / 10 min (`429`). (Top-level path, not under `/v1/devices/`, to avoid a `{id}` route collision with `/v1/devices/{id}/auth-key`.) |
+| `GET /v1/provisioning-sessions/{id}` | none | → `200 {blob}` once the primary has provisioned, `204` while pending, `404` expired/consumed. New device polls this. Single-use: the session is deleted on the first successful fetch. |
+| `PUT /v1/provisioning-sessions/{id}` | sig | `{blob}` → `204`. Primary deposits the ciphertext (identity key + credentials, AES-GCM under an ECDH-derived key, **signed by the account identity key** so the new device authenticates the primary). **Write-once** — a session can be provisioned only once, so a second writer can't substitute the payload (`404` if expired/unknown/already used). Blob capped at 64 KiB (`413`). Relay stores only the opaque blob. |
+| `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion`. No verification code — the camera scan is the trust anchor. |
 | `PUT /v1/devices/auth-key` | sig | `{publicKey}` — uncompressed P-256 point `0x04‖X‖Y` (65 bytes), ≤512 B → `204`. Stores the key `Relay-Sig` and nuke/device-list signatures verify against. |
 | `GET /v1/devices/{id}/auth-key` | sig | → `{authPublicKey}` (same account only). Lets clients verify a peer device's nuke/device-list signatures. |
 | `PUT /v1/devices/apns` | sig | `{token}` → `204`. Registers an APNs token (iOS); sets push kind `apns`. |
@@ -124,7 +128,7 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `PUT /v1/keys` | sig | `{registrationId, identityKey, signedPreKey{keyId,publicKey,signature}, kyberPreKey{…}, oneTimePreKeys[{keyId,publicKey}]}` → `204`. Identity/signed/Kyber **replace**; one-time keys **append**. ≤200 OTKs/upload, 100 uploads/account/hour. Kyber prekey is **required** (PQXDH). |
+| `PUT /v1/keys` | sig | `{registrationId, identityKey, signedPreKey{keyId,publicKey,signature}, kyberPreKey{…}, oneTimePreKeys[{keyId,publicKey}], replaceOneTimePreKeys?}` → `204`. Identity/signed/Kyber **replace**; one-time keys **append** by default, or **replace** the device's whole pool when `replaceOneTimePreKeys:true` (deletes this device's existing one-time rows first, in the same transaction — used on fresh install/restore or desync heal so the relay never serves an orphaned key). ≤200 OTKs/upload, 100 uploads/account/hour. Kyber prekey is **required** (PQXDH). |
 | `GET /v1/keys/count` | sig | → `{count}`. Replenish below ~20. |
 | `GET /v1/keys/{account}[?device=N]` | sig | → `{devices:[{deviceId, mailboxId, registrationId, identityKey, signedPreKey, kyberPreKey, oneTimePreKey|null}], accessKey?}`. Consumes one OTK per device; `null` when exhausted (degraded PQXDH). 200/(requester,target)/hour; own-account fetches exempt. |
 

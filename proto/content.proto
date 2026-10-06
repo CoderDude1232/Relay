@@ -28,6 +28,8 @@ message Content {
     EditMessage edit = 11;
     PollMessage poll = 17;
     PollVote poll_vote = 18;
+    ScreenshotAlert screenshot = 19;
+    ScreenSecurityUpdate screen_security_update = 20;
   }
   // Set when this content belongs to a group; empty for 1:1. Group messages
   // are encrypted with the sender's sender key (senderKey ciphertext);
@@ -76,6 +78,7 @@ message GroupUpdate {
     PROMOTE_ADMIN = 8;   // target was promoted to admin
     DEMOTE_ADMIN = 9;    // target was demoted from admin
     SET_ANNOUNCE_ONLY = 10; // announce_only toggled
+    SET_SCREEN_SECURITY = 11; // admin toggled group screenshot hiding
   }
   int64 revision = 1;
   Action action = 2;
@@ -91,6 +94,8 @@ message GroupUpdate {
   repeated string admins = 9;
   // New announce-only state (SET_ANNOUNCE_ONLY action).
   bool announce_only = 10;
+  // New group screenshot-hide state (SET_SCREEN_SECURITY action, admin-set).
+  bool screen_security = 13;
   // The group's current sender-key epoch. Carried E2E (was server-managed) so
   // clients agree on it without a server round-trip. On member REMOVE the actor
   // rotates this to a fresh id, forcing new sender keys the removed member can't
@@ -138,6 +143,16 @@ message ProfileUpdate {
   string display_name = 1;
   AttachmentPointer avatar = 2; // optional; unset means no photo
   int64 timestamp = 3;          // sender clock; newest wins
+  string status = 4;            // short "about" line shown under the name
+  string bio = 5;               // longer free-text profile bio
+  repeated ProfileLink links = 6; // labelled profile links (site/handle)
+}
+
+// A single labelled link on a profile (e.g. label "Website", url
+// "https://example.com"). Distributed inside ProfileUpdate, so E2E.
+message ProfileLink {
+  string label = 1;
+  string url = 2;
 }
 
 // A snapshot of the message being replied to. Self-contained (carries the
@@ -250,6 +265,22 @@ message PollVote {
   int64 poll_timestamp = 2;       // timestamp field from the PollMessage
   repeated uint32 selected_options = 3; // zero-based option indices
   int64 timestamp = 4;            // sender's clock for ordering
+}
+
+// Sent (always, regardless of the hide setting) when the sender takes a
+// screenshot while a conversation is open. `group_id` (Content field 8) routes
+// group vs 1:1. Recipients show an in-chat notice; non-ephemeral so it queues.
+message ScreenshotAlert {
+  int64 timestamp = 1; // sender clock
+}
+
+// Syncs the sender's per-CHAT screenshot-hide preference to a 1:1 peer. The
+// effective hide state on each device is the OR of both sides' preferences, so
+// content stays hidden unless BOTH disable it. Groups instead use the
+// admin-controlled GroupUpdate.SET_SCREEN_SECURITY flag.
+message ScreenSecurityUpdate {
+  bool enabled = 1;
+  int64 timestamp = 2; // sender clock; newest wins
 }
 
 // Sent with Envelope.ephemeral = true; never queued for offline devices.

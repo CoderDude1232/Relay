@@ -19,7 +19,7 @@ func main() {
 	keyPath := flag.String("apns-key", "", "path to .p8")
 	keyID := flag.String("apns-key-id", "", "APNs key id")
 	teamID := flag.String("apns-team-id", "", "team id")
-	topic := flag.String("apns-topic", "com.morgandaly.RelayTexting", "bundle id")
+	topic := flag.String("apns-topic", "app.relaymsg", "bundle id")
 	production := flag.Bool("apns-production", false, "use production host")
 	flag.Parse()
 

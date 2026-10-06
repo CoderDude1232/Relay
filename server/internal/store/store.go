@@ -35,7 +35,12 @@ var (
 	ErrEnvelopeTooLarge          = errors.New("store: envelope too large")
 	ErrDeviceListVersionMismatch = errors.New("store: device list version mismatch")
 	ErrDuplicateNukeCommand      = errors.New("store: nuke command already executed")
+	ErrDeviceLimit               = errors.New("store: linked device limit reached")
 )
+
+// maxDevicesPerAccount caps how many devices (primary + linked) an account may
+// have at once, bounding the blast radius of a linking compromise.
+const maxDevicesPerAccount = 5
 
 const maxGroupMembers = 256
 
@@ -284,6 +289,9 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// existing iOS devices are unaffected.
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_kind TEXT NOT NULL DEFAULT 'apns'`,
+		// A short, non-PII device label (e.g. "iPhone", "iPad") the new device
+		// supplies at link time, shown in the owner's Linked Devices list.
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_name TEXT`,
 		// Email privacy: never store the email in plaintext. We keep only the
 		// OPRF-keyed token (the same keyed hash used for blinded discovery), which
 		// is a one-way, non-enumerable-without-the-key value. All email lookups
@@ -296,6 +304,19 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`UPDATE accounts a SET email_token = d.token FROM directory d WHERE d.account_id = a.id AND d.kind = 1 AND a.email_token IS NULL`,
 		`DROP INDEX IF EXISTS idx_accounts_email`,
 		`ALTER TABLE accounts DROP COLUMN IF EXISTS email`,
+		// Reversed device linking: the new (secondary) device creates a session
+		// and shows a QR carrying its ephemeral key; the primary scans it,
+		// encrypts the provisioning payload (shared identity key + credentials)
+		// under an ECDH-derived key, and PUTs the ciphertext here. The relay is a
+		// blind mailbox — it stores only the opaque blob keyed by session id and
+		// never sees the ephemeral key (which travels in the QR) or the plaintext.
+		`CREATE TABLE IF NOT EXISTS provisioning_sessions (
+    session_id TEXT PRIMARY KEY,
+    blob       BYTEA,
+    expires_at BIGINT NOT NULL,
+    created_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_provisioning_sessions_expires ON provisioning_sessions (expires_at)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -359,6 +380,8 @@ type Device struct {
 	MailboxID      string
 	RegistrationID uint32
 	AuthPublicKey  []byte
+	Name           string
+	CreatedAt      int64
 }
 
 type DeviceLinkClaim struct {
@@ -800,6 +823,133 @@ func (s *Store) ClaimDeviceLinkToken(token string, code string) (*DeviceLinkClai
 	return &claim, tx.Commit(ctx)
 }
 
+// CreateProvisioningSession mints a blind mailbox for reversed device linking.
+// The new (secondary) device creates it, shows its id + ephemeral key in a QR,
+// and later polls FetchProvisioningBlob; the primary stores the ciphertext via
+// StoreProvisioningBlob. Unauthenticated by design — the session grants no
+// authority until a primary chooses to provision into it.
+func (s *Store) CreateProvisioningSession() (sessionID string, expiresAt int64, err error) {
+	sessionID, err = newSecureToken(32)
+	if err != nil {
+		return "", 0, err
+	}
+	now := time.Now().UnixMilli()
+	expiresAt = now + int64((10*time.Minute)/time.Millisecond)
+	ctx := context.Background()
+	if _, err := s.db.Exec(ctx, `DELETE FROM provisioning_sessions WHERE expires_at < $1`, now); err != nil {
+		return "", 0, err
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO provisioning_sessions (session_id, blob, expires_at, created_at) VALUES ($1, NULL, $2, $3)`,
+		sessionID, expiresAt, now); err != nil {
+		return "", 0, err
+	}
+	return sessionID, expiresAt, nil
+}
+
+// StoreProvisioningBlob attaches the primary's encrypted payload to a session.
+// Write-once: the `blob IS NULL` guard means a session can only be provisioned
+// a single time, so a second writer can't overwrite (substitute) the primary's
+// payload before the new device fetches it. Returns ErrNotFound if the session
+// is unknown, expired, or already provisioned.
+func (s *Store) StoreProvisioningBlob(sessionID string, blob []byte) error {
+	now := time.Now().UnixMilli()
+	ctx := context.Background()
+	tag, err := s.db.Exec(ctx, `UPDATE provisioning_sessions SET blob = $1 WHERE session_id = $2 AND expires_at >= $3 AND blob IS NULL`,
+		blob, sessionID, now)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// FetchProvisioningBlob returns the encrypted payload once the primary has
+// stored it, deleting the session on success (single-use). Returns (nil, nil)
+// when the session exists but no blob is present yet (caller replies 204), and
+// ErrNotFound when the session is unknown or expired.
+func (s *Store) FetchProvisioningBlob(sessionID string) ([]byte, error) {
+	now := time.Now().UnixMilli()
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM provisioning_sessions WHERE expires_at < $1`, now); err != nil {
+		return nil, err
+	}
+	var blob []byte
+	err = tx.QueryRow(ctx, `SELECT blob FROM provisioning_sessions WHERE session_id = $1`, sessionID).Scan(&blob)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if blob == nil {
+		return nil, tx.Commit(ctx) // not provisioned yet
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM provisioning_sessions WHERE session_id = $1`, sessionID); err != nil {
+		return nil, err
+	}
+	return blob, tx.Commit(ctx)
+}
+
+// AllocateLinkedDevice creates a new device row for an existing account using a
+// primary-supplied password, guarded by the device-list version to serialize
+// against concurrent link/unlink. Returns the assigned device id. This is the
+// reversed-flow counterpart to ClaimDeviceLinkToken: the primary (already
+// authenticated) drives device creation directly after scanning the QR.
+func (s *Store) AllocateLinkedDevice(accountID, password, deviceName string, expectedVersion int64) (deviceID uint32, err error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return 0, err
+	}
+	mailboxID, err := newMailboxID()
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UnixMilli()
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	var currentVersion int64
+	if err := tx.QueryRow(ctx, `SELECT device_list_version FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&currentVersion); errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	} else if err != nil {
+		return 0, err
+	}
+	if currentVersion != expectedVersion {
+		return 0, ErrDeviceListVersionMismatch
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM devices WHERE account_id = $1`, accountID).Scan(&count); err != nil {
+		return 0, err
+	}
+	if count >= maxDevicesPerAccount {
+		return 0, ErrDeviceLimit
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) + 1 FROM devices WHERE account_id = $1`, accountID).Scan(&deviceID); err != nil {
+		return 0, err
+	}
+	if deviceID == 1 {
+		return 0, ErrNotFound
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at, device_name) VALUES ($1, $2, $3, $4, $5, $6)`,
+		accountID, deviceID, mailboxID, hash, now, deviceName); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, currentVersion+1, accountID); err != nil {
+		return 0, err
+	}
+	return deviceID, tx.Commit(ctx)
+}
+
 // Authenticate verifies device credentials and returns the device row.
 func (s *Store) Authenticate(accountID string, deviceID uint32, password string) (*Device, error) {
 	ctx := context.Background()
@@ -853,7 +1003,7 @@ func (s *Store) DeviceListVersion(accountID string) (int64, error) {
 // ListDevices returns all devices for the given account.
 func (s *Store) ListDevices(accountID string) ([]Device, error) {
 	ctx := context.Background()
-	rows, err := s.db.Query(ctx, `SELECT device_id, registration_id, COALESCE(mailbox_id, '') FROM devices WHERE account_id = $1 ORDER BY device_id`, accountID)
+	rows, err := s.db.Query(ctx, `SELECT device_id, registration_id, COALESCE(mailbox_id, ''), COALESCE(device_name, ''), created_at FROM devices WHERE account_id = $1 ORDER BY device_id`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -862,7 +1012,7 @@ func (s *Store) ListDevices(accountID string) ([]Device, error) {
 	for rows.Next() {
 		var d Device
 		d.AccountID = accountID
-		if err := rows.Scan(&d.DeviceID, &d.RegistrationID, &d.MailboxID); err != nil {
+		if err := rows.Scan(&d.DeviceID, &d.RegistrationID, &d.MailboxID, &d.Name, &d.CreatedAt); err != nil {
 			return nil, err
 		}
 		devices = append(devices, d)
@@ -1156,27 +1306,6 @@ func (s *Store) VoIPToken(accountID string, deviceID uint32) (string, error) {
 	return *token, nil
 }
 
-// VoIPTokensForAccount returns all VoIP tokens registered for any device of an account.
-func (s *Store) VoIPTokensForAccount(accountID string) ([]string, error) {
-	ctx := context.Background()
-	rows, err := s.db.Query(ctx,
-		`SELECT voip_token FROM devices WHERE account_id = $1 AND voip_token IS NOT NULL AND voip_token != ''`,
-		accountID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var tokens []string
-	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err == nil {
-			tokens = append(tokens, t)
-		}
-	}
-	return tokens, rows.Err()
-}
-
 // ---------------------------------------------------------------------------
 // Prekeys
 // ---------------------------------------------------------------------------
@@ -1205,7 +1334,7 @@ type PreKeyBundle struct {
 
 // SetKeys replaces the device's identity key, registration id, signed prekey
 // and last-resort Kyber prekey, and appends one-time prekeys to its pool.
-func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32, identityKey []byte, spk SignedPreKey, kyber SignedPreKey, oneTime []OneTimePreKey) error {
+func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32, identityKey []byte, spk SignedPreKey, kyber SignedPreKey, oneTime []OneTimePreKey, replaceOneTime bool) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -1238,6 +1367,17 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 			signature = EXCLUDED.signature, created_at = EXCLUDED.created_at`,
 		accountID, deviceID, kyber.KeyID, kyber.PublicKey, kyber.Signature, time.Now().UnixMilli()); err != nil {
 		return err
+	}
+	// A client that knows its local key store is fresh (first launch after
+	// install/restore) or has detected a desync replaces the whole pool, so the
+	// relay never advertises a stale high-id key the device no longer holds the
+	// private for (which decrypts to recordNotFound and is silently dropped).
+	// Scoped to this device only; sibling devices' pools are untouched.
+	if replaceOneTime {
+		if _, err := tx.Exec(ctx, `DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
+			accountID, deviceID); err != nil {
+			return err
+		}
 	}
 	for _, k := range oneTime {
 		if _, err := tx.Exec(ctx, `

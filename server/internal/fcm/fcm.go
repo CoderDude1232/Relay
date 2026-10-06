@@ -104,9 +104,32 @@ func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 		}
 		// else: too big for the payload — fall back to the content-free wake.
 	}
+	return p.send(deviceToken, data)
+}
 
-	// Data-only message (no "notification" block) so the app, not the OS,
-	// decides what to display — required to keep the contentless model.
+// PushCall wakes an Android device for an incoming call — the FCM analogue of
+// iOS PushKit, since Android has no VoIP push. It carries the same call
+// metadata the VoIP payload does (nothing more): the client starts a foreground
+// service and posts a full-screen-intent notification to ring. "type":"call"
+// lets the client tell a call wake from a message wake. caller_account is an id
+// the recipient already knows, so no new information is revealed.
+func (p *Pusher) PushCall(deviceToken, callID, callerAccount, callerName, kind string) error {
+	data := map[string]string{
+		"type":           "call",
+		"call_id":        callID,
+		"caller_account": callerAccount,
+		"kind":           kind,
+	}
+	if callerName != "" {
+		data["caller_name"] = callerName
+	}
+	return p.send(deviceToken, data)
+}
+
+// send posts a data-only, high-priority FCM message (no "notification" block, so
+// the app — not the OS — decides what to display; required for the contentless
+// model).
+func (p *Pusher) send(deviceToken string, data map[string]string) error {
 	body, err := json.Marshal(map[string]any{
 		"message": map[string]any{
 			"token":   deviceToken,

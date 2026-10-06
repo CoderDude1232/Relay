@@ -34,17 +34,18 @@ const (
 type GroupUpdate_Action int32
 
 const (
-	GroupUpdate_ACTION_UNSPECIFIED GroupUpdate_Action = 0
-	GroupUpdate_CREATE             GroupUpdate_Action = 1
-	GroupUpdate_ADD                GroupUpdate_Action = 2
-	GroupUpdate_REMOVE             GroupUpdate_Action = 3
-	GroupUpdate_LEAVE              GroupUpdate_Action = 4
-	GroupUpdate_RENAME             GroupUpdate_Action = 5
-	GroupUpdate_DESCRIBE           GroupUpdate_Action = 6  // group description changed
-	GroupUpdate_AVATAR             GroupUpdate_Action = 7  // group avatar changed
-	GroupUpdate_PROMOTE_ADMIN      GroupUpdate_Action = 8  // target was promoted to admin
-	GroupUpdate_DEMOTE_ADMIN       GroupUpdate_Action = 9  // target was demoted from admin
-	GroupUpdate_SET_ANNOUNCE_ONLY  GroupUpdate_Action = 10 // announce_only toggled
+	GroupUpdate_ACTION_UNSPECIFIED  GroupUpdate_Action = 0
+	GroupUpdate_CREATE              GroupUpdate_Action = 1
+	GroupUpdate_ADD                 GroupUpdate_Action = 2
+	GroupUpdate_REMOVE              GroupUpdate_Action = 3
+	GroupUpdate_LEAVE               GroupUpdate_Action = 4
+	GroupUpdate_RENAME              GroupUpdate_Action = 5
+	GroupUpdate_DESCRIBE            GroupUpdate_Action = 6  // group description changed
+	GroupUpdate_AVATAR              GroupUpdate_Action = 7  // group avatar changed
+	GroupUpdate_PROMOTE_ADMIN       GroupUpdate_Action = 8  // target was promoted to admin
+	GroupUpdate_DEMOTE_ADMIN        GroupUpdate_Action = 9  // target was demoted from admin
+	GroupUpdate_SET_ANNOUNCE_ONLY   GroupUpdate_Action = 10 // announce_only toggled
+	GroupUpdate_SET_SCREEN_SECURITY GroupUpdate_Action = 11 // admin toggled group screenshot hiding
 )
 
 // Enum value maps for GroupUpdate_Action.
@@ -61,19 +62,21 @@ var (
 		8:  "PROMOTE_ADMIN",
 		9:  "DEMOTE_ADMIN",
 		10: "SET_ANNOUNCE_ONLY",
+		11: "SET_SCREEN_SECURITY",
 	}
 	GroupUpdate_Action_value = map[string]int32{
-		"ACTION_UNSPECIFIED": 0,
-		"CREATE":             1,
-		"ADD":                2,
-		"REMOVE":             3,
-		"LEAVE":              4,
-		"RENAME":             5,
-		"DESCRIBE":           6,
-		"AVATAR":             7,
-		"PROMOTE_ADMIN":      8,
-		"DEMOTE_ADMIN":       9,
-		"SET_ANNOUNCE_ONLY":  10,
+		"ACTION_UNSPECIFIED":  0,
+		"CREATE":              1,
+		"ADD":                 2,
+		"REMOVE":              3,
+		"LEAVE":               4,
+		"RENAME":              5,
+		"DESCRIBE":            6,
+		"AVATAR":              7,
+		"PROMOTE_ADMIN":       8,
+		"DEMOTE_ADMIN":        9,
+		"SET_ANNOUNCE_ONLY":   10,
+		"SET_SCREEN_SECURITY": 11,
 	}
 )
 
@@ -150,7 +153,7 @@ func (x ReceiptMessage_Type) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ReceiptMessage_Type.Descriptor instead.
 func (ReceiptMessage_Type) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{9, 0}
+	return file_content_proto_rawDescGZIP(), []int{10, 0}
 }
 
 type CallMessage_Type int32
@@ -217,7 +220,7 @@ func (x CallMessage_Type) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CallMessage_Type.Descriptor instead.
 func (CallMessage_Type) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{10, 0}
+	return file_content_proto_rawDescGZIP(), []int{11, 0}
 }
 
 type TypingMessage_Action int32
@@ -266,7 +269,7 @@ func (x TypingMessage_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TypingMessage_Action.Descriptor instead.
 func (TypingMessage_Action) EnumDescriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{14, 0}
+	return file_content_proto_rawDescGZIP(), []int{17, 0}
 }
 
 type Content struct {
@@ -285,6 +288,8 @@ type Content struct {
 	//	*Content_Edit
 	//	*Content_Poll
 	//	*Content_PollVote
+	//	*Content_Screenshot
+	//	*Content_ScreenSecurityUpdate
 	Body isContent_Body `protobuf_oneof:"body"`
 	// Set when this content belongs to a group; empty for 1:1. Group messages
 	// are encrypted with the sender's sender key (senderKey ciphertext);
@@ -456,6 +461,24 @@ func (x *Content) GetPollVote() *PollVote {
 	return nil
 }
 
+func (x *Content) GetScreenshot() *ScreenshotAlert {
+	if x != nil {
+		if x, ok := x.Body.(*Content_Screenshot); ok {
+			return x.Screenshot
+		}
+	}
+	return nil
+}
+
+func (x *Content) GetScreenSecurityUpdate() *ScreenSecurityUpdate {
+	if x != nil {
+		if x, ok := x.Body.(*Content_ScreenSecurityUpdate); ok {
+			return x.ScreenSecurityUpdate
+		}
+	}
+	return nil
+}
+
 func (x *Content) GetGroupId() string {
 	if x != nil {
 		return x.GroupId
@@ -550,6 +573,14 @@ type Content_PollVote struct {
 	PollVote *PollVote `protobuf:"bytes,18,opt,name=poll_vote,json=pollVote,proto3,oneof"`
 }
 
+type Content_Screenshot struct {
+	Screenshot *ScreenshotAlert `protobuf:"bytes,19,opt,name=screenshot,proto3,oneof"`
+}
+
+type Content_ScreenSecurityUpdate struct {
+	ScreenSecurityUpdate *ScreenSecurityUpdate `protobuf:"bytes,20,opt,name=screen_security_update,json=screenSecurityUpdate,proto3,oneof"`
+}
+
 func (*Content_Text) isContent_Body() {}
 
 func (*Content_Receipt) isContent_Body() {}
@@ -573,6 +604,10 @@ func (*Content_Edit) isContent_Body() {}
 func (*Content_Poll) isContent_Body() {}
 
 func (*Content_PollVote) isContent_Body() {}
+
+func (*Content_Screenshot) isContent_Body() {}
+
+func (*Content_ScreenSecurityUpdate) isContent_Body() {}
 
 // Carries a libsignal Sender Key Distribution Message so a member can
 // decrypt this sender's group messages. Sent 1:1 (pairwise-encrypted) to
@@ -648,6 +683,8 @@ type GroupUpdate struct {
 	Admins []string `protobuf:"bytes,9,rep,name=admins,proto3" json:"admins,omitempty"`
 	// New announce-only state (SET_ANNOUNCE_ONLY action).
 	AnnounceOnly bool `protobuf:"varint,10,opt,name=announce_only,json=announceOnly,proto3" json:"announce_only,omitempty"`
+	// New group screenshot-hide state (SET_SCREEN_SECURITY action, admin-set).
+	ScreenSecurity bool `protobuf:"varint,13,opt,name=screen_security,json=screenSecurity,proto3" json:"screen_security,omitempty"`
 	// The group's current sender-key epoch. Carried E2E (was server-managed) so
 	// clients agree on it without a server round-trip. On member REMOVE the actor
 	// rotates this to a fresh id, forcing new sender keys the removed member can't
@@ -759,6 +796,13 @@ func (x *GroupUpdate) GetAdmins() []string {
 func (x *GroupUpdate) GetAnnounceOnly() bool {
 	if x != nil {
 		return x.AnnounceOnly
+	}
+	return false
+}
+
+func (x *GroupUpdate) GetScreenSecurity() bool {
+	if x != nil {
+		return x.ScreenSecurity
 	}
 	return false
 }
@@ -962,6 +1006,9 @@ type ProfileUpdate struct {
 	DisplayName   string                 `protobuf:"bytes,1,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	Avatar        *AttachmentPointer     `protobuf:"bytes,2,opt,name=avatar,proto3" json:"avatar,omitempty"`        // optional; unset means no photo
 	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // sender clock; newest wins
+	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`        // short "about" line shown under the name
+	Bio           string                 `protobuf:"bytes,5,opt,name=bio,proto3" json:"bio,omitempty"`              // longer free-text profile bio
+	Links         []*ProfileLink         `protobuf:"bytes,6,rep,name=links,proto3" json:"links,omitempty"`          // labelled profile links (site/handle)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1017,6 +1064,81 @@ func (x *ProfileUpdate) GetTimestamp() int64 {
 	return 0
 }
 
+func (x *ProfileUpdate) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ProfileUpdate) GetBio() string {
+	if x != nil {
+		return x.Bio
+	}
+	return ""
+}
+
+func (x *ProfileUpdate) GetLinks() []*ProfileLink {
+	if x != nil {
+		return x.Links
+	}
+	return nil
+}
+
+// A single labelled link on a profile (e.g. label "Website", url
+// "https://example.com"). Distributed inside ProfileUpdate, so E2E.
+type ProfileLink struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Label         string                 `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
+	Url           string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileLink) Reset() {
+	*x = ProfileLink{}
+	mi := &file_content_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileLink) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileLink) ProtoMessage() {}
+
+func (x *ProfileLink) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileLink.ProtoReflect.Descriptor instead.
+func (*ProfileLink) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ProfileLink) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *ProfileLink) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
 // A snapshot of the message being replied to. Self-contained (carries the
 // quoted text) so the reply renders without a lookup and survives the
 // original being deleted, following Signal's model.
@@ -1034,7 +1156,7 @@ type Quote struct {
 
 func (x *Quote) Reset() {
 	*x = Quote{}
-	mi := &file_content_proto_msgTypes[6]
+	mi := &file_content_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1046,7 +1168,7 @@ func (x *Quote) String() string {
 func (*Quote) ProtoMessage() {}
 
 func (x *Quote) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[6]
+	mi := &file_content_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1059,7 +1181,7 @@ func (x *Quote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Quote.ProtoReflect.Descriptor instead.
 func (*Quote) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{6}
+	return file_content_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Quote) GetTargetTimestamp() int64 {
@@ -1101,7 +1223,7 @@ type DeleteMessage struct {
 
 func (x *DeleteMessage) Reset() {
 	*x = DeleteMessage{}
-	mi := &file_content_proto_msgTypes[7]
+	mi := &file_content_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1113,7 +1235,7 @@ func (x *DeleteMessage) String() string {
 func (*DeleteMessage) ProtoMessage() {}
 
 func (x *DeleteMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[7]
+	mi := &file_content_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1126,7 +1248,7 @@ func (x *DeleteMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteMessage.ProtoReflect.Descriptor instead.
 func (*DeleteMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{7}
+	return file_content_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DeleteMessage) GetTargetTimestamp() int64 {
@@ -1164,7 +1286,7 @@ type ReactionMessage struct {
 
 func (x *ReactionMessage) Reset() {
 	*x = ReactionMessage{}
-	mi := &file_content_proto_msgTypes[8]
+	mi := &file_content_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1176,7 +1298,7 @@ func (x *ReactionMessage) String() string {
 func (*ReactionMessage) ProtoMessage() {}
 
 func (x *ReactionMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[8]
+	mi := &file_content_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1189,7 +1311,7 @@ func (x *ReactionMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReactionMessage.ProtoReflect.Descriptor instead.
 func (*ReactionMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{8}
+	return file_content_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ReactionMessage) GetEmoji() string {
@@ -1241,7 +1363,7 @@ type ReceiptMessage struct {
 
 func (x *ReceiptMessage) Reset() {
 	*x = ReceiptMessage{}
-	mi := &file_content_proto_msgTypes[9]
+	mi := &file_content_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1253,7 +1375,7 @@ func (x *ReceiptMessage) String() string {
 func (*ReceiptMessage) ProtoMessage() {}
 
 func (x *ReceiptMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[9]
+	mi := &file_content_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1266,7 +1388,7 @@ func (x *ReceiptMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReceiptMessage.ProtoReflect.Descriptor instead.
 func (*ReceiptMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{9}
+	return file_content_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ReceiptMessage) GetType() ReceiptMessage_Type {
@@ -1304,7 +1426,7 @@ type CallMessage struct {
 
 func (x *CallMessage) Reset() {
 	*x = CallMessage{}
-	mi := &file_content_proto_msgTypes[10]
+	mi := &file_content_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1316,7 +1438,7 @@ func (x *CallMessage) String() string {
 func (*CallMessage) ProtoMessage() {}
 
 func (x *CallMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[10]
+	mi := &file_content_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1329,7 +1451,7 @@ func (x *CallMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CallMessage.ProtoReflect.Descriptor instead.
 func (*CallMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{10}
+	return file_content_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CallMessage) GetType() CallMessage_Type {
@@ -1396,7 +1518,7 @@ type EditMessage struct {
 
 func (x *EditMessage) Reset() {
 	*x = EditMessage{}
-	mi := &file_content_proto_msgTypes[11]
+	mi := &file_content_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1408,7 +1530,7 @@ func (x *EditMessage) String() string {
 func (*EditMessage) ProtoMessage() {}
 
 func (x *EditMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[11]
+	mi := &file_content_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1421,7 +1543,7 @@ func (x *EditMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EditMessage.ProtoReflect.Descriptor instead.
 func (*EditMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{11}
+	return file_content_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *EditMessage) GetTargetTimestamp() int64 {
@@ -1454,7 +1576,7 @@ type PollMessage struct {
 
 func (x *PollMessage) Reset() {
 	*x = PollMessage{}
-	mi := &file_content_proto_msgTypes[12]
+	mi := &file_content_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1466,7 +1588,7 @@ func (x *PollMessage) String() string {
 func (*PollMessage) ProtoMessage() {}
 
 func (x *PollMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[12]
+	mi := &file_content_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1479,7 +1601,7 @@ func (x *PollMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollMessage.ProtoReflect.Descriptor instead.
 func (*PollMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{12}
+	return file_content_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *PollMessage) GetQuestion() string {
@@ -1524,7 +1646,7 @@ type PollVote struct {
 
 func (x *PollVote) Reset() {
 	*x = PollVote{}
-	mi := &file_content_proto_msgTypes[13]
+	mi := &file_content_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1536,7 +1658,7 @@ func (x *PollVote) String() string {
 func (*PollVote) ProtoMessage() {}
 
 func (x *PollVote) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[13]
+	mi := &file_content_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1549,7 +1671,7 @@ func (x *PollVote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollVote.ProtoReflect.Descriptor instead.
 func (*PollVote) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{13}
+	return file_content_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *PollVote) GetPollAuthor() string {
@@ -1580,6 +1702,109 @@ func (x *PollVote) GetTimestamp() int64 {
 	return 0
 }
 
+// Sent (always, regardless of the hide setting) when the sender takes a
+// screenshot while a conversation is open. `group_id` (Content field 8) routes
+// group vs 1:1. Recipients show an in-chat notice; non-ephemeral so it queues.
+type ScreenshotAlert struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Timestamp     int64                  `protobuf:"varint,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // sender clock
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScreenshotAlert) Reset() {
+	*x = ScreenshotAlert{}
+	mi := &file_content_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScreenshotAlert) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScreenshotAlert) ProtoMessage() {}
+
+func (x *ScreenshotAlert) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScreenshotAlert.ProtoReflect.Descriptor instead.
+func (*ScreenshotAlert) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ScreenshotAlert) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+// Syncs the sender's per-CHAT screenshot-hide preference to a 1:1 peer. The
+// effective hide state on each device is the OR of both sides' preferences, so
+// content stays hidden unless BOTH disable it. Groups instead use the
+// admin-controlled GroupUpdate.SET_SCREEN_SECURITY flag.
+type ScreenSecurityUpdate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // sender clock; newest wins
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScreenSecurityUpdate) Reset() {
+	*x = ScreenSecurityUpdate{}
+	mi := &file_content_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScreenSecurityUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScreenSecurityUpdate) ProtoMessage() {}
+
+func (x *ScreenSecurityUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScreenSecurityUpdate.ProtoReflect.Descriptor instead.
+func (*ScreenSecurityUpdate) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ScreenSecurityUpdate) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *ScreenSecurityUpdate) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
 // Sent with Envelope.ephemeral = true; never queued for offline devices.
 type TypingMessage struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1591,7 +1816,7 @@ type TypingMessage struct {
 
 func (x *TypingMessage) Reset() {
 	*x = TypingMessage{}
-	mi := &file_content_proto_msgTypes[14]
+	mi := &file_content_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1603,7 +1828,7 @@ func (x *TypingMessage) String() string {
 func (*TypingMessage) ProtoMessage() {}
 
 func (x *TypingMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_content_proto_msgTypes[14]
+	mi := &file_content_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1616,7 +1841,7 @@ func (x *TypingMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TypingMessage.ProtoReflect.Descriptor instead.
 func (*TypingMessage) Descriptor() ([]byte, []int) {
-	return file_content_proto_rawDescGZIP(), []int{14}
+	return file_content_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *TypingMessage) GetAction() TypingMessage_Action {
@@ -1637,7 +1862,7 @@ var File_content_proto protoreflect.FileDescriptor
 
 const file_content_proto_rawDesc = "" +
 	"\n" +
-	"\rcontent.proto\x12\rrelay.content\"\xb1\a\n" +
+	"\rcontent.proto\x12\rrelay.content\"\xd0\b\n" +
 	"\aContent\x120\n" +
 	"\x04text\x18\x01 \x01(\v2\x1a.relay.content.TextMessageH\x00R\x04text\x129\n" +
 	"\areceipt\x18\x02 \x01(\v2\x1d.relay.content.ReceiptMessageH\x00R\areceipt\x126\n" +
@@ -1651,7 +1876,11 @@ const file_content_proto_rawDesc = "" +
 	" \x01(\v2\x1a.relay.content.CallMessageH\x00R\x04call\x120\n" +
 	"\x04edit\x18\v \x01(\v2\x1a.relay.content.EditMessageH\x00R\x04edit\x120\n" +
 	"\x04poll\x18\x11 \x01(\v2\x1a.relay.content.PollMessageH\x00R\x04poll\x126\n" +
-	"\tpoll_vote\x18\x12 \x01(\v2\x17.relay.content.PollVoteH\x00R\bpollVote\x12\x19\n" +
+	"\tpoll_vote\x18\x12 \x01(\v2\x17.relay.content.PollVoteH\x00R\bpollVote\x12@\n" +
+	"\n" +
+	"screenshot\x18\x13 \x01(\v2\x1e.relay.content.ScreenshotAlertH\x00R\n" +
+	"screenshot\x12[\n" +
+	"\x16screen_security_update\x18\x14 \x01(\v2#.relay.content.ScreenSecurityUpdateH\x00R\x14screenSecurityUpdate\x12\x19\n" +
 	"\bgroup_id\x18\b \x01(\tR\agroupId\x12\x18\n" +
 	"\apadding\x18\f \x01(\fR\apadding\x12*\n" +
 	"\x11sender_account_id\x18\r \x01(\tR\x0fsenderAccountId\x12(\n" +
@@ -1661,7 +1890,7 @@ const file_content_proto_rawDesc = "" +
 	"\x04body\"T\n" +
 	"\x15SenderKeyDistribution\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12'\n" +
-	"\x0fdistribution_id\x18\x02 \x01(\tR\x0edistributionId\"\xd2\x04\n" +
+	"\x0fdistribution_id\x18\x02 \x01(\tR\x0edistributionId\"\x94\x05\n" +
 	"\vGroupUpdate\x12\x1a\n" +
 	"\brevision\x18\x01 \x01(\x03R\brevision\x129\n" +
 	"\x06action\x18\x02 \x01(\x0e2!.relay.content.GroupUpdate.ActionR\x06action\x12\x14\n" +
@@ -1674,9 +1903,10 @@ const file_content_proto_rawDesc = "" +
 	"\x06admins\x18\t \x03(\tR\x06admins\x12#\n" +
 	"\rannounce_only\x18\n" +
 	" \x01(\bR\fannounceOnly\x12'\n" +
+	"\x0fscreen_security\x18\r \x01(\bR\x0escreenSecurity\x12'\n" +
 	"\x0fdistribution_id\x18\v \x01(\tR\x0edistributionId\x12\x1d\n" +
 	"\n" +
-	"invite_key\x18\f \x01(\fR\tinviteKey\"\xae\x01\n" +
+	"invite_key\x18\f \x01(\fR\tinviteKey\"\xc7\x01\n" +
 	"\x06Action\x12\x16\n" +
 	"\x12ACTION_UNSPECIFIED\x10\x00\x12\n" +
 	"\n" +
@@ -1693,7 +1923,8 @@ const file_content_proto_rawDesc = "" +
 	"\rPROMOTE_ADMIN\x10\b\x12\x10\n" +
 	"\fDEMOTE_ADMIN\x10\t\x12\x15\n" +
 	"\x11SET_ANNOUNCE_ONLY\x10\n" +
-	"\"\xaf\x01\n" +
+	"\x12\x17\n" +
+	"\x13SET_SCREEN_SECURITY\x10\v\"\xaf\x01\n" +
 	"\vTextMessage\x12\x12\n" +
 	"\x04body\x18\x01 \x01(\tR\x04body\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x12*\n" +
@@ -1707,11 +1938,17 @@ const file_content_proto_rawDesc = "" +
 	"\x04size\x18\x05 \x01(\x04R\x04size\x12\x1a\n" +
 	"\bfilename\x18\x06 \x01(\tR\bfilename\x12\x14\n" +
 	"\x05width\x18\a \x01(\rR\x05width\x12\x16\n" +
-	"\x06height\x18\b \x01(\rR\x06height\"\x8a\x01\n" +
+	"\x06height\x18\b \x01(\rR\x06height\"\xe6\x01\n" +
 	"\rProfileUpdate\x12!\n" +
 	"\fdisplay_name\x18\x01 \x01(\tR\vdisplayName\x128\n" +
 	"\x06avatar\x18\x02 \x01(\v2 .relay.content.AttachmentPointerR\x06avatar\x12\x1c\n" +
-	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\"^\n" +
+	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12\x10\n" +
+	"\x03bio\x18\x05 \x01(\tR\x03bio\x120\n" +
+	"\x05links\x18\x06 \x03(\v2\x1a.relay.content.ProfileLinkR\x05links\"5\n" +
+	"\vProfileLink\x12\x14\n" +
+	"\x05label\x18\x01 \x01(\tR\x05label\x12\x10\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\"^\n" +
 	"\x05Quote\x12)\n" +
 	"\x10target_timestamp\x18\x01 \x01(\x03R\x0ftargetTimestamp\x12\x16\n" +
 	"\x06author\x18\x02 \x01(\tR\x06author\x12\x12\n" +
@@ -1767,7 +2004,12 @@ const file_content_proto_rawDesc = "" +
 	"pollAuthor\x12%\n" +
 	"\x0epoll_timestamp\x18\x02 \x01(\x03R\rpollTimestamp\x12)\n" +
 	"\x10selected_options\x18\x03 \x03(\rR\x0fselectedOptions\x12\x1c\n" +
-	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\"\xb4\x01\n" +
+	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\"/\n" +
+	"\x0fScreenshotAlert\x12\x1c\n" +
+	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"N\n" +
+	"\x14ScreenSecurityUpdate\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1c\n" +
+	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"\xb4\x01\n" +
 	"\rTypingMessage\x12;\n" +
 	"\x06action\x18\x01 \x01(\x0e2#.relay.content.TypingMessage.ActionR\x06action\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"H\n" +
@@ -1789,7 +2031,7 @@ func file_content_proto_rawDescGZIP() []byte {
 }
 
 var file_content_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_content_proto_goTypes = []any{
 	(GroupUpdate_Action)(0),       // 0: relay.content.GroupUpdate.Action
 	(ReceiptMessage_Type)(0),      // 1: relay.content.ReceiptMessage.Type
@@ -1801,42 +2043,48 @@ var file_content_proto_goTypes = []any{
 	(*TextMessage)(nil),           // 7: relay.content.TextMessage
 	(*AttachmentPointer)(nil),     // 8: relay.content.AttachmentPointer
 	(*ProfileUpdate)(nil),         // 9: relay.content.ProfileUpdate
-	(*Quote)(nil),                 // 10: relay.content.Quote
-	(*DeleteMessage)(nil),         // 11: relay.content.DeleteMessage
-	(*ReactionMessage)(nil),       // 12: relay.content.ReactionMessage
-	(*ReceiptMessage)(nil),        // 13: relay.content.ReceiptMessage
-	(*CallMessage)(nil),           // 14: relay.content.CallMessage
-	(*EditMessage)(nil),           // 15: relay.content.EditMessage
-	(*PollMessage)(nil),           // 16: relay.content.PollMessage
-	(*PollVote)(nil),              // 17: relay.content.PollVote
-	(*TypingMessage)(nil),         // 18: relay.content.TypingMessage
+	(*ProfileLink)(nil),           // 10: relay.content.ProfileLink
+	(*Quote)(nil),                 // 11: relay.content.Quote
+	(*DeleteMessage)(nil),         // 12: relay.content.DeleteMessage
+	(*ReactionMessage)(nil),       // 13: relay.content.ReactionMessage
+	(*ReceiptMessage)(nil),        // 14: relay.content.ReceiptMessage
+	(*CallMessage)(nil),           // 15: relay.content.CallMessage
+	(*EditMessage)(nil),           // 16: relay.content.EditMessage
+	(*PollMessage)(nil),           // 17: relay.content.PollMessage
+	(*PollVote)(nil),              // 18: relay.content.PollVote
+	(*ScreenshotAlert)(nil),       // 19: relay.content.ScreenshotAlert
+	(*ScreenSecurityUpdate)(nil),  // 20: relay.content.ScreenSecurityUpdate
+	(*TypingMessage)(nil),         // 21: relay.content.TypingMessage
 }
 var file_content_proto_depIdxs = []int32{
 	7,  // 0: relay.content.Content.text:type_name -> relay.content.TextMessage
-	13, // 1: relay.content.Content.receipt:type_name -> relay.content.ReceiptMessage
-	18, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
-	12, // 3: relay.content.Content.reaction:type_name -> relay.content.ReactionMessage
+	14, // 1: relay.content.Content.receipt:type_name -> relay.content.ReceiptMessage
+	21, // 2: relay.content.Content.typing:type_name -> relay.content.TypingMessage
+	13, // 3: relay.content.Content.reaction:type_name -> relay.content.ReactionMessage
 	5,  // 4: relay.content.Content.sender_key_distribution:type_name -> relay.content.SenderKeyDistribution
 	6,  // 5: relay.content.Content.group_update:type_name -> relay.content.GroupUpdate
-	11, // 6: relay.content.Content.delete:type_name -> relay.content.DeleteMessage
+	12, // 6: relay.content.Content.delete:type_name -> relay.content.DeleteMessage
 	9,  // 7: relay.content.Content.profile:type_name -> relay.content.ProfileUpdate
-	14, // 8: relay.content.Content.call:type_name -> relay.content.CallMessage
-	15, // 9: relay.content.Content.edit:type_name -> relay.content.EditMessage
-	16, // 10: relay.content.Content.poll:type_name -> relay.content.PollMessage
-	17, // 11: relay.content.Content.poll_vote:type_name -> relay.content.PollVote
-	0,  // 12: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
-	8,  // 13: relay.content.GroupUpdate.avatar:type_name -> relay.content.AttachmentPointer
-	10, // 14: relay.content.TextMessage.quote:type_name -> relay.content.Quote
-	8,  // 15: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
-	8,  // 16: relay.content.ProfileUpdate.avatar:type_name -> relay.content.AttachmentPointer
-	1,  // 17: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
-	2,  // 18: relay.content.CallMessage.type:type_name -> relay.content.CallMessage.Type
-	3,  // 19: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	15, // 8: relay.content.Content.call:type_name -> relay.content.CallMessage
+	16, // 9: relay.content.Content.edit:type_name -> relay.content.EditMessage
+	17, // 10: relay.content.Content.poll:type_name -> relay.content.PollMessage
+	18, // 11: relay.content.Content.poll_vote:type_name -> relay.content.PollVote
+	19, // 12: relay.content.Content.screenshot:type_name -> relay.content.ScreenshotAlert
+	20, // 13: relay.content.Content.screen_security_update:type_name -> relay.content.ScreenSecurityUpdate
+	0,  // 14: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
+	8,  // 15: relay.content.GroupUpdate.avatar:type_name -> relay.content.AttachmentPointer
+	11, // 16: relay.content.TextMessage.quote:type_name -> relay.content.Quote
+	8,  // 17: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
+	8,  // 18: relay.content.ProfileUpdate.avatar:type_name -> relay.content.AttachmentPointer
+	10, // 19: relay.content.ProfileUpdate.links:type_name -> relay.content.ProfileLink
+	1,  // 20: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
+	2,  // 21: relay.content.CallMessage.type:type_name -> relay.content.CallMessage.Type
+	3,  // 22: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_content_proto_init() }
@@ -1857,6 +2105,8 @@ func file_content_proto_init() {
 		(*Content_Edit)(nil),
 		(*Content_Poll)(nil),
 		(*Content_PollVote)(nil),
+		(*Content_Screenshot)(nil),
+		(*Content_ScreenSecurityUpdate)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1864,7 +2114,7 @@ func file_content_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_content_proto_rawDesc), len(file_content_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   15,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

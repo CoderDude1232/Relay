@@ -37,6 +37,9 @@ type Pusher interface {
 // non-nil envelope is carried for the opt-in ciphertext-in-push case. Optional.
 type FCMPusher interface {
 	Push(deviceToken string, envelope []byte) error
+	// PushCall wakes an Android device for an incoming call (the FCM analogue of
+	// PushKit): a high-priority data message carrying the call metadata.
+	PushCall(deviceToken, callID, callerAccount, callerName, kind string) error
 }
 
 // VoIPPusher sends a PushKit VoIP push to wake the app and present the
@@ -76,29 +79,54 @@ func (h *Hub) SetFCMPusher(p FCMPusher) { h.fcmPusher = p }
 // SetVoIPPusher attaches a PushKit sender for incoming-call wakes.
 func (h *Hub) SetVoIPPusher(p VoIPPusher) { h.voipPusher = p }
 
-// PushCallToAccount sends a VoIP push to every device of accountID.
+// PushCallToAccount wakes every device of accountID for an incoming call,
+// picking the transport each device registered — the same per-device branch
+// Deliver uses. iOS ('apns') gets a PushKit VoIP push (its separate VoIP token);
+// Android ('fcm') gets a high-priority FCM data message carrying the same call
+// metadata. Android has no PushKit, so without the FCM branch it would only ring
+// while already in the foreground.
 func (h *Hub) PushCallToAccount(accountID, callID, callerAccount, callerName, kind string) {
-	if h.voipPusher == nil {
+	devices, err := h.store.ListDevices(accountID)
+	if err != nil {
+		slog.Warn("call push: device lookup failed", "err", privlog.Error(err))
 		return
 	}
-	tokens, err := h.store.VoIPTokensForAccount(accountID)
-	if err != nil || len(tokens) == 0 {
+	for _, d := range devices {
+		transport, token, err := h.store.PushTarget(accountID, d.DeviceID)
 		if err != nil {
-			slog.Warn("voip: token lookup failed", "err", privlog.Error(err))
-		} else {
-			slog.Info("voip: no tokens for account")
+			slog.Warn("call push: push target lookup failed", "err", privlog.Error(err))
+			continue
 		}
-		return
-	}
-	for _, token := range tokens {
-		t := token
-		go func() {
-			if err := h.voipPusher.PushVoIP(t, callID, callerAccount, callerName, kind); err != nil {
-				slog.Warn("voip push failed", "err", privlog.Error(err))
-			} else {
-				slog.Info("voip push sent")
+		switch transport {
+		case "fcm":
+			if h.fcmPusher == nil || token == "" {
+				continue
 			}
-		}()
+			t := token
+			go func() {
+				if err := h.fcmPusher.PushCall(t, callID, callerAccount, callerName, kind); err != nil {
+					slog.Warn("call push (fcm) failed", "err", privlog.Error(err))
+				} else {
+					slog.Info("call push sent", "kind", "fcm")
+				}
+			}()
+		default: // apns — PushKit uses the device's separate VoIP token
+			if h.voipPusher == nil {
+				continue
+			}
+			voipToken, err := h.store.VoIPToken(accountID, d.DeviceID)
+			if err != nil || voipToken == "" {
+				continue
+			}
+			t := voipToken
+			go func() {
+				if err := h.voipPusher.PushVoIP(t, callID, callerAccount, callerName, kind); err != nil {
+					slog.Warn("call push (voip) failed", "err", privlog.Error(err))
+				} else {
+					slog.Info("call push sent", "kind", "voip")
+				}
+			}()
+		}
 	}
 }
 
