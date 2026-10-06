@@ -293,7 +293,7 @@ private struct AccountSettingsView: View {
                         .lineLimit(1)
                 }
                 Button {
-                    UIPasteboard.general.string = "https://\(addLink)"
+                    SecurePasteboard.copy("https://\(addLink)")
                     linkCopied = true
                     Task { try? await Task.sleep(for: .seconds(2)); linkCopied = false }
                 } label: {

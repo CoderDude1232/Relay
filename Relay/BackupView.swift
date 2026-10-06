@@ -265,7 +265,7 @@ private struct RecoveryKeySheet: View {
                     .padding(.horizontal)
 
                 Button {
-                    UIPasteboard.general.string = key.replacingOccurrences(of: " ", with: "")
+                    SecurePasteboard.copySecret(key.replacingOccurrences(of: " ", with: ""))
                     copied = true
                 } label: {
                     Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")

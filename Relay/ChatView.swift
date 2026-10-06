@@ -1039,7 +1039,7 @@ struct ChatView: View {
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
         guard !text.isEmpty else { return }
-        UIPasteboard.general.string = text
+        SecurePasteboard.copy(text)
         clearMessageSelection()
     }
 
@@ -1914,7 +1914,7 @@ private struct MessageRow: View {
         }
         let isViewOnce = message.body.hasPrefix(MessagingService.viewOncePrefix)
         if !message.body.isEmpty && !isViewOnce {
-            items.append(.init(label: "Copy", icon: "doc.on.doc") { UIPasteboard.general.string = message.body })
+            items.append(.init(label: "Copy", icon: "doc.on.doc") { SecurePasteboard.copy(message.body) })
         }
         if (!message.body.isEmpty || !message.attachments.isEmpty) && !isViewOnce && !message.isDeleted {
             items.append(.init(label: "Forward", icon: "arrowshape.turn.up.right") { onForward() })

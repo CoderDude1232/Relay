@@ -210,7 +210,7 @@ struct ContactCardView: View {
                 // MARK: Account
                 Section("Account") {
                     Button {
-                        UIPasteboard.general.string = account
+                        SecurePasteboard.copy(account)
                         accountIdCopied = true
                         Task {
                             try? await Task.sleep(for: .seconds(2))
