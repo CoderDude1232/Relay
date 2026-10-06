@@ -58,7 +58,7 @@ public struct NotificationContent: Sendable {
     public let body: String
 }
 
-public enum GroupAction: Sendable {
+public enum GroupAction: Sendable, Codable {
     case create, add, remove, leave, rename, describe, avatar
     case promoteAdmin, demoteAdmin, setAnnounceOnly, setScreenSecurity
     case unknown
@@ -67,7 +67,7 @@ public enum GroupAction: Sendable {
 /// A group membership/metadata change. The `members` field carries the full
 /// updated roster (present on CREATE/ADD/REMOVE/LEAVE) so recipients can keep
 /// their local copy current without a server round-trip.
-public struct GroupUpdateInfo: Sendable {
+public struct GroupUpdateInfo: Sendable, Codable {
     public let groupId: String
     public let action: GroupAction
     public let actor: String
@@ -116,7 +116,7 @@ public struct GroupUpdateInfo: Sendable {
 
 /// The sender took a screenshot in a conversation (sent regardless of the hide
 /// setting). The caller shows an in-chat notice.
-public struct ScreenshotAlertInfo: Sendable {
+public struct ScreenshotAlertInfo: Sendable, Codable {
     public let conversationId: String
     public let senderAccount: String
     public let timestamp: Int64
@@ -129,7 +129,7 @@ public struct ScreenshotAlertInfo: Sendable {
 
 /// A 1:1 peer's screenshot-hide preference. The caller stores it as the peer's
 /// side of the OR that decides effective hiding.
-public struct ScreenSecurityInfo: Sendable {
+public struct ScreenSecurityInfo: Sendable, Codable {
     public let conversationId: String
     public let senderAccount: String
     public let enabled: Bool
@@ -216,13 +216,13 @@ public struct CallInfo: Sendable {
 
 /// A peer's self-set profile. The caller stores it (and downloads the avatar
 /// blob, if any) — kept out of the processor so it stays network-free.
-public struct ProfileInfo: Sendable {
-    public struct Avatar: Sendable {
+public struct ProfileInfo: Sendable, Codable {
+    public struct Avatar: Sendable, Codable {
         public let id: String
         public let key: Data
         public let digest: Data
     }
-    public struct Link: Sendable {
+    public struct Link: Sendable, Codable {
         public let label: String
         public let url: String
         public init(label: String, url: String) {
@@ -409,6 +409,24 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return try storage.messages.conversation(withPeer: groupId ?? attestedAccount)
         }
 
+        // Edits and unsends name their target by timestamp only. Apply them only
+        // to a message this sender actually wrote: their incoming message (in a
+        // group, the one with their sender_account), or — for a sync copy from
+        // our own other device — our outgoing message. Otherwise any peer or
+        // group member could rewrite or delete someone else's message.
+        func targetIsAuthoredBySender(timestamp: Int64, conversationId: String) -> Bool {
+            let rows = (try? storage.database.query(
+                "SELECT is_outgoing, sender_account FROM messages WHERE conversation_id = ? AND timestamp = ?",
+                [.text(conversationId), .integer(timestamp)]
+            )) ?? []
+            return rows.contains { row in
+                let outgoing = row[0].int64 == 1
+                if isSyncMessage { return outgoing }
+                if outgoing { return false }
+                return groupId == nil || row[1].string == attestedAccount
+            }
+        }
+
         switch content.body {
         case .text(let text):
             let conversationId = try chatConversation()
@@ -520,11 +538,19 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         case .delete(let deletion):
             let conversationId = try chatConversation()
+            guard targetIsAuthoredBySender(timestamp: deletion.targetTimestamp, conversationId: conversationId) else {
+                log.warning("ignoring unsend for a message the sender didn't write")
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount, conversationId: conversationId)
+            }
             try storage.messages.markDeleted(conversationId: conversationId, targetTimestamp: deletion.targetTimestamp)
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
 
         case .edit(let edit):
             let conversationId = try chatConversation()
+            guard targetIsAuthoredBySender(timestamp: edit.targetTimestamp, conversationId: conversationId) else {
+                log.warning("ignoring edit for a message the sender didn't write")
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount, conversationId: conversationId)
+            }
             try storage.messages.editMessage(
                 conversationId: conversationId,
                 targetTimestamp: edit.targetTimestamp,
@@ -656,11 +682,17 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, callInfo: info)
 
         case .typing(let typing):
-            // Ephemeral, 1:1 only for now — release the dedup claim.
+            // Ephemeral — release the dedup claim. In a group, report the group's
+            // existing conversation (never create one for a typing frame).
             try? storage.messages.releaseEnvelope(id: envelope.id)
+            let groupConversation = groupId.flatMap { try? storage.messages.groupConversationId(groupId: $0) }
+            if groupId != nil && groupConversation == nil {
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            }
             return ProcessedEnvelope(
                 outcome: .ignored, peerAccount: attestedAccount,
-                typingStarted: groupId == nil ? (typing.action == .started) : nil
+                conversationId: groupConversation,
+                typingStarted: typing.action == .started
             )
 
         case .screenshot(let shot):

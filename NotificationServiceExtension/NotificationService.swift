@@ -180,8 +180,14 @@ class NotificationService: UNNotificationServiceExtension {
             ownAccountId: account.accountId,
             sealedSenderTrustRoot: RelaySealedSender.trustRoot
         )
-        guard let result = try? processor.process(envelope) else { return .suppress }
-        return outcome(for: result, storage: storage, appGroupId: appGroupId)
+        // Blocked senders are still decrypted (keeps the ratchet in sync) but
+        // the processor drops them before storing — matching the app.
+        let blocked = RelayStore.blockedAccounts(in: storage)
+        guard let result = try? processor.process(envelope, blockedAccounts: blocked) else { return .suppress }
+        // The envelope is now claimed and the ratchet advanced, so the app can
+        // never re-decrypt it: hand it the control payloads to apply later.
+        PendingControlStore.persist(result, envelopeId: envelope.id, in: storage)
+        return outcome(for: result, storage: storage, appGroupId: appGroupId, account: account)
     }
 
     // Contentless push: the APNs payload carries no message data — not even
@@ -215,15 +221,25 @@ class NotificationService: UNNotificationServiceExtension {
             sealedSenderTrustRoot: RelaySealedSender.trustRoot
         )
 
+        // Blocked senders are still decrypted (keeps the ratchet in sync) but
+        // the processor drops them before storing — matching the app.
+        let blocked = RelayStore.blockedAccounts(in: storage)
+
         var latest: DecryptOutcome?
         for envelope in envelopes {
-            let result = try? processor.process(envelope)
+            let result = try? processor.process(envelope, blockedAccounts: blocked)
+            // The envelope is now claimed and the ratchet advanced, so the app
+            // can never re-decrypt it: persist the control payloads (group
+            // updates, profiles, receipts to send, …) for the app to apply.
+            if let result {
+                PendingControlStore.persist(result, envelopeId: envelope.id, in: storage)
+            }
             // Ack either way: a message we stored, or a poison one we drop
             // (matches the app's poison-message protection). Ephemeral envelopes
             // never queue, so we won't see them here.
             try? await api.ackMessage(envelopeId: envelope.id)
             guard let result else { continue }
-            if let mapped = outcome(for: result, storage: storage, appGroupId: appGroupId) {
+            if let mapped = outcome(for: result, storage: storage, appGroupId: appGroupId, account: account) {
                 // Prefer a visible message over a suppress when the queue has several.
                 if case .show = mapped { latest = mapped }
                 else if latest == nil { latest = mapped }
@@ -235,7 +251,8 @@ class NotificationService: UNNotificationServiceExtension {
     private func outcome(
         for result: ProcessedEnvelope,
         storage: SecureStore,
-        appGroupId: String
+        appGroupId: String,
+        account: RelayAccount
     ) -> DecryptOutcome? {
         // Call signalling: HANGUP means the caller gave up before we answered
         // — show a missed call banner. Everything else (OFFER, ICE, ANSWER…)
@@ -262,8 +279,19 @@ class NotificationService: UNNotificationServiceExtension {
             return .suppress
         }
         let defaults = UserDefaults(suiteName: appGroupId)
-        let mutedIds = defaults?.stringArray(forKey: "relay.mutedConversationIds") ?? []
-        if mutedIds.contains(notification.conversationId) { return .suppress }
+        // Mute: the app stores per-conversation expiries in `relay.muteExpiries`.
+        // Like the app, an @mention of us still surfaces in a muted conversation.
+        if RelayStore.isConversationMuted(notification.conversationId, defaults: defaults) {
+            let mentioned = account.username.map {
+                !$0.isEmpty && notification.body.localizedCaseInsensitiveContains("@\($0)")
+            } ?? false
+            if !mentioned { return .suppress }
+        }
+        // Shared-notepad updates are stored as prefixed text; don't leak the
+        // raw marker into the banner.
+        let previewBody = notification.body.hasPrefix(PendingControlStore.notepadPrefix)
+            ? "📝 Updated the shared notepad"
+            : notification.body
 
         let title = displayName(for: notification.conversationId, in: storage)
             ?? String(notification.senderAccount.prefix(8))
@@ -288,7 +316,7 @@ class NotificationService: UNNotificationServiceExtension {
         default:
             return .show(
                 title: title,
-                body: notification.body,
+                body: previewBody,
                 conversationId: notification.conversationId,
                 senderAccount: notification.senderAccount
             )
