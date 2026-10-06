@@ -92,7 +92,7 @@ struct ConversationListView: View {
                 }
             }
             .navigationTitle("Chats")
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search messages")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search messages").incognitoKeyboard()
             .onAppear {
                 // Handle notification taps that arrived while this view was off-screen
                 // (e.g. user was on a different tab when the notification fired).
@@ -766,7 +766,7 @@ private struct NewChatSheet: View {
                     }
                 }
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts").incognitoKeyboard()
             .navigationTitle("New Conversation")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

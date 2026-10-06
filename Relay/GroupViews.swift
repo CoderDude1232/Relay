@@ -58,7 +58,7 @@ struct NewGroupView: View {
         NavigationStack {
             Form {
                 Section("Group name") {
-                    TextField("Name", text: $name)
+                    TextField("Name", text: $name).incognitoKeyboard()
                 }
                 let candidates = chatCandidates
                 if !candidates.isEmpty {
@@ -475,7 +475,7 @@ struct GroupInfoView: View {
             .overlay { if working { ProgressView() } }
             // Rename alert
             .alert("Rename Group", isPresented: $editingName) {
-                TextField("Name", text: $draftName)
+                TextField("Name", text: $draftName).incognitoKeyboard()
                 Button("Save") {
                     guard let group else { return }
                     let name = draftName.trimmingCharacters(in: .whitespaces)
@@ -486,7 +486,7 @@ struct GroupInfoView: View {
             }
             // Description alert
             .alert("Group Description", isPresented: $editingDescription) {
-                TextField("Description", text: $draftDescription)
+                TextField("Description", text: $draftDescription).incognitoKeyboard()
                 Button("Save") {
                     guard let group else { return }
                     run { try await service.setGroupDescription(draftDescription, groupId: group.id) }

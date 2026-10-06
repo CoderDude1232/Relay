@@ -102,7 +102,7 @@ struct ChatView: View {
     @State private var pinnedMessage: StoredMessage?
     @State private var showingStarred = false
     @State private var mentionQuery: String? = nil
-    @AppStorage("privacy.incognitoKeyboard") private var incognitoKeyboard = false
+    @AppStorage(PrivacyPreferences.incognitoKeyboardKey) private var incognitoKeyboard = true
     @State private var lastTypingSentAt: Date?
     @State private var isAtBottom = true
     @State private var scrollViewProxy: ScrollViewProxy?
@@ -2972,7 +2972,7 @@ private struct PendingAttachmentPreviewSheet: View {
                     .padding(.vertical, 8)
                 }
 
-                TextField("Add a caption", text: $caption, axis: .vertical)
+                TextField("Add a caption", text: $caption, axis: .vertical).incognitoKeyboard()
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal, 16)
