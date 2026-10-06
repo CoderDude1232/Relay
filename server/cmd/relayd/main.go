@@ -67,6 +67,7 @@ func main() {
 	turnSecret := flag.String("turn-secret", "", "shared HMAC-SHA1 secret for coturn REST API credential generation")
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
 	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
+	supabaseServiceKeyFile := flag.String("supabase-service-key-file", "", "path to a file holding the Supabase service-role key (enables deleting the Supabase auth user on account deletion)")
 	sealedKey := flag.String("sealed-sender-trust-key", "", "path to the sealed-sender trust-root private key (hex, 32 bytes); generated if absent, enables GET /v1/certificate/delivery")
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
 	flag.Parse()
@@ -115,6 +116,15 @@ func main() {
 	if *supabaseURL != "" {
 		apiServer.SetSupabaseAuth(*supabaseURL, *supabaseAnonKey)
 		slog.Info("supabase social login enabled", "url", *supabaseURL)
+		if *supabaseServiceKeyFile != "" {
+			key, err := os.ReadFile(*supabaseServiceKeyFile)
+			if err != nil {
+				slog.Error("read supabase service key", "err", err)
+				os.Exit(1)
+			}
+			apiServer.SetSupabaseServiceKey(string(key))
+			slog.Info("supabase auth-user deletion enabled")
+		}
 	}
 	if *sealedKey != "" {
 		trustRoot, err := sealedsender.LoadOrCreateTrustRoot(*sealedKey)

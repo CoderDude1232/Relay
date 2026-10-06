@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,8 +48,11 @@ type Server struct {
 	// Supabase who it belongs to (server-to-server GET /auth/v1/user), then
 	// trusts the returned id/email. verifySupabaseToken is a field so tests can
 	// stub it without hitting the network.
-	supabaseURL         string
-	supabaseAnonKey     string
+	supabaseURL     string
+	supabaseAnonKey string
+	// supabaseServiceKey (service-role) lets account deletion also delete the
+	// user's Supabase auth record, which holds their email. Optional.
+	supabaseServiceKey  string
 	verifySupabaseToken func(ctx context.Context, accessToken string) (userID, email string, err error)
 
 	// Sealed-sender certificate issuance. When set, GET /v1/certificate/delivery
@@ -83,6 +87,37 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 // server at a Supabase project. projectURL is the base (e.g.
 // https://xxxx.supabase.co); anonKey is the project's anon API key, required as
 // the apikey header on GoTrue calls.
+// SetSupabaseServiceKey enables deleting the Supabase auth user when its
+// relay account is deleted. Requires SetSupabaseAuth for the project URL.
+func (s *Server) SetSupabaseServiceKey(key string) {
+	s.supabaseServiceKey = strings.TrimSpace(key)
+}
+
+// deleteSupabaseUser removes a Supabase auth user via the admin API. Best
+// effort: the relay account is already gone, so failures are only logged.
+func (s *Server) deleteSupabaseUser(ctx context.Context, userID string) {
+	if s.supabaseURL == "" || s.supabaseServiceKey == "" || userID == "" {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		s.supabaseURL+"/auth/v1/admin/users/"+url.PathEscape(userID), nil)
+	if err != nil {
+		slog.Error("supabase user delete: request", "err", privlog.Error(err))
+		return
+	}
+	req.Header.Set("apikey", s.supabaseServiceKey)
+	req.Header.Set("Authorization", "Bearer "+s.supabaseServiceKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Error("supabase user delete failed", "err", privlog.Error(err))
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
+		slog.Error("supabase user delete failed", "status", resp.StatusCode)
+	}
+}
+
 func (s *Server) SetSupabaseAuth(projectURL, anonKey string) {
 	s.supabaseURL = strings.TrimRight(projectURL, "/")
 	s.supabaseAnonKey = anonKey
@@ -1600,6 +1635,12 @@ func internalError(w http.ResponseWriter, err error) {
 // WebSocket of the account. After this, the account's credentials no longer
 // authenticate (401) and its username is free for re-registration.
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	// Read the linked Supabase user before the row (and the link) is gone.
+	supabaseUserID, err := s.store.SupabaseUserID(dev.AccountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
 	if err := s.store.DeleteAccount(dev.AccountID); errors.Is(err, store.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "no such account")
 		return
@@ -1608,6 +1649,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 		return
 	}
 	s.hub.DisconnectAccount(dev.AccountID, "account deleted")
+	s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

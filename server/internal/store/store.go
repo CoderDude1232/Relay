@@ -1087,6 +1087,18 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 // encrypted_group_invites (anonymous, TTL-reaped), attachment blobs (ownership
 // is not tracked; reaped by blob GC), and envelopes the account sent that sit
 // in other accounts' queues (those belong to the recipients).
+// SupabaseUserID returns the Supabase auth user linked to an account, or ""
+// when none is (or the account doesn't exist).
+func (s *Store) SupabaseUserID(accountID string) (string, error) {
+	var id string
+	err := s.db.QueryRow(context.Background(),
+		`SELECT COALESCE(supabase_user_id, '') FROM accounts WHERE id = $1`, accountID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
 func (s *Store) DeleteAccount(accountID string) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)

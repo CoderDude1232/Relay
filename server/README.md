@@ -250,8 +250,8 @@ Flags:
   itself stores **no Apple or OAuth tokens** — social login goes through Supabase
   (`POST /v1/accounts/oauth`), and the only linkage persisted is
   `accounts.supabase_user_id` (deleted with the account). Any Apple refresh token
-  lives in Supabase Auth, so revocation (and deleting the Supabase auth user)
-  would have to happen there or via a server-side call using Supabase's service
-  role — `DELETE /v1/accounts/me` does neither today.
+  lives in Supabase Auth. When relayd runs with `-supabase-service-key-file`,
+  `DELETE /v1/accounts/me` also deletes the Supabase auth user (and with it the
+  stored email) via the admin API; Apple token revocation is still separate.
 - Attachment blobs are not owner-tracked, so account deletion cannot remove the
   account's uploads; they expire via the blob store's TTL GC.
