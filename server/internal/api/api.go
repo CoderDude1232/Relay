@@ -813,7 +813,7 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 		}
 		elements = append(elements, raw)
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !oprfBudget.take(len(elements), "acct:"+dev.AccountID, "ip:"+ip) {
 		httpError(w, http.StatusTooManyRequests, "discovery budget exhausted; try again later")
 		return
@@ -840,7 +840,7 @@ func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, 
 		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
 		return
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !directoryLimiter.allow(dev.AccountID) || !directoryIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "discovery rate limit exceeded; try again later")
 		return
