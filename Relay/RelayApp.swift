@@ -33,6 +33,9 @@ struct RelayApp: App {
                     #if DEBUG
                     PrivacyRedactor.runSelfCheck()
                     #endif
+                    // Spotlight indexing is opt-in: clear anything an older
+                    // (index-by-default) build left in the system index.
+                    if !SpotlightIndexer.isEnabled { SpotlightIndexer.deindexAll() }
                     appDelegate.model = model
                     // Drain any conversationId that arrived via notification tap
                     // before the model was wired (cold-start path).

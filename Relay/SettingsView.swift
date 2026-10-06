@@ -411,12 +411,18 @@ struct PrivacySettingsView: View {
     @State private var privateCallMode = CallManager.isPrivateCallModeEnabled
     @State private var showDirectCallsWarning = false
     @AppStorage(CallManager.callsInRecentsKey) private var callsInRecents = false
-    @State private var notificationPrivacy: String = UserDefaults(suiteName: AppModel.appGroupId)?.string(forKey: "relay.notificationPrivacy") ?? "full"
-    @AppStorage("privacy.incognitoKeyboard") private var incognitoKeyboard = false
+    @State private var notificationPrivacy: String = NotificationPreviewSetting.current.rawValue
+    @AppStorage(PrivacyPreferences.incognitoKeyboardKey) private var incognitoKeyboard = true
+    @AppStorage(PrivacyPreferences.sendTypingKey) private var sendTyping = true
+    @AppStorage(PrivacyPreferences.linkPreviewsKey) private var linkPreviews = true
+    @AppStorage(PrivacyPreferences.spotlightIndexingKey) private var spotlightIndexing = false
 
     var body: some View {
         List {
             Section("Presence") {
+                SettingsToggleRow(systemName: "ellipsis.bubble.fill", title: "Send Typing Indicators",
+                                  info: "When on, people you're chatting with can see when you're typing. When off, you'll still see theirs.",
+                                  isOn: $sendTyping)
                 SettingsToggleRow(systemName: "checkmark.circle.fill", title: "Read Receipts",
                                   info: "When on, people can see when you've read their messages.",
                                   isOn: Binding(get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 }))
@@ -430,8 +436,23 @@ struct PrivacySettingsView: View {
                                   info: "Adds a small random delay before each message sends, making it harder to correlate your activity by timing.",
                                   isOn: Binding(get: { service.sendJitterEnabled }, set: { service.sendJitterEnabled = $0 }))
                 SettingsToggleRow(systemName: "keyboard", title: "Incognito Keyboard",
-                                  info: "Asks the system keyboard not to learn from or store what you type in Relay.",
+                                  info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
+                SettingsToggleRow(systemName: "link", title: "Generate Link Previews",
+                                  info: "When on, Relay fetches a preview for links you send, which connects your device to that website. Previews are never fetched for links you receive.",
+                                  isOn: $linkPreviews)
+            }
+
+            Section {
+                SettingsToggleRow(systemName: "magnifyingglass", title: "Show Chats in Search",
+                                  info: "Adds your chat names to iPhone Search (Spotlight). The search index is stored by iOS outside Relay's encryption. Hidden chats are never added.",
+                                  isOn: Binding(get: { spotlightIndexing }, set: { enabled in
+                                      spotlightIndexing = enabled
+                                      if enabled { service.refreshConversations() } // re-index now
+                                      else { SpotlightIndexer.deindexAll() }
+                                  }))
+            } header: {
+                Text("System Integration")
             }
 
             Section("Notifications") {
@@ -1183,8 +1204,11 @@ struct PanicSetupSheet: View {
         guard pin.count >= 4 else { error = "PIN must be at least 4 digits."; return }
         guard pin.allSatisfy({ $0.isASCII && $0.isNumber }) else { error = "PIN must contain digits only."; return }
         guard pin == confirm else { error = "PINs do not match."; return }
-        manager.enable(pin: pin)
-        dismiss()
+        let chosen = pin
+        Task {
+            await manager.enableAsync(pin: chosen)
+            dismiss()
+        }
     }
 }
 

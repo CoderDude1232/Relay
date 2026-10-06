@@ -74,10 +74,17 @@ class NotificationService: UNNotificationServiceExtension {
                 content.threadIdentifier = conversationId
             }
             // Wrap in INSendMessageIntent so iOS shows the sender's avatar as the
-            // notification icon and elevates the notification through Focus modes.
+            // notification icon — but only when the preview level allows the
+            // sender's name to be shown at all. In "no name or content" mode
+            // nothing about the sender is handed to the system.
+            guard Self.previewLevel(defaults: UserDefaults(suiteName: RelayStore.appGroupId)) != "none",
+                  !senderAccount.isEmpty, !conversationId.isEmpty
+            else {
+                contentHandler(content)
+                return
+            }
             contentHandler(enriched(content: content,
                                     senderName: title,
-                                    senderAccount: senderAccount,
                                     conversationId: conversationId))
         case .suppress, .none:
             // Call signalling (handled by VoIP push), a duplicate the app already
@@ -95,10 +102,18 @@ class NotificationService: UNNotificationServiceExtension {
 
     // MARK: - Communication Notification enrichment
 
+    /// The app-wide preview level. Default (never chosen): name only.
+    private static func previewLevel(defaults: UserDefaults?) -> String {
+        defaults?.string(forKey: "relay.notificationPrivacy") ?? "nameOnly"
+    }
+
+    /// Builds a communication notification. The donated intent carries NO
+    /// message content (iOS stores donations in its own interaction database,
+    /// outside Relay's encryption) and identifies the sender only by the opaque
+    /// local conversation id — never their Relay account id.
     private func enriched(
         content: UNMutableNotificationContent,
         senderName: String,
-        senderAccount: String,
         conversationId: String
     ) -> UNNotificationContent {
         var nameComponents = PersonNameComponents()
@@ -112,12 +127,12 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         let sender = INPerson(
-            personHandle: INPersonHandle(value: senderAccount, type: .unknown),
+            personHandle: INPersonHandle(value: conversationId, type: .unknown),
             nameComponents: nameComponents,
             displayName: senderName,
             image: image,
             contactIdentifier: nil,
-            customIdentifier: senderAccount,
+            customIdentifier: conversationId,
             isMe: false,
             suggestionType: .none
         )
@@ -125,9 +140,9 @@ class NotificationService: UNNotificationServiceExtension {
         let intent = INSendMessageIntent(
             recipients: nil,
             outgoingMessageType: .outgoingMessageText,
-            content: content.body,
+            content: nil,
             speakableGroupName: nil,
-            conversationIdentifier: conversationId.isEmpty ? senderAccount : conversationId,
+            conversationIdentifier: conversationId,
             serviceName: nil,
             sender: sender,
             attachments: nil
@@ -262,11 +277,13 @@ class NotificationService: UNNotificationServiceExtension {
                 savePendingCallOffer(callInfo, in: storage)
             }
             if callInfo.type == .hangup {
+                // Missed-call banner, honoring the preview level. No account
+                // prefix fallback: an unknown caller is just "Missed call".
                 let callerAccount = result.peerAccount ?? ""
-                let name = callerDisplayName(for: callerAccount, in: storage)
-                    ?? String(callerAccount.prefix(8))
+                let showName = Self.previewLevel(defaults: UserDefaults(suiteName: appGroupId)) != "none"
+                let name = showName ? (callerDisplayName(for: callerAccount, in: storage) ?? "Relay") : "Relay"
                 return .show(title: name, body: "Missed call",
-                             conversationId: "", senderAccount: callerAccount)
+                             conversationId: "", senderAccount: "")
             }
             return .suppress
         }
@@ -300,7 +317,7 @@ class NotificationService: UNNotificationServiceExtension {
         // "nameOnly": show sender name but redact message content.
         // "none": hide both sender name and content.
         // Per-conversation hidePreviews overrides with "nameOnly" when set.
-        let globalPrivacy = defaults?.string(forKey: "relay.notificationPrivacy") ?? "full"
+        let globalPrivacy = Self.previewLevel(defaults: defaults)
         let convHidePreviews = conversationHidesPreviews(notification.conversationId, in: storage)
         let effectivePrivacy = (globalPrivacy == "none") ? "none"
                              : (globalPrivacy == "nameOnly" || convHidePreviews) ? "nameOnly"

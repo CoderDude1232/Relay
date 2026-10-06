@@ -35,6 +35,7 @@ struct ConversationListView: View {
     // onChange again, re-prompting indefinitely.
     @State private var sessionUnlocked: Set<String> = []
     @State private var showingPanicPINError = false
+    @State private var panicLockoutUntil: Date?
     @State private var qrStartError: String?
     @State private var confirmBulkDelete = false
     @State private var deleteError: String?
@@ -192,25 +193,36 @@ struct ConversationListView: View {
                 SecureField("PIN", text: $panicPINInput)
                     .keyboardType(.numberPad)
                 Button("Unlock") {
-                    let ok = panicMode.activate(pin: panicPINInput)
+                    let pin = panicPINInput
                     panicPINInput = ""
-                    if !ok {
+                    Task {
+                        let result = await panicMode.activate(pin: pin)
+                        guard result != .unlocked else { return }
                         UINotificationFeedbackGenerator().notificationOccurred(.error)
-                        // Let the PIN alert finish dismissing before presenting the next one.
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(350))
-                            showingPanicPINError = true
+                        if case .lockedOut(let until) = result {
+                            panicLockoutUntil = until
+                        } else {
+                            panicLockoutUntil = nil
                         }
+                        // Let the PIN alert finish dismissing before presenting the next one.
+                        try? await Task.sleep(for: .milliseconds(350))
+                        showingPanicPINError = true
                     }
                 }
                 Button("Cancel", role: .cancel) { panicPINInput = "" }
             }
-            .alert("Incorrect PIN", isPresented: $showingPanicPINError) {
-                Button("Try Again") {
-                    panicPINInput = ""
-                    showingPanicPIN = true
+            .alert(panicLockoutUntil == nil ? "Incorrect PIN" : "Too Many Attempts", isPresented: $showingPanicPINError) {
+                if panicLockoutUntil == nil {
+                    Button("Try Again") {
+                        panicPINInput = ""
+                        showingPanicPIN = true
+                    }
                 }
-                Button("Cancel", role: .cancel) {}
+                Button(panicLockoutUntil == nil ? "Cancel" : "OK", role: .cancel) {}
+            } message: {
+                if let until = panicLockoutUntil {
+                    Text("Try again \(until, format: .relative(presentation: .named)).")
+                }
             }
             .alert("Couldn't Start Chat", isPresented: Binding(
                 get: { qrStartError != nil },
@@ -511,6 +523,8 @@ struct ConversationListView: View {
                     if panicMode.isEnabled {
                         Button {
                             panicMode.hide(conversation.id)
+                            SpotlightIndexer.deindex(conversationId: conversation.id)
+                            ShareBridge.removeConversation(conversation.id)
                         } label: {
                             Label("Hide in Panic Mode", systemImage: "eye.slash")
                         }
