@@ -59,6 +59,14 @@ func runRetentionSweeper(st *store.Store, h *hub.Hub) {
 	}
 }
 
+// envOr returns the environment variable's value, or def when it's unset or empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 // parseLogLevel maps the -log-level flag to a slog level.
 func parseLogLevel(v string) (slog.Level, error) {
 	var l slog.Level
@@ -78,7 +86,9 @@ func runRateLimiterGC(h *api.Server) {
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
-	dsn := flag.String("dsn", "postgres://relay:relay@localhost/relay?sslmode=disable", "PostgreSQL DSN")
+	// Secrets can come from the environment (e.g. a root-only systemd
+	// EnvironmentFile) so they never appear in the unit file or in `ps`.
+	dsn := flag.String("dsn", envOr("RELAY_DSN", "postgres://relay:relay@localhost/relay?sslmode=disable"), "PostgreSQL DSN (default $RELAY_DSN)")
 	tlsCert := flag.String("tls-cert", "", "path to TLS certificate (enables HTTPS/WSS)")
 	tlsKey := flag.String("tls-key", "", "path to TLS private key")
 	blobDir := flag.String("blobs", "attachments", "directory for encrypted attachment blobs")
@@ -94,7 +104,7 @@ func main() {
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
 	fcmServiceAccount := flag.String("fcm-service-account", "", "path to a Firebase service-account JSON key (enables FCM push for Android devices)")
 	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")
-	turnSecret := flag.String("turn-secret", "", "shared HMAC-SHA1 secret for coturn REST API credential generation")
+	turnSecret := flag.String("turn-secret", os.Getenv("RELAY_TURN_SECRET"), "shared HMAC-SHA1 secret for coturn REST API credential generation (default $RELAY_TURN_SECRET)")
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
 	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
 	supabaseServiceKeyFile := flag.String("supabase-service-key-file", "", "path to a file holding the Supabase service-role key (enables deleting the Supabase auth user on account deletion)")

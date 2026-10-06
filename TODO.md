@@ -10,7 +10,11 @@ before building on top. Full checklist in [`TESTING.md`](TESTING.md).
       backup/restore, groups, sealed sender. (Simulators can't do APNs/CloudKit.)
 - [ ] Deploy the CloudKit **production** schema (dev schema won't work for release).
 
-## URGENT: production relay is running WITHOUT `-oprf-key`
+## RESOLVED: production relay was running without `-oprf-key`
+
+(Fixed 2026-09-18; verified 2026-10-06 — `-oprf-key /opt/relay/oprf.key` is in
+the base unit, the drop-in is gone. DB password + TURN secret now live in the
+root-only `/etc/relay/relayd.env`, rotated 2026-10-06. Kept below for history.)
 
 `api.relaymsg.app` has no OPRF key configured. Consequences, live now:
 - Both directory endpoints (`/v1/directory/oprf`, `/v1/directory/resolve`) return
