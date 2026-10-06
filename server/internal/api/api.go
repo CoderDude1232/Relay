@@ -168,18 +168,28 @@ func (s *Server) SetOPRF(key *oprf.Key) error {
 	return s.store.ReplaceDirectory(entries)
 }
 
-// directoryEntries computes the OPRF token rows for an account's username/email.
+// directoryEntries computes the OPRF token rows for an account's username/email,
+// each with its bucket, match tag and a box sealing (accountId, username) under
+// a key derived from the token — so a bucket fetch is a plain read and only a
+// client that already holds the token can recognise or open its entry.
 func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry {
 	var entries []store.DirectoryEntry
-	if a.Username != "" {
+	add := func(token []byte, kind int16) {
+		box, err := oprf.SealDirectoryEntry(token, a.AccountID, a.Username)
+		if err != nil {
+			slog.Error("directory: seal entry failed", "err", privlog.Error(err))
+			return
+		}
 		entries = append(entries, store.DirectoryEntry{
-			Token: s.oprf.Token(a.Username), AccountID: a.AccountID, Kind: store.DirectoryKindUsername,
+			Token: token, AccountID: a.AccountID, Kind: kind,
+			Bucket: oprf.DirectoryBucket(token), Tag: oprf.DirectoryTag(token), Box: box,
 		})
 	}
+	if a.Username != "" {
+		add(s.oprf.Token(a.Username), store.DirectoryKindUsername)
+	}
 	if len(a.EmailToken) > 0 {
-		entries = append(entries, store.DirectoryEntry{
-			Token: a.EmailToken, AccountID: a.AccountID, Kind: store.DirectoryKindEmail,
-		})
+		add(a.EmailToken, store.DirectoryKindEmail)
 	}
 	return entries
 }
@@ -219,7 +229,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))
 	mux.HandleFunc("POST /v1/directory/oprf", s.auth(s.handleDirectoryOPRF))
-	mux.HandleFunc("POST /v1/directory/resolve", s.auth(s.handleDirectoryResolve))
+	mux.HandleFunc("POST /v1/directory/buckets", s.auth(s.handleDirectoryBuckets))
 	mux.HandleFunc("POST /v1/messages/sealed", s.handleSealedSend) // unauthenticated by design
 	mux.HandleFunc("GET /v1/queue", s.auth(s.handleFetchQueue))
 	mux.HandleFunc("POST /v1/messages/ack", s.auth(s.handleAckMessage))
@@ -771,7 +781,9 @@ func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev
 
 // handleDirectoryOPRF evaluates the OPRF over a batch of client-blinded elements
 // (returns E = k·B for each). The server learns nothing about the identifiers
-// the client is querying — only opaque curve points cross the wire.
+// the client is querying — only opaque curve points cross the wire. Every
+// evaluated element spends one unit of a per-account and a per-IP daily budget,
+// so the oracle can't be driven to enumerate identifiers offline.
 func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.oprf == nil {
 		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
@@ -788,17 +800,26 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if len(req.Blinded) == 0 || len(req.Blinded) > 1024 {
+	if len(req.Blinded) == 0 || len(req.Blinded) > maxDirectoryBatch {
 		httpError(w, http.StatusBadRequest, "blinded must contain 1..1024 elements")
 		return
 	}
-	out := make([]string, 0, len(req.Blinded))
+	elements := make([][]byte, 0, len(req.Blinded))
 	for _, b := range req.Blinded {
 		raw, err := base64.StdEncoding.DecodeString(b)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, "invalid blinded element")
 			return
 		}
+		elements = append(elements, raw)
+	}
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !oprfBudget.take(len(elements), "acct:"+dev.AccountID, "ip:"+ip) {
+		httpError(w, http.StatusTooManyRequests, "discovery budget exhausted; try again later")
+		return
+	}
+	out := make([]string, 0, len(elements))
+	for _, raw := range elements {
 		eval, err := s.oprf.Evaluate(raw)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, "invalid blinded element")
@@ -809,58 +830,70 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 	writeJSON(w, http.StatusOK, map[string]any{"evaluated": out})
 }
 
-// handleDirectoryResolve returns the account (and current username) for each
-// token that matches the directory index. Tokens are OPRF outputs the client
-// derived after the oblivious evaluation; unmatched tokens yield no result, so
-// non-registered contacts stay private.
-func (s *Server) handleDirectoryResolve(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+// handleDirectoryBuckets returns the directory entries for the requested
+// 16-bit buckets. The client derives bucket(t) from each OPRF token t locally
+// and sends only that; tokens never leave the device. Each entry is a match
+// tag plus a box only a holder of the token can open, so the relay learns at
+// most which buckets were requested — not which identifiers, nor which matched.
+func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.oprf == nil {
 		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
 		return
 	}
-	if !directoryLimiter.allow(dev.AccountID) {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !directoryLimiter.allow(dev.AccountID) || !directoryIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "discovery rate limit exceeded; try again later")
 		return
 	}
 	var req struct {
-		Tokens []string `json:"tokens"`
+		Buckets []int `json:"buckets"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if len(req.Tokens) == 0 || len(req.Tokens) > 1024 {
-		httpError(w, http.StatusBadRequest, "tokens must contain 1..1024 elements")
+	if len(req.Buckets) == 0 || len(req.Buckets) > maxDirectoryBatch {
+		httpError(w, http.StatusBadRequest, "buckets must contain 1..1024 entries")
 		return
 	}
-	tokens := make([][]byte, 0, len(req.Tokens))
-	for _, t := range req.Tokens {
-		raw, err := base64.StdEncoding.DecodeString(t)
-		if err != nil {
-			httpError(w, http.StatusBadRequest, "invalid token")
+	seen := make(map[uint16]bool, len(req.Buckets))
+	buckets := make([]uint16, 0, len(req.Buckets))
+	for _, b := range req.Buckets {
+		if b < 0 || b > 0xffff {
+			httpError(w, http.StatusBadRequest, "bucket out of range")
 			return
 		}
-		tokens = append(tokens, raw)
+		if !seen[uint16(b)] {
+			seen[uint16(b)] = true
+			buckets = append(buckets, uint16(b))
+		}
 	}
-	matches, err := s.store.ResolveDirectory(tokens)
+	rows, err := s.store.DirectoryBuckets(buckets)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
-	type result struct {
-		Token     string `json:"token"`
-		AccountID string `json:"accountId"`
-		Username  string `json:"username"`
+	type entry struct {
+		Tag b64 `json:"tag"`
+		Box b64 `json:"box"`
 	}
-	results := make([]result, 0, len(matches))
-	for _, m := range matches {
-		results = append(results, result{
-			Token:     base64.StdEncoding.EncodeToString(m.Token),
-			AccountID: m.AccountID,
-			Username:  m.Username,
-		})
+	type bucket struct {
+		Bucket  uint16  `json:"bucket"`
+		Entries []entry `json:"entries"`
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+	byBucket := make(map[uint16][]entry, len(buckets))
+	for _, e := range rows {
+		byBucket[e.Bucket] = append(byBucket[e.Bucket], entry{Tag: e.Tag, Box: e.Box})
+	}
+	out := make([]bucket, 0, len(buckets))
+	for _, b := range buckets {
+		entries := byBucket[b]
+		if entries == nil {
+			entries = []entry{}
+		}
+		out = append(out, bucket{Bucket: b, Entries: entries})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": out})
 }
 
 // handleDeliveryCertificate mints a sealed-sender certificate for the
@@ -2149,6 +2182,7 @@ func (l *slidingWindowLimiter) allow(key string) bool {
 func (s *Server) PruneStaleLimiterKeys() {
 	s.pruneTokenBuckets()
 	recoveryLockout.prune()
+	oprfBudget.prune()
 	for _, l := range []*slidingWindowLimiter{
 		accountCreationLimiter,
 		preKeyFetchLimiter,
@@ -2163,6 +2197,7 @@ func (s *Server) PruneStaleLimiterKeys() {
 		sealedSendIPLimiter,
 		sealedSendMailboxLimiter,
 		directoryLimiter,
+		directoryIPLimiter,
 		provisioningLimiter,
 		reportLimiter,
 	} {
@@ -2239,11 +2274,24 @@ var usernameLookupLimiter = newSlidingWindowLimiter(120, time.Hour)
 var sealedSendIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 var sealedSendMailboxLimiter = newSlidingWindowLimiter(120, time.Minute)
 
-// directoryLimiter: blinded-discovery requests (OPRF eval + resolve) per account
-// per hour. Batched (up to 1024 identifiers per request), so a full address-book
-// sync is a couple of calls; generous enough for that without enabling the OPRF
-// oracle to be hammered for offline enumeration.
+// directoryLimiter: blinded-discovery requests (OPRF eval + bucket fetch) per
+// account per hour. Batched (up to 1024 per request), so a full address-book
+// sync is a couple of calls.
 var directoryLimiter = newSlidingWindowLimiter(200, time.Hour)
+
+// directoryIPLimiter: bucket fetches per source IP per hour.
+var directoryIPLimiter = newSlidingWindowLimiter(400, time.Hour)
+
+// maxDirectoryBatch caps elements/buckets per discovery request.
+const maxDirectoryBatch = 1024
+
+// oprfBudget meters OPRF evaluations per ELEMENT (not per request): a few
+// thousand per account and per source IP per day — enough to sync a large
+// address book, far too few to enumerate the identifier space offline.
+var oprfBudget = newElementBudget(map[string]budgetSpec{
+	"acct:": {capacity: 5000, period: 24 * time.Hour},
+	"ip:":   {capacity: 20000, period: 24 * time.Hour},
+})
 
 // 100 key uploads per account per hour.
 var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)

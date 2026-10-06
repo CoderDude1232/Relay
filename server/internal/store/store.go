@@ -307,6 +307,14 @@ CREATE TABLE IF NOT EXISTS group_invites (
     PRIMARY KEY (token)
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_directory_account ON directory (account_id)`,
+		// Bucketed discovery: the client sends only a 16-bit bucket per lookup
+		// and matches locally. Each row carries its bucket, an 8-byte match tag
+		// and an AES-GCM box of (accountId, username) under a token-derived key —
+		// all computed at index time (rebuilt from scratch at every startup).
+		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS bucket INTEGER`,
+		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS tag BYTEA`,
+		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS box BYTEA`,
+		`CREATE INDEX IF NOT EXISTS idx_directory_bucket ON directory (bucket)`,
 		// Encrypted group invites: the relay stores an opaque ciphertext blob
 		// keyed by a token; the decrypt key travels in the invite URL fragment,
 		// so the server never learns the group id, name, or roster. Replaces the
@@ -2200,18 +2208,23 @@ const (
 	DirectoryKindEmail    int16 = 1
 )
 
-// DirectoryEntry is one OPRF token → account row for the blinded directory index.
+// DirectoryEntry is one OPRF token → account row for the blinded directory
+// index, with its precomputed bucket, match tag and sealed (accountId,
+// username) box.
 type DirectoryEntry struct {
 	Token     []byte
 	AccountID string
 	Kind      int16
+	Bucket    uint16
+	Tag       []byte
+	Box       []byte
 }
 
-// DirectoryMatch is a resolved directory hit returned to a querying client.
-type DirectoryMatch struct {
-	Token     []byte
-	AccountID string
-	Username  string
+// BucketEntry is one row of a directory bucket as served to clients.
+type BucketEntry struct {
+	Bucket uint16
+	Tag    []byte
+	Box    []byte
 }
 
 // AccountDirInfo is the identifier material the API layer needs to (re)build an
@@ -2281,10 +2294,10 @@ func (s *Store) ReplaceDirectory(entries []DirectoryEntry) error {
 // identifier could hijack another user's discovery entry.
 func upsertDirectoryEntry(ctx context.Context, tx pgx.Tx, e DirectoryEntry) error {
 	tag, err := tx.Exec(ctx,
-		`INSERT INTO directory (token, account_id, kind) VALUES ($1, $2, $3)
-         ON CONFLICT (token) DO UPDATE SET kind = EXCLUDED.kind
+		`INSERT INTO directory (token, account_id, kind, bucket, tag, box) VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (token) DO UPDATE SET kind = EXCLUDED.kind, bucket = EXCLUDED.bucket, tag = EXCLUDED.tag, box = EXCLUDED.box
          WHERE directory.account_id = EXCLUDED.account_id`,
-		e.Token, e.AccountID, e.Kind)
+		e.Token, e.AccountID, e.Kind, int32(e.Bucket), e.Tag, e.Box)
 	if err != nil {
 		return err
 	}
@@ -2314,28 +2327,32 @@ func (s *Store) SetDirectoryForAccount(accountID string, entries []DirectoryEntr
 	return tx.Commit(ctx)
 }
 
-// ResolveDirectory returns the account (and current username) for each token
-// that matches a directory entry. Unmatched tokens are simply absent.
-func (s *Store) ResolveDirectory(tokens [][]byte) ([]DirectoryMatch, error) {
-	if len(tokens) == 0 {
+// DirectoryBuckets returns every directory row in the requested buckets (tag +
+// sealed box only — never the token or account id).
+func (s *Store) DirectoryBuckets(buckets []uint16) ([]BucketEntry, error) {
+	if len(buckets) == 0 {
 		return nil, nil
 	}
+	ids := make([]int32, len(buckets))
+	for i, b := range buckets {
+		ids[i] = int32(b)
+	}
 	rows, err := s.db.Query(context.Background(),
-		`SELECT d.token, d.account_id, COALESCE(a.username, '')
-         FROM directory d JOIN accounts a ON a.id = d.account_id
-         WHERE d.token = ANY($1)`,
-		tokens)
+		`SELECT bucket, tag, box FROM directory
+         WHERE bucket = ANY($1) AND tag IS NOT NULL AND box IS NOT NULL`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []DirectoryMatch
+	var out []BucketEntry
 	for rows.Next() {
-		var m DirectoryMatch
-		if err := rows.Scan(&m.Token, &m.AccountID, &m.Username); err != nil {
+		var e BucketEntry
+		var b int32
+		if err := rows.Scan(&b, &e.Tag, &e.Box); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		e.Bucket = uint16(b)
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

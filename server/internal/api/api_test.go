@@ -797,30 +797,45 @@ func TestBlindedDirectory(t *testing.T) {
 	th.Write(n.Encode(nil))
 	token := th.Sum(nil)
 
-	var resResp struct {
-		Results []struct {
-			Token     string `json:"token"`
-			AccountID string `json:"accountId"`
-			Username  string `json:"username"`
-		} `json:"results"`
+	// The token never leaves the client: only its 16-bit bucket is sent; the
+	// client matches the tag and opens the box locally.
+	fetch := func(tok []byte) (acct, user string, found bool) {
+		var resp struct {
+			Buckets []struct {
+				Bucket  int `json:"bucket"`
+				Entries []struct {
+					Tag string `json:"tag"`
+					Box string `json:"box"`
+				} `json:"entries"`
+			} `json:"buckets"`
+		}
+		env.doJSON("POST", "/v1/directory/buckets", alice.authUser(), alice.password,
+			map[string]any{"buckets": []int{int(oprf.DirectoryBucket(tok))}}, http.StatusOK, &resp)
+		if len(resp.Buckets) != 1 || resp.Buckets[0].Bucket != int(oprf.DirectoryBucket(tok)) {
+			t.Fatalf("bucket response: %+v", resp)
+		}
+		want := base64.StdEncoding.EncodeToString(oprf.DirectoryTag(tok))
+		for _, e := range resp.Buckets[0].Entries {
+			if e.Tag != want {
+				continue
+			}
+			box, _ := base64.StdEncoding.DecodeString(e.Box)
+			a, u, err := oprf.OpenDirectoryEntry(tok, box)
+			if err != nil {
+				t.Fatalf("open box: %v", err)
+			}
+			return a, u, true
+		}
+		return "", "", false
 	}
-	env.doJSON("POST", "/v1/directory/resolve", alice.authUser(), alice.password,
-		map[string]any{"tokens": []string{base64.StdEncoding.EncodeToString(token)}},
-		http.StatusOK, &resResp)
-	if len(resResp.Results) != 1 || resResp.Results[0].Username != "bob-dir" {
-		t.Fatalf("expected to resolve bob-dir, got %+v", resResp.Results)
+	if _, user, ok := fetch(token); !ok || user != "bob-dir" {
+		t.Fatalf("expected to resolve bob-dir, got %q (found=%v)", user, ok)
 	}
 
-	// An unknown token resolves to nothing — non-registered contacts stay private.
+	// An unknown token matches nothing — non-registered contacts stay private.
 	junk := make([]byte, 32)
 	rand.Read(junk)
-	var empty struct {
-		Results []json.RawMessage `json:"results"`
-	}
-	env.doJSON("POST", "/v1/directory/resolve", alice.authUser(), alice.password,
-		map[string]any{"tokens": []string{base64.StdEncoding.EncodeToString(junk)}},
-		http.StatusOK, &empty)
-	if len(empty.Results) != 0 {
-		t.Fatalf("unknown token should not resolve, got %d results", len(empty.Results))
+	if _, _, ok := fetch(junk); ok {
+		t.Fatal("unknown token resolved")
 	}
 }
