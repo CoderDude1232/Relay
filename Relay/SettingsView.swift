@@ -25,6 +25,7 @@ struct SettingsView: View {
     @State private var nukeInProgress = false
     @State private var nukeError: String?
     @State private var nukeSucceeded = false
+    @State private var showingDeleteAccount = false
 
     private var displayName: String {
         let name = service.myDisplayName ?? service.username
@@ -50,7 +51,7 @@ struct SettingsView: View {
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
                                 if let username = service.username {
-                                    Text(username)
+                                    Text("@\(username)")
                                         .font(.subheadline)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
@@ -115,6 +116,24 @@ struct SettingsView: View {
                     }
                 }
 
+                // MARK: Support & legal
+                Section {
+                    Link(destination: LegalLinks.feedbackMail) {
+                        SettingsExternalRow(systemName: "envelope.fill", title: "Send Feedback")
+                    }
+                    Link(destination: LegalLinks.privacy) {
+                        SettingsExternalRow(systemName: "hand.raised.fill", title: "Privacy Policy")
+                    }
+                    Link(destination: LegalLinks.terms) {
+                        SettingsExternalRow(systemName: "doc.text.fill", title: "Terms of Service")
+                    }
+                    NavigationLink(destination: AcknowledgementsView()) {
+                        SettingsNavRow(systemName: "heart.text.square.fill", color: .accentColor, title: "Acknowledgements")
+                    }
+                } header: {
+                    Text("About")
+                }
+
                 // MARK: Emergency Wipe
                 Section {
                     Button(role: .destructive) {
@@ -138,7 +157,7 @@ struct SettingsView: View {
                     Text("Sends a signed wipe command to all devices on your account. Each device verifies the command before deleting its messages and keys.")
                 }
 
-                // MARK: Sign out
+                // MARK: Sign out / delete account
                 Section {
                     Button(role: .destructive) {
                         UINotificationFeedbackGenerator().notificationOccurred(.warning)
@@ -147,6 +166,15 @@ struct SettingsView: View {
                         HStack(spacing: 14) {
                             SettingsIcon(systemName: "rectangle.portrait.and.arrow.right", color: .red, useColor: true)
                             Text("Sign Out").foregroundStyle(.red)
+                        }
+                    }
+                    Button(role: .destructive) {
+                        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                        showingDeleteAccount = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "person.crop.circle.badge.xmark", color: .red, useColor: true)
+                            Text("Delete Account").foregroundStyle(.red)
                         }
                     }
                 } footer: {
@@ -226,6 +254,11 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingPanicSettings) {
                 PanicModeSheet(manager: panicMode)
+            }
+            .sheet(isPresented: $showingDeleteAccount) {
+                DeleteAccountSheet(service: service) {
+                    model.signOut()
+                }
             }
         }
     }
@@ -354,8 +387,10 @@ private struct DataStorageSettingsView: View {
                     HStack(spacing: 14) {
                         SettingsIcon(systemName: "key.horizontal.fill", color: .accentColor)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Message keys repaired").foregroundStyle(.primary)
-                            Text("\(service.preKeyDesyncDropCount) message(s) couldn't be decrypted and were skipped; your keys have been refreshed.")
+                            Text("Some messages couldn't be shown").foregroundStyle(.primary)
+                            Text(service.preKeyDesyncDropCount == 1
+                                 ? "1 message couldn't be decrypted. Your encryption keys were refreshed automatically — ask the sender to resend it if it was important."
+                                 : "\(service.preKeyDesyncDropCount) messages couldn't be decrypted. Your encryption keys were refreshed automatically — ask the sender to resend them if they were important.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -555,13 +590,15 @@ private struct StorageSettingsView: View {
     let service: MessagingService
     @State private var cacheSize: Int64 = 0
     @State private var isClearing = false
+    @State private var confirmingClear = false
+    @State private var clearError: String?
 
     var body: some View {
         List {
             Section {
                 LabeledContent("Cached Media", value: formattedSize(cacheSize))
                 Button(role: .destructive) {
-                    clearCache()
+                    confirmingClear = true
                 } label: {
                     HStack {
                         if isClearing { ProgressView().padding(.trailing, 4) }
@@ -571,6 +608,8 @@ private struct StorageSettingsView: View {
                 .disabled(cacheSize == 0 || isClearing)
             } header: {
                 Text("Media Cache")
+            } footer: {
+                Text("Removes downloaded copies of received photos, videos and files. They'll download again when you open them, as long as they're still available on the server.")
             }
 
             Section("Database") {
@@ -581,6 +620,20 @@ private struct StorageSettingsView: View {
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { cacheSize = attachmentCacheSize() }
+        .confirmationDialog("Clear cached media?", isPresented: $confirmingClear, titleVisibility: .visible) {
+            Button("Clear Cached Media", role: .destructive) { clearCache() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Downloaded media will be removed from this device and re-downloaded when you view it. Media that's no longer on the server can't be recovered.")
+        }
+        .alert("Couldn't Clear Media", isPresented: Binding(
+            get: { clearError != nil },
+            set: { if !$0 { clearError = nil } }
+        )) {
+            Button("OK", role: .cancel) { clearError = nil }
+        } message: {
+            Text(clearError ?? "")
+        }
     }
 
     private func attachmentCacheSize() -> Int64 {
@@ -598,17 +651,20 @@ private struct StorageSettingsView: View {
         return total
     }
 
+    /// Delegates to MessagingService so only re-downloadable blobs are removed
+    /// and their attachment rows are reset to "not downloaded" (deleting the
+    /// directory directly would destroy local-only Note to Self media and
+    /// leave isDownloaded=true, so images could never re-download).
     private func clearCache() {
-        guard let container = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: AppModel.appGroupId
-        ) else { return }
         isClearing = true
         Task {
-            let dir = container.appendingPathComponent("attachments")
-            if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-                for file in files { try? FileManager.default.removeItem(at: file) }
+            do {
+                try await service.clearCachedMedia()
+            } catch {
+                clearError = error.localizedDescription
             }
-            await MainActor.run { cacheSize = 0; isClearing = false }
+            cacheSize = attachmentCacheSize()
+            isClearing = false
         }
     }
 
@@ -959,7 +1015,8 @@ struct SettingsToggleRow: View {
                 SettingsInfoButton(title: title, message: info)
             }
             Spacer(minLength: 8)
-            Toggle("", isOn: $isOn)
+            // Real title (hidden visually) so VoiceOver announces the switch.
+            Toggle(title, isOn: $isOn)
                 .labelsHidden()
         }
     }
@@ -1064,7 +1121,7 @@ struct PanicSetupSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    SecureField("PIN (min 4 characters)", text: $pin)
+                    SecureField("PIN (at least 4 digits)", text: $pin)
                         .keyboardType(.numberPad)
                     SecureField("Confirm PIN", text: $confirm)
                         .keyboardType(.numberPad)
@@ -1096,6 +1153,7 @@ struct PanicSetupSheet: View {
 
     private func save() {
         guard pin.count >= 4 else { error = "PIN must be at least 4 digits."; return }
+        guard pin.allSatisfy({ $0.isASCII && $0.isNumber }) else { error = "PIN must contain digits only."; return }
         guard pin == confirm else { error = "PINs do not match."; return }
         manager.enable(pin: pin)
         dismiss()
@@ -1131,7 +1189,7 @@ private struct ChangeUsernameSheet: View {
     @FocusState private var isFocused: Bool
 
     enum UsernameStatus: Equatable {
-        case idle, checking, available, taken, invalid(String), unchanged
+        case idle, checking, available, taken, unknown, invalid(String), unchanged
     }
 
     private var canSave: Bool {
@@ -1150,6 +1208,7 @@ private struct ChangeUsernameSheet: View {
                         Text("@").foregroundStyle(.secondary)
                         TextField("username", text: $username)
                             .focused($isFocused)
+                            .keyboardType(.asciiCapable)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .submitLabel(.done)
@@ -1208,6 +1267,7 @@ private struct ChangeUsernameSheet: View {
         case .idle, .unchanged: EmptyView()
         case .checking:   ProgressView().scaleEffect(0.75)
         case .available:  Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .unknown:    Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange)
         case .taken, .invalid: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
         }
     }
@@ -1216,7 +1276,7 @@ private struct ChangeUsernameSheet: View {
     private var statusMessage: some View {
         switch usernameStatus {
         case .idle:
-            Text("3–20 characters, letters, digits and underscores.")
+            Text(UsernameRules.hint)
         case .unchanged:
             Text("This is already your username.")
         case .checking:
@@ -1225,6 +1285,8 @@ private struct ChangeUsernameSheet: View {
             Text("@\(trimmed) is available").foregroundStyle(.green)
         case .taken:
             Text("@\(trimmed) is already taken").foregroundStyle(.red)
+        case .unknown:
+            Text("Couldn't check — you're offline").foregroundStyle(.orange)
         case .invalid(let reason):
             Text(reason).foregroundStyle(.orange)
         }
@@ -1236,25 +1298,19 @@ private struct ChangeUsernameSheet: View {
         checkTask?.cancel()
         guard !lower.isEmpty else { usernameStatus = .idle; return }
         if lower == currentUsername { usernameStatus = .unchanged; return }
-        if let reason = validationError(lower) { usernameStatus = .invalid(reason); return }
+        if let reason = UsernameRules.validationError(lower) { usernameStatus = .invalid(reason); return }
         usernameStatus = .checking
         checkTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            let available = await model.checkUsernameAvailable(lower)
+            let availability = await model.checkUsername(lower)
             guard !Task.isCancelled else { return }
-            usernameStatus = available ? .available : .taken
+            switch availability {
+            case .available: usernameStatus = .available
+            case .taken:     usernameStatus = .taken
+            case .unknown:   usernameStatus = .unknown
+            }
         }
-    }
-
-    private func validationError(_ u: String) -> String? {
-        if u.count < 3  { return "Too short — minimum 3 characters." }
-        if u.count > 20 { return "Too long — maximum 20 characters." }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
-        if u.unicodeScalars.contains(where: { !allowed.contains($0) }) {
-            return "Only letters, digits and underscores."
-        }
-        return nil
     }
 
     private func save() {
@@ -1265,7 +1321,7 @@ private struct ChangeUsernameSheet: View {
                 try await model.changeUsername(username)
                 dismiss()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = FriendlyError.message(for: error)
             }
             isLoading = false
         }
@@ -1292,4 +1348,184 @@ private struct InviteShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - About rows
+
+/// A settings row that opens something outside the app (Safari / Mail).
+struct SettingsExternalRow: View {
+    let systemName: String
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            SettingsIcon(systemName: systemName, color: .accentColor)
+            Text(title).foregroundStyle(.primary)
+            Spacer(minLength: 0)
+            Image(systemName: "arrow.up.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+/// Open-source components shipped in the app and their licences.
+struct AcknowledgementsView: View {
+    private struct Component: Identifiable {
+        let name: String
+        let license: String
+        let url: String
+        let note: String
+        var id: String { name }
+    }
+
+    private let components: [Component] = [
+        Component(name: "libsignal", license: "AGPL-3.0",
+                  url: "https://github.com/signalapp/libsignal",
+                  note: "Signal Protocol (PQXDH, Double Ratchet), sealed sender and safety numbers. © Signal Messenger, LLC."),
+        Component(name: "SQLCipher", license: "BSD-3-Clause",
+                  url: "https://github.com/sqlcipher/sqlcipher",
+                  note: "Encrypted on-device database. © Zetetic LLC. Packaged via skiptools/swift-sqlcipher; includes SQLite (public domain)."),
+        Component(name: "swift-protobuf", license: "Apache-2.0",
+                  url: "https://github.com/apple/swift-protobuf",
+                  note: "Protocol Buffers runtime. © Apple Inc."),
+        Component(name: "swift-sodium / libsodium", license: "ISC",
+                  url: "https://github.com/jedisct1/swift-sodium",
+                  note: "Cryptographic primitives. © Frank Denis."),
+        Component(name: "WebRTC", license: "BSD-3-Clause",
+                  url: "https://github.com/stasel/WebRTC",
+                  note: "Voice and video calls. © The WebRTC project authors (Google). Binary distribution by stasel/WebRTC."),
+    ]
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(components) { c in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(c.name).font(.headline)
+                            Spacer(minLength: 8)
+                            Text(c.license)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(c.note)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        if let url = URL(string: c.url) {
+                            Link(c.url, destination: url)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            } footer: {
+                Text("Relay is built on these open-source projects and their dependencies. Full licence texts are available at the linked repositories.")
+            }
+        }
+        .navigationTitle("Acknowledgements")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Delete account
+
+/// Permanent account deletion (App Store Guideline 5.1.1(v)). Requires typing
+/// DELETE, deletes the account on the relay, then wipes this device.
+private struct DeleteAccountSheet: View {
+    let service: MessagingService
+    let onDeleted: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmation = ""
+    @State private var isDeleting = false
+    @State private var errorMessage: String?
+    @FocusState private var focused: Bool
+
+    private var confirmed: Bool {
+        confirmation.trimmingCharacters(in: .whitespaces) == "DELETE"
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Label {
+                        Text("This permanently deletes your Relay account. It can't be undone.")
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("• Your username is released and people can no longer reach you.")
+                        Text("• All your linked devices are signed out and removed.")
+                        Text("• Undelivered messages, keys and your profile are deleted from the server.")
+                        Text("• All messages and media on this iPhone are erased.")
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    TextField("DELETE", text: $confirmation)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .focused($focused)
+                        .disabled(isDeleting)
+                } header: {
+                    Text("Type DELETE to confirm")
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage).foregroundStyle(.red).font(.footnote)
+                    }
+                }
+
+                Section {
+                    Button(role: .destructive) {
+                        delete()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if isDeleting {
+                                ProgressView()
+                            } else {
+                                Text("Delete Account Permanently").bold()
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(!confirmed || isDeleting)
+                }
+            }
+            .navigationTitle("Delete Account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isDeleting)
+                }
+            }
+            .interactiveDismissDisabled(isDeleting)
+            .onAppear { focused = true }
+        }
+    }
+
+    private func delete() {
+        guard confirmed else { return }
+        focused = false
+        isDeleting = true
+        errorMessage = nil
+        Task {
+            do {
+                try await service.deleteAccount()
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                dismiss()
+                onDeleted()
+            } catch {
+                errorMessage = "Couldn't delete your account: \(FriendlyError.message(for: error)) Nothing was deleted — please try again."
+                isDeleting = false
+            }
+        }
+    }
 }

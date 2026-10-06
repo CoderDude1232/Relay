@@ -2761,6 +2761,28 @@ final class MessagingService {
         }
     }
 
+    /// Frees space by deleting cached ciphertext that can be fetched again:
+    /// received attachments. Outgoing media and Note to Self media may exist
+    /// only on this device, so they are kept. Each deleted blob's row is reset
+    /// to "not downloaded" so it re-downloads when next viewed.
+    func clearCachedMedia() async throws {
+        let rows = try storage.database.query(
+            """
+            SELECT a.id FROM attachments a
+            JOIN messages m ON a.message_id = m.id
+            JOIN conversations c ON m.conversation_id = c.id
+            WHERE a.downloaded = 1 AND m.is_outgoing = 0 AND c.peer_account != ?
+            """,
+            [.text(noteToSelfAccount)]
+        )
+        for row in rows {
+            guard let id = row.first?.string else { continue }
+            attachmentStore.delete(id)
+            try storage.database.run("UPDATE attachments SET downloaded = 0 WHERE id = ?", [.text(id)])
+        }
+        if let active = activeConversationId { refreshActiveMessages(ifShowing: active) }
+    }
+
     /// All messages in a conversation (not just the active one). Used by
     /// MediaGalleryView which may open from ContactCardView when another
     /// conversation is active.

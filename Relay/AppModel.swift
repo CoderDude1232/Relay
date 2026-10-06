@@ -659,9 +659,7 @@ final class AppModel {
         try? keychain.wipeIdentity()
         Task { await SupabaseAuth.shared.signOut() }
         try? keychain.deleteSecret(for: Self.accountSecretName)
-        for suffix in ["", "-wal", "-shm"] {
-            try? FileManager.default.removeItem(at: Self.databaseURL(suffix: suffix))
-        }
+        wipeLocalFiles()
         // Wipe App Group share state so a fresh account doesn't inherit the old
         // account's conversations, avatars, or badge count in the share sheet,
         // widgets, and Siri suggestions.
@@ -679,11 +677,25 @@ final class AppModel {
         }
         try? keychain.wipeIdentity()
         try? keychain.deleteSecret(for: Self.accountSecretName)
+        wipeLocalFiles()
+        ShareBridge.clearAll()
+        phase = .onboarding
+    }
+
+    /// Removes everything the previous account left on disk: the database,
+    /// cached attachment ciphertext, and this app's preferences (profile
+    /// status/bio, privacy toggles, per-chat flags), so the next account on
+    /// this phone starts clean.
+    private func wipeLocalFiles() {
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: Self.databaseURL(suffix: suffix))
         }
-        ShareBridge.clearAll()
-        phase = .onboarding
+        if let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId) {
+            try? FileManager.default.removeItem(at: container.appendingPathComponent("attachments", isDirectory: true))
+        }
+        if let bundleId = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: bundleId)
+        }
     }
 
     /// The database lives in the App Group container so the Notification

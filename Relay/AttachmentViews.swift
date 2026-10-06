@@ -86,7 +86,9 @@ struct VoiceNoteBubble: View {
                     .frame(maxWidth: 260, alignment: .leading)
             }
 
-            if #available(iOS 26.0, *), data != nil, transcript == nil {
+            // Transcription runs on-device only; hide it where that's unsupported.
+            if #available(iOS 26.0, *), AIAssistant.isOnDeviceTranscriptionAvailable,
+               data != nil, transcript == nil {
                 Button {
                     Task { await transcribeVoiceNote() }
                 } label: {

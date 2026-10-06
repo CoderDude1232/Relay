@@ -18,22 +18,16 @@
 			</array>
 		</dict>
 	</array>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Relay saves images you choose to save, such as your safety-number QR code, to your photo library. Relay can only add photos; it cannot see your library.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Relay transcribes voice messages into text when you ask it to. Recognition runs entirely on your device, and audio never leaves it.</string>
 	<key>RelayICEServerURLs</key>
 	<array>
 		<string>turn:api.relaymsg.app:3478?transport=udp</string>
 		<string>turn:api.relaymsg.app:3478?transport=tcp</string>
 		<string>stun:api.relaymsg.app:3478</string>
-		<string>stun:stun.l.google.com:19302</string>
 	</array>
-	<key>RelayTURNCredential</key>
-	<string>r3layTURN</string>
-	<key>RelayTURNUsername</key>
-	<string>relay</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

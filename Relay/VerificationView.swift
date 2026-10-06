@@ -33,8 +33,8 @@ struct VerificationView: View {
     @State private var qrSaveStatus: QRSaveStatus?
 
     private enum QRSaveStatus: Identifiable {
-        case saved, denied
-        var id: Int { self == .saved ? 0 : 1 }
+        case saved, denied, failed
+        var id: Self { self }
     }
 
     private enum ScanResult: Identifiable {
@@ -85,7 +85,18 @@ struct VerificationView: View {
             case .saved:
                 return Alert(title: Text("Saved"), message: Text("QR code saved to your photo library."), dismissButton: .default(Text("OK")))
             case .denied:
-                return Alert(title: Text("Photos Access Denied"), message: Text("Allow Photos access in Settings to save the QR code."), dismissButton: .default(Text("OK")))
+                return Alert(
+                    title: Text("Photos Access Needed"),
+                    message: Text("Allow Relay to add photos in Settings to save the QR code."),
+                    primaryButton: .default(Text("Open Settings")) {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .failed:
+                return Alert(title: Text("Couldn't Save"), message: Text("The QR code couldn't be saved to your photo library. Please try again."), dismissButton: .default(Text("OK")))
             }
         }
     }
@@ -193,25 +204,35 @@ struct VerificationView: View {
         verification = service.peerVerification(for: conversationId)
     }
 
+    /// Saves with add-only Photos access. Uses the async authorization API so
+    /// no callback runs off the main actor (the app target is MainActor by
+    /// default, and a main-isolated closure invoked on Photos' background
+    /// queue would trap). Denied/restricted access shows an alert with a
+    /// shortcut to Settings instead of failing silently.
     private func saveQRToPhotos(_ image: UIImage) {
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        switch status {
-        case .authorized, .limited:
-            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-            qrSaveStatus = .saved
-        case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-                DispatchQueue.main.async {
-                    if status == .authorized || status == .limited {
-                        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
-                        qrSaveStatus = .saved
-                    } else {
-                        qrSaveStatus = .denied
-                    }
-                }
+        Task {
+            var status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+            if status == .notDetermined {
+                status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
             }
-        default:
-            qrSaveStatus = .denied
+            guard status == .authorized || status == .limited else {
+                qrSaveStatus = .denied
+                return
+            }
+            do {
+                try await Self.addToPhotoLibrary(image)
+                qrSaveStatus = .saved
+            } catch {
+                qrSaveStatus = .failed
+            }
+        }
+    }
+
+    /// Nonisolated so the change block isn't inferred @MainActor (Photos runs
+    /// it on its own queue).
+    nonisolated private static func addToPhotoLibrary(_ image: UIImage) async throws {
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.creationRequestForAsset(from: image)
         }
     }
 

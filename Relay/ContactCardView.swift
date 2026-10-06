@@ -23,12 +23,19 @@ struct ContactCardView: View {
     @State private var nicknameDraft = ""
     @State private var accountIdCopied = false
     @State private var confirmResetSession = false
+    @State private var confirmBlock = false
+    @State private var showingReport = false
 
     private var conversation: Conversation? {
         service.conversations.first { $0.id == conversationId }
     }
     private var account: String { conversation?.peerAccount ?? "" }
     private var isNoteToSelf: Bool { account == service.noteToSelfAccount }
+    /// Block/Report make no sense for your own Note to Self or the local
+    /// Relay notices account.
+    private var canBlockOrReport: Bool {
+        !account.isEmpty && !isNoteToSelf && account != service.relayOfficialAccount
+    }
     private var displayName: String { service.displayName(forAccount: account) }
     private var username: String? { service.username(forAccount: account) }
     private var peerStatus: String { service.peerStatus(forAccount: account) }
@@ -173,7 +180,10 @@ struct ContactCardView: View {
                 if !peerLinks.isEmpty {
                     Section("Links") {
                         ForEach(peerLinks) { link in
-                            if !link.url.isEmpty, let url = URL(string: link.url) {
+                            // Peer-supplied: only open http(s), never tel:,
+                            // sms:, relay:// or other app-scheme links that
+                            // could be disguised behind a label.
+                            if let url = Self.safeWebURL(link.url) {
                                 Link(destination: url) {
                                     linkRow(label: link.label, url: link.url, tappable: true)
                                 }
@@ -224,19 +234,30 @@ struct ContactCardView: View {
                     .tint(.primary)
                 }
 
-                // MARK: Block
-                Section {
-                    let blocked = service.isBlocked(account)
-                    Button {
-                        if blocked { service.unblockAccount(account) }
-                        else { service.blockAccount(account) }
-                    } label: {
-                        Label(
-                            blocked ? "Unblock \(displayName)" : "Block \(displayName)",
-                            systemImage: blocked ? "checkmark.circle" : "nosign"
-                        )
+                // MARK: Block / Report
+                if canBlockOrReport {
+                    Section {
+                        let blocked = service.isBlocked(account)
+                        Button {
+                            if blocked { service.unblockAccount(account) }
+                            else { confirmBlock = true }
+                        } label: {
+                            Label(
+                                blocked ? "Unblock \(displayName)" : "Block \(displayName)",
+                                systemImage: blocked ? "checkmark.circle" : "nosign"
+                            )
+                        }
+                        .tint(blocked ? .primary : .red)
+
+                        Button {
+                            showingReport = true
+                        } label: {
+                            Label("Report \(displayName)", systemImage: "exclamationmark.bubble")
+                        }
+                        .tint(.red)
+                    } footer: {
+                        Text("Reports go to the Relay team. Messages are only included if you choose to share them.")
                     }
-                    .tint(blocked ? .primary : .red)
                 }
 
                 if !isNoteToSelf {
@@ -264,6 +285,15 @@ struct ContactCardView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This forces a new encrypted session on the next message. Only use this if messages are stuck.")
+            }
+            .confirmationDialog("Block \(displayName)?", isPresented: $confirmBlock, titleVisibility: .visible) {
+                Button("Block", role: .destructive) { service.blockAccount(account) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Blocked contacts can't message or call you, and won't see when you're online. You can unblock them later in Settings.")
+            }
+            .sheet(isPresented: $showingReport) {
+                ReportContactSheet(service: service, account: account, displayName: displayName)
             }
             .alert("Nickname", isPresented: $editingNickname) {
                 TextField("Custom name (optional)", text: $nicknameDraft)
@@ -345,6 +375,126 @@ struct ContactCardView: View {
     private func saveAndDismiss() {
         service.setNickname(nickname, forAccount: account)
         dismiss()
+    }
+
+    /// Returns the URL only if it's an absolute http/https link with a host.
+    static func safeWebURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host(), !host.isEmpty else { return nil }
+        return url
+    }
+}
+
+// MARK: - Report sheet
+
+/// Report a contact to the Relay team (App Store Guideline 1.2). Optional
+/// details and — only with explicit opt-in — the last 10 received messages.
+struct ReportContactSheet: View {
+    let service: MessagingService
+    let account: String
+    let displayName: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var reason: ReportReason = .spam
+    @State private var details = ""
+    @State private var includeMessages = false
+    @State private var alsoBlock = true
+    @State private var isSending = false
+    @State private var errorMessage: String?
+    @State private var sent = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Reason", selection: $reason) {
+                        ForEach(ReportReason.allCases) { r in
+                            Text(r.title).tag(r)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                } header: {
+                    Text("Why are you reporting \(displayName)?")
+                }
+
+                Section {
+                    TextField("Add details (optional)", text: $details, axis: .vertical)
+                        .lineLimit(3...6)
+                } footer: {
+                    Text("\(details.count)/2000")
+                        .foregroundStyle(details.count > 2000 ? .red : .secondary)
+                }
+
+                Section {
+                    Toggle("Include last \(MessagingService.reportMessageLimit) messages", isOn: $includeMessages)
+                } footer: {
+                    Text("Relay is end-to-end encrypted, so we can't see your chats. If you turn this on, the text of the last \(MessagingService.reportMessageLimit) messages \(displayName) sent you is shared with the Relay team for review. Nothing else is shared.")
+                }
+
+                if !service.isBlocked(account) {
+                    Section {
+                        Toggle("Also block \(displayName)", isOn: $alsoBlock)
+                    }
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage).foregroundStyle(.red).font(.footnote)
+                    }
+                }
+            }
+            .navigationTitle("Report")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isSending)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSending {
+                        ProgressView()
+                    } else {
+                        Button(alsoBlock && !service.isBlocked(account) ? "Report and Block" : "Report") { submit() }
+                            .bold()
+                            .disabled(details.count > 2000)
+                    }
+                }
+            }
+            .alert("Report Sent", isPresented: $sent) {
+                Button("OK") { dismiss() }
+            } message: {
+                Text("Thanks for letting us know. The Relay team will review your report.")
+            }
+            .interactiveDismissDisabled(isSending)
+        }
+    }
+
+    private func submit() {
+        isSending = true
+        errorMessage = nil
+        let shouldBlock = alsoBlock && !service.isBlocked(account)
+        Task {
+            do {
+                try await service.reportContact(
+                    accountId: account,
+                    reason: reason,
+                    details: details,
+                    includeRecentMessages: includeMessages
+                )
+                if shouldBlock { service.blockAccount(account) }
+                sent = true
+            } catch RelayAPIError.http(status: 429, _) {
+                errorMessage = "You've sent a lot of reports today. Please try again tomorrow."
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            isSending = false
+        }
     }
 }
 

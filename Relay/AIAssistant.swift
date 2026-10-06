@@ -65,9 +65,19 @@ actor AIAssistant {
 
     // MARK: Voice transcription
 
+    /// True only when the current locale's recognizer can transcribe fully
+    /// on-device. Callers should hide the "Transcribe" affordance when false:
+    /// we never fall back to Apple's server-based recognition, so audio never
+    /// leaves the device.
+    nonisolated static var isOnDeviceTranscriptionAvailable: Bool {
+        guard let recognizer = SFSpeechRecognizer() else { return false }
+        return recognizer.supportsOnDeviceRecognition && recognizer.isAvailable
+    }
+
     /// Transcribes on-device audio data (m4a/AAC) to text. Requires Speech
-    /// recognition permission. Never contacts Apple servers when
-    /// requiresOnDeviceRecognition is supported.
+    /// recognition permission. On-device only: throws
+    /// `AIError.transcriptionUnavailable` when the recognizer can't run
+    /// locally, rather than sending audio to Apple's servers.
     func transcribe(audioData: Data, contentType: String) async throws -> String {
         let ext = contentType.contains("m4a") ? "m4a" : "aac"
         let tmp = FileManager.default.temporaryDirectory
@@ -79,7 +89,8 @@ actor AIAssistant {
     }
 
     private func transcribe(url: URL) async throws -> String {
-        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else {
+        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable,
+              recognizer.supportsOnDeviceRecognition else {
             throw AIError.transcriptionUnavailable
         }
         let authorized = await withCheckedContinuation { cont in
@@ -90,9 +101,7 @@ actor AIAssistant {
         guard authorized else { throw AIError.transcriptionDenied }
 
         let request = SFSpeechURLRecognitionRequest(url: url)
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.requiresOnDeviceRecognition = true
 
         return try await withCheckedThrowingContinuation { continuation in
             var resumed = false
@@ -123,7 +132,7 @@ enum AIError: LocalizedError {
         switch self {
         case .modelUnavailable: "Apple Intelligence is not available on this device."
         case .noContent: "No messages to summarize."
-        case .transcriptionUnavailable: "Speech recognition is not available."
+        case .transcriptionUnavailable: "On-device speech recognition is not available for this language."
         case .transcriptionDenied: "Speech recognition permission was denied."
         }
     }

@@ -5,6 +5,7 @@
 
 import AuthenticationServices
 import CryptoKit
+import RelayKit
 import SwiftUI
 
 private struct GoogleGLogo: View {
@@ -76,10 +77,17 @@ struct OnboardingView: View {
                 SetupView(
                     displayName: $displayName,
                     username: $username,
-                    checkAvailability: { u in await model.checkUsernameAvailable(u) },
+                    checkAvailability: { u in await model.checkUsername(u) },
                     onComplete: {
                         guard let session = supabaseSession else { return }
                         try await finish(session: session, password: supabasePassword)
+                    },
+                    onBack: {
+                        // Abandon setup: forget the half-finished sign-up so the
+                        // user can pick a different sign-in method.
+                        supabaseSession = nil
+                        supabasePassword = ""
+                        withAnimation(.spring(duration: 0.5)) { step = .welcome }
                     }
                 )
                 .transition(.asymmetric(
@@ -100,6 +108,9 @@ struct OnboardingView: View {
             } // end else isAutoRestoring
         }
         .animation(.spring(duration: 0.5), value: step)
+        // Onboarding draws white text over .ultraThinMaterial on a near-black
+        // background; force dark so the material stays dark in Light Mode.
+        .preferredColorScheme(.dark)
         .task {
             // If a Supabase session is already stored (e.g. after a relay-only
             // sign-out due to server reset), try to re-use it without prompting
@@ -129,7 +140,7 @@ struct OnboardingView: View {
                 isAutoRestoring = false
                 withAnimation(.spring(duration: 0.5)) { step = .setup }
             } catch {
-                registrationError = error.localizedDescription
+                registrationError = FriendlyError.message(for: error)
                 isAutoRestoring = false
             }
         }
@@ -165,7 +176,7 @@ struct OnboardingView: View {
                 }
                 withAnimation(.spring(duration: 0.5)) { step = .setup }
             } catch {
-                registrationError = error.localizedDescription
+                registrationError = FriendlyError.message(for: error)
             }
         }
     }
@@ -315,6 +326,9 @@ private struct WelcomeView: View {
                         .foregroundStyle(.white.opacity(0.3))
                 }
                 .padding(.top, 2)
+
+                LegalFooter()
+                    .padding(.top, 6)
             }
             .frame(maxWidth: 420)
             .padding(.horizontal, 28)
@@ -341,7 +355,7 @@ private struct WelcomeView: View {
                     let session = try await SupabaseAuth.shared.signInWithApple(identityToken: token)
                     onOAuthSession(session)
                 } catch {
-                    oauthError = error.localizedDescription
+                    oauthError = FriendlyError.message(for: error)
                 }
                 oauthLoading = false
             }
@@ -407,7 +421,7 @@ private struct WelcomeView: View {
             let session = try await SupabaseAuth.shared.exchangeOAuthCode(code, verifier: verifier)
             onOAuthSession(session)
         } catch {
-            oauthError = error.localizedDescription
+            oauthError = FriendlyError.message(for: error)
         }
         oauthLoading = false
     }
@@ -545,10 +559,7 @@ private struct AuthView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
 
-                Text("By continuing you agree to our Terms & Privacy Policy.")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.35))
-                    .multilineTextAlignment(.center)
+                LegalFooter()
                     .padding(.horizontal, 40)
                     .padding(.top, 16)
 
@@ -567,7 +578,7 @@ private struct AuthView: View {
                 let session = try await SupabaseAuth.shared.signUp(email: email, password: password)
                 try await onComplete(session, password)
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = FriendlyError.message(for: error)
             }
             isLoading = false
         }
@@ -591,7 +602,8 @@ private struct RecoveryView: View {
     enum RecoveryField: Hashable { case email, password }
 
     private var canSubmit: Bool {
-        !isLoading && !email.isEmpty && password.count >= 6
+        // Same minimum as sign-up (AuthView): recovery passwords are 8+ chars.
+        !isLoading && !email.isEmpty && password.count >= 8
     }
 
     var body: some View {
@@ -713,7 +725,7 @@ private struct RecoveryView: View {
                 )
                 onComplete()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = FriendlyError.message(for: error)
             }
             isLoading = false
         }
@@ -765,8 +777,9 @@ private struct AuthField: View {
 private struct SetupView: View {
     @Binding var displayName: String
     @Binding var username: String
-    let checkAvailability: (String) async -> Bool
+    let checkAvailability: (String) async -> AppModel.UsernameAvailability
     let onComplete: () async throws -> Void
+    let onBack: () -> Void
 
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -777,7 +790,7 @@ private struct SetupView: View {
     enum SetupField: Hashable { case displayName, username }
 
     enum UsernameStatus: Equatable {
-        case idle, checking, available, taken, invalid(String)
+        case idle, checking, available, taken, unknown, invalid(String)
     }
 
     private var canContinue: Bool {
@@ -787,113 +800,136 @@ private struct SetupView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer()
-
-            VStack(spacing: 8) {
-                Image(systemName: "person.crop.circle.badge.plus")
-                    .font(.system(size: 52, weight: .light))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(.bottom, 8)
-                Text("Set up your profile")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                Text("Seen by the people you message.")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-            .padding(.bottom, 36)
-
+        // A ScrollView (not Spacers) so the keyboard can never cover the
+        // "Start messaging" button on small phones.
+        ScrollView {
             VStack(spacing: 0) {
-                // Display name row
-                HStack(spacing: 12) {
-                    Image(systemName: "person")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(width: 24)
-                    TextField("Display name", text: $displayName)
-                        .focused($focused, equals: .displayName)
-                        .textContentType(.name)
-                        .textInputAutocapitalization(.words)
-                        .autocorrectionDisabled()
-                        .foregroundStyle(.white)
-                        .tint(.white)
-                        .submitLabel(.next)
-                        .onSubmit { focused = .username }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
-
-                Divider().background(.white.opacity(0.12))
-
-                // Username row
-                HStack(spacing: 12) {
-                    Text("@")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(width: 24)
-                    TextField("username", text: $username)
-                        .focused($focused, equals: .username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .foregroundStyle(.white)
-                        .tint(.white)
-                        .submitLabel(.done)
-                        .onSubmit { focused = nil }
-                        .onChange(of: username) { _, new in scheduleCheck(new) }
-                    usernameStatusIcon
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
-            }
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 16, style: .continuous))
-            .padding(.horizontal, 28)
-            .onAppear { focused = .displayName }
-
-            usernameStatusLabel
-                .padding(.horizontal, 32)
-                .padding(.top, 8)
-
-            if let errorMessage {
-                InlineErrorBanner(errorMessage)
-                    .padding(.horizontal, 28)
-                    .padding(.top, 12)
-            }
-
-            Spacer()
-
-            Button {
-                focused = nil
-                isLoading = true
-                errorMessage = nil
-                Task {
-                    do {
-                        try await onComplete()
-                    } catch {
-                        errorMessage = error.localizedDescription
-                        isLoading = false
+                HStack {
+                    Button(action: onBack) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: .circle)
                     }
+                    .accessibilityLabel("Back")
+                    .disabled(isLoading)
+                    Spacer()
                 }
-            } label: {
-                ZStack {
-                    if isLoading {
-                        ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
-                    } else {
-                        Text("Start messaging")
-                            .font(.headline)
-                            .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+
+                VStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .font(.system(size: 52, weight: .light))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(.bottom, 8)
+                        .accessibilityHidden(true)
+                    Text("Set up your profile")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Seen by the people you message.")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .padding(.top, 24)
+                .padding(.bottom, 36)
+
+                VStack(spacing: 0) {
+                    // Display name row
+                    HStack(spacing: 12) {
+                        Image(systemName: "person")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .frame(width: 24)
+                        TextField("Display name", text: $displayName)
+                            .focused($focused, equals: .displayName)
+                            .textContentType(.name)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .foregroundStyle(.white)
+                            .tint(.white)
+                            .submitLabel(.next)
+                            .onSubmit { focused = .username }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+
+                    Divider().background(.white.opacity(0.12))
+
+                    // Username row
+                    HStack(spacing: 12) {
+                        Text("@")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .frame(width: 24)
+                        TextField("username", text: $username)
+                            .focused($focused, equals: .username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.asciiCapable)
+                            .foregroundStyle(.white)
+                            .tint(.white)
+                            .submitLabel(.done)
+                            .onSubmit { focused = nil }
+                            .onChange(of: username) { _, new in scheduleCheck(new) }
+                        usernameStatusIcon
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(
-                    canContinue ? Color.white : Color.white.opacity(0.3),
-                    in: .rect(cornerRadius: 16, style: .continuous)
-                )
+                .background(.ultraThinMaterial, in: .rect(cornerRadius: 16, style: .continuous))
+                .padding(.horizontal, 28)
+                .onAppear { focused = .displayName }
+
+                usernameStatusLabel
+                    .padding(.horizontal, 32)
+                    .padding(.top, 8)
+
+                if let errorMessage {
+                    InlineErrorBanner(errorMessage)
+                        .padding(.horizontal, 28)
+                        .padding(.top, 12)
+                }
+
+                Button {
+                    focused = nil
+                    isLoading = true
+                    errorMessage = nil
+                    Task {
+                        do {
+                            try await onComplete()
+                        } catch {
+                            errorMessage = FriendlyError.message(for: error)
+                            isLoading = false
+                        }
+                    }
+                } label: {
+                    ZStack {
+                        if isLoading {
+                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        } else {
+                            Text("Start messaging")
+                                .font(.headline)
+                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        canContinue ? Color.white : Color.white.opacity(0.3),
+                        in: .rect(cornerRadius: 16, style: .continuous)
+                    )
+                }
+                .disabled(!canContinue)
+                .padding(.horizontal, 28)
+                .padding(.top, 28)
+
+                LegalFooter()
+                    .padding(.horizontal, 40)
+                    .padding(.top, 16)
+                    .padding(.bottom, 40)
             }
-            .disabled(!canContinue)
-            .padding(.horizontal, 28)
-            .padding(.bottom, 48)
         }
         .scrollDismissesKeyboard(.interactively)
     }
@@ -904,6 +940,7 @@ private struct SetupView: View {
         case .idle:           EmptyView()
         case .checking:       ProgressView().scaleEffect(0.75).tint(.white.opacity(0.6))
         case .available:      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .unknown:        Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange.opacity(0.9))
         case .taken, .invalid: Image(systemName: "xmark.circle.fill").foregroundStyle(.red.opacity(0.8))
         }
     }
@@ -912,7 +949,7 @@ private struct SetupView: View {
     private var usernameStatusLabel: some View {
         switch usernameStatus {
         case .idle:
-            Text("Letters, digits and underscores. 3–20 characters.")
+            Text(UsernameRules.hint)
                 .font(.caption).foregroundStyle(.white.opacity(0.4)).multilineTextAlignment(.center)
         case .checking:
             Text("Checking availability…")
@@ -923,6 +960,9 @@ private struct SetupView: View {
         case .taken:
             Text("@\(username) is already taken")
                 .font(.caption).foregroundStyle(.red.opacity(0.85))
+        case .unknown:
+            Text("Couldn't check — you're offline")
+                .font(.caption).foregroundStyle(.orange.opacity(0.9))
         case .invalid(let reason):
             Text(reason)
                 .font(.caption).foregroundStyle(.orange.opacity(0.9)).multilineTextAlignment(.center)
@@ -937,25 +977,122 @@ private struct SetupView: View {
         checkTask?.cancel()
         guard !lower.isEmpty else { usernameStatus = .idle; return }
 
-        if let reason = validationError(lower) { usernameStatus = .invalid(reason); return }
+        if let reason = UsernameRules.validationError(lower) { usernameStatus = .invalid(reason); return }
 
         usernameStatus = .checking
         checkTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            let available = await checkAvailability(lower)
+            let availability = await checkAvailability(lower)
             guard !Task.isCancelled else { return }
-            usernameStatus = available ? .available : .taken
+            switch availability {
+            case .available: usernameStatus = .available
+            case .taken:     usernameStatus = .taken
+            case .unknown:   usernameStatus = .unknown
+            }
         }
     }
+}
 
-    private func validationError(_ u: String) -> String? {
+// MARK: - Legal footer
+
+/// "By continuing you agree to…" with tappable Terms / Privacy Policy links.
+/// Shown on every onboarding screen that creates or signs into an account.
+struct LegalFooter: View {
+    var body: some View {
+        // Literal URLs (not interpolated) so SwiftUI parses the Markdown links.
+        Text("By continuing you agree to our [Terms](https://relaymsg.app/terms) and [Privacy Policy](https://relaymsg.app/privacy).")
+            .font(.caption)
+            .foregroundStyle(.white.opacity(0.45))
+            .tint(.white.opacity(0.85))
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+/// Public legal/support URLs. The pages must be live before App Review.
+enum LegalLinks {
+    static let terms = URL(string: "https://relaymsg.app/terms")!
+    static let privacy = URL(string: "https://relaymsg.app/privacy")!
+    static let supportEmail = "support@relaymsg.app"
+    static let feedbackMail = URL(string: "mailto:support@relaymsg.app?subject=Relay%20Feedback")!
+}
+
+// MARK: - Username rules
+
+/// Client-side username validation shared by onboarding and Change Username.
+/// Usernames are ASCII only: a–z, 0–9 and underscore, 3–20 characters.
+enum UsernameRules {
+    static let hint = "Lowercase letters (a–z), digits and underscores. 3–20 characters."
+
+    static func validationError(_ u: String) -> String? {
         if u.count < 3  { return "Too short — minimum 3 characters." }
         if u.count > 20 { return "Too long — maximum 20 characters." }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
-        if u.unicodeScalars.contains(where: { !allowed.contains($0) }) {
-            return "Only letters, digits and underscores."
+        let ok = u.unicodeScalars.allSatisfy { s in
+            (s >= "a" && s <= "z") || (s >= "0" && s <= "9") || s == "_"
         }
+        if !ok { return "Only a–z, 0–9 and underscores." }
         return nil
     }
+}
+
+// MARK: - Friendly errors
+
+/// Maps raw network/server/auth errors to short, human messages for
+/// onboarding and settings. Falls back to the error's own description.
+enum FriendlyError {
+    static func message(for error: Error) -> String {
+        if let setup = error as? AppModel.SetupError {
+            return message(for: setup.underlying)
+        }
+        if let url = error as? URLError {
+            switch url.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
+                 .internationalRoamingOff:
+                return offline
+            case .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
+                return unreachable
+            default:
+                break
+            }
+        }
+        if let api = error as? RelayAPIError, case .http(let status, _) = api {
+            switch status {
+            case 409: return "That username was just taken. Please choose another."
+            case 429: return tooMany
+            case 500...599: return "Relay is having trouble right now. Please try again shortly."
+            default: break
+            }
+        }
+        if let supa = error as? SupabaseError, case .server(let raw) = supa {
+            let m = raw.lowercased()
+            if m.contains("no internet") { return offline }
+            if m.contains("cannot reach") || m.contains("timed out") { return unreachable }
+            if m.contains("already registered") || m.contains("already exists")
+                || m.contains("user_already_exists") || m.contains("email_exists") {
+                return "An account with this email already exists. Sign in instead."
+            }
+            if m.contains("invalid login credentials") || m.contains("invalid_credentials") {
+                return "Incorrect email or password."
+            }
+            if m.contains("email not confirmed") {
+                return "Please confirm your email address first — check your inbox."
+            }
+            if m.contains("password should") || m.contains("weak_password") || m.contains("weak password") {
+                return "Please choose a stronger password (at least 8 characters)."
+            }
+            if m.contains("rate limit") || m.contains("http 429") { return tooMany }
+            if m.contains("invalid") && m.contains("email") { return "Please enter a valid email address." }
+            // Strip the "HTTP 400: " transport prefix from anything else.
+            if raw.hasPrefix("HTTP "), let colon = raw.firstIndex(of: ":") {
+                return String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            }
+            return raw
+        }
+        return error.localizedDescription
+    }
+
+    private static let offline = "You're offline. Check your connection and try again."
+    private static let unreachable = "Couldn't reach Relay. Please try again in a moment."
+    private static let tooMany = "Too many attempts. Please wait a minute and try again."
 }
