@@ -139,9 +139,10 @@ struct RelayApp: App {
                             model.enterBackground()
                             appDelegate.scheduleBackgroundRefresh()
                         }
-                        // Refresh the encrypted iCloud backup when leaving the app.
+                        // Refresh the encrypted iCloud backup when leaving the app —
+                        // at most daily unless something changed.
                         if case .ready(let service) = model.phase {
-                            Task { await CloudBackupManager.shared.backupNow(service: service) }
+                            Task { await CloudBackupManager.shared.backupIfDue(service: service) }
                         }
                     case .active:
                         model.enterForeground()
