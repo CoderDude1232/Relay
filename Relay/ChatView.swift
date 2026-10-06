@@ -2729,6 +2729,7 @@ private struct AttachmentImageView: View {
     @State private var gifData: Data?
     @State private var failed = false
     @State private var preview: PreviewItem?
+    @State private var previewFileURL: URL?
     @State private var isUnlocked = false
 
     private var isGIF: Bool { attachment.contentType == "image/gif" }
@@ -2795,10 +2796,17 @@ private struct AttachmentImageView: View {
         .frame(width: 240, height: height)
         .clipShape(.rect(cornerRadius: 16))
         .task(id: attachment.id) { await load() }
-        .fullScreenCover(item: $preview) { item in
+        .fullScreenCover(item: $preview, onDismiss: cleanUpPreviewFile) { item in
             QuickLookPreview(url: item.url, title: senderName)
                 .ignoresSafeArea()
         }
+        .onDisappear { if preview == nil { cleanUpPreviewFile() } }
+    }
+
+    /// Deletes the decrypted temp file once the preview has closed.
+    private func cleanUpPreviewFile() {
+        TempMediaFiles.remove(previewFileURL)
+        previewFileURL = nil
     }
 
     private func load() async {
@@ -2830,17 +2838,15 @@ private struct AttachmentImageView: View {
         }
         guard let data = service.attachmentPlaintext(attachment) else { return }
         let ext = UTType(mimeType: attachment.contentType)?.preferredFilenameExtension ?? "jpg"
-        // Strip any directory traversal from server-provided filenames.
-        let rawName = attachment.filename.flatMap { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 }
-        let name = rawName ?? "\(attachment.id).\(ext)"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         do {
-            try data.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+            // Random filename + complete protection; deleted when the preview closes.
+            let url = try TempMediaFiles.write(data, originalName: attachment.filename, fallbackExtension: ext)
+            TempMediaFiles.remove(previewFileURL)
+            previewFileURL = url
             preview = PreviewItem(url: url)
         } catch {
-            Logger(subsystem: "com.relaytextingapp.Relay", category: "chat")
-                .error("openPreview: write to tmp failed: \(error.localizedDescription)")
+            Logger(subsystem: "app.relaymsg", category: "chat")
+                .error("openPreview: temp write failed: \(PrivacyRedactor.error(error))")
         }
     }
 }

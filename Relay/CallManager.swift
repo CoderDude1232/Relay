@@ -1384,6 +1384,8 @@ final class CallManager: NSObject {
             deviceBroadcastTask = nil
             screenVideoCapturer = nil
             isUsingDeviceBroadcast = false
+            // Don't leave the last screen frame lying in the App Group container.
+            if let url = Self.broadcastFrameURL() { try? FileManager.default.removeItem(at: url) }
             isScreenSharing = false
             updateDiagnostics { _ in }
             if restartCamera, isVideoEnabled, let capturer = localVideoCapturer {

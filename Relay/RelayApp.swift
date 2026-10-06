@@ -36,6 +36,8 @@ struct RelayApp: App {
                     // Spotlight indexing is opt-in: clear anything an older
                     // (index-by-default) build left in the system index.
                     if !SpotlightIndexer.isEnabled { SpotlightIndexer.deindexAll() }
+                    // Decrypted media left behind by a killed session.
+                    TempMediaFiles.sweep()
                     appDelegate.model = model
                     // Drain any conversationId that arrived via notification tap
                     // before the model was wired (cold-start path).
