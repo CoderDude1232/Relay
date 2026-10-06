@@ -72,3 +72,19 @@ nonisolated enum PrivacyPreferences {
         defaults.bool(forKey: contactDiscoveryConsentKey)
     }
 }
+
+/// Contact discovery (address-book matching) never runs on its own: only when
+/// the user taps "Find contacts on Relay" after reading this explanation.
+nonisolated enum ContactDiscoveryConsent {
+    static let explanation = "Relay will read the email addresses in your contacts and check which of them belong to Relay accounts. The addresses are blinded on your device before the check, and your address book is never stored on Relay's servers. This only happens when you tap Find Contacts."
+
+    static var isGranted: Bool { PrivacyPreferences.contactDiscoveryConsented }
+
+    static func grant() {
+        UserDefaults.standard.set(true, forKey: PrivacyPreferences.contactDiscoveryConsentKey)
+    }
+
+    static func revoke() {
+        UserDefaults.standard.removeObject(forKey: PrivacyPreferences.contactDiscoveryConsentKey)
+    }
+}

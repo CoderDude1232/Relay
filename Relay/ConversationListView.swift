@@ -643,7 +643,10 @@ private struct NewChatSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var contacts: [ContactEntry] = []
     @State private var authDenied = false
-    @State private var isLoadingContacts = true
+    @State private var isLoadingContacts = false
+    /// The user tapped "Find contacts on Relay" (and has consented).
+    @State private var discoveryStarted = false
+    @State private var showingDiscoveryConsent = false
     @State private var searchText = ""
     @State private var showingUsernameSearch = false
     @State private var startingContactEmail: String?
@@ -703,8 +706,18 @@ private struct NewChatSheet: View {
                         }
                     }
 
-                    // Contact sections
-                    if authDenied {
+                    // Contact sections — only after the user explicitly asks.
+                    if !discoveryStarted {
+                        Section {
+                            Button {
+                                requestContactDiscovery()
+                            } label: {
+                                Label("Find contacts on Relay", systemImage: "person.crop.circle.badge.checkmark")
+                            }
+                        } footer: {
+                            Text(ContactDiscoveryConsent.explanation)
+                        }
+                    } else if authDenied {
                         Section {
                             Label("Allow Contacts access in Settings → Relay to see who's on Relay.", systemImage: "person.slash")
                                 .font(.subheadline).foregroundStyle(.secondary)
@@ -774,8 +787,34 @@ private struct NewChatSheet: View {
             } message: {
                 Text(addError ?? "")
             }
+            .alert("Find Contacts on Relay?", isPresented: $showingDiscoveryConsent) {
+                Button("Find Contacts") {
+                    ContactDiscoveryConsent.grant()
+                    startContactDiscovery()
+                }
+                Button("Not Now", role: .cancel) {}
+            } message: {
+                Text(ContactDiscoveryConsent.explanation)
+            }
         }
-        .task { await loadContacts() }
+        // No automatic contact access or lookup: see requestContactDiscovery().
+    }
+
+    /// Contact discovery runs only when the user taps "Find contacts on Relay".
+    /// The first time, they see what it does and must agree; the agreement is
+    /// remembered so later taps go straight to the lookup.
+    private func requestContactDiscovery() {
+        if ContactDiscoveryConsent.isGranted {
+            startContactDiscovery()
+        } else {
+            showingDiscoveryConsent = true
+        }
+    }
+
+    private func startContactDiscovery() {
+        discoveryStarted = true
+        isLoadingContacts = true
+        Task { await loadContacts() }
     }
 
     @ViewBuilder
