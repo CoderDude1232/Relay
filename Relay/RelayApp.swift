@@ -8,6 +8,7 @@
 import BackgroundTasks
 import CoreSpotlight
 import Intents
+import OSLog
 import RelayKit
 import SwiftUI
 import UIKit
@@ -207,6 +208,7 @@ struct RelayApp: App {
 /// before any VoIP push can arrive on a killed-app launch.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     static let bgRefreshTaskId = "app.relaymsg.bg-refresh"
+    private static let log = Logger(subsystem: "app.relaymsg", category: "AppDelegate")
 
     let callManager = CallManager()
     let pushKitDelegate = PushKitDelegate()
@@ -243,17 +245,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         pushKitDelegate.start(callManager: callManager)
         UNUserNotificationCenter.current().delegate = self
+        // Both actions act on the account without opening the app, so they
+        // require the device to be unlocked (Face ID / passcode) first —
+        // otherwise anyone holding a locked phone could reply as the user.
         let replyAction = UNTextInputNotificationAction(
             identifier: "RELAY_QUICK_REPLY",
             title: "Reply",
-            options: [],
+            options: [.authenticationRequired],
             textInputButtonTitle: "Send",
             textInputPlaceholder: "Message"
         )
         let markReadAction = UNNotificationAction(
             identifier: "RELAY_MARK_READ",
             title: "Mark as Read",
-            options: []
+            options: [.authenticationRequired]
         )
         let msgCategory = UNNotificationCategory(
             identifier: "RELAY_MESSAGE",
@@ -340,6 +345,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: any Error
     ) {
-        NSLog("Relay: remote notification registration failed: \(error)")
+        Self.log.error("remote notification registration failed: \(PrivacyRedactor.error(error))")
     }
 }
