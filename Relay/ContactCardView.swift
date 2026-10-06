@@ -31,6 +31,12 @@ struct ContactCardView: View {
     private var isNoteToSelf: Bool { account == service.noteToSelfAccount }
     private var displayName: String { service.displayName(forAccount: account) }
     private var username: String? { service.username(forAccount: account) }
+    private var peerStatus: String { service.peerStatus(forAccount: account) }
+    private var peerBio: String { service.peerBio(forAccount: account) }
+    private var mutualGroups: [(id: String, name: String)] {
+        isNoteToSelf ? [] : service.mutualGroups(with: account)
+    }
+    private var peerLinks: [ProfileLink] { service.peerLinks(forAccount: account) }
 
     private var disappearingLabel: String {
         guard let s = conversation?.disappearingSeconds, s > 0 else { return "Off" }
@@ -55,6 +61,12 @@ struct ContactCardView: View {
                             Text("@\(username)")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
+                        }
+                        if !peerStatus.isEmpty {
+                            Text(peerStatus)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
                         }
                         if let presence = service.peerPresence {
                             if presence.online {
@@ -108,6 +120,16 @@ struct ContactCardView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
 
+                // MARK: Bio
+                if !peerBio.isEmpty {
+                    Section("Bio") {
+                        Text(peerBio)
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                            .textSelection(.enabled)
+                    }
+                }
+
                 // MARK: Conversation settings
                 Section {
                     NavigationLink {
@@ -143,6 +165,34 @@ struct ContactCardView: View {
                     if let conv = service.conversations.first(where: { $0.id == conversationId }) {
                         NavigationLink(destination: ChatPrivacySettingsView(service: service, conversation: conv)) {
                             SettingsNavRow(systemName: "slider.horizontal.3", color: .blue, title: "Chat Settings")
+                        }
+                    }
+                }
+
+                // MARK: Links
+                if !peerLinks.isEmpty {
+                    Section("Links") {
+                        ForEach(peerLinks) { link in
+                            if !link.url.isEmpty, let url = URL(string: link.url) {
+                                Link(destination: url) {
+                                    linkRow(label: link.label, url: link.url, tappable: true)
+                                }
+                            } else {
+                                linkRow(label: link.label, url: link.url, tappable: false)
+                            }
+                        }
+                    }
+                }
+
+                // MARK: Mutual groups
+                if !mutualGroups.isEmpty {
+                    Section(mutualGroups.count == 1 ? "1 Group in Common" : "\(mutualGroups.count) Groups in Common") {
+                        ForEach(mutualGroups, id: \.id) { group in
+                            HStack(spacing: 14) {
+                                AvatarView(name: group.name, size: 30,
+                                           imageData: service.group(for: group.id)?.avatarData)
+                                Text(group.name).foregroundStyle(.primary)
+                            }
                         }
                     }
                 }
@@ -251,6 +301,30 @@ struct ContactCardView: View {
             .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func linkRow(label: String, url: String, tappable: Bool) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                if !label.isEmpty {
+                    Text(label).foregroundStyle(.primary)
+                }
+                if !url.isEmpty {
+                    Text(url)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 0)
+            if tappable {
+                Image(systemName: "arrow.up.right")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     @ViewBuilder

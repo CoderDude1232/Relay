@@ -230,16 +230,16 @@ struct ConversationListView: View {
 
     private var labelChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                LabelChip(title: "All", isSelected: activeLabel == nil) { activeLabel = nil }
+            HStack(spacing: DS.Spacing.sm) {
+                Pill(title: "All", isSelected: activeLabel == nil) { activeLabel = nil }
                 ForEach(usedLabels, id: \.self) { label in
-                    LabelChip(title: label, isSelected: activeLabel == label) {
+                    Pill(title: label, isSelected: activeLabel == label) {
                         activeLabel = (activeLabel == label) ? nil : label
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.horizontal, DS.Spacing.lg)
+            .padding(.vertical, DS.Spacing.sm)
         }
     }
 
@@ -452,12 +452,7 @@ struct ConversationListView: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                         if !archivedConversations.isEmpty {
-                            Text("\(archivedConversations.count)")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.secondary.opacity(0.6), in: .capsule)
+                            CountBadge(count: archivedConversations.count, tint: .secondary.opacity(0.6))
                         }
                     }
                 }
@@ -991,40 +986,15 @@ private struct UsernameSearchSheet: View {
     }
 }
 
-// MARK: - Label chip
-
-private struct LabelChip: View {
-    let title: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .foregroundStyle(isSelected ? .white : .primary)
-                .background {
-                    if isSelected {
-                        Capsule().fill(Color.accentColor)
-                    } else {
-                        Capsule().fill(.clear)
-                    }
-                }
-                .glassCompat(in: .capsule)
-                .animation(.spring(duration: 0.22), value: isSelected)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 private struct ConversationRow: View {
     let conversation: Conversation
     let service: MessagingService
     var presenceCache: [String: Presence] = [:]
 
+    private var isRelayOfficial: Bool { conversation.peerAccount == service.relayOfficialAccount }
+
     private var displayName: String {
+        if isRelayOfficial { return "Relay" }
         if conversation.peerAccount == service.noteToSelfAccount { return "Note to Self" }
         if conversation.isGroup { return conversation.peerUsername ?? "Group" }
         return service.displayName(forAccount: conversation.peerAccount)
@@ -1104,7 +1074,9 @@ private struct ConversationRow: View {
 
     var body: some View {
         HStack(spacing: 13) {
-            if conversation.peerAccount == service.noteToSelfAccount {
+            if isRelayOfficial {
+                RelayOfficialAvatar(size: 54)
+            } else if conversation.peerAccount == service.noteToSelfAccount {
                 ZStack {
                     Circle()
                         .fill(Color.yellow.opacity(0.18))
@@ -1149,6 +1121,12 @@ private struct ConversationRow: View {
                         Text(displayName)
                             .font(hasUnread ? .headline.weight(.bold) : .headline)
                             .lineLimit(1)
+                        if isRelayOfficial {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.blue)
+                                .accessibilityLabel("Official")
+                        }
                     }
                     Spacer(minLength: 6)
                     HStack(spacing: 5) {
@@ -1195,14 +1173,7 @@ private struct ConversationRow: View {
                     .lineLimit(1)
                     Spacer(minLength: 6)
                     if hasUnread {
-                        Text("\(conversation.unreadCount)")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.accentColor, in: .capsule)
-                            .contentTransition(.numericText(countsDown: false))
-                            .animation(.spring(duration: 0.3), value: conversation.unreadCount)
+                        CountBadge(count: conversation.unreadCount)
                     }
                 }
             }

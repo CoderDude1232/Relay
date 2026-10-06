@@ -29,7 +29,7 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
     private var pendingCall: (callId: String, callerAccount: String, callerName: String, kind: CallKind)?
     // Cached so we can upload the token even if apiClient arrives after PushKit fires.
     private var cachedVoIPToken: String?
-    private let log = Logger(subsystem: "com.morgandaly.RelayMessenger", category: "PushKit")
+    private let log = Logger(subsystem: "app.relaymsg", category: "PushKit")
 
     override init() {
         super.init()

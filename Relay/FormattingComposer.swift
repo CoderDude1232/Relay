@@ -41,6 +41,9 @@ struct FormattingTextEditor: UIViewRepresentable {
     var maxLines: Int = 8
     var context: ComposerContext
     @Binding var isFocused: Bool
+    /// When true, disables autocorrect/spell-check/smart punctuation so the
+    /// keyboard doesn't learn or suggest from what's typed here ("incognito").
+    var incognito: Bool = false
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -64,13 +67,28 @@ struct FormattingTextEditor: UIViewRepresentable {
         tv.textContainerInset = UIEdgeInsets(top: 9, left: 10, bottom: 9, right: 10)
         tv.isScrollEnabled = false
         tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        applyIncognito(to: tv)
         ctx.coordinator.setupPlaceholder(in: tv)
         context.textView = tv
         return tv
     }
 
+    /// Sets the keyboard traits that suppress learning/suggestions. Toggling
+    /// while focused requires reloadInputViews() for the keyboard to pick it up.
+    private func applyIncognito(to tv: UITextView) {
+        let newType: UITextAutocorrectionType = incognito ? .no : .default
+        guard tv.autocorrectionType != newType else { return }
+        tv.autocorrectionType = newType
+        tv.spellCheckingType = incognito ? .no : .default
+        tv.smartQuotesType = incognito ? .no : .default
+        tv.smartDashesType = incognito ? .no : .default
+        tv.smartInsertDeleteType = incognito ? .no : .default
+        if tv.isFirstResponder { tv.reloadInputViews() }
+    }
+
     func updateUIView(_ tv: UITextView, context ctx: Context) {
         context.textView = tv
+        applyIncognito(to: tv)
         if tv.text != text { tv.text = text }
         ctx.coordinator.updatePlaceholder(in: tv)
         // Clamp height to maxLines.

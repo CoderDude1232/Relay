@@ -184,7 +184,7 @@ struct RelayApp: App {
 /// Placing them here ensures they exist before any SwiftUI view renders and
 /// before any VoIP push can arrive on a killed-app launch.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    static let bgRefreshTaskId = "com.morgandaly.RelayMessenger.bg-refresh"
+    static let bgRefreshTaskId = "app.relaymsg.bg-refresh"
 
     let callManager = CallManager()
     let pushKitDelegate = PushKitDelegate()

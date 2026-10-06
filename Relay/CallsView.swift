@@ -13,29 +13,67 @@ struct CallsView: View {
     @Environment(CallManager.self) private var callManager
     @State private var showingClearConfirm = false
 
+    /// Call history grouped into day sections (most recent first), so the log
+    /// reads like a timeline instead of one flat run of rows.
+    private var sections: [(id: Int, title: String, calls: [StoredCall])] {
+        let cal = Calendar.current
+        var result: [(id: Int, title: String, calls: [StoredCall])] = []
+        for call in service.callHistory {
+            let date = Date(timeIntervalSince1970: Double(call.startedAt) / 1000)
+            let title = Self.sectionTitle(date, cal: cal)
+            if result.last?.title == title {
+                result[result.count - 1].calls.append(call)
+            } else {
+                result.append((id: result.count, title: title, calls: [call]))
+            }
+        }
+        return result
+    }
+
+    private var missedCount: Int {
+        service.callHistory.filter { $0.outcome == .missed }.count
+    }
+
+    private static func sectionTitle(_ date: Date, cal: Calendar) -> String {
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInYesterday(date) { return "Yesterday" }
+        if let weekAgo = cal.date(byAdding: .day, value: -6, to: .now), date >= weekAgo {
+            return date.formatted(.dateTime.weekday(.wide))
+        }
+        return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+    }
+
     var body: some View {
         NavigationStack {
             Group {
                 if service.callHistory.isEmpty {
-                    ContentUnavailableView(
-                        "No Calls",
-                        systemImage: "phone",
-                        description: Text("Voice and video calls will appear here.")
-                    )
+                    ContentUnavailableView {
+                        Label("No Calls Yet", systemImage: "phone.badge.waveform.fill")
+                    } description: {
+                        Text("Your voice and video calls will appear here. Start one from any chat or a contact's card.")
+                    }
                 } else {
-                    List(service.callHistory) { call in
-                        CallHistoryRow(call: call, service: service) { kind in
-                            guard case .idle = callManager.state else { return }
-                            Task {
-                                await callManager.startCall(
-                                    peerAccount: call.peerAccount,
-                                    peerName: service.displayName(forAccount: call.peerAccount),
-                                    kind: kind
-                                )
+                    List {
+                        ForEach(sections, id: \.id) { section in
+                            Section {
+                                ForEach(section.calls) { call in
+                                    CallHistoryRow(call: call, service: service) { kind in
+                                        guard case .idle = callManager.state else { return }
+                                        Task {
+                                            await callManager.startCall(
+                                                peerAccount: call.peerAccount,
+                                                peerName: service.displayName(forAccount: call.peerAccount),
+                                                kind: kind
+                                            )
+                                        }
+                                    }
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(Color.clear)
+                                }
+                            } header: {
+                                DSSectionHeader(title: section.title)
                             }
                         }
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
                     }
                     .listStyle(.plain)
                 }
@@ -98,7 +136,7 @@ private struct CallHistoryRow: View {
                         .foregroundStyle(outcomeTint)
                     Text(summary)
                         .font(.subheadline)
-                        .foregroundStyle(call.outcome == .missed ? .primary : .secondary)
+                        .foregroundStyle(isNegative ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                         .lineLimit(1)
                 }
             }
@@ -106,7 +144,8 @@ private struct CallHistoryRow: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 8) {
-                Text(relativeLabel(call.startedAt))
+                Text(Date(timeIntervalSince1970: Double(call.startedAt) / 1000)
+                        .formatted(date: .omitted, time: .shortened))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
@@ -145,6 +184,11 @@ private struct CallHistoryRow: View {
         }
     }
 
+    /// Missed and failed calls read in red for at-a-glance scanning.
+    private var isNegative: Bool {
+        call.outcome == .missed || call.outcome == .failed
+    }
+
     private var summary: String {
         let kind = call.kind == .video ? "Video" : "Audio"
         switch call.outcome {
@@ -171,14 +215,4 @@ private struct CallHistoryRow: View {
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
-    private func relativeLabel(_ millis: Int64) -> String {
-        let date = Date(timeIntervalSince1970: Double(millis) / 1000)
-        if Calendar.current.isDateInToday(date) {
-            return date.formatted(date: .omitted, time: .shortened)
-        }
-        if Calendar.current.isDateInYesterday(date) {
-            return "Yesterday"
-        }
-        return date.formatted(.dateTime.day().month(.abbreviated))
-    }
 }

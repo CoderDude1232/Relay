@@ -8,7 +8,7 @@
 
 import Foundation
 
-let kShareAppGroup = "group.com.morgandaly.RelayMessenger"
+let kShareAppGroup = "group.app.relaymsg"
 
 // Lightweight, unencrypted snapshot of a conversation written to App Group
 // storage by the main app so the Share Extension can display a picker.

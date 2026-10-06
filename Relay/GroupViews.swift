@@ -117,11 +117,8 @@ struct GroupInfoView: View {
                             } label: {
                                 GroupAvatarView(data: group.avatarData, name: group.name, size: 64)
                                     .overlay(alignment: .bottomTrailing) {
-                                        Image(systemName: "pencil.circle.fill")
-                                            .font(.system(size: 20))
-                                            .foregroundStyle(.white, .blue)
+                                        AvatarEditBadge(systemImage: "pencil", diameter: 24)
                                             .offset(x: 4, y: 4)
-                                            .accessibilityHidden(true)
                                     }
                             }
                             .buttonStyle(.plain)

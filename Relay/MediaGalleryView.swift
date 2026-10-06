@@ -39,11 +39,10 @@ struct MediaGalleryView: View {
                                 GalleryThumbnail(attachment: attachment, service: service) { image in
                                     fullScreenImage = image
                                 }
-                                .aspectRatio(1, contentMode: .fill)
-                                .clipped()
                             }
                         }
                     }
+                    .padding(.horizontal, 2)
                 }
             }
         }
@@ -87,23 +86,25 @@ private struct GalleryThumbnail: View {
     @State private var isLoading = false
 
     var body: some View {
-        ZStack {
-            Color(.secondarySystemFill)
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .contentShape(Rectangle())
-                    .transition(.opacity)
-                    .onTapGesture { onTap(image) }
-            } else if isLoading {
-                ProgressView()
-            } else {
-                Image(systemName: "photo")
-                    .foregroundStyle(.secondary)
+        Color(.secondarySystemFill)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .transition(.opacity)
+                } else if isLoading {
+                    ProgressView()
+                } else {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                }
             }
-        }
-        .task { await load() }
+            .clipShape(.rect)
+            .contentShape(.rect)
+            .onTapGesture { if let image { onTap(image) } }
+            .task { await load() }
     }
 
     private func load() async {

@@ -9,7 +9,6 @@
 //
 
 import CoreImage.CIFilterBuiltins
-import CoreNFC
 import SwiftUI
 import Vision
 import VisionKit
@@ -45,11 +44,11 @@ struct MyQRCodeView: View {
     var createInviteLink: (() async throws -> URL)? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @State private var preset    = QRPreset.all[0]
+    // Fixed card style — the colour picker was removed to keep this view uncluttered.
+    private let preset = QRPreset.all[0]
     @State private var qrImage: UIImage?
     @State private var shareCard: UIImage?
     @State private var showingShare = false
-    @State private var nfcAlert: String? = nil
     @State private var inviteLink: URL?
     @State private var showingInviteShare = false
     @State private var generatingInvite = false
@@ -62,16 +61,12 @@ struct MyQRCodeView: View {
                 cardView
                     .frame(maxWidth: 340)
                     .padding(.top, 24)
-                    .animation(.easeInOut(duration: 0.2), value: preset.id)
 
-                // Controls pinned to the bottom. The colour picker and the NFC /
-                // one-time-link buttons are hosted in a secure canvas so they are
-                // omitted from screenshots — a screenshot captures only the card.
+                // Controls pinned to the bottom. The one-time-link button is
+                // hosted in a secure canvas so it is omitted from screenshots —
+                // a screenshot captures only the card.
                 VStack(spacing: 14) {
                     Spacer()
-
-                    presetPicker
-                        .hiddenInScreenshots()
 
                     Text("relaymsg.app/add/\(username)")
                         .font(.subheadline)
@@ -103,16 +98,8 @@ struct MyQRCodeView: View {
                         .presentationDetents([.medium, .large])
                 }
             }
-            .task(id: preset.id) {
+            .task {
                 await regenerate()
-            }
-            .alert("NFC Tag", isPresented: Binding(
-                get: { nfcAlert != nil },
-                set: { if !$0 { nfcAlert = nil } }
-            )) {
-                Button("OK") { nfcAlert = nil }
-            } message: {
-                Text(nfcAlert ?? "")
             }
             .sheet(isPresented: $showingInviteShare) {
                 if let inviteLink {
@@ -168,45 +155,9 @@ struct MyQRCodeView: View {
         )
     }
 
-    private var presetPicker: some View {
-        HStack(spacing: 10) {
-            ForEach(QRPreset.all) { p in
-                Button { preset = p } label: {
-                    Circle()
-                        .fill(LinearGradient(
-                            colors: [p.topColor, p.botColor],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                        .frame(width: 34, height: 34)
-                        .overlay {
-                            if p == preset {
-                                Circle().strokeBorder(.white, lineWidth: 2.5)
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(p.id)
-            }
-        }
-    }
-
     @ViewBuilder
     private var actionButtons: some View {
         VStack(spacing: 10) {
-            if NFCContactManager.isAvailable {
-                Button {
-                    NFCContactManager.shared.startWriting(username: username) { success in
-                        nfcAlert = success
-                            ? "Contact link written! Anyone can tap this tag to add you on Relay."
-                            : "Could not write to tag. Make sure it is writable and try again."
-                    }
-                } label: {
-                    Label("Write to NFC Tag", systemImage: "wave.3.right")
-                }
-                .buttonStyle(.bordered)
-            }
-
             if let createInviteLink {
                 Button {
                     generatingInvite = true
@@ -356,15 +307,27 @@ extension View {
     /// normally on screen and stays interactive, but iOS omits that layer from
     /// screenshots and screen recordings. Used to keep editing chrome out of a
     /// shared screenshot of the QR card.
-    func hiddenInScreenshots() -> some View {
-        ScreenshotHiddenContainer { self }
+    @ViewBuilder
+    func hiddenInScreenshots(_ active: Bool = true) -> some View {
+        if active {
+            // Reparents content into a secure UITextField canvas (omitted from
+            // screenshots). Only apply when actually protecting — otherwise the
+            // reparenting itself clips/letterboxes the content.
+            ScreenshotHiddenContainer(active: true) { self }
+        } else {
+            self
+        }
     }
 }
 
 private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
+    var active: Bool
     var content: Content
 
-    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    init(active: Bool = true, @ViewBuilder content: () -> Content) {
+        self.active = active
+        self.content = content()
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(rootView: content) }
 
@@ -409,6 +372,10 @@ private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.hosting.rootView = content
+        // Toggle screenshot omission live. The field is always created secure so
+        // the secure canvas subview exists to host content; this just controls
+        // whether that layer is captured by screenshots/recordings.
+        context.coordinator.secureField.isSecureTextEntry = active
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
@@ -463,17 +430,6 @@ struct ContactQRScanner: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                }
-                if NFCContactManager.isAvailable {
-                    ToolbarItem(placement: .bottomBar) {
-                        Button {
-                            NFCContactManager.shared.startReading { username in
-                                handleScan(username)
-                            }
-                        } label: {
-                            Label("Scan NFC Tag", systemImage: "wave.3.right")
-                        }
-                    }
                 }
             }
         }

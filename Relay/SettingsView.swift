@@ -15,9 +15,7 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(ChatAppearance.self) private var appearance
     @State private var confirmingSignOut = false
-    @State private var showingQR = false
     @State private var showingEditProfile = false
-    @State private var showingChangeUsername = false
     @State private var avatarData: Data?
     @State private var panicMode = PanicModeManager.shared
     @State private var showingPanicSettings = false
@@ -27,7 +25,6 @@ struct SettingsView: View {
     @State private var nukeInProgress = false
     @State private var nukeError: String?
     @State private var nukeSucceeded = false
-    @State private var usernameCopied = false
 
     private var displayName: String {
         let name = service.myDisplayName ?? service.username
@@ -44,14 +41,8 @@ struct SettingsView: View {
                         HStack(spacing: 14) {
                             ZStack(alignment: .bottomTrailing) {
                                 AvatarView(name: displayName, size: 64, imageData: avatarData)
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 22, height: 22)
-                                    .background(Color.accentColor, in: .circle)
-                                    .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                                AvatarEditBadge(systemImage: "pencil", diameter: 22)
                                     .offset(x: 2, y: 2)
-                                    .accessibilityHidden(true)
                             }
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(displayName)
@@ -76,96 +67,34 @@ struct SettingsView: View {
                     .tint(.primary)
                 }
 
-                // MARK: Account
-                Section("Account") {
-                    Button { showingChangeUsername = true } label: {
-                        HStack(spacing: 14) {
-                            SettingsIcon(systemName: "at", color: .blue)
-                            Text("Username").foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                            if let username = service.username {
-                                Text(usernameCopied ? "Copied!" : "@\(username)")
-                                    .foregroundStyle(usernameCopied ? .green : .secondary)
-                                    .font(.subheadline)
-                                    .animation(.easeInOut(duration: 0.2), value: usernameCopied)
-                            }
+                // MARK: Primary categories
+                // A tidy single-column list of important categories, each
+                // opening a sub-page. Niche tools (Scheduled Messages, Blocked)
+                // now live inside "Chats"; storage/backup/sync inside "Data &
+                // Storage" — keeping this top level focused.
+                Section {
+                    if service.username != nil {
+                        NavigationLink(destination: AccountSettingsView(service: service)) {
+                            SettingsNavRow(systemName: "person.crop.circle.fill", color: .accentColor, title: "Account")
                         }
                     }
-                    .tint(.primary)
-                    .contextMenu {
-                        if let username = service.username {
-                            Button {
-                                UIPasteboard.general.string = "@\(username)"
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                usernameCopied = true
-                                Task {
-                                    try? await Task.sleep(for: .seconds(2))
-                                    usernameCopied = false
-                                }
-                            } label: {
-                                Label("Copy Username", systemImage: "doc.on.doc")
-                            }
-                            Button { showingChangeUsername = true } label: {
-                                Label("Change Username", systemImage: "pencil")
-                            }
-                        }
-                    }
-                    .sheet(isPresented: $showingChangeUsername) {
-                        ChangeUsernameSheet(currentUsername: service.username ?? "")
-                    }
-
-                    if let username = service.username {
-                        Button { showingQR = true } label: {
-                            HStack(spacing: 14) {
-                                SettingsIcon(systemName: "qrcode", color: .indigo)
-                                Text("My QR Code").foregroundStyle(.primary)
-                            }
-                        }
-                        .tint(.primary)
-                        .sheet(isPresented: $showingQR) {
-                            MyQRCodeView(username: username, createInviteLink: {
-                                try await service.createContactInviteLink()
-                            })
-                        }
-                    }
-                }
-
-                // MARK: Chats settings
-                Section("Chats") {
                     NavigationLink(destination: AppearanceSettingsView()) {
-                        SettingsNavRow(systemName: "paintbrush.fill", color: .purple, title: "Appearance")
+                        SettingsNavRow(systemName: "paintbrush.fill", color: .accentColor, title: "Appearance")
                     }
-                    NavigationLink(destination: ScheduledMessagesView(service: service)) {
-                        SettingsNavRow(systemName: "clock.badge.checkmark", color: .mint, title: "Scheduled Messages")
+                    NavigationLink(destination: ChatsSettingsView(service: service)) {
+                        SettingsNavRow(systemName: "bubble.left.and.bubble.right.fill", color: .accentColor, title: "Chats")
                     }
-                    NavigationLink(destination: BlockedContactsView(service: service)) {
-                        SettingsNavRow(systemName: "person.crop.circle.badge.minus", color: .red, title: "Blocked Contacts")
-                    }
-                }
-
-                // MARK: Privacy & Security settings
-                Section("Privacy & Security") {
                     NavigationLink(destination: PrivacySettingsView(service: service)) {
-                        SettingsNavRow(systemName: "hand.raised.fill", color: .blue, title: "Privacy")
+                        SettingsNavRow(systemName: "hand.raised.fill", color: .accentColor, title: "Privacy")
                     }
                     NavigationLink(destination: SecuritySettingsView(service: service)) {
-                        SettingsNavRow(systemName: "lock.shield.fill", color: .green, title: "Security")
+                        SettingsNavRow(systemName: "lock.shield.fill", color: .accentColor, title: "Security")
                     }
                     NavigationLink(destination: LinkedDevicesView(service: service)) {
-                        SettingsNavRow(systemName: "iphone", color: .teal, title: "Linked Devices")
+                        SettingsNavRow(systemName: "laptopcomputer.and.iphone", color: .accentColor, title: "Linked Devices")
                     }
-                }
-
-                // MARK: Data & Devices settings
-                Section("Data & Devices") {
-                    NavigationLink(destination: StorageSettingsView(service: service)) {
-                        SettingsNavRow(systemName: "internaldrive.fill", color: .orange, title: "Storage")
-                    }
-                    NavigationLink(destination: BackupView(service: service)) {
-                        SettingsNavRow(systemName: "arrow.clockwise.icloud.fill", color: .indigo, title: "Backup & Restore")
-                    }
-                    NavigationLink(destination: ContactSyncView(service: service)) {
-                        SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .cyan, title: "Contact Syncing")
+                    NavigationLink(destination: DataStorageSettingsView(service: service)) {
+                        SettingsNavRow(systemName: "internaldrive.fill", color: .accentColor, title: "Data & Storage")
                     }
                 }
 
@@ -175,7 +104,7 @@ struct SettingsView: View {
                         showingInvite = true
                     } label: {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "person.badge.plus", color: .green)
+                            SettingsIcon(systemName: "person.badge.plus", color: .accentColor)
                             Text("Invite Friends").foregroundStyle(.primary)
                         }
                     }
@@ -193,7 +122,7 @@ struct SettingsView: View {
                         confirmingNuke = true
                     } label: {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "flame.fill", color: .red)
+                            SettingsIcon(systemName: "flame.fill", color: .red, useColor: true)
                             Text("Emergency Wipe All Devices")
                                 .foregroundStyle(.red)
                             Spacer(minLength: 0)
@@ -211,9 +140,14 @@ struct SettingsView: View {
 
                 // MARK: Sign out
                 Section {
-                    Button("Sign Out", role: .destructive) {
+                    Button(role: .destructive) {
                         UINotificationFeedbackGenerator().notificationOccurred(.warning)
                         confirmingSignOut = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "rectangle.portrait.and.arrow.right", color: .red, useColor: true)
+                            Text("Sign Out").foregroundStyle(.red)
+                        }
                     }
                 } footer: {
                     Text("Relay \(appVersion)")
@@ -304,6 +238,136 @@ struct SettingsView: View {
 
 }
 
+// MARK: - Account sub-page
+
+private struct AccountSettingsView: View {
+    let service: MessagingService
+    @State private var showingQR = false
+    @State private var linkCopied = false
+
+    private var username: String { service.username ?? "" }
+    private var addLink: String { "relaymsg.app/add/\(username)" }
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 14) {
+                    SettingsIcon(systemName: "at", color: .accentColor)
+                    Text("Username")
+                    Spacer(minLength: 0)
+                    Text("@\(username)")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Button {
+                    UIPasteboard.general.string = "https://\(addLink)"
+                    linkCopied = true
+                    Task { try? await Task.sleep(for: .seconds(2)); linkCopied = false }
+                } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: linkCopied ? "checkmark" : "link", color: .accentColor)
+                        Text(linkCopied ? "Link Copied" : "Copy My Link").foregroundStyle(.primary)
+                        Spacer(minLength: 0)
+                        Text(addLink)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .tint(.primary)
+            } header: {
+                Text("Identity")
+            } footer: {
+                Text("People can start a chat with you using your username, link, or QR code — no phone number or email needed.")
+            }
+
+            Section {
+                Button { showingQR = true } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "qrcode", color: .accentColor)
+                        Text("My QR Code").foregroundStyle(.primary)
+                    }
+                }
+                .tint(.primary)
+            }
+        }
+        .navigationTitle("Account")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingQR) {
+            MyQRCodeView(username: username, createInviteLink: {
+                try await service.createContactInviteLink()
+            })
+        }
+    }
+}
+
+// MARK: - Chats sub-page
+
+private struct ChatsSettingsView: View {
+    let service: MessagingService
+
+    var body: some View {
+        List {
+            Section {
+                NavigationLink(destination: ScheduledMessagesView(service: service)) {
+                    SettingsNavRow(systemName: "clock.badge.checkmark", color: .accentColor, title: "Scheduled Messages")
+                }
+            } footer: {
+                Text("Messages you've queued to send automatically at a later time.")
+            }
+
+            Section {
+                NavigationLink(destination: BlockedContactsView(service: service)) {
+                    SettingsNavRow(systemName: "person.crop.circle.badge.minus", color: .accentColor, title: "Blocked Contacts")
+                }
+            } footer: {
+                Text("Blocked accounts can't message or call you, and won't see when you're online.")
+            }
+        }
+        .navigationTitle("Chats")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Data & Storage sub-page
+
+private struct DataStorageSettingsView: View {
+    let service: MessagingService
+
+    var body: some View {
+        List {
+            Section {
+                NavigationLink(destination: StorageSettingsView(service: service)) {
+                    SettingsNavRow(systemName: "internaldrive.fill", color: .accentColor, title: "Storage")
+                }
+                NavigationLink(destination: BackupView(service: service)) {
+                    SettingsNavRow(systemName: "arrow.clockwise.icloud.fill", color: .accentColor, title: "Backup & Restore")
+                }
+                NavigationLink(destination: ContactSyncView(service: service)) {
+                    SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .accentColor, title: "Contact Syncing")
+                }
+            }
+
+            if service.preKeyDesyncDropCount > 0 {
+                Section {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "key.horizontal.fill", color: .accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Message keys repaired").foregroundStyle(.primary)
+                            Text("\(service.preKeyDesyncDropCount) message(s) couldn't be decrypted and were skipped; your keys have been refreshed.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Data & Storage")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 // MARK: - Privacy sub-page
 
 struct PrivacySettingsView: View {
@@ -311,28 +375,36 @@ struct PrivacySettingsView: View {
     @Environment(CallManager.self) private var callManager
     @State private var privateCallMode = UserDefaults.standard.object(forKey: "relay.privateCallMode") as? Bool ?? true
     @State private var notificationPrivacy: String = UserDefaults(suiteName: AppModel.appGroupId)?.string(forKey: "relay.notificationPrivacy") ?? "full"
+    @AppStorage("privacy.incognitoKeyboard") private var incognitoKeyboard = false
 
     var body: some View {
         List {
-            Section("Messaging") {
-                toggleRow("checkmark.circle.fill", .blue, "Read Receipts",
-                          get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 })
-                toggleRow("eye.slash.fill", .gray, "Hide Last Seen",
-                          get: { service.hideLastSeen }, set: { service.hideLastSeen = $0 })
-                toggleRow("timer", .indigo, "Send Delay",
-                          get: { service.sendJitterEnabled }, set: { service.sendJitterEnabled = $0 })
-                toggleRow("shield.lefthalf.filled", .purple, "Sealed Sender",
-                          get: { service.sealedSenderEnabled }, set: { service.sealedSenderEnabled = $0 })
+            Section("Presence") {
+                SettingsToggleRow(systemName: "checkmark.circle.fill", title: "Read Receipts",
+                                  info: "When on, people can see when you've read their messages.",
+                                  isOn: Binding(get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 }))
+                SettingsToggleRow(systemName: "eye.slash.fill", title: "Hide Last Seen",
+                                  info: "When on, others can't see when you were last online.",
+                                  isOn: Binding(get: { service.hideLastSeen }, set: { service.hideLastSeen = $0 }))
             }
 
-            Section {
+            Section("Messaging") {
+                SettingsToggleRow(systemName: "timer", title: "Send Delay",
+                                  info: "Adds a small random delay before each message sends, making it harder to correlate your activity by timing.",
+                                  isOn: Binding(get: { service.sendJitterEnabled }, set: { service.sendJitterEnabled = $0 }))
+                SettingsToggleRow(systemName: "keyboard", title: "Incognito Keyboard",
+                                  info: "Asks the system keyboard not to learn from or store what you type in Relay.",
+                                  isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
+            }
+
+            Section("Notifications") {
                 Picker(selection: $notificationPrivacy) {
                     Text("Name and Content").tag("full")
                     Text("Name Only").tag("nameOnly")
                     Text("No Name or Content").tag("none")
                 } label: {
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "bell.badge.fill", color: .blue)
+                        SettingsIcon(systemName: "bell.badge.fill", color: .gray)
                         Text("Lock Screen Preview")
                     }
                 }
@@ -341,31 +413,27 @@ struct PrivacySettingsView: View {
                     UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
                 }
 
-                toggleRow("bolt.fill", .orange, "Include Message in Push",
-                          get: { service.pushIncludeContent },
-                          set: { service.pushIncludeContent = $0 })
-            } header: {
-                Text("Notifications")
-            } footer: {
-                Text("Off (default): pushes are a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it. On: the encrypted message rides in the push for faster alerts.")
+                SettingsToggleRow(systemName: "bolt.fill", title: "Faster Alerts",
+                                  info: "On: the encrypted message is delivered inside the push notification for instant alerts. Off (more private): the push is just a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it.",
+                                  isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
             }
 
             Section("Calls") {
-                toggleRow("phone.fill", .green, "Private Call Mode",
-                          get: { privateCallMode },
-                          set: { privateCallMode = $0; callManager.privateCallMode = $0 })
+                SettingsToggleRow(systemName: "phone.fill", title: "Private Call Mode",
+                                  info: "Routes calls through Relay's servers so your IP address stays hidden from the other person. Calls may connect a little slower.",
+                                  isOn: Binding(get: { privateCallMode }, set: { privateCallMode = $0; callManager.privateCallMode = $0 }))
             }
 
             Section("Media") {
-                toggleRow("wifi", .blue, "Wi-Fi Only Downloads",
-                          get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
-                          set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") })
+                SettingsToggleRow(systemName: "wifi", title: "Wi-Fi Only Downloads",
+                                  isOn: Binding(get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
+                                                set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") }))
             }
 
             Section {
                 NavigationLink(destination: DataRetentionView()) {
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "doc.text.magnifyingglass", color: .indigo)
+                        SettingsIcon(systemName: "doc.text.magnifyingglass", color: .gray)
                         Text("Data & Retention Policy")
                     }
                 }
@@ -373,19 +441,6 @@ struct PrivacySettingsView: View {
         }
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    /// A compact single-line settings toggle: icon + title, no description.
-    private func toggleRow(
-        _ systemName: String, _ color: Color, _ title: String,
-        get: @escaping () -> Bool, set: @escaping (Bool) -> Void
-    ) -> some View {
-        Toggle(isOn: Binding(get: get, set: set)) {
-            HStack(spacing: 14) {
-                SettingsIcon(systemName: systemName, color: color)
-                Text(title)
-            }
-        }
     }
 }
 
@@ -403,7 +458,7 @@ private struct DataRetentionView: View {
                 RetentionRow(
                     icon: "key.slash", color: .orange,
                     title: "Private Keys",
-                    detail: "Identity and session keys are generated on-device and stored in the Secure Enclave or Keychain. They never leave your device."
+                    detail: "Your identity key lives in the Keychain, protected by a key held in the Secure Enclave. Session (ratchet) keys live in the app's AES-256 encrypted database. None of them ever leave your device."
                 )
                 RetentionRow(
                     icon: "eye.slash.fill", color: .gray,
@@ -428,7 +483,7 @@ private struct DataRetentionView: View {
                 RetentionRow(
                     icon: "person.fill", color: .teal,
                     title: "Account Registration",
-                    detail: "Username, bcrypt-hashed password, and device list are stored for the lifetime of the account. Account deletion removes all associated records."
+                    detail: "Your username, a bcrypt hash of your password, and your device list are stored for the lifetime of the account. Signing out and Emergency Wipe erase your messages and keys from your devices and clear any queued envelopes on the server."
                 )
                 RetentionRow(
                     icon: "paperclip", color: .purple,
@@ -463,7 +518,7 @@ private struct DataRetentionView: View {
             } header: {
                 Text("Metadata Limits")
             } footer: {
-                Text("Relay is open-source. The server code in this repository implements these policies exactly.")
+                Text("These retention rules are enforced directly by the Relay server and client code.")
                     .padding(.top, 4)
             }
         }
@@ -516,8 +571,6 @@ private struct StorageSettingsView: View {
                 .disabled(cacheSize == 0 || isClearing)
             } header: {
                 Text("Media Cache")
-            } footer: {
-                Text("Downloaded attachments cached on this device. They re-download on demand.")
             }
 
             Section("Database") {
@@ -593,18 +646,10 @@ private struct SecuritySettingsView: View {
                 }
             }
 
-            Section {
-                Toggle(isOn: $screenLockEnabled) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "faceid", color: .indigo)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Screen Lock")
-                            Text("Require Face ID or Touch ID when opening Relay")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+            Section("Screen Lock") {
+                SettingsToggleRow(systemName: "faceid", title: "Screen Lock",
+                                  info: "Require \(biometricTypeName) when returning to Relay after it's been in the background.",
+                                  isOn: $screenLockEnabled)
                 if screenLockEnabled {
                     Picker(selection: $screenLockTimeout) {
                         Text("Immediately").tag(0)
@@ -614,35 +659,26 @@ private struct SecuritySettingsView: View {
                         Text("After 1 hour").tag(3600)
                     } label: {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "timer", color: .orange)
+                            SettingsIcon(systemName: "timer", color: .gray)
                             Text("Lock After")
                         }
                     }
                 }
-            } header: {
-                Text("Screen Lock")
-            } footer: {
-                Text(screenLockEnabled
-                    ? "Relay will ask for \(biometricTypeName) when you return to the app after it has been in the background."
-                    : "Protect your chats with Face ID or Touch ID when reopening the app.")
             }
 
-            Section {
-                Toggle("Panic Mode", isOn: Binding(
-                    get: { panicMode.isEnabled },
-                    set: { enabled in
-                        if enabled { showingPanicSettings = true }
-                        else { panicMode.disable() }
-                    }
-                ))
+            Section("Panic Mode") {
+                SettingsToggleRow(systemName: "eye.slash.fill", title: "Panic Mode",
+                                  info: "Hides selected chats behind a PIN. Long-press a conversation in the list to mark it hidden.",
+                                  isOn: Binding(
+                                    get: { panicMode.isEnabled },
+                                    set: { enabled in
+                                        if enabled { showingPanicSettings = true }
+                                        else { panicMode.disable() }
+                                    }))
                 if panicMode.isEnabled {
                     Button("Configure Panic Mode") { showingPanicSettings = true }
                         .foregroundStyle(.tint)
                 }
-            } header: {
-                Text("Panic Mode")
-            } footer: {
-                Text("Hides selected chats behind a PIN. Long-press a conversation in the list to mark it hidden.")
             }
         }
         .navigationTitle("Security")
@@ -672,9 +708,12 @@ private struct EditProfileSheet: View {
     @State private var displayNameDraft: String
     @State private var bioDraft: String
     @State private var statusDraft: String
+    @State private var linkDrafts: [ProfileLink]
     @State private var avatarData: Data?
+    @State private var avatarChanged = false
     @State private var profilePhoto: PhotosPickerItem?
     @State private var loadingPhoto = false
+    @State private var showingChangeUsername = false
 
     init(service: MessagingService, onDone: @escaping () -> Void) {
         self.service = service
@@ -683,7 +722,10 @@ private struct EditProfileSheet: View {
         _avatarData = State(initialValue: service.myAvatarData)
         _bioDraft = State(initialValue: UserDefaults.standard.string(forKey: "my.profile.bio") ?? "")
         _statusDraft = State(initialValue: UserDefaults.standard.string(forKey: "my.profile.status") ?? "")
+        _linkDrafts = State(initialValue: service.myLinks)
     }
+
+    private static let maxLinks = 5
 
     private var previewName: String {
         displayNameDraft.isEmpty ? (service.username ?? "?") : displayNameDraft
@@ -698,11 +740,7 @@ private struct EditProfileSheet: View {
                         PhotosPicker(selection: $profilePhoto, matching: .images) {
                             ZStack(alignment: .bottomTrailing) {
                                 AvatarView(name: previewName, size: 90, imageData: avatarData)
-                                Image(systemName: "camera.fill")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .padding(6)
-                                    .background(Color.accentColor, in: .circle)
+                                AvatarEditBadge(systemImage: "camera.fill", diameter: 26)
                                     .offset(x: 3, y: 3)
                             }
                         }
@@ -716,10 +754,19 @@ private struct EditProfileSheet: View {
                     TextField("Display name", text: $displayNameDraft)
                         .autocorrectionDisabled()
                         .submitLabel(.next)
-                    if let username = service.username {
-                        LabeledContent("Email", value: username)
-                            .foregroundStyle(.secondary)
+                    Button { showingChangeUsername = true } label: {
+                        HStack {
+                            Text("Username").foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            if let username = service.username {
+                                Text("@\(username)").foregroundStyle(.secondary)
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
                     }
+                    .tint(.primary)
                 }
 
                 Section {
@@ -746,7 +793,35 @@ private struct EditProfileSheet: View {
                 } header: {
                     Text("Bio")
                 } footer: {
-                    Text("Shown on your profile card. Not end-to-end encrypted.")
+                    Text("Shown on your profile card. End-to-end encrypted.")
+                }
+
+                Section {
+                    ForEach($linkDrafts) { $link in
+                        VStack(spacing: 4) {
+                            TextField("Label (e.g. Website)", text: $link.label)
+                                .font(.subheadline.weight(.medium))
+                                .autocorrectionDisabled()
+                            TextField("https://…", text: $link.url)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                        }
+                    }
+                    .onDelete { linkDrafts.remove(atOffsets: $0) }
+                    if linkDrafts.count < Self.maxLinks {
+                        Button {
+                            linkDrafts.append(ProfileLink())
+                        } label: {
+                            Label("Add Link", systemImage: "plus.circle.fill")
+                        }
+                    }
+                } header: {
+                    Text("Links")
+                } footer: {
+                    Text("Up to \(Self.maxLinks). Shown on your profile card. End-to-end encrypted.")
                 }
 
                 if avatarData != nil {
@@ -770,20 +845,30 @@ private struct EditProfileSheet: View {
                 }
             }
             .onChange(of: profilePhoto) { _, item in loadPhoto(item) }
+            .sheet(isPresented: $showingChangeUsername) {
+                ChangeUsernameSheet(currentUsername: service.username ?? "")
+            }
         }
     }
 
     private func saveAndDismiss() {
         service.setMyDisplayName(displayNameDraft)
-        UserDefaults.standard.set(bioDraft, forKey: "my.profile.bio")
-        UserDefaults.standard.set(statusDraft, forKey: "my.profile.status")
+        // Only commit the avatar (which distributes to peers) if it actually
+        // changed in this editing session — nothing leaves the sheet until Save.
+        if avatarChanged {
+            service.setMyAvatarData(avatarData)
+        }
+        // Distributes to peers over the E2EE profile channel (bumps revision only
+        // if changed). Nothing left the sheet until this Save.
+        service.setMyProfileText(status: statusDraft, bio: bioDraft, links: linkDrafts)
         onDone()
         dismiss()
     }
 
+    // Holds the new avatar locally only; it isn't distributed until Save.
     private func setAvatar(_ data: Data?) {
         avatarData = data
-        service.setMyAvatarData(data)
+        avatarChanged = true
     }
 
     private func loadPhoto(_ item: PhotosPickerItem?) {
@@ -804,13 +889,18 @@ private struct EditProfileSheet: View {
 struct SettingsIcon: View {
     let systemName: String
     let color: Color
+    /// Opt-in: use the provided `color` instead of the default neutral gray.
+    /// Reserved for rows that need to signal danger (e.g. Emergency Wipe).
+    var useColor: Bool = false
 
     var body: some View {
         Image(systemName: systemName)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: 28, height: 28)
-            .background(color.gradient, in: .rect(cornerRadius: 7))
+            // Unified to a neutral gray for a consistent, non-rainbow settings
+            // look; `useColor` opts a row back into its explicit `color`.
+            .background((useColor ? color : Color(.systemGray)).gradient, in: .rect(cornerRadius: 7))
     }
 }
 
@@ -823,6 +913,54 @@ struct SettingsNavRow: View {
         HStack(spacing: 14) {
             SettingsIcon(systemName: systemName, color: color)
             Text(title)
+        }
+    }
+}
+
+/// A small white ⓘ button that surfaces a one-shot explanation in a native
+/// alert. Self-contained (owns its own presentation) so any settings row can
+/// drop one in without plumbing shared state. Use only where a title isn't
+/// self-explanatory.
+struct SettingsInfoButton: View {
+    let title: String
+    let message: String
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing = true } label: {
+            Image(systemName: "info.circle")
+                .font(.footnote)
+                .foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("About \(title)")
+        .alert(title, isPresented: $showing) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(message)
+        }
+    }
+}
+
+/// The standard settings toggle row: gray icon, self-explanatory title, an
+/// optional ⓘ for detail, and a trailing switch. One implementation shared by
+/// every settings page so rows look and behave identically.
+struct SettingsToggleRow: View {
+    let systemName: String
+    let title: String
+    var info: String? = nil
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            SettingsIcon(systemName: systemName, color: .gray)
+            Text(title)
+            if let info {
+                SettingsInfoButton(title: title, message: info)
+            }
+            Spacer(minLength: 8)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
         }
     }
 }
@@ -1002,13 +1140,14 @@ private struct ChangeUsernameSheet: View {
         return false
     }
 
+    private var trimmed: String { username.lowercased() }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     HStack {
-                        Text("@")
-                            .foregroundStyle(.secondary)
+                        Text("@").foregroundStyle(.secondary)
                         TextField("username", text: $username)
                             .focused($isFocused)
                             .textInputAutocapitalization(.never)
@@ -1019,8 +1158,20 @@ private struct ChangeUsernameSheet: View {
                         statusIcon
                     }
                 } footer: {
-                    statusMessage
-                        .padding(.top, 2)
+                    statusMessage.padding(.top, 2)
+                }
+
+                Section {
+                    HStack {
+                        Text("Link")
+                        Spacer(minLength: 0)
+                        Text("relaymsg.app/add/\(trimmed.isEmpty ? currentUsername : trimmed)")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                } footer: {
+                    Text("People can start a chat with you by opening this link or scanning your QR code — no phone number or email needed.")
                 }
 
                 if let errorMessage {
@@ -1071,9 +1222,9 @@ private struct ChangeUsernameSheet: View {
         case .checking:
             Text("Checking availability…")
         case .available:
-            Text("@\(username) is available").foregroundStyle(.green)
+            Text("@\(trimmed) is available").foregroundStyle(.green)
         case .taken:
-            Text("@\(username) is already taken").foregroundStyle(.red)
+            Text("@\(trimmed) is already taken").foregroundStyle(.red)
         case .invalid(let reason):
             Text(reason).foregroundStyle(.orange)
         }

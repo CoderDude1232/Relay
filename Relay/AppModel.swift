@@ -6,6 +6,7 @@
 //  encrypted database, and moves the app between onboarding and messaging.
 //
 
+import CryptoCore
 import CryptoKit
 import Foundation
 import Observation
@@ -30,6 +31,10 @@ final class AppModel {
     static let appGroupId = RelayStore.appGroupId
     private static let accountSecretName = "relay-account"
     private static let accessKeySecretName = "relay-access-key"
+    /// Set once this device received the account's shared identity via linking.
+    /// Absent on secondaries linked before the shared-identity change — they
+    /// still hold a self-generated identity and see the re-link nudge.
+    static let identityProvisionedKey = "relay.identityProvisioned"
 
     private(set) var phase: Phase = .loading
     /// Set by onOpenURL when the user opens a relay://add/<username> link.
@@ -500,48 +505,125 @@ final class AppModel {
         Task { try? await service.publishInitialKeys() }
     }
 
-    /// Links this device by claiming a short-lived token from a scanned QR code.
-    func bootAsLinkedDevice(payload: LinkPayload) async throws {
-        let api = RelayAPIClient(baseURL: payload.serverURL, credentials: nil, session: session)
-        let claim: DeviceLinkClaim
-        do {
-            claim = try await api.claimDeviceLink(
-                linkToken: payload.linkToken,
-                verificationCode: payload.verificationCode
-            )
-        } catch {
-            throw SetupError(step: "Claim device link", underlying: error)
+    enum LinkingError: LocalizedError {
+        case timedOut
+        case unauthenticated
+        var errorDescription: String? {
+            switch self {
+            case .timedOut:
+                return "Timed out waiting for the other device. Make sure both devices are online, then try again."
+            case .unauthenticated:
+                return "Couldn't verify the linking response came from your account. For your security, linking was cancelled. Try again."
+            }
         }
+    }
+
+    /// New-device side of reversed linking, step 1: creates a blind provisioning
+    /// session on the relay and returns the QR string the primary will scan, plus
+    /// the ephemeral key pair the caller must retain (in memory) for step 2. The
+    /// private half never leaves this device.
+    func beginDeviceLinking() async throws -> (qr: String, sessionId: String, ephemeral: ProvisioningCipher.EphemeralKeyPair) {
+        let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
+        let ephemeral = ProvisioningCipher.EphemeralKeyPair()
+        let info: ProvisioningSession
+        do {
+            info = try await api.createProvisioningSession()
+        } catch {
+            throw SetupError(step: "Start device linking", underlying: error)
+        }
+        let qrPayload = LinkQRPayload(
+            sessionId: info.sessionId,
+            ephemeralPublicKey: ephemeral.publicKey,
+            serverURL: RelayConfig.serverURL.absoluteString,
+            deviceName: UIDevice.current.model
+        )
+        let qr = String(data: try JSONEncoder().encode(qrPayload), encoding: .utf8) ?? ""
+        return (qr, info.sessionId, ephemeral)
+    }
+
+    /// New-device side, step 2: polls until the primary provisions, installs the
+    /// shared account identity + credentials, then boots. Throws on timeout.
+    func completeDeviceLinking(sessionId: String, ephemeral: ProvisioningCipher.EphemeralKeyPair) async throws {
+        let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
+        let deadline = Date().addingTimeInterval(600) // session lifetime (~10 min)
+        var blob: Data?
+        while Date() < deadline {
+            if let b = try await api.fetchProvisioningBlob(sessionId: sessionId) {
+                blob = b
+                break
+            }
+            try await Task.sleep(for: .seconds(2))
+        }
+        guard let blob else { throw LinkingError.timedOut }
+
+        let payload: LinkProvisioningPayload
+        do {
+            let plaintext = try ProvisioningCipher.open(blob, ephemeralPrivateKey: ephemeral.privateKey)
+            payload = try JSONDecoder().decode(LinkProvisioningPayload.self, from: plaintext)
+        } catch {
+            throw SetupError(step: "Decrypt provisioning payload", underlying: error)
+        }
+
+        // Authenticate the payload before adopting the identity: verify the
+        // primary's signature over the session/ephemeral/credentials transcript.
+        // Rejects a replayed or substituted-but-well-formed provisioning blob.
+        guard let signature = payload.signature,
+              ProvisioningSignature.verify(
+                signature,
+                sessionId: sessionId,
+                recipientEphemeralPublicKey: ephemeral.publicKey,
+                accountId: payload.accountId,
+                deviceId: payload.deviceId,
+                password: payload.password,
+                identityKeyPair: payload.identityKeyPair
+              )
+        else {
+            throw SetupError(step: "Verify provisioning signature", underlying: LinkingError.unauthenticated)
+        }
+
+        // Install the shared account identity BEFORE opening storage/service, so
+        // the Keychain never auto-generates a fresh identity for this device.
+        do {
+            try keychain.installProvisionedIdentity(payload.identityKeyPair)
+        } catch {
+            throw SetupError(step: "Install account identity", underlying: error)
+        }
+
         let credentials = RelayCredentials(
-            accountId: claim.accountId,
-            deviceId: claim.deviceId,
-            password: claim.password
+            accountId: payload.accountId,
+            deviceId: payload.deviceId,
+            password: payload.password
         )
         let service: MessagingService
         do {
-            service = try await makeService(credentials: credentials, serverURL: payload.serverURL, username: claim.username ?? payload.username)
+            service = try await makeService(credentials: credentials, serverURL: RelayConfig.serverURL, username: payload.username)
         } catch {
             throw SetupError(step: "Open local storage", underlying: error)
         }
         let saved = SavedAccount(
             accountId: credentials.accountId,
             deviceId: credentials.deviceId,
-            password: claim.password,
-            serverURL: payload.serverURL,
-            username: claim.username ?? payload.username,
+            password: credentials.password,
+            serverURL: RelayConfig.serverURL,
+            username: payload.username,
             email: nil,
             supabaseUserId: nil
         )
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        // This device received the account's shared identity, so its safety
+        // numbers are verifiable — suppress the re-link nudge for it.
+        UserDefaults.standard.set(true, forKey: Self.identityProvisionedKey)
         if !payload.peers.isEmpty {
-            service.importConversationStubs(payload.peers)
+            service.importConversationStubs(payload.peers.map { (account: $0.account, username: $0.username) })
         }
-        if let historyId = payload.historyAttachmentId,
+        if let historyId = payload.historyId,
            let historyKey = payload.historyKey,
            let historyDigest = payload.historyDigest {
             await service.importHistoryBlob(attachmentId: historyId, key: historyKey, digest: historyDigest)
         }
         service.start()
+        // Transparency on the new device too: confirm the link in its Relay chat.
+        service.postRelayNotice("This device was just linked to your Relay account.")
         phase = .ready(service)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()

@@ -142,16 +142,8 @@ struct OnboardingView: View {
             Text(registrationError ?? "")
         }
         .sheet(isPresented: $showingLinkScanner) {
-            ScanLinkCodeView { payload in
-                showingLinkScanner = false
-                Task {
-                    do {
-                        try await model.bootAsLinkedDevice(payload: payload)
-                    } catch {
-                        registrationError = "Device linking failed: \(error.localizedDescription)"
-                    }
-                }
-            }
+            LinkNewDeviceView()
+                .environment(model)
         }
     }
 
@@ -299,12 +291,7 @@ private struct WelcomeView: View {
                 }
 
                 if let oauthError {
-                    Label(oauthError, systemImage: "xmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(Color.red.opacity(0.9))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.red.opacity(0.12), in: .rect(cornerRadius: 10, style: .continuous))
+                    InlineErrorBanner(oauthError)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
@@ -373,7 +360,7 @@ private struct WelcomeView: View {
         let challenge = codeChallenge(from: verifier)
         pendingCodeVerifier = verifier
 
-        let redirect = "com.morgandaly.RelayMessenger://auth-callback"
+        let redirect = "app.relaymsg://auth-callback"
         guard let encodedRedirect = redirect.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
               let authURL = URL(string: "\(SupabaseConfig.projectURL)/auth/v1/authorize?provider=google&redirect_to=\(encodedRedirect)&code_challenge=\(challenge)&code_challenge_method=s256")
         else { return }
@@ -383,7 +370,7 @@ private struct WelcomeView: View {
 
         let ws = ASWebAuthenticationSession(
             url: authURL,
-            callbackURLScheme: "com.morgandaly.RelayMessenger"
+            callbackURLScheme: "app.relaymsg"
         ) { callbackURL, error in
             googleWebSession = nil
             if let error {
@@ -532,12 +519,7 @@ private struct AuthView: View {
                 }
 
                 if let errorMessage {
-                    Label(errorMessage, systemImage: "xmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(Color.red.opacity(0.9))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.red.opacity(0.12), in: .rect(cornerRadius: 10, style: .continuous))
+                    InlineErrorBanner(errorMessage)
                         .padding(.horizontal, 24)
                         .padding(.top, 12)
                 }
@@ -679,12 +661,7 @@ private struct RecoveryView: View {
                 .padding(.horizontal, 24)
 
                 if let errorMessage {
-                    Label(errorMessage, systemImage: "xmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(Color.red.opacity(0.9))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.red.opacity(0.12), in: .rect(cornerRadius: 10, style: .continuous))
+                    InlineErrorBanner(errorMessage)
                         .padding(.horizontal, 24)
                         .padding(.top, 12)
                 }
@@ -878,12 +855,7 @@ private struct SetupView: View {
                 .padding(.top, 8)
 
             if let errorMessage {
-                Label(errorMessage, systemImage: "xmark.circle.fill")
-                    .font(.footnote)
-                    .foregroundStyle(Color.red.opacity(0.9))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.red.opacity(0.12), in: .rect(cornerRadius: 10, style: .continuous))
+                InlineErrorBanner(errorMessage)
                     .padding(.horizontal, 28)
                     .padding(.top, 12)
             }

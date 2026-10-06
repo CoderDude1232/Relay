@@ -23,6 +23,16 @@ import UIKit
 import UserNotifications
 import os
 
+/// A labelled profile link (e.g. "Website" → https://…), edited locally and
+/// distributed E2EE inside ProfileUpdate. Persisted as JSON (id is not encoded).
+/// `nonisolated` so Codable synthesis stays off the app's MainActor default.
+nonisolated struct ProfileLink: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var label: String = ""
+    var url: String = ""
+    enum CodingKeys: String, CodingKey { case label, url }
+}
+
 enum MessagingError: LocalizedError {
     case attachmentTooLarge
 
@@ -179,7 +189,8 @@ final class MessagingService {
             ownAccountId: credentials.accountId,
             sealedSenderTrustRoot: RelayConfig.sealedSenderTrustRoot
         )
-        self.api = RelayAPIClient(baseURL: serverURL, credentials: credentials, session: session)
+        self.api = RelayAPIClient(baseURL: serverURL, credentials: credentials, session: session,
+                                  signer: DeviceAuthSigner(keychain: keychain))
         self.allocator = KVPreKeyIdAllocator(database: storage.database)
         loadMuteExpiries()
         loadBlockedAccounts()
@@ -433,6 +444,7 @@ final class MessagingService {
                     }
                     await rotateMailboxIfNeeded()
                     await ensureNoteToSelf()
+                    ensureRelayAccount()
                 case .envelope(let envelope):
                     await handleEnvelope(envelope)
                 case .nukeCommand(let nuke):
@@ -564,9 +576,67 @@ final class MessagingService {
             if let callInfo = result.callInfo {
                 await onCallMessage?(callInfo)
             }
+            if let shot = result.screenshotAlert {
+                let name = displayName(forAccount: shot.senderAccount)
+                insertSystemLine("\(name) took a screenshot", conversationId: shot.conversationId)
+            }
+            if let upd = result.screenSecurityUpdate {
+                try? storage.messages.setConversationPeerScreenSecurity(upd.conversationId, enabled: upd.enabled)
+                refreshConversations()
+            }
         } catch {
             log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
+            handlePossiblePreKeyDesync(error)
         }
+    }
+
+    /// A `PreKeySignalMessage` that references a one-time (or signed/Kyber)
+    /// prekey the local store no longer holds means the relay is advertising a
+    /// bundle we can't honour — the pool is desynced (typically an app reinstall
+    /// that wiped local keys while the relay kept the old publication). The
+    /// envelope itself is unrecoverable (already acked+dropped), but we heal the
+    /// published pool so future sessions succeed instead of silently failing.
+    private var didHealPreKeyPoolThisLaunch = false
+    private static let preKeyDesyncCountKey = "prekey-desync-drop-count"
+
+    private func handlePossiblePreKeyDesync(_ error: Error) {
+        guard case StorageError.recordNotFound(let what) = error,
+              what.contains("prekey") else { return }
+        // Count it for diagnostics regardless of whether we heal this launch.
+        incrementPreKeyDesyncCount()
+        log.error("prekey pool desync detected (\(what, privacy: .public)); scheduling replace-publish")
+        guard !didHealPreKeyPoolThisLaunch else { return }
+        didHealPreKeyPoolThisLaunch = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await maintainer.replacePublishedPool(api: api, engine: engine, allocator: allocator)
+                log.info("prekey pool replace-publish completed after desync")
+            } catch {
+                // Let a later desync retry (next launch) if this attempt failed.
+                self.didHealPreKeyPoolThisLaunch = false
+                log.error("prekey pool replace-publish failed: \(PrivacyRedactor.error(error))")
+            }
+        }
+    }
+
+    private func incrementPreKeyDesyncCount() {
+        let current = preKeyDesyncDropCount
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+            [.text(Self.preKeyDesyncCountKey), .blob(Data("\(current + 1)".utf8))]
+        )
+    }
+
+    /// Number of envelopes dropped due to a prekey-pool desync (0 = none seen).
+    /// Surfaced quietly in Settings diagnostics only when non-zero.
+    var preKeyDesyncDropCount: Int {
+        guard let data = try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(Self.preKeyDesyncCountKey)]
+        ).first?.first?.data, let s = String(data: data, encoding: .utf8), let n = Int(s) else {
+            return 0
+        }
+        return n
     }
 
     // MARK: - Blinded discovery
@@ -574,11 +644,27 @@ final class MessagingService {
     /// Resolves a username to its account id without revealing the username to the
     /// relay: blind → server OPRF eval → unblind → token → resolve. Throws
     /// `RelayAPIError.http(404,…)` when no such user exists.
+    /// Blinded discovery is unavailable on the server (OPRF key not configured).
+    /// We deliberately do NOT fall back to the plaintext `by-username` lookup —
+    /// that would leak the looked-up username to the relay, silently downgrading
+    /// the privacy guarantee. Surface a clear error instead.
+    enum DiscoveryError: LocalizedError {
+        case unavailable
+        var errorDescription: String? {
+            "Private contact discovery isn’t available on this server right now. Please try again later."
+        }
+    }
+
     func resolveAccount(username: String) async throws -> String {
         guard let blinded = BlindedDiscovery.blind(username) else {
             throw RelayAPIError.malformedResponse
         }
-        let evaluated = try await api.directoryEvaluate(blinded: [blinded.element])
+        let evaluated: [Data]
+        do {
+            evaluated = try await api.directoryEvaluate(blinded: [blinded.element])
+        } catch RelayAPIError.http(status: 503, _) {
+            throw DiscoveryError.unavailable
+        }
         guard let ev = evaluated.first,
               let token = BlindedDiscovery.token(for: blinded, evaluated: ev) else {
             throw RelayAPIError.malformedResponse
@@ -610,7 +696,12 @@ final class MessagingService {
             let end = min(start + chunkSize, blindeds.count)
             let chunkBlinds = Array(blindeds[start..<end])
             let chunkEmails = Array(emailForBlind[start..<end])
-            let evaluated = try await api.directoryEvaluate(blinded: chunkBlinds.map { $0.element })
+            let evaluated: [Data]
+            do {
+                evaluated = try await api.directoryEvaluate(blinded: chunkBlinds.map { $0.element })
+            } catch RelayAPIError.http(status: 503, _) {
+                throw DiscoveryError.unavailable
+            }
             guard evaluated.count == chunkBlinds.count else { throw RelayAPIError.malformedResponse }
             var tokenToEmail: [Data: String] = [:]
             var tokens: [Data] = []
@@ -841,15 +932,35 @@ final class MessagingService {
     /// are sent to yourself via the server so they go through the normal E2EE path.
     var noteToSelfAccount: String { credentials.accountId }
 
+    /// The reserved peer id + username for the official, read-only "Relay"
+    /// system chat that surfaces account notices (device linked, etc.). The
+    /// `relay` username is reserved server-side so no user can impersonate it.
+    static let relayOfficialAccount = "relay.official"
+    static let relayOfficialUsername = "relay"
+    /// Instance accessor mirroring `noteToSelfAccount`, for views.
+    var relayOfficialAccount: String { Self.relayOfficialAccount }
+
     /// The stored group backing a conversation (nil for 1:1), for the UI.
     func group(for conversationId: String) -> StoredGroup? {
         try? groupForConversation(conversationId)
+    }
+
+    /// Groups shared with a peer — computed locally from stored rosters, shown
+    /// on their contact card. Returns (conversationId, group name).
+    func mutualGroups(with account: String) -> [(id: String, name: String)] {
+        conversations.compactMap { conv in
+            guard conv.isGroup,
+                  let g = group(for: conv.id),
+                  g.members.contains(account) else { return nil }
+            return (conv.id, g.name)
+        }
     }
 
     /// A human name for an account, in precedence order: "You" for self, a
     /// user-set nickname, the known username, else a short account prefix.
     /// Result is cached in memory to avoid DB reads during render.
     func displayName(forAccount account: String) -> String {
+        if account == Self.relayOfficialAccount { return "Relay" }
         if account == credentials.accountId { return "You" }
         if let cached = nameCache[account] { return cached }
         let name = resolveDisplayName(forAccount: account)
@@ -940,6 +1051,48 @@ final class MessagingService {
         bumpMyProfileRevision()
     }
 
+    /// This user's short status line and longer bio, distributed to peers over
+    /// the E2EE profile channel. Stored locally in UserDefaults.
+    var myStatus: String { UserDefaults.standard.string(forKey: "my.profile.status") ?? "" }
+    var myBio: String { UserDefaults.standard.string(forKey: "my.profile.bio") ?? "" }
+
+    /// This user's labelled profile links, distributed E2EE inside ProfileUpdate.
+    var myLinks: [ProfileLink] {
+        Self.decodeLinks(UserDefaults.standard.string(forKey: "my.profile.links"))
+    }
+
+    /// Persists status/bio/links and, if any changed, bumps the profile revision
+    /// so the update is redistributed to every peer.
+    func setMyProfileText(status: String, bio: String, links: [ProfileLink]) {
+        let s = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = links
+            .map { ProfileLink(label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
+                               url: $0.url.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.label.isEmpty || !$0.url.isEmpty }
+        let newLinksJSON = Self.encodeLinks(cleaned)
+        let oldLinksJSON = UserDefaults.standard.string(forKey: "my.profile.links") ?? ""
+        guard s != myStatus || b != myBio || newLinksJSON != oldLinksJSON else { return }
+        UserDefaults.standard.set(s, forKey: "my.profile.status")
+        UserDefaults.standard.set(b, forKey: "my.profile.bio")
+        UserDefaults.standard.set(newLinksJSON, forKey: "my.profile.links")
+        bumpMyProfileRevision()
+    }
+
+    /// JSON <-> [ProfileLink] helpers (links persist as a JSON string both in
+    /// UserDefaults for self and in the profiles table for peers).
+    static func decodeLinks(_ json: String?) -> [ProfileLink] {
+        guard let json, let data = json.data(using: .utf8),
+              let links = try? JSONDecoder().decode([ProfileLink].self, from: data) else { return [] }
+        return links
+    }
+
+    static func encodeLinks(_ links: [ProfileLink]) -> String {
+        guard !links.isEmpty, let data = try? JSONEncoder().encode(links),
+              let s = String(data: data, encoding: .utf8) else { return "" }
+        return s
+    }
+
     // MARK: - Profile distribution (E2EE)
 
     /// My profile "clock", bumped whenever the name/avatar changes. A peer
@@ -987,6 +1140,14 @@ final class MessagingService {
             var content = Relay_Content_Content()
             content.profile.displayName = myDisplayName ?? ""
             content.profile.timestamp = rev
+            content.profile.status = myStatus
+            content.profile.bio = myBio
+            content.profile.links = myLinks.map {
+                var l = Relay_Content_ProfileLink()
+                l.label = $0.label
+                l.url = $0.url
+                return l
+            }
             if let pointer = try await currentAvatarPointer() {
                 content.profile.avatar = pointer
             }
@@ -1053,10 +1214,15 @@ final class MessagingService {
         // Keeping the old revision means the next profile delivery retries the download.
         let revisionToStore = avatarReady ? profile.revision : (existing?.revision ?? 0)
         do {
+            let linksJSON = Self.encodeLinks(
+                profile.links.map { ProfileLink(label: $0.label, url: $0.url) })
             try storage.messages.upsertProfile(
                 account: profile.account,
                 displayName: profile.displayName.isEmpty ? nil : profile.displayName,
-                avatarId: avatarId, avatarData: avatarData, revision: revisionToStore
+                avatarId: avatarId, avatarData: avatarData, revision: revisionToStore,
+                status: profile.status.isEmpty ? nil : profile.status,
+                bio: profile.bio.isEmpty ? nil : profile.bio,
+                linksJSON: linksJSON.isEmpty ? nil : linksJSON
             )
         } catch {
             log.error("applyPeerProfile: upsertProfile failed: \(PrivacyRedactor.error(error))")
@@ -1070,6 +1236,25 @@ final class MessagingService {
 
     /// A peer's avatar image bytes from their profile. Cached in memory to avoid
     /// loading large blobs from the DB on every render pass.
+    /// A peer's self-set status line (from their E2EE profile). Empty if none.
+    func peerStatus(forAccount account: String) -> String {
+        if account == credentials.accountId { return myStatus }
+        return ((try? storage.messages.peerProfile(account: account)) ?? nil)?.status ?? ""
+    }
+
+    /// A peer's self-set bio (from their E2EE profile). Empty if none.
+    func peerBio(forAccount account: String) -> String {
+        if account == credentials.accountId { return myBio }
+        return ((try? storage.messages.peerProfile(account: account)) ?? nil)?.bio ?? ""
+    }
+
+    /// A peer's self-set profile links (from their E2EE profile). Empty if none.
+    func peerLinks(forAccount account: String) -> [ProfileLink] {
+        if account == credentials.accountId { return myLinks }
+        let json = ((try? storage.messages.peerProfile(account: account)) ?? nil)?.linksJSON
+        return Self.decodeLinks(json)
+    }
+
     func peerAvatarData(forAccount account: String) -> Data? {
         // Own account avatar lives in the local KV store, not the peer profiles table.
         if account == credentials.accountId { return myAvatarData }
@@ -1287,6 +1472,11 @@ final class MessagingService {
     /// Inserts a centered "system" line (e.g. "Alice added Bob") into a group.
     private func insertSystemLine(_ text: String, inGroup groupId: String) {
         guard let conversationId = (try? storage.messages.groupConversationId(groupId: groupId)) ?? nil else { return }
+        insertSystemLine(text, conversationId: conversationId)
+    }
+
+    /// Inserts a centered "system" line into any conversation (DM or group).
+    private func insertSystemLine(_ text: String, conversationId: String) {
         _ = try? storage.messages.insertMessage(
             id: UUID().uuidString, conversationId: conversationId, isOutgoing: false,
             body: text, timestamp: Int64(Date().timeIntervalSince1970 * 1000),
@@ -1464,41 +1654,107 @@ final class MessagingService {
 
     // MARK: - Device linking
 
-    /// Provisions a new linked device: registers it on the server, then returns
-    /// a JSON payload for embedding in a QR code for the new device to scan.
-    func provisionLinkedDevice(syncConversations: Bool, syncHistory: Bool = false) async throws -> String {
-        let authorization = try await deviceMutationAuthorization(action: "link", targetDeviceId: 0, password: "")
-        let invitation = try await api.createDeviceLinkInvitation(authorization: authorization)
-        var payload: [String: Any] = [
-            "linkToken": invitation.linkToken,
-            "verificationCode": invitation.verificationCode,
-            "expiresAt": invitation.expiresAt,
-            "serverURL": serverURL.absoluteString
-        ]
-        if let u = username { payload["username"] = u }
-        let convList = conversations.filter { $0.groupId == nil && !$0.peerAccount.isEmpty }
-        if syncConversations {
-            let stubs: [[String: String]] = convList
-                .prefix(50)
-                .map { conv in
-                    var d = ["account": conv.peerAccount]
-                    if let u = conv.peerUsername { d["username"] = u }
-                    return d
-                }
-            if !stubs.isEmpty { payload["peers"] = stubs }
-        }
-        if syncHistory {
-            // Package the last 50 messages per conversation (capped at 500 total),
-            // encrypt with a fresh AES-GCM key, upload to relay, and embed the
-            // blob id + key + digest so the linked device can download and import them.
-            if let (attachmentId, key, digest) = try? await buildAndUploadHistory(conversations: convList) {
-                payload["historyId"] = attachmentId
-                payload["historyKey"] = key.base64EncodedString()
-                payload["historyDigest"] = digest.base64EncodedString()
+    enum LinkingError: LocalizedError {
+        case serverMismatch
+        case notAuthorized
+        var errorDescription: String? {
+            switch self {
+            case .serverMismatch:
+                return "That device is connected to a different Relay server. Point both devices at the same server and try again."
+            case .notAuthorized:
+                return "Linking was cancelled — biometric confirmation is required to add a device."
             }
         }
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// Primary side of reversed linking: provisions a device that displayed a
+    /// linking QR. Creates the device's server-side row, then seals the account's
+    /// shared identity key + the new device's credentials to its ephemeral public
+    /// key and deposits the ciphertext on the relay for it to fetch. The identity
+    /// private key is encrypted end-to-end here and is never logged.
+    func provisionScannedDevice(
+        sessionId: String,
+        ephemeralPublicKey: Data,
+        newDeviceServerURL: String,
+        deviceName: String?,
+        syncConversations: Bool,
+        syncHistory: Bool
+    ) async throws {
+        // The new device polls the relay it created the session on; it must be
+        // the same relay we're authenticated against, or the blob never arrives.
+        guard newDeviceServerURL == serverURL.absoluteString else {
+            throw LinkingError.serverMismatch
+        }
+        // User-presence gate: adding a device shares this account's identity, so
+        // require an explicit biometric confirmation before sealing anything.
+        guard await BiometricGate.authenticate(reason: "Confirm linking a new device to your Relay account.") else {
+            throw LinkingError.notAuthorized
+        }
+        let password = Self.newDevicePassword()
+        let authorization = try await deviceMutationAuthorization(action: "link", targetDeviceId: 0, password: password)
+        let deviceId = try await api.linkDevice(password: password, deviceName: deviceName, authorization: authorization)
+
+        // The account identity key pair — shared with the new device so every
+        // device of the account presents the same identity.
+        let identityData = try keychain.identityKeyPair().serialize()
+
+        var peers: [LinkProvisioningPayload.PeerStub] = []
+        let convList = conversations.filter { $0.groupId == nil && !$0.peerAccount.isEmpty }
+        if syncConversations {
+            peers = convList.prefix(50).map { .init(account: $0.peerAccount, username: $0.peerUsername) }
+        }
+        var historyId: String?
+        var historyKey: Data?
+        var historyDigest: Data?
+        if syncHistory {
+            if let (id, key, digest) = try? await buildAndUploadHistory(conversations: convList) {
+                historyId = id
+                historyKey = key
+                historyDigest = digest
+            }
+        }
+
+        // Authenticate the payload: sign a transcript binding this session, the
+        // new device's ephemeral key, and the issued credentials with the
+        // account identity key, so the new device can prove it came from a
+        // legitimate primary (not a replayed/substituted blob).
+        let signature = try ProvisioningSignature.sign(
+            sessionId: sessionId,
+            recipientEphemeralPublicKey: ephemeralPublicKey,
+            accountId: credentials.accountId,
+            deviceId: deviceId,
+            password: password,
+            identityKeyPair: identityData
+        )
+        let payload = LinkProvisioningPayload(
+            identityKeyPair: identityData,
+            accountId: credentials.accountId,
+            username: username,
+            deviceId: deviceId,
+            password: password,
+            serverURL: serverURL.absoluteString,
+            peers: peers,
+            historyId: historyId,
+            historyKey: historyKey,
+            historyDigest: historyDigest,
+            signature: signature
+        )
+        let plaintext = try JSONEncoder().encode(payload)
+        let blob = try ProvisioningCipher.seal(plaintext, toEphemeralPublicKey: ephemeralPublicKey)
+        try await api.storeProvisioningBlob(sessionId: sessionId, blob: blob)
+
+        // Transparency: record the new device in the official Relay chat so a
+        // silent addition can't go unnoticed.
+        postRelayNotice("A new device (device \(deviceId)) was linked to your account. If this wasn't you, unlink it in Settings → Linked Devices and change your recovery details.")
+    }
+
+    /// A fresh random device password (32 bytes, URL-safe base64). Bound into the
+    /// device-mutation signature and delivered to the new device inside the
+    /// encrypted provisioning payload.
+    static func newDevicePassword() -> String {
+        var b = Data(count: 32)
+        b.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        return b.base64URLEncodedString()
     }
 
     private func buildAndUploadHistory(conversations convList: [Conversation]) async throws -> (String, Data, Data)? {
@@ -1769,6 +2025,7 @@ final class MessagingService {
     func removeLinkedDevice(deviceId: UInt32) async throws {
         let authorization = try await deviceMutationAuthorization(action: "remove", targetDeviceId: deviceId, password: "")
         try await api.removeDevice(deviceId: deviceId, authorization: authorization)
+        postRelayNotice("Device \(deviceId) was unlinked from your account.")
     }
 
     private func deviceMutationAuthorization(action: String, targetDeviceId: UInt32, password: String) async throws -> RelayKit.DeviceMutationAuthorization {
@@ -2135,6 +2392,13 @@ final class MessagingService {
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
             } catch { log.warning("group announce-only update failed: \(PrivacyRedactor.error(error))") }
             return
+        case .setScreenSecurity:
+            do {
+                try storage.messages.setGroupScreenSecurity(id: info.groupId, enabled: info.screenSecurity)
+                refreshConversations()
+                if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
+            } catch { log.warning("group screen-security update failed: \(PrivacyRedactor.error(error))") }
+            return
         default:
             break
         }
@@ -2212,6 +2476,9 @@ final class MessagingService {
         case .setAnnounceOnly: return info.announceOnly
             ? "\(actor) turned on announce-only mode"
             : "\(actor) turned off announce-only mode"
+        case .setScreenSecurity: return info.screenSecurity
+            ? "\(actor) turned on screenshot protection"
+            : "\(actor) turned off screenshot protection"
         case .unknown: return nil
         }
     }
@@ -2971,9 +3238,10 @@ final class MessagingService {
     /// attested by a relay-minted certificate). Receiving handles both formats
     /// regardless of this flag, so it's safe to toggle at any time.
     var sealedSenderEnabled: Bool {
-        // Default ON: hide the sender from the relay unless the user opts out.
-        get { UserDefaults.standard.object(forKey: "relay.sealedSender") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "relay.sealedSender") }
+        // Always ON: sealed sender is mandatory — the relay never learns who a
+        // message is from. Not user-configurable (no UI toggle).
+        get { true }
+        set { }
     }
 
     /// Opt-in ciphertext-in-push. Off by default: pushes are a content-free wake
@@ -3064,21 +3332,100 @@ final class MessagingService {
         _ conversationId: String,
         mediaRequiresBiometric: Bool,
         requireBiometricChat: Bool,
-        hidePreviews: Bool,
-        screenSecurity: Bool
+        hidePreviews: Bool
     ) {
         do {
             try storage.messages.setConversationPrivacy(
                 conversationId,
                 mediaRequiresBiometric: mediaRequiresBiometric,
                 requireBiometricChat: requireBiometricChat,
-                hidePreviews: hidePreviews,
-                screenSecurity: screenSecurity
+                hidePreviews: hidePreviews
             )
             refreshConversations()
         } catch {
             log.error("set conversation privacy failed: \(PrivacyRedactor.error(error))")
         }
+    }
+
+    // MARK: - Screenshot protection
+
+    /// Whether chat content should be hidden from screenshots/recordings for a
+    /// conversation. Groups use the admin-set flag; DMs use the OR of both
+    /// sides' preferences (both must disable it to turn it off).
+    func effectiveScreenHidden(_ conversationId: String) -> Bool {
+        if let group = group(for: conversationId) { return group.screenSecurity }
+        guard let conv = conversations.first(where: { $0.id == conversationId }) else { return true }
+        // Nothing to protect in your own notes or the official Relay chat.
+        if conv.peerAccount == noteToSelfAccount || conv.peerAccount == relayOfficialAccount { return false }
+        return conv.screenSecurity || conv.peerScreenSecurity
+    }
+
+    /// The local user's own screenshot-hide preference for a DM.
+    func myScreenSecurityPref(_ conversationId: String) -> Bool {
+        conversations.first { $0.id == conversationId }?.screenSecurity ?? true
+    }
+
+    /// Sets the local user's DM screenshot-hide preference and syncs it to the
+    /// peer so the effective (OR) state stays consistent on both sides.
+    func setScreenSecurity(_ enabled: Bool, conversationId: String) {
+        guard let conv = conversations.first(where: { $0.id == conversationId }), !conv.isGroup else { return }
+        try? storage.messages.setConversationScreenSecurity(conversationId, enabled: enabled)
+        refreshConversations()
+        let peer = conv.peerAccount
+        guard !peer.isEmpty else { return }
+        Task {
+            var content = Relay_Content_Content()
+            content.screenSecurityUpdate.enabled = enabled
+            content.screenSecurityUpdate.timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+            content.senderAccountID = credentials.accountId
+            content.senderDeviceID = credentials.deviceId
+            if let data = try? content.serializedData() {
+                try? await sendContent(data, toPeer: peer, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
+            }
+        }
+    }
+
+    /// Admin-only: sets the group-wide screenshot-hide flag and distributes it.
+    func setGroupScreenSecurity(_ enabled: Bool, conversationId: String) async throws {
+        guard let group = group(for: conversationId) else { throw GroupError.notFound }
+        try requireGroupAdmin(group)
+        try storage.messages.setGroupScreenSecurity(id: group.id, enabled: enabled)
+        guard let grp = try? storage.messages.group(id: group.id) else { return }
+        var update = Relay_Content_GroupUpdate()
+        update.action = .setScreenSecurity
+        update.screenSecurity = enabled
+        await sendGroupUpdateCustom(update, group: grp)
+        let line = enabled ? "You turned on screenshot protection" : "You turned off screenshot protection"
+        insertSystemLine(line, inGroup: group.id)
+        refreshConversations()
+    }
+
+    /// Sends a screenshot alert to the other party (DM) or all members (group),
+    /// regardless of the hide setting, and drops a local confirmation line.
+    func sendScreenshotAlert(conversationId: String) {
+        guard let conv = conversations.first(where: { $0.id == conversationId }) else { return }
+        if conv.peerAccount == noteToSelfAccount || conv.peerAccount == relayOfficialAccount { return } // no one to notify
+        let ts = Int64(Date().timeIntervalSince1970 * 1000)
+        var content = Relay_Content_Content()
+        content.screenshot.timestamp = ts
+        content.senderAccountID = credentials.accountId
+        content.senderDeviceID = credentials.deviceId
+
+        let recipients: [String]
+        if let group = group(for: conversationId) {
+            content.groupID = group.id
+            recipients = group.members.filter { $0 != credentials.accountId }
+        } else {
+            recipients = conv.peerAccount.isEmpty ? [] : [conv.peerAccount]
+        }
+        guard let data = try? content.serializedData() else { return }
+        Task {
+            for peer in recipients {
+                try? await sendContent(data, toPeer: peer, clientTimestamp: ts)
+            }
+        }
+        // Local confirmation shown to the screenshotter too.
+        insertSystemLine("You took a screenshot", conversationId: conversationId)
     }
 
     func setNotificationSound(_ conversationId: String, sound: String?) {
@@ -3190,6 +3537,55 @@ final class MessagingService {
     func ensureNoteToSelf() async -> String {
         guard let me = username else { return "" }
         return (try? await startConversation(username: me)) ?? ""
+    }
+
+    // MARK: - Official Relay account
+
+    /// Ensures the official Relay system conversation exists (local, pinned,
+    /// read-only) and returns its id. Posts a one-time welcome on first creation.
+    @discardableResult
+    func ensureRelayAccount() -> String {
+        guard let id = try? storage.messages.conversation(
+            withPeer: relayOfficialAccount, username: Self.relayOfficialUsername
+        ) else { return "" }
+        // The Relay chat should only ever contain Relay notices — strip any
+        // stray system lines (e.g. "You took a screenshot" alerts inserted
+        // before this chat was exempted from screenshot protection).
+        if let existing = try? allMessages(in: id) {
+            for m in existing where m.senderAccount == Self.systemSender {
+                try? storage.messages.deleteMessage(id: m.id)
+            }
+        }
+        if !UserDefaults.standard.bool(forKey: "relay.official.welcomed") {
+            UserDefaults.standard.set(true, forKey: "relay.official.welcomed")
+            insertRelayMessage(
+                "Welcome to Relay 👋\n\nI'll let you know about important account activity here — like when a new device is linked to your account. You can't reply to this chat.",
+                conversationId: id)
+        }
+        if let conv = conversations.first(where: { $0.id == id }), !conv.isPinned {
+            setConversationPinned(id, pinned: true)
+        }
+        refreshConversations()
+        refreshActiveMessages(ifShowing: id)
+        return id
+    }
+
+    /// Posts a notice from Relay into the official system chat (creating it if
+    /// needed). Renders as a normal incoming bubble; the chat stays read-only.
+    func postRelayNotice(_ text: String) {
+        let id = ensureRelayAccount()
+        guard !id.isEmpty else { return }
+        insertRelayMessage(text, conversationId: id)
+    }
+
+    private func insertRelayMessage(_ text: String, conversationId: String) {
+        _ = try? storage.messages.insertMessage(
+            id: UUID().uuidString, conversationId: conversationId, isOutgoing: false,
+            body: text, timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+            status: .received, senderAccount: relayOfficialAccount
+        )
+        refreshConversations()
+        refreshActiveMessages(ifShowing: conversationId)
     }
 
     func searchMessages(query: String) -> [MessageStore.SearchResult] {
@@ -3368,8 +3764,11 @@ final class MessagingService {
     }
 
     private func currentIdentityData(forPeer peer: String) throws -> Data? {
+        // Identities are now keyed by (address, device_id); the account-level
+        // safety-number acknowledgement tracks the canonical (lowest device id)
+        // identity, which under shared identity is the same across devices.
         try storage.database.query(
-            "SELECT identity_key FROM remote_identities WHERE address = ?",
+            "SELECT identity_key FROM remote_identities WHERE address = ? ORDER BY device_id LIMIT 1",
             [.text(peer)]
         ).first?.first?.data
     }

@@ -73,6 +73,7 @@ struct ChatView: View {
 
     private var isGroup: Bool { conversation?.isGroup == true }
     private var isNoteToSelf: Bool { conversation?.peerAccount == service.noteToSelfAccount }
+    private var isRelayOfficial: Bool { conversation?.peerAccount == service.relayOfficialAccount }
     private var callControlsDisabled: Bool {
         if case .idle = callManager.state { return false }
         return true
@@ -80,6 +81,7 @@ struct ChatView: View {
     @State private var pinnedMessage: StoredMessage?
     @State private var showingStarred = false
     @State private var mentionQuery: String? = nil
+    @AppStorage("privacy.incognitoKeyboard") private var incognitoKeyboard = false
     @State private var lastTypingSentAt: Date?
     @State private var isAtBottom = true
     @State private var scrollViewProxy: ScrollViewProxy?
@@ -285,6 +287,10 @@ struct ChatView: View {
 
     var body: some View {
         rawScrollView
+        .hiddenInScreenshots(service.effectiveScreenHidden(conversationId))
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
+            service.sendScreenshotAlert(conversationId: conversationId)
+        }
         .background { appearance.background.ignoresSafeArea(.all) }
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme == "https" || url.scheme == "http" else { return .systemAction }
@@ -311,10 +317,16 @@ struct ChatView: View {
             }
             ToolbarItem(placement: .principal) {
                 Button {
-                    if isGroup { showingGroupInfo = true } else { showingContactCard = true }
+                    if isRelayOfficial { }
+                    else if isGroup { showingGroupInfo = true }
+                    else { showingContactCard = true }
                 } label: {
                     HStack(spacing: 8) {
-                        AvatarView(name: peerName, size: 34, imageData: isGroup ? service.group(for: conversationId)?.avatarData : peerAvatar)
+                        if isRelayOfficial {
+                            RelayOfficialAvatar(size: 34)
+                        } else {
+                            AvatarView(name: peerName, size: 34, imageData: isGroup ? service.group(for: conversationId)?.avatarData : peerAvatar)
+                        }
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 4) {
                                 if let symbol = verification?.state.titleSymbol {
@@ -324,8 +336,17 @@ struct ChatView: View {
                                 }
                                 Text(peerName)
                                     .font(.subheadline.weight(.semibold))
+                                if isRelayOfficial {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .foregroundStyle(.blue)
+                                        .font(.caption2)
+                                }
                             }
-                            if let connectionSubtitle {
+                            if isRelayOfficial {
+                                Text("Official account")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            } else if let connectionSubtitle {
                                 Text(connectionSubtitle)
                                     .font(.caption2)
                                     .foregroundStyle(service.connectionState == .connecting ? .orange : .secondary)
@@ -345,7 +366,7 @@ struct ChatView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 HStack(spacing: 12) {
-                    if !isGroup && !isNoteToSelf {
+                    if !isGroup && !isNoteToSelf && !isRelayOfficial {
                         Button {
                             if let account = conversation?.peerAccount {
                                 Task { await callManager.startCall(peerAccount: account, peerName: peerName) }
@@ -468,14 +489,8 @@ struct ChatView: View {
                                     .frame(width: 34, height: 34)
                                     .glassCompat(in: .circle)
                                 if let count = conversation?.unreadCount, count > 0 {
-                                    Text("\(count)")
-                                        .font(.caption2.weight(.bold))
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 5)
-                                        .padding(.vertical, 2)
-                                        .background(Color.accentColor, in: .capsule)
+                                    CountBadge(count: count)
                                         .offset(x: 6, y: -6)
-                                        .contentTransition(.numericText(countsDown: false))
                                 }
                             }
                         }
@@ -509,7 +524,14 @@ struct ChatView: View {
                     .padding(.bottom, 4)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                if isAnnounceOnlyBlocked {
+                if isRelayOfficial {
+                    Label("You can't reply to Relay", systemImage: "checkmark.seal.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(.ultraThinMaterial)
+                } else if isAnnounceOnlyBlocked {
                     Label("Only admins can send messages", systemImage: "megaphone.fill")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -1075,7 +1097,8 @@ struct ChatView: View {
                             placeholder: isNoteToSelf ? "Write a note…" : "Message \(peerName)…",
                             maxLines: Self.maxDraftLines,
                             context: composerContext,
-                            isFocused: $composerFocused
+                            isFocused: $composerFocused,
+                            incognito: incognitoKeyboard
                         )
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(minHeight: Self.composerControlHeight)
@@ -1541,6 +1564,7 @@ struct ChatPrivacySettingsView: View {
     @State private var hidePreviews: Bool
     @State private var disappearingSeconds: Int64
     @State private var notepadEnabled: Bool
+    @State private var screenSecurity: Bool
 
     init(service: MessagingService, conversation: Conversation) {
         self.service = service
@@ -1551,7 +1575,13 @@ struct ChatPrivacySettingsView: View {
         _hidePreviews = State(initialValue: conversation.hidePreviews)
         _disappearingSeconds = State(initialValue: conversation.disappearingSeconds)
         _notepadEnabled = State(initialValue: UserDefaults.standard.bool(forKey: "chat.notepad.\(conversation.id)"))
+        _screenSecurity = State(initialValue: conversation.isGroup
+            ? (service.group(for: conversation.id)?.screenSecurity ?? true)
+            : conversation.screenSecurity)
     }
+
+    private var isGroup: Bool { conversation.isGroup }
+    private var canEditGroupScreenSecurity: Bool { service.isAdmin(in: conversation.id) }
 
     var body: some View {
         Form {
@@ -1563,6 +1593,28 @@ struct ChatPrivacySettingsView: View {
             Section("Privacy") {
                 Toggle("Require Face ID for media", isOn: $mediaRequiresBiometric)
                 Toggle("Require Face ID to open chat", isOn: $requireBiometricChat)
+            }
+
+            Section {
+                if isGroup && !canEditGroupScreenSecurity {
+                    HStack {
+                        Text("Hide from screenshots")
+                        Spacer()
+                        Text(screenSecurity ? "On" : "Off").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Toggle("Hide from screenshots", isOn: $screenSecurity)
+                }
+            } header: {
+                Text("Screenshots")
+            } footer: {
+                if isGroup {
+                    Text(canEditGroupScreenSecurity
+                         ? "Blanks messages in screenshots and recordings for everyone. Only admins can change this. The other person is always alerted when a screenshot is taken."
+                         : "The group admin controls whether messages are hidden from screenshots. Everyone is always alerted when a screenshot is taken.")
+                } else {
+                    Text("Blanks messages in screenshots and recordings. Both people must turn this off to disable it. The other person is always alerted when you take a screenshot.")
+                }
             }
 
             Section("Disappearing Messages") {
@@ -1595,6 +1647,14 @@ struct ChatPrivacySettingsView: View {
         .onChange(of: notepadEnabled) { _, value in
             UserDefaults.standard.set(value, forKey: "chat.notepad.\(conversation.id)")
         }
+        .onChange(of: screenSecurity) { _, value in
+            if isGroup {
+                guard canEditGroupScreenSecurity else { return }
+                Task { try? await service.setGroupScreenSecurity(value, conversationId: conversation.id) }
+            } else {
+                service.setScreenSecurity(value, conversationId: conversation.id)
+            }
+        }
     }
 
     private func savePrivacy() {
@@ -1602,8 +1662,7 @@ struct ChatPrivacySettingsView: View {
             conversation.id,
             mediaRequiresBiometric: mediaRequiresBiometric,
             requireBiometricChat: requireBiometricChat,
-            hidePreviews: hidePreviews,
-            screenSecurity: true
+            hidePreviews: hidePreviews
         )
     }
 }
@@ -2033,7 +2092,7 @@ private struct MessageBubble: View {
     }
 
     private var cornerRadii: RectangleCornerRadii {
-        let radius: CGFloat = 20
+        let radius = DS.Radius.bubble
         return RectangleCornerRadii(
             topLeading: radius,
             bottomLeading: radius,
@@ -2887,7 +2946,7 @@ private struct TypingIndicatorView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
-            .background(.fill.secondary, in: .rect(cornerRadius: 18))
+            .background(.fill.secondary, in: .rect(cornerRadius: DS.Radius.bubble))
             Spacer(minLength: 56)
         }
         .task {

@@ -546,7 +546,7 @@ private struct SystemBroadcastPickerButton: UIViewRepresentable {
     func makeUIView(context: Context) -> RPSystemBroadcastPickerView {
         // Frame must be non-zero or the tap target is unreliable.
         let view = RPSystemBroadcastPickerView(frame: CGRect(x: 0, y: 0, width: 60, height: 60))
-        view.preferredExtension = "com.morgandaly.RelayMessenger.RelayBroadcastUpload"
+        view.preferredExtension = "app.relaymsg.RelayBroadcastUpload"
         view.showsMicrophoneButton = false
         view.backgroundColor = .clear
         return view

@@ -12,7 +12,7 @@ import WidgetKit
 struct RelayWidgetExtensionControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
-            kind: "com.morgandaly.RelayMessenger.RelayWidgetExtension",
+            kind: "app.relaymsg.RelayWidgetExtension",
             provider: Provider()
         ) { value in
             ControlWidgetToggle(

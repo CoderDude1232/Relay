@@ -141,6 +141,57 @@ struct Pill: View {
     }
 }
 
+/// The branded avatar for the official, read-only "Relay" system chat — an
+/// accent-gradient disc with the relay glyph. Distinct from user avatars.
+struct RelayOfficialAvatar: View {
+    var size: CGFloat = 54
+
+    var body: some View {
+        Circle()
+            .fill(Color.accentColor.gradient)
+            .frame(width: size, height: size)
+            .overlay {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: size * 0.42, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            .accessibilityLabel("Relay")
+    }
+}
+
+/// A compact inline error chip (icon + message on a soft red fill). Shared so
+/// error states read the same wherever they surface.
+struct InlineErrorBanner: View {
+    let message: String
+    init(_ message: String) { self.message = message }
+
+    var body: some View {
+        Label(message, systemImage: "xmark.circle.fill")
+            .font(.footnote)
+            .foregroundStyle(Color.red.opacity(0.9))
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.sm)
+            .background(Color.red.opacity(0.12), in: .rect(cornerRadius: DS.Radius.control, style: .continuous))
+    }
+}
+
+/// The small circular "edit" affordance overlaid on the bottom-trailing corner
+/// of an editable avatar. One look everywhere an avatar can be changed.
+struct AvatarEditBadge: View {
+    var systemImage: String = "camera.fill"
+    var diameter: CGFloat = 24
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: diameter * 0.5, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: diameter, height: diameter)
+            .background(Color.accentColor, in: .circle)
+            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+            .accessibilityHidden(true)
+    }
+}
+
 /// A grouped-list section header with consistent typography and casing.
 struct DSSectionHeader: View {
     let title: String

@@ -2,9 +2,12 @@
 //  LinkDeviceView.swift
 //  Relay
 //
-//  Two-sided linking flow:
-//  Primary device: generates credentials + shows QR code
-//  Linking device: scans QR → boots as the same account (via OnboardingView)
+//  Reversed (Signal-style) linking flow, so every device of an account shares
+//  one identity key:
+//  New device: shows a QR carrying its ephemeral key (via LinkNewDeviceView,
+//    surfaced from OnboardingView) and polls for the encrypted payload.
+//  Primary device: scans that QR (LinkDeviceView below), creates the device,
+//    and seals the shared identity + credentials to the new device's key.
 //
 //  Manage linked devices (list + revoke) lives in LinkedDevicesView,
 //  surfaced from SettingsView.
@@ -16,144 +19,230 @@ import RelayKit
 import SecureStorage
 import SwiftUI
 
-// MARK: - Link Device (primary side — show QR)
+// MARK: - Link Device (primary side — scan the new device's QR)
 
 struct LinkDeviceView: View {
     let service: MessagingService
 
     @Environment(\.dismiss) private var dismiss
-    @State private var qrPayload: String?
-    @State private var qrImage: UIImage?
-    @State private var verificationCode: String?
-    @State private var generating = false
-    @State private var errorMessage: String?
+
+    private enum Phase: Equatable {
+        case options          // choose sync toggles, then start scanning
+        case scanning
+        case provisioning
+        case done
+        case failed(String)
+    }
+
+    @State private var phase: Phase = .options
     @State private var syncConversations = true
     @State private var syncHistory = false
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                if generating {
-                    ProgressView("Generating link code…")
+            Group {
+                switch phase {
+                case .options:
+                    optionsView
+                case .scanning:
+                    scannerView
+                case .provisioning:
+                    ProgressView("Linking device…")
                         .padding(.top, 60)
-                } else if let qrImage {
-                    VStack(spacing: 16) {
-                        Text("Scan with your other device")
-                            .font(.headline)
-
-                        Image(uiImage: qrImage)
-                            .interpolation(.none)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 240, height: 240)
-                            .padding(12)
-                            .background(.white, in: .rect(cornerRadius: 16))
-                            .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
-
-                        if let verificationCode {
-                            Text(verificationCode)
-                                .font(.title2.monospacedDigit().weight(.semibold))
-                                .textSelection(.enabled)
-                        }
-
-                        Text("This code expires in 10 minutes or after it is used.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .done:
+                    ContentUnavailableView {
+                        Label("Device Linked", systemImage: "checkmark.circle.fill")
+                    } description: {
+                        Text("Your new device now shares this account's identity and is ready to use.")
                     }
-                } else {
-                    ContentUnavailableView(
-                        "Generate a Link Code",
-                        systemImage: "qrcode",
-                        description: Text("Tap Generate to create a one-time code for linking a new device.")
-                    )
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                        .font(.footnote)
-                }
-
-                Spacer()
-
-                VStack(spacing: 0) {
-                    Toggle(isOn: $syncConversations) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Sync conversation list")
-                                .font(.subheadline)
-                            Text("Linked device will see your existing chats.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding()
-                    .disabled(qrImage != nil)
-
-                    Divider()
-                        .padding(.leading)
-
-                    Toggle(isOn: $syncHistory) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Sync message history")
-                                .font(.subheadline)
-                            Text("Transfers up to 50 recent messages per chat, end-to-end encrypted.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding()
-                    .disabled(qrImage != nil || !syncConversations)
-                    .onChange(of: syncConversations) { _, on in
-                        if !on { syncHistory = false }
+                case .failed(let message):
+                    ContentUnavailableView {
+                        Label("Linking Failed", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(message)
+                    } actions: {
+                        Button("Try Again") { phase = .options }
+                            .buttonStyle(.borderedProminent)
                     }
                 }
-                .background(.ultraThinMaterial, in: .rect(cornerRadius: 14))
-                .padding(.horizontal)
-
-                Button {
-                    generate()
-                } label: {
-                    Label("Generate Link Code", systemImage: "qrcode")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .padding(.horizontal)
-                .disabled(generating)
             }
-            .padding(.top, 24)
             .navigationTitle("Link New Device")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button(phase == .done ? "Done" : "Cancel") { dismiss() }
                 }
             }
         }
     }
 
-    private func generate() {
-        generating = true
+    private var optionsView: some View {
+        VStack(spacing: 24) {
+            ContentUnavailableView(
+                "Link a New Device",
+                systemImage: "qrcode.viewfinder",
+                description: Text("On your new device, choose “Link existing device” to show its code, then scan it here.")
+            )
+
+            VStack(spacing: 0) {
+                Toggle(isOn: $syncConversations) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sync conversation list").font(.subheadline)
+                        Text("The new device will see your existing chats.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+
+                Divider().padding(.leading)
+
+                Toggle(isOn: $syncHistory) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sync message history").font(.subheadline)
+                        Text("Transfers up to 50 recent messages per chat, end-to-end encrypted.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+                .disabled(!syncConversations)
+                .onChange(of: syncConversations) { _, on in if !on { syncHistory = false } }
+            }
+            .background(.ultraThinMaterial, in: .rect(cornerRadius: 14))
+            .padding(.horizontal)
+
+            Spacer()
+
+            Button {
+                phase = .scanning
+            } label: {
+                Label("Scan Device Code", systemImage: "qrcode.viewfinder")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.horizontal)
+        }
+        .padding(.top, 24)
+    }
+
+    private var scannerView: some View {
+        LinkQRScannerView { raw in
+            guard phase == .scanning else { return }
+            guard
+                let data = raw.data(using: .utf8),
+                let qr = try? JSONDecoder().decode(LinkQRPayload.self, from: data)
+            else {
+                phase = .failed("That QR code isn't a Relay device link code.")
+                return
+            }
+            phase = .provisioning
+            Task {
+                do {
+                    try await service.provisionScannedDevice(
+                        sessionId: qr.sessionId,
+                        ephemeralPublicKey: qr.ephemeralPublicKey,
+                        newDeviceServerURL: qr.serverURL,
+                        deviceName: qr.deviceName,
+                        syncConversations: syncConversations,
+                        syncHistory: syncHistory
+                    )
+                    phase = .done
+                } catch {
+                    phase = .failed(error.localizedDescription)
+                }
+            }
+        }
+        .ignoresSafeArea()
+        .overlay(alignment: .bottom) {
+            Text("Point the camera at the code shown on your new device.")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .padding()
+                .background(.ultraThinMaterial, in: .capsule)
+                .padding(.bottom, 40)
+        }
+    }
+}
+
+// MARK: - New device (show QR + poll for provisioning)
+
+/// Shown on a brand-new device from onboarding. Generates an ephemeral key,
+/// displays a QR for the primary to scan, and waits for the encrypted payload.
+struct LinkNewDeviceView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var qrImage: UIImage?
+    @State private var status: String = "Preparing…"
+    @State private var errorMessage: String?
+    @State private var started = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                if let qrImage {
+                    Text("Scan with your other device")
+                        .font(.headline)
+                    Image(uiImage: qrImage)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 240, height: 240)
+                        .padding(12)
+                        .background(.white, in: .rect(cornerRadius: 16))
+                        .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text(status).font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Text("On your existing device: Settings → Linked Devices → Link a New Device, then scan this code.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                } else if let errorMessage {
+                    ContentUnavailableView {
+                        Label("Linking Failed", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(errorMessage)
+                    } actions: {
+                        Button("Try Again") { start() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                } else {
+                    ProgressView(status).padding(.top, 60)
+                }
+            }
+            .padding(.top, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .navigationTitle("Link to Account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .task {
+                guard !started else { return }
+                started = true
+                start()
+            }
+        }
+    }
+
+    private func start() {
         errorMessage = nil
         qrImage = nil
-        verificationCode = nil
+        status = "Preparing…"
         Task {
             do {
-                let payload = try await service.provisionLinkedDevice(syncConversations: syncConversations, syncHistory: syncHistory)
-                let image = makeQRImage(payload)
-                let verificationCode = Self.verificationCode(from: payload)
-                await MainActor.run {
-                    qrPayload = payload
-                    qrImage = image
-                    self.verificationCode = verificationCode
-                    generating = false
-                }
+                let (qr, sessionId, ephemeral) = try await model.beginDeviceLinking()
+                qrImage = makeQRImage(qr)
+                status = "Waiting for your other device…"
+                try await model.completeDeviceLinking(sessionId: sessionId, ephemeral: ephemeral)
+                // On success the model flips phase to .ready and onboarding dismisses.
             } catch {
-                await MainActor.run {
-                    errorMessage = "Failed to generate link code: \(error.localizedDescription)"
-                    generating = false
-                }
+                errorMessage = error.localizedDescription
             }
         }
     }
@@ -169,111 +258,6 @@ struct LinkDeviceView: View {
         guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
         return UIImage(cgImage: cgImage)
     }
-
-    private static func verificationCode(from payload: String) -> String? {
-        guard
-            let data = payload.data(using: .utf8),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return json["verificationCode"] as? String
-    }
-}
-
-// MARK: - Scan Link Code (linking device side)
-
-/// Scans a linking QR from the primary device and returns the decoded payload.
-struct ScanLinkCodeView: View {
-    let onScanned: (LinkPayload) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var errorMessage: String?
-
-    var body: some View {
-        NavigationStack {
-            LinkQRScannerView { raw in
-                guard
-                    let data = raw.data(using: .utf8),
-                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                    let linkToken = json["linkToken"] as? String,
-                    let verificationCode = json["verificationCode"] as? String,
-                    let serverURLStr = json["serverURL"] as? String,
-                    let serverURL = URL(string: serverURLStr)
-                else {
-                    errorMessage = "Invalid link code."
-                    return
-                }
-                let peers: [(account: String, username: String?)] =
-                    (json["peers"] as? [[String: String]] ?? []).compactMap { d in
-                        guard let account = d["account"], !account.isEmpty else { return nil }
-                        return (account: account, username: d["username"])
-                    }
-                let historyKey: Data? = (json["historyKey"] as? String).flatMap { Data(base64Encoded: $0) }
-                let historyDigest: Data? = (json["historyDigest"] as? String).flatMap { Data(base64Encoded: $0) }
-                let payload = LinkPayload(
-                    linkToken: linkToken,
-                    verificationCode: verificationCode,
-                    serverURL: serverURL,
-                    username: json["username"] as? String,
-                    peers: peers,
-                    historyAttachmentId: json["historyId"] as? String,
-                    historyKey: historyKey,
-                    historyDigest: historyDigest
-                )
-                onScanned(payload)
-            }
-            .ignoresSafeArea()
-            .overlay(alignment: .bottom) {
-                VStack(spacing: 8) {
-                    if let errorMessage {
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
-                            .font(.footnote)
-                    }
-                    Text("Point the camera at the link code shown on your primary device.")
-                        .font(.footnote)
-                        .multilineTextAlignment(.center)
-                        .padding()
-                        .background(.ultraThinMaterial, in: .capsule)
-                }
-                .padding(.bottom, 40)
-            }
-            .navigationTitle("Scan Link Code")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-public struct LinkPayload: Sendable {
-    public let linkToken: String
-    public let verificationCode: String
-    public let serverURL: URL
-    public let username: String?
-    /// 1:1 conversation peers to pre-populate on the linked device (empty = no sync).
-    public let peers: [(account: String, username: String?)]
-    /// Relay blob id, AES key, and SHA-256 digest for the encrypted message history upload (nil = no history).
-    public let historyAttachmentId: String?
-    public let historyKey: Data?
-    public let historyDigest: Data?
-
-    public init(
-        linkToken: String, verificationCode: String, serverURL: URL, username: String?,
-        peers: [(account: String, username: String?)],
-        historyAttachmentId: String? = nil, historyKey: Data? = nil, historyDigest: Data? = nil
-    ) {
-        self.linkToken = linkToken
-        self.verificationCode = verificationCode
-        self.serverURL = serverURL
-        self.username = username
-        self.peers = peers
-        self.historyAttachmentId = historyAttachmentId
-        self.historyKey = historyKey
-        self.historyDigest = historyDigest
-    }
 }
 
 // MARK: - Linked Devices management (settings)
@@ -285,6 +269,19 @@ struct LinkedDevicesView: View {
     @State private var loading = true
     @State private var showingLinkSheet = false
     @State private var errorMessage: String?
+    @State private var relinkNudgeDismissed = UserDefaults.standard.bool(forKey: Self.relinkNudgeDismissedKey)
+
+    private static let relinkNudgeDismissedKey = "relay.relinkNudgeDismissed"
+
+    /// A secondary device linked before the shared-identity change still holds a
+    /// self-generated identity, so its safety numbers differ from the account's.
+    /// Nudge the user (once) to re-link it. New provisioned devices set
+    /// `identityProvisionedKey`, so they never see this.
+    private var showRelinkNudge: Bool {
+        !relinkNudgeDismissed
+            && service.credentials.deviceId != 1
+            && !UserDefaults.standard.bool(forKey: AppModel.identityProvisionedKey)
+    }
 
     var body: some View {
         List {
@@ -293,12 +290,39 @@ struct LinkedDevicesView: View {
                     .frame(maxWidth: .infinity)
                     .listRowBackground(Color.clear)
             } else {
+                if showRelinkNudge {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Re-link for verifiable safety numbers", systemImage: "checkmark.shield")
+                                .font(.subheadline.weight(.semibold))
+                            Text("This device was linked before Relay shared one identity per account. Unlink and link it again so its safety numbers match your other devices.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("Got it") {
+                                relinkNudgeDismissed = true
+                                UserDefaults.standard.set(true, forKey: Self.relinkNudgeDismissedKey)
+                            }
+                            .font(.caption.weight(.semibold))
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
                 Section {
                     ForEach(devices) { device in
-                        HStack {
-                            Image(systemName: device.deviceId == 1 ? "iphone.homebutton" : "iphone")
+                        HStack(spacing: 12) {
+                            Image(systemName: deviceIcon(device))
+                                .font(.title3)
                                 .foregroundStyle(.secondary)
-                            Text(device.deviceId == 1 ? "This device (primary)" : "Device \(device.deviceId)")
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(deviceTitle(device))
+                                if let subtitle = deviceSubtitle(device) {
+                                    Text(subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Spacer()
                             if device.deviceId == 1 {
                                 Text("Primary")
@@ -306,6 +330,7 @@ struct LinkedDevicesView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .padding(.vertical, 2)
                     }
                     .onDelete { indexSet in
                         for index in indexSet {
@@ -363,6 +388,24 @@ struct LinkedDevicesView: View {
             errorMessage = error.localizedDescription
         }
         loading = false
+    }
+
+    private func deviceIcon(_ d: RelayKit.LinkedDevice) -> String {
+        let name = d.name?.lowercased() ?? ""
+        if name.contains("ipad") { return "ipad" }
+        if name.contains("mac") { return "laptopcomputer" }
+        return "iphone"
+    }
+
+    private func deviceTitle(_ d: RelayKit.LinkedDevice) -> String {
+        let base = (d.name?.isEmpty == false ? d.name! : "Device \(d.deviceId)")
+        return d.deviceId == service.credentials.deviceId ? "\(base) (this device)" : base
+    }
+
+    private func deviceSubtitle(_ d: RelayKit.LinkedDevice) -> String? {
+        guard let ms = d.createdAt, ms > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+        return "Linked \(date.formatted(date: .abbreviated, time: .omitted))"
     }
 }
 

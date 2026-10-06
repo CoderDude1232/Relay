@@ -8,7 +8,7 @@ import SecureStorage
 import UIKit
 
 enum SpotlightIndexer {
-    private static let domain = "com.morgandaly.RelayMessenger.conversations"
+    private static let domain = "app.relaymsg.conversations"
 
     /// Precomputed, Sendable input for one conversation. The caller builds these
     /// cheaply on the main actor (dictionary lookups + cached avatar bytes); the

@@ -22,6 +22,9 @@ struct LinkQRPayload: Codable {
     /// 32-byte X25519 public key the primary encrypts the payload to.
     let ephemeralPublicKey: Data
     let serverURL: String
+    /// Short, non-PII label for the new device (e.g. "iPhone", "iPad") shown in
+    /// the owner's Linked Devices list. Optional for decoding older QR codes.
+    var deviceName: String? = nil
 }
 
 /// Sealed by the primary, fetched and opened by the new device. Carries the
@@ -46,4 +49,9 @@ struct LinkProvisioningPayload: Codable {
     let historyId: String?
     let historyKey: Data?
     let historyDigest: Data?
+    /// Signature by the account identity key over a transcript binding this
+    /// session, the new device's ephemeral key, and the granted credentials.
+    /// The new device verifies it before adopting the identity. Optional only
+    /// for decoding legacy payloads; new devices reject an absent/invalid one.
+    var signature: Data? = nil
 }

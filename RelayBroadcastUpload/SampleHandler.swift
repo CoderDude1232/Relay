@@ -8,7 +8,7 @@ import ReplayKit
 import UIKit
 
 final class SampleHandler: RPBroadcastSampleHandler {
-    private static let appGroupId = "group.com.morgandaly.RelayMessenger"
+    private static let appGroupId = "group.app.relaymsg"
     private static let frameFilename = "RelayBroadcastFrame.jpg"
     private static let stateFilename = "RelayBroadcastState.plist"
 

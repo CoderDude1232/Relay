@@ -57,7 +57,7 @@ final class CloudBackupManager {
     private static let enabledKey = "relay.icloudBackup.enabled"
     private static let lastBackupKey = "relay.icloudBackup.lastAt"
     private static let keychainAccount = "relay.icloudBackup.recoveryKey"
-    private static let containerId = "iCloud.com.morgandaly.RelayMessenger"
+    private static let containerId = "iCloud.app.relaymsg"
     private static let recordType = "Backup"
 
     private var database: CKDatabase {

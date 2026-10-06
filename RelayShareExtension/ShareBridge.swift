@@ -8,7 +8,7 @@
 
 import Foundation
 
-let kShareAppGroup = "group.com.morgandaly.RelayMessenger"
+let kShareAppGroup = "group.app.relaymsg"
 
 struct ShareConversationSummary: Codable, Identifiable {
     let id: String

@@ -10,6 +10,44 @@ before building on top. Full checklist in [`TESTING.md`](TESTING.md).
       backup/restore, groups, sealed sender. (Simulators can't do APNs/CloudKit.)
 - [ ] Deploy the CloudKit **production** schema (dev schema won't work for release).
 
+## URGENT: production relay is running WITHOUT `-oprf-key`
+
+`api.relaymsg.app` has no OPRF key configured. Consequences, live now:
+- Both directory endpoints (`/v1/directory/oprf`, `/v1/directory/resolve`) return
+  `503 "discovery not configured"`, so **starting any new chat by username fails**
+  (`MessagingService.resolveAccount` is blinded-discovery only, by design — no
+  plaintext fallback).
+- `api.go`'s `emailToken()` returns nil when `s.oprf == nil`, so **no email has ever
+  been stored, even as a keyed token**. Email contact sync, by-email lookup, and
+  `POST /v1/accounts/recover` are all silently dead, and every account registered so
+  far has **no recovery path**.
+
+Actions:
+- [x] **Redeploy `relayd` with `-oprf-key`.** DONE 2026-09-18: added
+      `-oprf-key /opt/relay/oprf.key` to the systemd **override.conf** ExecStart
+      (the base unit's ExecStart is dead — a drop-in overrides it). `LoadOrCreateKey`
+      generated + persisted the key (`0600`). `/v1/directory/*` now returns 401
+      (auth) instead of 503. Backed up off-box to `~/.relay-dev/oprf.key.backup`
+      (0600, SHA-256 verified) 2026-09-18. Recommend a second copy in a password
+      manager / offsite — losing it invalidates every stored token and forces a
+      full index rebuild.
+- [ ] **Stranded accounts (registered while OPRF was off) have no stored email.**
+      Their `email_token` is null, so email recovery/discovery can't match them.
+      Decision: they must **re-supply their email once** after the redeploy so the
+      server can store the keyed token. Needs a small path to do that:
+      - Simplest: an authenticated `PUT /v1/accounts/me/email` (Relay-Sig) that takes
+        an email, computes `oprf.Token(email)`, and sets `email_token` +
+        (re)inserts the `directory` row (`kind=1`). Then prompt for email in-app on
+        next launch when the account has no `email_token` (server exposes a
+        `hasRecoveryEmail` bit).
+      - OAuth accounts already have a Supabase email; re-provision their `email_token`
+        server-side on next authenticated call instead of prompting.
+- [x] **`resolveAccount` on 503:** decided — **surface a clear error, no silent
+      plaintext fallback** (a fallback would leak the looked-up username to the relay,
+      downgrading the privacy guarantee). Implemented: `resolveAccount` /
+      `discoverContacts` map `503` to `DiscoveryError.unavailable` with a user-facing
+      message. Stopgap; the real fix is the redeploy above.
+
 ## Website copy (non-app, keeps marketing claims honest)
 - [ ] Contacts claim → "hashed & blinded on-device; server never learns contacts"
       (don't say "never reads your contacts" — the app reads the address book locally).

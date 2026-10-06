@@ -162,9 +162,9 @@ final class CallManager: NSObject {
     private var pendingOffer: Relay_Content_CallMessage?
     private var ringTask: Task<Void, Never>?
 
-    nonisolated private static let broadcastAppGroupId = "group.com.morgandaly.RelayMessenger"
+    nonisolated private static let broadcastAppGroupId = "group.app.relaymsg"
     nonisolated private static let broadcastFrameFilename = "RelayBroadcastFrame.jpg"
-    private let log = Logger(subsystem: "com.morgandaly.RelayMessenger", category: "CallManager")
+    private let log = Logger(subsystem: "app.relaymsg", category: "CallManager")
 
     var needsSignalingConnection: Bool {
         if isInGroupCall { return true }
@@ -450,18 +450,31 @@ final class CallManager: NSObject {
         switch msg.type {
         case .offer:
             let kind = Self.callKind(fromMetadata: msg.ice) ?? (Self.sdpContainsVideo(msg.sdp) ? .video : .audio)
-            if case .incoming(let existingId, _, _) = state, existingId == msg.callID {
+            let inCall: Bool
+            switch state {
+            case .connecting, .active: inCall = true
+            default: inCall = false
+            }
+            if inCall, peerConnection != nil, storedCallId == msg.callID {
+                // We already have a peer connection for this call. This OFFER is
+                // either the initial one arriving after callKitAnswered() (callee),
+                // or a mid-call ICE-restart OFFER (fresh SDP, same callId). Both
+                // renegotiate in place: apply the remote offer, drain candidates,
+                // and answer on the same callId. No CallKit state change, no BUSY —
+                // this is not a new call. Cancel any armed ICE-failure grace timer,
+                // since this OFFER is the recovery attempt.
+                iceRecoveryTask?.cancel()
+                iceRecoveryTask = nil
+                storedCallKind = kind
+                if storedCallPeer?.isEmpty != false { storedCallPeer = account }
+                updateCallKitVideoIfNeeded(kind: kind)
+                await applyOffer(msg, from: account)
+            } else if case .incoming(let existingId, _, _) = state, existingId == msg.callID {
                 // VoIP push already registered this call; store SDP for when user answers.
                 storedCallKind = kind
                 if storedCallPeer?.isEmpty != false { storedCallPeer = account }
                 updateCallKitVideoIfNeeded(kind: kind)
                 pendingOffer = msg
-            } else if case .connecting = state, peerConnection != nil, storedCallId == msg.callID {
-                // callKitAnswered() ran before OFFER arrived; apply directly.
-                storedCallKind = kind
-                if storedCallPeer?.isEmpty != false { storedCallPeer = account }
-                updateCallKitVideoIfNeeded(kind: kind)
-                await applyOffer(msg, from: account)
             } else {
                 // Fresh incoming call via WS — resolve display name before reporting to CallKit.
                 let displayName = nameResolver?(account) ?? account
