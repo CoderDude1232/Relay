@@ -1907,7 +1907,8 @@ final class MessagingService {
     /// encrypted provisioning payload.
     static func newDevicePassword() -> String {
         var b = Data(count: 32)
-        b.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        let status = b.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed")
         return b.base64URLEncodedString()
     }
 

@@ -9,6 +9,9 @@
 import CryptoCore
 import CryptoKit
 import Foundation
+import UserNotifications
+import CoreSpotlight
+import Intents
 import Observation
 import RelayCore
 import RelayKit
@@ -251,7 +254,8 @@ final class AppModel {
                 key = existing
             } else {
                 var bytes = [UInt8](repeating: 0, count: 32)
-                _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+                let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+                precondition(status == errSecSuccess, "SecRandomCopyBytes failed")
                 key = Data(bytes)
                 try? keychain.storeSecret(key, for: Self.accessKeySecretName)
             }
@@ -415,7 +419,8 @@ final class AppModel {
     /// Called once per new registration; stored in Keychain immediately after.
     private static func generateRandomPassword() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed")
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
@@ -697,6 +702,13 @@ final class AppModel {
         if let bundleId = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: bundleId)
         }
+        // Traces the OS keeps for us outside the app's files: Siri/share-sheet
+        // interaction donations, Spotlight entries, and delivered notifications.
+        INInteraction.deleteAll(completion: nil)
+        CSSearchableIndex.default().deleteAllSearchableItems(completionHandler: nil)
+        let center = UNUserNotificationCenter.current()
+        center.removeAllDeliveredNotifications()
+        center.removeAllPendingNotificationRequests()
     }
 
     /// The database lives in the App Group container so the Notification

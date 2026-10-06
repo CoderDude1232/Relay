@@ -63,12 +63,18 @@ public final class KeychainSecureStore {
         }
 
         let key = DatabaseKey.random()
+        #if targetEnvironment(simulator)
+        // No Secure Enclave in the Simulator: Keychain protection only.
         if let enclaveKey = try? enclaveWrappingKey() {
             try write(Item.wrappedDatabaseKey, data: try wrap(key.bytes, with: enclaveKey))
         } else {
-            // No Secure Enclave (Simulator): Keychain protection only.
             try write(Item.plainDatabaseKey, data: key.bytes)
         }
+        #else
+        // Every supported iPhone has a Secure Enclave. A failure here is an
+        // error to surface, not a reason to store the master key unwrapped.
+        try write(Item.wrappedDatabaseKey, data: try wrap(key.bytes, with: try enclaveWrappingKey()))
+        #endif
         return key
     }
 
@@ -164,11 +170,16 @@ public final class KeychainSecureStore {
         if let existing = try loadDeviceAuthorizationPrivateKey() {
             return existing
         }
+        #if targetEnvironment(simulator)
         do {
             return try createDeviceAuthorizationPrivateKey(secureEnclave: true)
         } catch {
             return try createDeviceAuthorizationPrivateKey(secureEnclave: false)
         }
+        #else
+        // On a device the auth key lives in the Secure Enclave or not at all.
+        return try createDeviceAuthorizationPrivateKey(secureEnclave: true)
+        #endif
     }
 
     private func loadDeviceAuthorizationPrivateKey() throws -> SecKey? {
