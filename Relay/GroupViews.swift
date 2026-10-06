@@ -363,7 +363,7 @@ struct GroupInfoView: View {
                     // Members
                     Section("Members (\(group.members.count))") {
                         ForEach(group.members, id: \.self) { member in
-                            let isAdmin = group.admins.contains(member)
+                            let memberIsAdmin = group.admins.contains(member)
                             HStack(spacing: 12) {
                                 AvatarView(
                                     name: service.displayName(forAccount: member),
@@ -373,7 +373,7 @@ struct GroupInfoView: View {
                                 VStack(alignment: .leading, spacing: 1) {
                                     HStack(spacing: 4) {
                                         Text(service.displayName(forAccount: member))
-                                        if isAdmin {
+                                        if memberIsAdmin {
                                             Image(systemName: "crown.fill")
                                                 .font(.caption)
                                                 .foregroundStyle(.yellow)
@@ -386,6 +386,7 @@ struct GroupInfoView: View {
                                     }
                                 }
                                 Spacer()
+                                // Gated on the VIEWER being an admin.
                                 if isAdmin && member != ownAccountId {
                                     Button(role: .destructive) {
                                         memberToRemove = member
@@ -398,7 +399,7 @@ struct GroupInfoView: View {
                             }
                             .contextMenu {
                                 if isAdmin && member != ownAccountId {
-                                    if isAdmin {
+                                    if memberIsAdmin {
                                         Button(role: .destructive) {
                                             run { try await service.demoteAdmin(in: group.id, account: member) }
                                         } label: {

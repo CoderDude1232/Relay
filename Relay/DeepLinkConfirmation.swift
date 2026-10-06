@@ -19,6 +19,8 @@ struct GroupInvitePreview: Identifiable {
     let memberCount: Int
     /// The decrypted invite payload (JSON), opaque to the UI.
     let payload: Data
+    /// Set when we're already in this group: the link just opens it.
+    var existingConversationId: String? = nil
 }
 
 /// A link action awaiting the user's confirmation.

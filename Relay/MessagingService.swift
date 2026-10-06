@@ -2219,7 +2219,12 @@ final class MessagingService {
         guard Self.isValidGroupId(payload.groupId, ownAccount: credentials.accountId) else {
             throw GroupError.notFound
         }
-        return GroupInvitePreview(groupName: payload.name, memberCount: payload.members.count, payload: json)
+        var preview = GroupInvitePreview(groupName: payload.name, memberCount: payload.members.count, payload: json)
+        if let existing = try storage.messages.group(id: payload.groupId),
+           existing.members.contains(credentials.accountId) {
+            preview.existingConversationId = try storage.messages.groupConversationId(groupId: payload.groupId)
+        }
+        return preview
     }
 
     /// Joins the group from a previewed invite the user confirmed.
@@ -2227,6 +2232,13 @@ final class MessagingService {
         let payload = try JSONDecoder().decode(GroupInvitePayload.self, from: preview.payload)
         guard Self.isValidGroupId(payload.groupId, ownAccount: credentials.accountId) else {
             throw GroupError.notFound
+        }
+        // Already a member: never overwrite our (newer) group state with the
+        // invite's snapshot — that would reset the revision and could restore
+        // members removed since the link was made. Just open the group.
+        if let existing = try storage.messages.group(id: payload.groupId),
+           existing.members.contains(credentials.accountId) {
+            return try storage.messages.groupConversationId(groupId: payload.groupId) ?? ""
         }
 
         var members = payload.members

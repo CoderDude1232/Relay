@@ -227,7 +227,13 @@ struct MainTabView: View {
                 do {
                     // Decrypts the invite to show its name and size. Does NOT join.
                     let preview = try await service.previewGroupInvite(token: token, fragment: fragment)
-                    pendingLinkAction = .groupInvite(preview)
+                    if let conversationId = preview.existingConversationId {
+                        // Already in this group: nothing to confirm, just open it.
+                        selectedTab = 0
+                        model.pendingNotificationConversationId = conversationId
+                    } else {
+                        pendingLinkAction = .groupInvite(preview)
+                    }
                 } catch {
                     joinGroupError = "Invite link is invalid or has already been used."
                 }
