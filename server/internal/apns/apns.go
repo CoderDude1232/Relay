@@ -158,7 +158,12 @@ func (p *Pusher) send(deviceToken string, payload []byte, topic, pushType string
 		p.rememberHost(deviceToken, first)
 		return nil
 	}
-	if status == http.StatusBadRequest && strings.Contains(reason, "BadDeviceToken") {
+	if status == http.StatusGone {
+		// 410 Unregistered: the app was uninstalled / the token retired.
+		p.forgetHost(deviceToken)
+		return &TokenError{Status: status, Reason: reason}
+	}
+	if isBadDeviceToken(status, reason) {
 		status, reason, err = p.post(second, deviceToken, payload, topic, pushType)
 		if err != nil {
 			return err
@@ -167,8 +172,39 @@ func (p *Pusher) send(deviceToken string, payload []byte, topic, pushType string
 			p.rememberHost(deviceToken, second)
 			return nil
 		}
+		if status == http.StatusGone || isBadDeviceToken(status, reason) {
+			// Rejected by BOTH environments: the token is dead.
+			p.forgetHost(deviceToken)
+			return &TokenError{Status: status, Reason: reason}
+		}
 	}
 	return fmt.Errorf("status %d: %s", status, reason)
+}
+
+func isBadDeviceToken(status int, reason string) bool {
+	return status == http.StatusBadRequest && strings.Contains(reason, "BadDeviceToken")
+}
+
+// TokenError reports that APNs rejected a device token permanently (410
+// Unregistered, or BadDeviceToken from both the sandbox and production
+// environments). The caller should stop pushing to it and clear it.
+type TokenError struct {
+	Status int
+	Reason string
+}
+
+func (e *TokenError) Error() string {
+	return fmt.Sprintf("status %d: %s (token invalid)", e.Status, e.Reason)
+}
+
+// TokenInvalid marks the error as a dead-token signal (checked by the hub via
+// an interface so it needn't import this package).
+func (e *TokenError) TokenInvalid() bool { return true }
+
+func (p *Pusher) forgetHost(deviceToken string) {
+	p.hostMu.Lock()
+	delete(p.hostByToken, deviceToken)
+	p.hostMu.Unlock()
 }
 
 func (p *Pusher) post(host, deviceToken string, payload []byte, topic, pushType string) (int, string, error) {
