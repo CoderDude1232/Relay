@@ -471,6 +471,43 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
+    /// Permanently deletes the authenticated account on the relay
+    /// (`DELETE /v1/accounts/me`): every device, prekey, queued envelope,
+    /// push token, directory entry and username is removed and live sockets
+    /// are closed. The credentials are useless afterwards.
+    public func deleteAccount() async throws {
+        let request = makeRequest("DELETE", "v1/accounts/me", authenticated: true)
+        _ = try await send(request)
+    }
+
+    /// Reports another account for abuse (`POST /v1/reports`). `messages` is
+    /// plaintext the user explicitly chose to forward (empty by default);
+    /// nothing else about the conversation is sent. Throws
+    /// `RelayAPIError.http(429, …)` when the daily report cap is reached.
+    public func reportAccount(
+        _ accountId: String,
+        reason: ReportReason,
+        details: String? = nil,
+        messages: [String] = []
+    ) async throws {
+        struct ReportRequest: Encodable {
+            let reportedAccount: String
+            let reason: String
+            let details: String?
+            let messages: [String]?
+        }
+        let trimmed = details?.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await requestExpectingNoContent(
+            "POST", "v1/reports",
+            body: ReportRequest(
+                reportedAccount: accountId,
+                reason: reason.rawValue,
+                details: (trimmed?.isEmpty ?? true) ? nil : trimmed,
+                messages: messages.isEmpty ? nil : messages
+            )
+        )
+    }
+
     /// Posts a signed remote-wipe command. The server validates signature shape and
     /// relays it to all devices; each device verifies the full signature before wiping.
     public func sendNukeCommand(commandId: String, creationTimeMs: Int64, initiatingDeviceId: UInt32, signature: Data) async throws {
@@ -686,6 +723,27 @@ public struct RelayAPIClient: Sendable {
 // MARK: - Groups
 
 /// A group's roster + state as returned by the relay.
+/// Abuse-report categories accepted by `POST /v1/reports`.
+public enum ReportReason: String, CaseIterable, Sendable, Identifiable {
+    case spam
+    case harassment
+    case inappropriate
+    case impersonation
+    case other
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .spam: "Spam"
+        case .harassment: "Harassment"
+        case .inappropriate: "Inappropriate content"
+        case .impersonation: "Impersonation"
+        case .other: "Other"
+        }
+    }
+}
+
 /// Time-limited TURN credentials in coturn REST API format.
 public struct TurnCredentials: Decodable, Sendable {
     public let urls: [String]

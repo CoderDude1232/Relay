@@ -317,6 +317,23 @@ CREATE TABLE IF NOT EXISTS group_invites (
     created_at BIGINT NOT NULL
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_provisioning_sessions_expires ON provisioning_sessions (expires_at)`,
+		// Abuse reports (moderation records). Deliberately NO foreign keys to
+		// accounts: a report against an account survives that account's
+		// deletion. Reports an account FILED are its own data and are removed
+		// by DeleteAccount. `messages` is a JSON array of plaintext messages the
+		// reporter explicitly chose to forward (the relay never sees plaintext
+		// otherwise).
+		`CREATE TABLE IF NOT EXISTS reports (
+    id                TEXT PRIMARY KEY,
+    reporter_account  TEXT NOT NULL,
+    reported_account  TEXT NOT NULL,
+    reason            TEXT NOT NULL,
+    details           TEXT NOT NULL DEFAULT '',
+    messages          TEXT NOT NULL DEFAULT '[]',
+    created_at        BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_account, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports (reported_account, created_at)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -1054,6 +1071,111 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 		return 0, err
 	}
 	return newVersion, tx.Commit(ctx)
+}
+
+// DeleteAccount permanently removes an account and everything keyed to it, in
+// one transaction: prekeys (signed, Kyber, one-time), queued envelopes for its
+// devices, its devices (incl. mailbox ids, auth keys, APNs/FCM/VoIP tokens),
+// pending device-link tokens, contact invites it minted, its blinded-directory
+// rows, stored nuke commands, reports it filed, and finally the account row
+// itself (username, email token, Supabase user id, access key, recovery hash).
+// The username becomes available again on commit. Reports filed AGAINST the
+// account are kept (moderation records). Returns ErrNotFound if the account
+// does not exist.
+//
+// Not cleaned (no account linkage is stored): provisioning_sessions and
+// encrypted_group_invites (anonymous, TTL-reaped), attachment blobs (ownership
+// is not tracked; reaped by blob GC), and envelopes the account sent that sit
+// in other accounts' queues (those belong to the recipients).
+func (s *Store) DeleteAccount(accountID string) error {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the account row so concurrent device-list mutations (which also
+	// take FOR UPDATE on it) serialize behind the delete.
+	var id string
+	if err := tx.QueryRow(ctx, `SELECT id FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&id); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		// FK dependents of devices first.
+		`DELETE FROM one_time_prekeys WHERE account_id = $1`,
+		`DELETE FROM signed_prekeys WHERE account_id = $1`,
+		`DELETE FROM kyber_prekeys WHERE account_id = $1`,
+		`DELETE FROM message_queue WHERE account_id = $1`,
+		`DELETE FROM devices WHERE account_id = $1`,
+		`DELETE FROM device_link_tokens WHERE account_id = $1`,
+		`DELETE FROM contact_invites WHERE account_id = $1`,
+		`DELETE FROM directory WHERE account_id = $1`,
+		`DELETE FROM nuke_commands WHERE account_id = $1`,
+		`DELETE FROM reports WHERE reporter_account = $1`,
+		`DELETE FROM accounts WHERE id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, stmt, accountID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// AccountExists reports whether an account id is registered.
+func (s *Store) AccountExists(accountID string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1)`, accountID).Scan(&exists)
+	return exists, err
+}
+
+// Report is one abuse report. Messages is the JSON-encoded array of plaintext
+// messages the reporter chose to forward.
+type Report struct {
+	ID              string
+	ReporterAccount string
+	ReportedAccount string
+	Reason          string
+	Details         string
+	Messages        string
+	CreatedAt       int64
+}
+
+// CreateReport stores an abuse report and returns its id.
+func (s *Store) CreateReport(reporter, reported, reason, details, messagesJSON string) (string, error) {
+	id := newUUID()
+	if messagesJSON == "" {
+		messagesJSON = "[]"
+	}
+	_, err := s.db.Exec(context.Background(),
+		`INSERT INTO reports (id, reporter_account, reported_account, reason, details, messages, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		id, reporter, reported, reason, details, messagesJSON, time.Now().UnixMilli())
+	return id, err
+}
+
+// ReportsAgainst returns every report filed against an account, oldest first.
+// Used by moderation tooling and tests.
+func (s *Store) ReportsAgainst(accountID string) ([]Report, error) {
+	rows, err := s.db.Query(context.Background(),
+		`SELECT id, reporter_account, reported_account, reason, details, messages, created_at
+		 FROM reports WHERE reported_account = $1 ORDER BY created_at, id`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Report
+	for rows.Next() {
+		var r Report
+		if err := rows.Scan(&r.ID, &r.ReporterAccount, &r.ReportedAccount, &r.Reason, &r.Details, &r.Messages, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // LookupAccountID resolves a username to an account id.

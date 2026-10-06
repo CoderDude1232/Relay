@@ -48,6 +48,16 @@ func (s *wsSession) Send(frame *relaypb.ServerFrame) bool {
 	}
 }
 
+// Close forcibly tears the connection down (hub.Closer), e.g. when the account
+// is deleted. It sends a best-effort close frame, then closes the socket; the
+// read loop errors out and runs the normal Unregister cleanup. WriteControl and
+// Close are safe to call concurrently with the read/write pumps.
+func (s *wsSession) Close(reason string) {
+	msg := websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason)
+	s.conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second)) //nolint:errcheck
+	s.conn.Close()
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -70,6 +80,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		close(sess.done)
 		conn.Close()
 	}()
+
+	// Close the race with DELETE /v1/accounts/me: if the account was deleted
+	// between auth and Register, DisconnectAccount missed this session.
+	if _, err := s.store.DeviceByID(dev.AccountID, dev.DeviceID); err != nil {
+		return
+	}
 
 	go sess.writePump()
 

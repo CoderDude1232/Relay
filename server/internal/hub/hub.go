@@ -172,6 +172,43 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 	}
 }
 
+// Closer is optionally implemented by a Session that can be forcibly torn down
+// by the server (e.g. on account deletion). Closing must be safe to call from
+// any goroutine and must cause the session's read loop to exit, which then
+// runs the normal Unregister cleanup.
+type Closer interface {
+	Close(reason string)
+}
+
+// DisconnectAccount detaches and closes every live session of an account and
+// forgets its in-memory presence. Used when the account is deleted so no
+// already-authenticated WebSocket outlives it. Returns how many sessions were
+// closed.
+func (h *Hub) DisconnectAccount(accountID string, reason string) int {
+	prefix := accountID + "/"
+	var victims []Session
+	h.mu.Lock()
+	for k, s := range h.sessions {
+		if strings.HasPrefix(k, prefix) {
+			victims = append(victims, s)
+			delete(h.sessions, k)
+		}
+	}
+	delete(h.lastSeen, accountID)
+	h.mu.Unlock()
+	// Close outside the lock: closing triggers the session's own Unregister,
+	// which takes h.mu (it is a no-op now since the entry is already gone).
+	for _, s := range victims {
+		if c, ok := s.(Closer); ok {
+			c.Close(reason)
+		}
+	}
+	if len(victims) > 0 {
+		slog.Info("ws: account sessions disconnected", "count", len(victims))
+	}
+	return len(victims)
+}
+
 // LastSeen returns the most recent connect/disconnect time for the account
 // in milliseconds since epoch, or 0 if not seen since server start.
 // This is intentionally in-memory only — never persisted to disk.

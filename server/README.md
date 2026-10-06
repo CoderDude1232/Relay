@@ -83,6 +83,10 @@ without the server's OPRF key. Source IPs are used transiently for
 rate-limiting and are never logged or persisted; presence/last-seen is kept in
 memory only.
 
+The one exception to "ciphertext only" is an abuse report (`POST /v1/reports`):
+it stores the plaintext messages the reporter explicitly chose to forward,
+plus their free-text details, in the `reports` table.
+
 ## REST API (JSON; binary fields are standard base64)
 
 `auth` column: `sig` = an authenticated endpoint (`Relay-Sig` signature, or HTTP
@@ -101,7 +105,14 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 | `GET /v1/accounts/{account}` | sig | → `{username}`. 600/account/hour. |
 | `PUT /v1/accounts/me/username` | sig | `{username}` → `204`. `409` taken. Reindexes the blinded directory. |
 | `PUT /v1/accounts/me/access-key` | sig | `{accessKey}` (base64, **exactly 32 bytes**) → `204`. Sealed-sender access key; returned to session-establishing peers in `GET /v1/keys/{account}`, presented on the unauthenticated delivery path. Rotating revokes old senders. |
+| `DELETE /v1/accounts/me` | sig | → `204`. **Permanently deletes the authenticated account** and everything keyed to it, in one DB transaction: devices (mailbox ids, auth keys, APNs/FCM/VoIP tokens), signed/Kyber/one-time prekeys, queued envelopes for its devices, pending device-link tokens, contact invites it minted, blinded-directory rows, stored nuke commands, reports it **filed**, and the account row (username, email token, Supabase user id, access key, recovery hash). Then closes all of the account's live WebSockets (close code 1008, "account deleted"). Afterwards its credentials get `401` and the username is free to register again. **Kept:** reports filed *against* the account (moderation records). **Not reachable:** anonymous `provisioning_sessions` / `encrypted_group_invites` (no account column; TTL-reaped), attachment blobs (ownership isn't tracked; reaped by blob GC), and envelopes it sent that sit in *other* accounts' queues (the recipients' data). No extra confirmation signature — clients must confirm with the user before calling. |
 | `POST /v1/accounts/me/nuke` | sig | `{commandId, creationTimeMs, initiatingDeviceId, signature}` → `204`. Signed remote wipe; broadcasts a `Nuke` frame to all live sessions. Signature over `relay-nuke-v1\n…`; rejects >5 min old / >30 s future / duplicate `commandId`. |
+
+### Reports
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/reports` | sig | `{reportedAccount, reason, details?, messages?}` → `204`. `reason` ∈ `spam`, `harassment`, `inappropriate`, `impersonation`, `other`. `details` ≤2000 chars; `messages` ≤10 entries of ≤4000 chars each — plaintext messages the reporter **explicitly chose to forward** (the only way message content ever reaches the relay). `400` bad reason / oversize / reporting yourself, `404` unknown `reportedAccount`, `429` >20 reports/reporter/24 h (in-memory sliding window, like the other limiters). Stored in the `reports` table (`id, reporter_account, reported_account, reason, details, messages, created_at`; `messages` is a JSON array as text), with **no foreign keys**: reports are moderation records, so a report *against* an account survives that account's deletion, while reports an account *filed* are deleted with it (its own data). No read API yet — query the table directly. |
 
 ### Devices
 
@@ -229,3 +240,18 @@ Flags:
   `-apns-production`. The same key also sends PushKit VoIP on the `.voip` sub-topic.
 - FCM: `-fcm-service-account` (path to a Firebase service-account JSON key). The
   sender uses FCM HTTP v1 with a service-account-signed OAuth2 token.
+
+## Known gaps
+
+- **TODO: accounts created via Sign in with Apple must have their Apple refresh
+  token revoked on account deletion** (Apple requires calling
+  `https://appleid.apple.com/auth/revoke` with a server-side client secret signed
+  by the team's Sign in with Apple key). Not implemented yet. Note: the relay
+  itself stores **no Apple or OAuth tokens** — social login goes through Supabase
+  (`POST /v1/accounts/oauth`), and the only linkage persisted is
+  `accounts.supabase_user_id` (deleted with the account). Any Apple refresh token
+  lives in Supabase Auth, so revocation (and deleting the Supabase auth user)
+  would have to happen there or via a server-side call using Supabase's service
+  role — `DELETE /v1/accounts/me` does neither today.
+- Attachment blobs are not owner-tracked, so account deletion cannot remove the
+  account's uploads; they expire via the blob store's TTL GC.

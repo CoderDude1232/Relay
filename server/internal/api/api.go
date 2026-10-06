@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/blob"
@@ -204,6 +205,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/accounts/by-email/{email}", s.auth(s.handleLookupEmail))
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
+	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
+	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
 	mux.HandleFunc("GET /v1/devices/{id}/auth-key", s.auth(s.handleGetDeviceAuthKey))
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("GET /v1/accounts/{account}", s.auth(s.handleLookupAccount))
@@ -1589,6 +1592,106 @@ func internalError(w http.ResponseWriter, err error) {
 }
 
 // ---------------------------------------------------------------------------
+// Account deletion and abuse reports
+// ---------------------------------------------------------------------------
+
+// handleDeleteAccount permanently deletes the authenticated account and all
+// server-side data keyed to it (see store.DeleteAccount), then drops every live
+// WebSocket of the account. After this, the account's credentials no longer
+// authenticate (401) and its username is free for re-registration.
+func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if err := s.store.DeleteAccount(dev.AccountID); errors.Is(err, store.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "no such account")
+		return
+	} else if err != nil {
+		internalError(w, err)
+		return
+	}
+	s.hub.DisconnectAccount(dev.AccountID, "account deleted")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+const (
+	maxReportDetailsChars = 2000
+	maxReportMessages     = 10
+	maxReportMessageChars = 4000
+)
+
+var validReportReasons = map[string]bool{
+	"spam":          true,
+	"harassment":    true,
+	"inappropriate": true,
+	"impersonation": true,
+	"other":         true,
+}
+
+// handleCreateReport stores an abuse report filed by the authenticated account
+// against another account. `messages` are plaintext messages the reporter
+// explicitly chose to forward from their decrypted conversation — the relay
+// otherwise never sees message content.
+func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		ReportedAccount string   `json:"reportedAccount"`
+		Reason          string   `json:"reason"`
+		Details         string   `json:"details"`
+		Messages        []string `json:"messages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ReportedAccount == "" {
+		httpError(w, http.StatusBadRequest, "reportedAccount and reason required")
+		return
+	}
+	if !validReportReasons[req.Reason] {
+		httpError(w, http.StatusBadRequest, "reason must be one of spam, harassment, inappropriate, impersonation, other")
+		return
+	}
+	if utf8.RuneCountInString(req.Details) > maxReportDetailsChars {
+		httpError(w, http.StatusBadRequest, "details too long (max 2000 characters)")
+		return
+	}
+	if len(req.Messages) > maxReportMessages {
+		httpError(w, http.StatusBadRequest, "too many messages (max 10)")
+		return
+	}
+	for _, m := range req.Messages {
+		if utf8.RuneCountInString(m) > maxReportMessageChars {
+			httpError(w, http.StatusBadRequest, "message too long (max 4000 characters)")
+			return
+		}
+	}
+	if req.ReportedAccount == dev.AccountID {
+		httpError(w, http.StatusBadRequest, "cannot report your own account")
+		return
+	}
+	exists, err := s.store.AccountExists(req.ReportedAccount)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	if !exists {
+		httpError(w, http.StatusNotFound, "no such account")
+		return
+	}
+	// Count only well-formed reports against real accounts toward the cap.
+	if !reportLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "report rate limit exceeded; try again later")
+		return
+	}
+	if req.Messages == nil {
+		req.Messages = []string{}
+	}
+	msgs, err := json.Marshal(req.Messages)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	if _, err := s.store.CreateReport(dev.AccountID, req.ReportedAccount, req.Reason, req.Details, string(msgs)); err != nil {
+		internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
 // Nuke (remote wipe / crypto-shred)
 // ---------------------------------------------------------------------------
 
@@ -1762,6 +1865,7 @@ func (s *Server) PruneStaleLimiterKeys() {
 		sealedSendMailboxLimiter,
 		directoryLimiter,
 		provisioningLimiter,
+		reportLimiter,
 	} {
 		now := time.Now()
 		l.mu.Lock()
@@ -1846,6 +1950,9 @@ var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)
 
 // 10 new provisioning (device-linking) sessions per source IP per 10 minutes.
 var provisioningLimiter = newSlidingWindowLimiter(10, 10*time.Minute)
+
+// 20 abuse reports per reporting account per rolling 24 hours.
+var reportLimiter = newSlidingWindowLimiter(20, 24*time.Hour)
 
 // ipRateLimiter kept for backward compatibility with existing call site.
 type ipRateLimiter = slidingWindowLimiter
