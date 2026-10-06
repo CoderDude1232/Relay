@@ -3315,29 +3315,39 @@ final class MessagingService {
     private func markVisibleMessagesRead(in conversationId: String) async {
         guard let messages = try? storage.messages.messages(in: conversationId) else { return }
         let unread = messages.filter { !$0.isOutgoing && $0.status == .received }
-        guard !unread.isEmpty else { return }
-        // Local system lines and the official Relay chat have nobody to
-        // receipt; they're only marked read locally.
-        let receiptable = unread.filter { $0.senderAccount != Self.systemSender }
-        let peer = try? peerAccount(for: conversationId)
-        let hasRealPeer = peer != relayOfficialAccount && peer != noteToSelfAccount
-
-        if sendReadReceipts, hasRealPeer, !receiptable.isEmpty {
-            let unread = receiptable
-            if let group = group(for: conversationId) {
-                let byAuthor = Dictionary(grouping: unread) { $0.senderAccount ?? "" }
-                for (author, msgs) in byAuthor where !author.isEmpty && author != credentials.accountId {
-                    await sendReceipt(.read, timestamps: msgs.map(\.timestamp), toPeer: author, groupId: group.id)
-                }
-            } else if let peer {
-                await sendReceipt(.read, timestamps: unread.map(\.timestamp), toPeer: peer)
-            }
-        }
+        // Mark read locally FIRST and unconditionally. The unread badge counts
+        // incoming messages newer than the conversation's read_at, which can
+        // disagree with per-message status — returning early when no message
+        // is still "received" left such chats unread forever. And doing this
+        // after the (network) receipt send meant a slow or interrupted send
+        // left the chat unread again on the next launch.
         for message in unread {
             try? storage.messages.updateStatus(messageId: message.id, status: .read)
         }
         try? storage.messages.markConversationRead(conversationId)
         refreshConversations()
+
+        // Local system lines and the official Relay chat have nobody to
+        // receipt; they're only marked read locally.
+        let receiptable = unread.filter { $0.senderAccount != Self.systemSender }
+        let peer = try? peerAccount(for: conversationId)
+        let hasRealPeer = peer != relayOfficialAccount && peer != noteToSelfAccount
+        guard sendReadReceipts, hasRealPeer, !receiptable.isEmpty else { return }
+        if let group = group(for: conversationId) {
+            let byAuthor = Dictionary(grouping: receiptable) { $0.senderAccount ?? "" }
+            for (author, msgs) in byAuthor where !author.isEmpty && author != credentials.accountId {
+                await sendReceipt(.read, timestamps: msgs.map(\.timestamp), toPeer: author, groupId: group.id)
+            }
+        } else if let peer {
+            await sendReceipt(.read, timestamps: receiptable.map(\.timestamp), toPeer: peer)
+        }
+    }
+
+    /// Back in the foreground with a chat still open: messages the NSE stored
+    /// while we were away are on screen, so mark them read now.
+    func markActiveConversationReadOnForeground() {
+        guard let conversationId = activeConversationId else { return }
+        Task { await markVisibleMessagesRead(in: conversationId) }
     }
 
     func markConversationRead(_ conversationId: String) {
@@ -3791,10 +3801,12 @@ final class MessagingService {
                 "Welcome to Relay 👋\n\nI'll let you know about important account activity here — like when a new device is linked to your account. You can't reply to this chat.",
                 conversationId: id)
         }
-        // Pin it once, when first created — after that it's the user's choice.
-        if !UserDefaults.standard.bool(forKey: "relay.official.pinned") {
-            UserDefaults.standard.set(true, forKey: "relay.official.pinned")
-            setConversationPinned(id, pinned: true)
+        // Not pinned. Earlier builds auto-pinned it on creation; undo that
+        // once (after which pinning it is the user's choice).
+        if UserDefaults.standard.bool(forKey: "relay.official.pinned"),
+           !UserDefaults.standard.bool(forKey: "relay.official.autoPinUndone") {
+            UserDefaults.standard.set(true, forKey: "relay.official.autoPinUndone")
+            setConversationPinned(id, pinned: false)
         }
         refreshConversations()
         refreshActiveMessages(ifShowing: id)

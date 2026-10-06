@@ -1388,15 +1388,6 @@ private struct ConversationRow: View {
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 4)
-        .overlay(alignment: .leading) {
-            if hasUnread {
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(width: 3, height: 38)
-                    .offset(x: -6)
-                    .transition(.scale.combined(with: .opacity))
-            }
-        }
         .contentShape(.rect)
     }
 

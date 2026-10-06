@@ -153,6 +153,7 @@ final class AppModel {
 
         if case .ready(let service) = phase {
             service.start()  // no-op if socket is already running
+            service.markActiveConversationReadOnForeground()
             Task { await service.ensureNoteToSelf() }
             Task {
                 if let convId = await service.processPendingShare() {
