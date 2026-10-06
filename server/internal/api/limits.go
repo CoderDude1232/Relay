@@ -34,12 +34,24 @@ type tokenBucket struct {
 // newTokenBucketLimiter allows `burst` events at once, refilled at
 // `burst` per `per` (so the long-run rate equals the burst over that period).
 func newTokenBucketLimiter(burst float64, per time.Duration) *tokenBucketLimiter {
-	return &tokenBucketLimiter{
+	l := &tokenBucketLimiter{
 		buckets: make(map[string]*tokenBucket),
 		burst:   burst,
 		rate:    burst / per.Seconds(),
 	}
+	allLimiters = append(allLimiters, l)
+	return l
 }
+
+func (l *tokenBucketLimiter) reset() {
+	l.mu.Lock()
+	l.buckets = make(map[string]*tokenBucket)
+	l.mu.Unlock()
+}
+
+// allLimiters holds every package limiter so tests, which all share one
+// process and source IP, can start each case from empty buckets.
+var allLimiters []interface{ reset() }
 
 // refill returns the (refilled) bucket for an already-hashed key. Caller holds mu.
 func (l *tokenBucketLimiter) refill(hk string, now time.Time) *tokenBucket {

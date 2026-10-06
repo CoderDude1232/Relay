@@ -2151,7 +2151,15 @@ type slidingWindowLimiter struct {
 }
 
 func newSlidingWindowLimiter(limit int, window time.Duration) *slidingWindowLimiter {
-	return &slidingWindowLimiter{windows: make(map[string][]time.Time), limit: limit, window: window}
+	l := &slidingWindowLimiter{windows: make(map[string][]time.Time), limit: limit, window: window}
+	allLimiters = append(allLimiters, l)
+	return l
+}
+
+func (l *slidingWindowLimiter) reset() {
+	l.mu.Lock()
+	l.windows = make(map[string][]time.Time)
+	l.mu.Unlock()
 }
 
 func (l *slidingWindowLimiter) allow(key string) bool {

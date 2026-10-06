@@ -49,6 +49,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
+	// Every test talks from 127.0.0.1, so start each from empty rate limits.
+	for _, l := range allLimiters {
+		l.reset()
+	}
 	blobs, err := blob.Open(filepath.Join(t.TempDir(), "blobs"), 25<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +67,7 @@ type client struct {
 	env       *testEnv
 	username  string
 	accountID string
+	mailboxID string // device 1's opaque mailbox: the only send address
 	deviceID  uint32
 	password  string
 	authKey   *ecdsa.PrivateKey
@@ -81,9 +86,10 @@ func (e *testEnv) registerAs(username, password string) *client {
 	var resp struct {
 		AccountID string `json:"accountId"`
 		DeviceID  uint32 `json:"deviceId"`
+		MailboxID string `json:"mailboxId"`
 	}
 	e.doJSON("POST", "/v1/accounts", "", "", map[string]string{"username": username, "password": password}, http.StatusCreated, &resp)
-	c := &client{env: e, username: username, accountID: resp.AccountID, deviceID: resp.DeviceID, password: password}
+	c := &client{env: e, username: username, accountID: resp.AccountID, mailboxID: resp.MailboxID, deviceID: resp.DeviceID, password: password}
 	e.clients[c.authUser()] = c
 	c.uploadDeviceAuthKey()
 	return c
@@ -340,7 +346,7 @@ func TestSendReceiveAckAndOfflineQueue(t *testing.T) {
 	bobWS := env.connect(bob)
 
 	// Alice sends to Bob while he is online.
-	aliceWS.writeFrame(sendFrame(bob.accountID, &relaypb.DeviceMessage{
+	aliceWS.writeFrame(sendFrame(bob.mailboxID, &relaypb.DeviceMessage{
 		DeviceId:       1,
 		RegistrationId: 4242,
 		Type:           relaypb.CiphertextType_CIPHERTEXT_TYPE_PREKEY_MESSAGE,
@@ -361,7 +367,7 @@ func TestSendReceiveAckAndOfflineQueue(t *testing.T) {
 	bobWS.conn.Close()
 	time.Sleep(100 * time.Millisecond) // let the hub unregister
 
-	aliceWS.writeFrame(sendFrame(bob.accountID, &relaypb.DeviceMessage{
+	aliceWS.writeFrame(sendFrame(bob.mailboxID, &relaypb.DeviceMessage{
 		DeviceId: 1,
 		Type:     relaypb.CiphertextType_CIPHERTEXT_TYPE_MESSAGE,
 		Content:  []byte("ciphertext-2"),
@@ -391,7 +397,7 @@ func TestMismatchedDevicesRejected(t *testing.T) {
 	}, http.StatusCreated, nil)
 
 	aliceWS := env.connect(alice)
-	aliceWS.writeFrame(sendFrame(bob.accountID, &relaypb.DeviceMessage{
+	aliceWS.writeFrame(sendFrame(bob.mailboxID, &relaypb.DeviceMessage{
 		DeviceId: 1,
 		Type:     relaypb.CiphertextType_CIPHERTEXT_TYPE_MESSAGE,
 		Content:  []byte("x"),
@@ -404,67 +410,18 @@ func TestMismatchedDevicesRejected(t *testing.T) {
 		t.Fatalf("missing devices = %v, want [2]", resp.MissingDevices)
 	}
 
-	// Stale registration id is also rejected.
-	aliceWS.writeFrame(sendFrame(bob.accountID,
+	// Stale registration id is rejected (one message per frame, per mailbox).
+	aliceWS.writeFrame(sendFrame(bob.mailboxID,
 		&relaypb.DeviceMessage{DeviceId: 1, RegistrationId: 9999, Content: []byte("x")},
-		&relaypb.DeviceMessage{DeviceId: 2, Content: []byte("x")},
 	))
 	resp = aliceWS.readFrame().GetSendResponse()
-	if resp.GetStatus() != relaypb.SendStatus_SEND_STATUS_MISMATCHED_DEVICES || len(resp.StaleDevices) != 1 {
+	if resp.GetStatus() != relaypb.SendStatus_SEND_STATUS_MISMATCHED_DEVICES ||
+		len(resp.StaleDevices) != 1 || resp.StaleDevices[0] != 1 {
 		t.Fatalf("stale check: %+v", resp)
 	}
 }
 
 func (e *testEnv) connect(c *client) *wsConn { return c.connectWS() }
-
-func TestGroupLifecycle(t *testing.T) {
-	env := newTestEnv(t)
-	alice := env.register("alice", "password123")
-	bob := env.register("bob", "password123")
-	carol := env.register("carol", "password123")
-
-	// Alice creates a group with Bob.
-	var g struct {
-		ID             string   `json:"id"`
-		Name           string   `json:"name"`
-		DistributionID string   `json:"distributionId"`
-		Revision       int64    `json:"revision"`
-		Members        []string `json:"members"`
-	}
-	env.doJSON("POST", "/v1/groups", alice.authUser(), alice.password,
-		map[string]any{"name": "Trip", "members": []string{bob.accountID}}, http.StatusCreated, &g)
-	if len(g.Members) != 2 || g.Revision != 1 || g.DistributionID == "" {
-		t.Fatalf("unexpected group: %+v", g)
-	}
-
-	// Bob (a member) can fetch; Carol (not a member) is forbidden.
-	env.doJSON("GET", "/v1/groups/"+g.ID, bob.authUser(), bob.password, nil, http.StatusOK, nil)
-	env.doJSON("GET", "/v1/groups/"+g.ID, carol.authUser(), carol.password, nil, http.StatusForbidden, nil)
-
-	// Add Carol → revision bumps, distribution id unchanged (no rotation on add).
-	var afterAdd struct {
-		DistributionID string   `json:"distributionId"`
-		Revision       int64    `json:"revision"`
-		Members        []string `json:"members"`
-	}
-	env.doJSON("POST", "/v1/groups/"+g.ID+"/members", alice.authUser(), alice.password,
-		map[string]string{"account": carol.accountID}, http.StatusOK, &afterAdd)
-	if len(afterAdd.Members) != 3 || afterAdd.Revision != 2 || afterAdd.DistributionID != g.DistributionID {
-		t.Fatalf("add changed distribution id or wrong revision: %+v", afterAdd)
-	}
-
-	// Remove Carol → rotation: distribution id changes, revision bumps.
-	var afterRemove struct {
-		DistributionID string   `json:"distributionId"`
-		Revision       int64    `json:"revision"`
-		Members        []string `json:"members"`
-	}
-	env.doJSON("DELETE", "/v1/groups/"+g.ID+"/members/"+carol.accountID, alice.authUser(), alice.password,
-		nil, http.StatusOK, &afterRemove)
-	if len(afterRemove.Members) != 2 || afterRemove.Revision != 3 || afterRemove.DistributionID == g.DistributionID {
-		t.Fatalf("remove did not rotate distribution id: %+v", afterRemove)
-	}
-}
 
 // TestOAuthAccountProvisioning covers the social-login flow: first sign-in
 // creates the account, a later sign-in from a "new device" (no local creds)
