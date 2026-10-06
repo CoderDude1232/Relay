@@ -156,14 +156,26 @@ struct RelayApp: App {
             await service.sendGroupCallMessage(msg, toAccounts: accounts)
         }
         callManager.ownAccountId = service.credentials.accountId
-        callManager.onTriggerPush = { account, callId, name, kind in
-            await service.triggerCallPush(account: account, callId: callId, callerName: name, kind: kind)
+        callManager.onTriggerPush = { account, callId in
+            // The VoIP push carries only the call id (no caller name/account/kind).
+            await service.triggerCallPush(account: account, callId: callId)
         }
         callManager.nameResolver = { account in
             service.displayName(forAccount: account)
         }
-        callManager.localDisplayNameProvider = {
-            service.myDisplayName ?? service.username ?? String(service.credentials.accountId.prefix(8))
+        callManager.isBlockedAccount = { account in
+            service.isBlocked(account)
+        }
+        callManager.groupMembersResolver = { groupId in
+            guard let conv = service.conversations.first(where: { $0.groupId == groupId }) else { return nil }
+            return service.group(for: conv.id)?.members
+        }
+        callManager.onAwaitingCallOffer = {
+            // A VoIP push woke us for an anonymous call: make sure the socket is
+            // up (no-op if already running) and replay any OFFER the NSE already
+            // decrypted, so the caller can be identified within the wait window.
+            service.start()
+            Task { await replayPendingCallOffersDuringWake(service) }
         }
         callManager.onRecordCall = { call in
             service.recordCall(call)

@@ -354,6 +354,14 @@ struct MainTabView: View {
         } message: {
             Text(joinGroupError ?? "")
         }
+        .alert("Call Not Started", isPresented: Binding(
+            get: { callManager.groupCallFailureMessage != nil },
+            set: { if !$0 { callManager.groupCallFailureMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { callManager.groupCallFailureMessage = nil }
+        } message: {
+            Text(callManager.groupCallFailureMessage ?? "")
+        }
     }
 }
 

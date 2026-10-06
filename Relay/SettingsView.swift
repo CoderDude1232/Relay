@@ -408,7 +408,9 @@ private struct DataStorageSettingsView: View {
 struct PrivacySettingsView: View {
     let service: MessagingService
     @Environment(CallManager.self) private var callManager
-    @State private var privateCallMode = UserDefaults.standard.object(forKey: "relay.privateCallMode") as? Bool ?? true
+    @State private var privateCallMode = CallManager.isPrivateCallModeEnabled
+    @State private var showDirectCallsWarning = false
+    @AppStorage(CallManager.callsInRecentsKey) private var callsInRecents = false
     @State private var notificationPrivacy: String = UserDefaults(suiteName: AppModel.appGroupId)?.string(forKey: "relay.notificationPrivacy") ?? "full"
     @AppStorage("privacy.incognitoKeyboard") private var incognitoKeyboard = false
 
@@ -453,10 +455,36 @@ struct PrivacySettingsView: View {
                                   isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
             }
 
-            Section("Calls") {
-                SettingsToggleRow(systemName: "phone.fill", title: "Private Call Mode",
-                                  info: "Routes calls through Relay's servers so your IP address stays hidden from the other person. Calls may connect a little slower.",
-                                  isOn: Binding(get: { privateCallMode }, set: { privateCallMode = $0; callManager.privateCallMode = $0 }))
+            Section {
+                SettingsToggleRow(systemName: "phone.fill", title: "Relay-Only Calls",
+                                  info: "Routes every call through Relay's relay server so the other person never sees your IP address. If the relay server can't be reached, the call fails instead of connecting directly.",
+                                  isOn: Binding(get: { privateCallMode }, set: { newValue in
+                                      if newValue {
+                                          privateCallMode = true
+                                          callManager.privateCallMode = true
+                                      } else {
+                                          showDirectCallsWarning = true
+                                      }
+                                  }))
+                SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Show Calls in Recents",
+                                  info: "Adds Relay calls to the Phone app's Recents list, which can sync to your other Apple devices through iCloud.",
+                                  isOn: $callsInRecents)
+            } header: {
+                Text("Calls")
+            } footer: {
+                if !privateCallMode {
+                    Text("Direct calls are on: the people you call can see your IP address, which can reveal your approximate location.")
+                        .foregroundStyle(.red)
+                }
+            }
+            .confirmationDialog("Allow direct calls?", isPresented: $showDirectCallsWarning, titleVisibility: .visible) {
+                Button("Allow Direct Calls", role: .destructive) {
+                    privateCallMode = false
+                    callManager.privateCallMode = false
+                }
+                Button("Keep Relay-Only", role: .cancel) {}
+            } message: {
+                Text("Direct calls can connect faster, but they reveal your IP address — and with it your approximate location and network — to the person you're calling.")
             }
 
             Section("Media") {
