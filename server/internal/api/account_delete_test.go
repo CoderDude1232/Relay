@@ -20,7 +20,7 @@ func uniqueUsername(prefix string) string {
 func TestDeleteAccount(t *testing.T) {
 	env := newTestEnv(t)
 	name := uniqueUsername("delme")
-	alice := env.register(name, "password-alice")
+	alice := env.registerAs(name, "password-alice")
 	alice.uploadKeys(5)
 	ws := alice.connectWS()
 
@@ -39,8 +39,14 @@ func TestDeleteAccount(t *testing.T) {
 	env.doJSON("DELETE", "/v1/accounts/me", alice.authUser(), alice.password, nil, http.StatusUnauthorized, nil)
 
 	// Username is released and can be registered again.
-	env.doJSON("GET", "/v1/accounts/by-username/"+name, "", "", nil, http.StatusNotFound, nil)
-	again := env.register(name, "password-again")
+	var avail struct {
+		Available bool `json:"available"`
+	}
+	env.doJSON("GET", "/v1/usernames/"+name+"/available", "", "", nil, http.StatusOK, &avail)
+	if !avail.Available {
+		t.Fatal("deleted account's username is still reported taken")
+	}
+	again := env.registerAs(name, "password-again")
 	if again.accountID == alice.accountID {
 		t.Fatal("re-registration reused the deleted account id")
 	}
@@ -50,8 +56,8 @@ func TestDeleteAccount(t *testing.T) {
 // an account filed are removed with it; reports against it are kept.
 func TestReports(t *testing.T) {
 	env := newTestEnv(t)
-	alice := env.register(uniqueUsername("rep-alice"), "password-alice")
-	bob := env.register(uniqueUsername("rep-bob"), "password-bob")
+	alice := env.registerAs(uniqueUsername("rep-alice"), "password-alice")
+	bob := env.registerAs(uniqueUsername("rep-bob"), "password-bob")
 
 	post := func(c *client, body map[string]any, want int) {
 		t.Helper()
@@ -92,7 +98,7 @@ func TestReports(t *testing.T) {
 	}
 
 	// Rate limit: 20 per reporter per 24h (bob has used 1).
-	carol := env.register(uniqueUsername("rep-carol"), "password-carol")
+	carol := env.registerAs(uniqueUsername("rep-carol"), "password-carol")
 	for i := 0; i < 19; i++ {
 		post(bob, map[string]any{"reportedAccount": carol.accountID, "reason": "spam"}, http.StatusNoContent)
 	}

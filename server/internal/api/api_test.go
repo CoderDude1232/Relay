@@ -61,20 +61,29 @@ func newTestEnv(t *testing.T) *testEnv {
 
 type client struct {
 	env       *testEnv
+	username  string
 	accountID string
 	deviceID  uint32
 	password  string
 	authKey   *ecdsa.PrivateKey
 }
 
-func (e *testEnv) register(username, password string) *client {
+// register creates an account whose username is prefix plus a random suffix,
+// so tests sharing one database never collide (read it back from c.username).
+func (e *testEnv) register(prefix, password string) *client {
+	e.t.Helper()
+	return e.registerAs(uniqueUsername(prefix), password)
+}
+
+// registerAs creates an account with exactly this username.
+func (e *testEnv) registerAs(username, password string) *client {
 	e.t.Helper()
 	var resp struct {
 		AccountID string `json:"accountId"`
 		DeviceID  uint32 `json:"deviceId"`
 	}
 	e.doJSON("POST", "/v1/accounts", "", "", map[string]string{"username": username, "password": password}, http.StatusCreated, &resp)
-	c := &client{env: e, accountID: resp.AccountID, deviceID: resp.DeviceID, password: password}
+	c := &client{env: e, username: username, accountID: resp.AccountID, deviceID: resp.DeviceID, password: password}
 	e.clients[c.authUser()] = c
 	c.uploadDeviceAuthKey()
 	return c
@@ -121,10 +130,12 @@ func (c *client) uploadDeviceAuthKey() {
 	if err != nil {
 		c.env.t.Fatal(err)
 	}
-	c.authKey = key
+	// The first upload goes over Basic; only afterwards does the client sign
+	// (signing with a key the relay doesn't hold yet is rightly refused).
 	c.env.doJSON("PUT", "/v1/devices/auth-key", c.authUser(), c.password, map[string]string{
 		"publicKey": base64.StdEncoding.EncodeToString(elliptic.Marshal(elliptic.P256(), key.X, key.Y)),
 	}, http.StatusNoContent, nil)
+	c.authKey = key
 }
 
 func (c *client) deviceListVersion() int64 {
@@ -465,6 +476,14 @@ func TestOAuthAccountProvisioning(t *testing.T) {
 	// Stub Supabase verification: the token is "userID|email"; user ids starting
 	// with "nc-" have an unconfirmed email.
 	env.api.SetSupabaseAuth("https://stub.supabase.co", "anon")
+	// Emails are stored only as OPRF tokens, so linking needs a key.
+	oprfKey, err := oprf.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.api.SetOPRF(oprfKey); err != nil {
+		t.Fatal(err)
+	}
 	env.api.verifySupabaseToken = func(_ context.Context, token string) (supabaseUser, error) {
 		id, email, ok := strings.Cut(token, "|")
 		if !ok || id == "" {
@@ -578,7 +597,7 @@ func TestContactInviteSingleUse(t *testing.T) {
 	}
 	env.doJSON("POST", "/v1/contact-invites/claim", bob.authUser(), bob.password,
 		map[string]string{"token": created.Token}, http.StatusOK, &claim)
-	if claim.AccountID != alice.accountID || claim.Username != "alice-invite" {
+	if claim.AccountID != alice.accountID || claim.Username != alice.username {
 		t.Fatalf("first claim wrong: %+v", claim)
 	}
 
@@ -762,11 +781,11 @@ func TestBlindedDirectory(t *testing.T) {
 	}
 
 	alice := env.register("alice-dir", "password-alice")
-	env.register("bob-dir", "password-bob")
+	bob := env.register("bob-dir", "password-bob")
 
 	// Simulate the client's oblivious lookup of "bob-dir": blind H1(x), have the
 	// server evaluate under k, unblind, derive the token — the server never sees x.
-	id := []byte(oprf.Normalize("bob-dir"))
+	id := []byte(oprf.Normalize(bob.username))
 	h := sha512.New()
 	h.Write([]byte("Relay-OPRF-v1-h2g"))
 	h.Write(id)
@@ -828,8 +847,8 @@ func TestBlindedDirectory(t *testing.T) {
 		}
 		return "", "", false
 	}
-	if _, user, ok := fetch(token); !ok || user != "bob-dir" {
-		t.Fatalf("expected to resolve bob-dir, got %q (found=%v)", user, ok)
+	if _, user, ok := fetch(token); !ok || user != bob.username {
+		t.Fatalf("expected to resolve %s, got %q (found=%v)", bob.username, user, ok)
 	}
 
 	// An unknown token matches nothing — non-registered contacts stay private.

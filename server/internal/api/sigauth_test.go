@@ -174,7 +174,7 @@ func TestRequestBodyDigestDeclared(t *testing.T) {
 
 func TestSignatureAuth(t *testing.T) {
 	env := newTestEnv(t)
-	c := env.register(uniqueUsername("siguser"), "password123")
+	c := env.registerAs(uniqueUsername("siguser"), "password123")
 
 	const path = "/v1/keys/count"
 	now := time.Now().UnixMilli()
