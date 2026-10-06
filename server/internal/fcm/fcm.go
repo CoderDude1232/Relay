@@ -160,10 +160,23 @@ func (p *Pusher) send(deviceToken string, data map[string]string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("fcm status %d: %s", resp.StatusCode, string(msg))
+		err := fmt.Errorf("fcm status %d: %s", resp.StatusCode, string(msg))
+		// 404 NOT_FOUND / UNREGISTERED: the registration token is dead (app
+		// uninstalled or token rotated). Signal it so the caller clears it.
+		if resp.StatusCode == http.StatusNotFound || bytes.Contains(msg, []byte("UNREGISTERED")) {
+			return &tokenError{err}
+		}
+		return err
 	}
 	return nil
 }
+
+// tokenError marks a send failure caused by a permanently invalid token; the
+// hub detects it via the TokenInvalid() method.
+type tokenError struct{ error }
+
+func (e *tokenError) Unwrap() error      { return e.error }
+func (e *tokenError) TokenInvalid() bool { return true }
 
 // accessToken returns a cached OAuth2 access token, minting a fresh one from a
 // signed service-account JWT when the cached one is near expiry.

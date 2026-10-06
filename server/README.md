@@ -7,8 +7,41 @@ message plaintext or private keys.
 ## Run
 
 ```sh
-go run ./cmd/relayd -addr :8080 -db relay.db
+go run ./cmd/relayd -addr :8080 -dsn 'postgres://relay:relay@localhost/relay?sslmode=disable'
 ```
+
+**Run PostgreSQL on the relay host** (loopback or a unix socket, e.g.
+`-dsn 'postgres:///relay?host=/var/run/postgresql'`). The DB connection carries
+every routing row and queued envelope; if the DSN names a non-local host and
+sets no `sslmode`, relayd logs a warning at startup (pgx's default silently
+falls back to plaintext). For a remote DB use `sslmode=verify-full`.
+
+### Operational flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-log-level` | `warn` | `debug`, `info`, `warn` or `error`. Per-connection / per-message events (session registered, push sent, …) are `debug`; startup lines (incl. the sealed-sender trust-root public key) are `info`. |
+| `-attachment-ttl` | `336h` (14 d) | Attachment blobs older than this are deleted (hourly GC). |
+| `-attachment-daily-bytes` | `2147483648` (2 GiB) | Per-account upload budget, bytes per rolling day. |
+| `-attachment-daily-count` | `1000` | Per-account `POST /v1/attachments` allocations per rolling day. |
+| `-max-attachment` | 25 MiB | Max size of one attachment blob. |
+
+HTTP server limits: 10 s to read request headers, 16 KiB max headers, 120 s
+keep-alive idle timeout, and per-request deadlines of 30 s (read) / 60 s
+(write) — 10 min for attachment upload/download, none for the WebSocket.
+
+### Retention
+
+An hourly sweeper (also run at startup) deletes:
+
+| Data | Kept for |
+|---|---|
+| Queued envelopes (`message_queue`) | 14 days, or until acked |
+| Attachment blobs | 14 days (`-attachment-ttl`) |
+| Abuse reports | 180 days |
+| Nuke commands | 1 hour (only deliverable inside the 5-min freshness window) |
+| Contact invites | until used or expired (7 d) |
+| Group invites, provisioning sessions, device-link tokens | until expired |
 
 ### TLS (recommended for LAN / device testing)
 
@@ -72,6 +105,13 @@ Authenticated endpoints accept either of two schemes:
 
 Account creation is unauthenticated.
 
+**Failed-auth throttling.** Failed authentications are counted per source IP
+bucket (50 per 10 min, both schemes) and, for HTTP Basic, per target device
+(20 per 10 min). Once a budget is spent the server answers `429` without doing
+any password hashing / signature work until it refills. (Relay-Sig is never
+throttled per device, so a third party can't lock a device out by failing on
+its behalf.)
+
 ## Data at rest
 
 The relay never stores a plaintext email address. When an email is supplied
@@ -82,6 +122,18 @@ exists only in keyed form and a database dump can't be reversed to addresses
 without the server's OPRF key. Source IPs are used transiently for
 rate-limiting and are never logged or persisted; presence/last-seen is kept in
 memory only.
+
+**Rate-limiter state holds no raw identifiers.** Every in-memory limiter key —
+a source-IP bucket (full IPv4 address, or the IPv6 **/64**), an account id, a
+requester:target pair — is replaced by an HMAC under a random salt that lives
+only in memory and rotates every 24 h (limiter counters restart on rotation).
+
+**Coarse timestamps.** `accounts.created_at` / `devices.created_at` are stored
+at day granularity (existing rows were truncated); prekey rows store no upload
+time (it used to be rewritten on every upload, acting as a last-active log).
+Legacy device-link tokens store no device password (it's generated at claim
+time); `message_queue.created_at` stays exact because it drives ordering and
+the 14-day TTL.
 
 The one exception to "ciphertext only" is an abuse report (`POST /v1/reports`):
 it stores the plaintext messages the reporter explicitly chose to forward,
@@ -118,20 +170,20 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `POST /v1/devices` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {accountId, deviceId, mailboxId, deviceListVersion}`. Broadcasts `DeviceListChanged(DEVICE_ADDED)`. `409` on stale `expectedVersion`. |
+| `POST /v1/devices` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {accountId, deviceId, mailboxId, deviceListVersion}`. Broadcasts `DeviceListChanged(DEVICE_ADDED)`. `409` on stale `expectedVersion` or when the account already has 5 devices. |
 | `GET /v1/devices` | sig | → `{devices:[{deviceId, mailboxId}], deviceListVersion}` |
-| `DELETE /v1/devices/{id}` | sig | `{auth{…}}` → `204`. Broadcasts `DEVICE_REMOVED`. |
+| `DELETE /v1/devices/{id}` | sig | `{auth{…}}` → `204`. Deletes the device and, in the same transaction, its signed/Kyber/one-time prekeys and queued envelopes (its push tokens and auth key live on the device row). Closes the device's live WebSocket and broadcasts `DEVICE_REMOVED`. Device ids are allocated from a monotonic per-account counter, so a removed id is **never reused**. |
 | `POST /v1/devices/link-invitations` | sig | `{auth{…}}` → `201 {linkToken, verificationCode, expiresAt}` |
-| `POST /v1/devices/link-claims` | none | `{linkToken, verificationCode}` → `200 {accountId, deviceId, password, username}`. `404` expired/used, `409` device list changed. Legacy forward-QR flow; superseded by the provisioning-session flow below. |
+| `POST /v1/devices/link-claims` | none | `{linkToken, verificationCode}` → `200 {accountId, deviceId, password, username}`. `404` expired/used, `409` device list changed or 5-device limit reached. The device password is generated at claim time (never stored with the token). Legacy forward-QR flow; superseded by the provisioning-session flow below. |
 | `POST /v1/provisioning-sessions` | none | → `201 {sessionId, expiresAt}`. New device mints a blind mailbox for reversed linking; shows `{sessionId, ephemeralPublicKey}` in a QR (ephemeral key never touches the server). 10-min expiry. Rate-limited to 10 sessions / source IP / 10 min (`429`). (Top-level path, not under `/v1/devices/`, to avoid a `{id}` route collision with `/v1/devices/{id}/auth-key`.) |
 | `GET /v1/provisioning-sessions/{id}` | none | → `200 {blob}` once the primary has provisioned, `204` while pending, `404` expired/consumed. New device polls this. Single-use: the session is deleted on the first successful fetch. |
 | `PUT /v1/provisioning-sessions/{id}` | sig | `{blob}` → `204`. Primary deposits the ciphertext (identity key + credentials, AES-GCM under an ECDH-derived key, **signed by the account identity key** so the new device authenticates the primary). **Write-once** — a session can be provisioned only once, so a second writer can't substitute the payload (`404` if expired/unknown/already used). Blob capped at 64 KiB (`413`). Relay stores only the opaque blob. |
-| `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion`. No verification code — the camera scan is the trust anchor. |
+| `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion` or 5-device limit. No verification code — the camera scan is the trust anchor. |
 | `PUT /v1/devices/auth-key` | sig | `{publicKey}` — uncompressed P-256 point `0x04‖X‖Y` (65 bytes), ≤512 B → `204`. Stores the key `Relay-Sig` and nuke/device-list signatures verify against. |
 | `GET /v1/devices/{id}/auth-key` | sig | → `{authPublicKey}` (same account only). Lets clients verify a peer device's nuke/device-list signatures. |
-| `PUT /v1/devices/apns` | sig | `{token}` → `204`. Registers an APNs token (iOS); sets push kind `apns`. |
+| `PUT /v1/devices/apns` | sig | `{token}` → `204`. Registers an APNs token (iOS); sets push kind `apns`. Token must be 64–200 hex chars (`400` otherwise). |
 | `PUT /v1/devices/fcm` | sig | `{token}` → `204`. Registers a Firebase Cloud Messaging token (Android); sets push kind `fcm`. Requires `-fcm-service-account` for the server to actually send. |
-| `PUT /v1/devices/voip` | sig | `{token}` → `204`. PushKit VoIP token (iOS; no Android analogue). |
+| `PUT /v1/devices/voip` | sig | `{token}` → `204`. PushKit VoIP token (iOS; no Android analogue). 64–200 hex chars. |
 | `PUT /v1/devices/me/push-content` | sig | `{includeContent}` → `204`. `false` (default) = content-free wake (the device fetches the envelope from `GET /v1/queue`); `true` embeds the encrypted envelope in the push (`"e"`). Applies to both APNs and FCM. |
 | `POST /v1/devices/me/mailbox/rotate` | sig | → `200 {mailboxId}`. Fresh opaque mailbox id (clients rotate daily in sealed mode). The offline queue is keyed by (account, device), not mailbox, so queued deliveries are unaffected. |
 
@@ -141,14 +193,14 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 |---|---|---|
 | `PUT /v1/keys` | sig | `{registrationId, identityKey, signedPreKey{keyId,publicKey,signature}, kyberPreKey{…}, oneTimePreKeys[{keyId,publicKey}], replaceOneTimePreKeys?}` → `204`. Identity/signed/Kyber **replace**; one-time keys **append** by default, or **replace** the device's whole pool when `replaceOneTimePreKeys:true` (deletes this device's existing one-time rows first, in the same transaction — used on fresh install/restore or desync heal so the relay never serves an orphaned key). ≤200 OTKs/upload, 100 uploads/account/hour. Kyber prekey is **required** (PQXDH). |
 | `GET /v1/keys/count` | sig | → `{count}`. Replenish below ~20. |
-| `GET /v1/keys/{account}[?device=N]` | sig | → `{devices:[{deviceId, mailboxId, registrationId, identityKey, signedPreKey, kyberPreKey, oneTimePreKey|null}], accessKey?}`. Consumes one OTK per device; `null` when exhausted (degraded PQXDH). 200/(requester,target)/hour; own-account fetches exempt. |
+| `GET /v1/keys/{account}[?device=N]` | sig | → `{devices:[{deviceId, mailboxId, registrationId, identityKey, signedPreKey, kyberPreKey, oneTimePreKey|null}], accessKey?}`. Consumes one OTK per device; `null` when exhausted (degraded PQXDH). 200/(requester,target)/hour; own-account fetches exempt. **OTK hand-out budgets** (cross-account): at most 60 OTKs per target device per hour (across all requesters) and 300 per requesting account per hour (across all targets). Past either budget the bundle is still returned, with `oneTimePreKey: null` (signed + last-resort Kyber prekey only), and the pool is untouched. |
 
 ### Messaging
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `POST /v1/messages/sealed` | **none** | `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral, clientTimestamp}` → `200 {serverTimestamp}`. Verifies `accessKey` matches the destination account (constant-time) without learning the sender, delivers an envelope with **empty sender fields**. `403` for *any* failure (unknown mailbox and wrong key are indistinguishable). 600/IP/min, 120/mailbox/min. |
-| `GET /v1/queue` | sig | → `{envelopes:[base64 serialized Envelope]}`. Does **not** dequeue. HTTP/3-capable QUIC fallback for receiving when the TCP WebSocket can't connect. |
+| `POST /v1/messages/sealed` | **none** | `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral, clientTimestamp}` → `200 {serverTimestamp}`. Verifies `accessKey` matches the destination account (constant-time) without learning the sender, delivers an envelope with **empty sender fields**. `403` for *any* failure (unknown mailbox and wrong key are indistinguishable — the lookup is one query and the constant-time key comparison always runs, against a dummy key for unknown mailboxes). 600/IP-bucket/min, 120/mailbox/min. `429` also when this source-IP bucket already holds 200 unacked envelopes in the destination device's queue, or that queue is full (500 envelopes / 50 MB). |
+| `GET /v1/queue[?limit=N][&cursor=C]` | sig | → `{envelopes:[base64 serialized Envelope], more: bool, cursor?: string}`. **Paged**: at most `limit` envelopes (1–100, default 100) and at most 4 MiB of ciphertext per page (always ≥1 envelope when any remain). When `more` is true, pass the returned opaque `cursor` back to get the next page; `cursor` is omitted when `more` is false. Does **not** dequeue (ack independently). `400` bad limit/cursor. HTTP/3-capable QUIC fallback for receiving when the TCP WebSocket can't connect. |
 | `POST /v1/messages/ack` | sig | `{envelopeId}` → `204`. REST equivalent of the WebSocket ack. |
 | `POST /v1/call/{account}` | sig | `{callId, callerName, kind}` → `204`. Fires a VoIP push (iOS/PushKit). |
 
@@ -169,10 +221,10 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `POST /v1/attachments` | sig | → `201 {id}` |
-| `PUT /v1/attachments/{id}` | sig | raw `application/octet-stream` body → `204`; `413` over the cap. Opaque ciphertext only. |
-| `GET /v1/attachments/{id}` | sig | → raw bytes; `404` after TTL reaping. |
-| `GET /v1/turn-credentials` | sig | → `{urls[], username, credential, ttl}` (coturn REST HMAC-SHA1, 1 h). `404` when TURN isn't configured — treat as "no TURN", not an error. |
+| `POST /v1/attachments` | sig | → `201 {id}`. `429` past the account's daily quota (1000 allocations or 2 GiB uploaded per rolling day by default). |
+| `PUT /v1/attachments/{id}` | sig | raw `application/octet-stream` body → `204`; `413` over the cap; `429` when the allocating account's daily byte budget is spent. Opaque ciphertext only. |
+| `GET /v1/attachments/{id}` | sig | → raw bytes, streamed from disk; supports `Range` (`206`) for resumable downloads; no `Last-Modified`. `404` after TTL reaping (14 days). |
+| `GET /v1/turn-credentials` | sig | → `{urls[], username, credential, ttl}` (coturn REST HMAC-SHA1, 1 h). `username` is `<expiry>:<16 random hex>` — it carries no account identifier. `404` when TURN isn't configured — treat as "no TURN", not an error. |
 
 ### Real-time
 
@@ -193,7 +245,18 @@ Every binary WS message is one serialized `relay.v1.ClientFrame`
 (client→server) or `relay.v1.ServerFrame` (server→client).
 
 On connect the server drains the device's offline queue as `Envelope`
-frames, then sends `QueueEmpty`; everything after that is real-time.
+frames, then sends `QueueEmpty`; everything after that is real-time. The
+drain is paged (≤100 envelopes / 4 MiB per database read) and applies
+backpressure, so no queued envelope (and never `QueueEmpty`) is dropped
+because the client reads slowly. One live socket per device: a new
+connection for the same device closes the previous one (close code 1008).
+Removing a device closes its socket.
+
+**Send limits.** `SendRequest`s are limited per sender account (burst 1000,
+then 1200/min) and, for fairness, one sender may hold at most 200 unacked
+envelopes in any one destination device's queue (a device queue holds at most
+500 envelopes / 50 MB). Over any of these the response is
+`SEND_STATUS_RATE_LIMITED` — back off and retry; nothing was queued.
 
 **Sending (`SendRequest`) is per-mailbox, one device per frame.**
 `destination_account` is an **opaque mailbox id** (not an account id), and
@@ -228,9 +291,21 @@ then fetches the encrypted envelope from `GET /v1/queue`, decrypts it
 on-device, and acks via `POST /v1/messages/ack`. So neither Apple nor Google
 ever carries message content.
 
+**Coalesced.** At most one push per device every 3 s; a burst of messages
+yields one immediate push plus one trailing push at the end of the window, so
+the newest message always gets a wake.
+
+**Dead tokens are cleared.** When APNs answers `410 Unregistered`, or
+`BadDeviceToken` from **both** the sandbox and production environments (or
+FCM answers `404`/`UNREGISTERED`), the stored token (APNs, VoIP or FCM) is
+cleared; the device must re-register it.
+
 **Opt-in ciphertext-in-push** (`PUT /v1/devices/me/push-content
 {includeContent:true}`) embeds the base64 `Envelope` under key `"e"` for a
-faster wake without a fetch — identical on both providers. FCM's data payload is
+faster wake without a fetch — identical on both providers. Only **sealed**
+envelopes (no `sender_account`/`sender_device`) are ever embedded, so the push
+provider never learns who sent what; an envelope from the authenticated send
+path gets a content-free wake instead and is fetched from the queue. FCM's data payload is
 capped at ~4 KB, so an envelope that would exceed the budget silently degrades
 to a content-free wake (the device fetches it from the queue instead); the
 message stays end-to-end encrypted either way.
@@ -257,5 +332,9 @@ Flags:
   lives in Supabase Auth. When relayd runs with `-supabase-service-key-file`,
   `DELETE /v1/accounts/me` also deletes the Supabase auth user (and with it the
   stored email) via the admin API; Apple token revocation is still separate.
-- Attachment blobs are not owner-tracked, so account deletion cannot remove the
-  account's uploads; they expire via the blob store's TTL GC.
+- Attachment blobs are not owner-tracked on disk, so account deletion cannot
+  remove the account's uploads; they expire via the blob store's TTL GC (14 d).
+  (The upload quota remembers the allocating account only in memory, as a
+  salted hash, for at most 24 h.)
+- Queue-fairness and push-coalescing bookkeeping is in memory only and starts
+  empty after a restart.

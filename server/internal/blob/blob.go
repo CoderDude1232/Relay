@@ -91,6 +91,21 @@ func (s *Store) Get(id string) ([]byte, error) {
 	return data, err
 }
 
+// Open returns the blob as an open file for streaming (the caller closes it).
+// Prefer this over Get for serving: it never loads the blob into memory, and
+// *os.File is an io.ReadSeeker so http.ServeContent can serve ranges.
+func (s *Store) Open(id string) (*os.File, error) {
+	p, ok := s.path(id)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	f, err := os.Open(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	return f, err
+}
+
 // GC removes blobs older than ttl (by mtime).
 func (s *Store) GC(ttl time.Duration) error {
 	entries, err := os.ReadDir(s.dir)

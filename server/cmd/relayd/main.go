@@ -39,6 +39,33 @@ func runBlobGC(blobs *blob.Store, ttl time.Duration) {
 	}
 }
 
+// runRetentionSweeper deletes expired rows from every table with a retention
+// window (queue, invites, provisioning sessions, link tokens, reports, nuke
+// commands) once at startup and then hourly, and prunes the hub's in-memory
+// bookkeeping. Without it expired data would linger until some request
+// happened to touch its table.
+func runRetentionSweeper(st *store.Store, h *hub.Hub) {
+	sweep := func() {
+		if err := st.PurgeExpired(); err != nil {
+			slog.Warn("retention sweep failed", "err", privlog.Error(err))
+		}
+		h.Prune(store.QueueTTL)
+	}
+	sweep()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		sweep()
+	}
+}
+
+// parseLogLevel maps the -log-level flag to a slog level.
+func parseLogLevel(v string) (slog.Level, error) {
+	var l slog.Level
+	err := l.UnmarshalText([]byte(v))
+	return l, err
+}
+
 // runRateLimiterGC periodically removes stale keys from the in-memory rate
 // limiters so they don't grow unboundedly in long-running deployments.
 func runRateLimiterGC(h *api.Server) {
@@ -56,7 +83,10 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "path to TLS private key")
 	blobDir := flag.String("blobs", "attachments", "directory for encrypted attachment blobs")
 	maxAttachment := flag.Int64("max-attachment", 25<<20, "max attachment blob size in bytes")
-	blobTTL := flag.Duration("attachment-ttl", 30*24*time.Hour, "how long to keep attachment blobs")
+	blobTTL := flag.Duration("attachment-ttl", 14*24*time.Hour, "how long to keep attachment blobs")
+	attachDailyBytes := flag.Int64("attachment-daily-bytes", 2<<30, "per-account attachment upload budget in bytes per rolling day")
+	attachDailyCount := flag.Int("attachment-daily-count", 1000, "per-account attachment allocations per rolling day")
+	logLevel := flag.String("log-level", "warn", "minimum log level: debug, info, warn or error (per-connection/per-message events are debug)")
 	apnsKey := flag.String("apns-key", "", "path to APNs .p8 auth key (enables push)")
 	apnsKeyID := flag.String("apns-key-id", "", "APNs key id")
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
@@ -71,6 +101,13 @@ func main() {
 	sealedKey := flag.String("sealed-sender-trust-key", "", "path to the sealed-sender trust-root private key (hex, 32 bytes); generated if absent, enables GET /v1/certificate/delivery")
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
 	flag.Parse()
+
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		slog.Error("invalid -log-level", "value", *logLevel)
+		os.Exit(1)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
 	if (*tlsCert == "") != (*tlsKey == "") {
 		slog.Error("-tls-cert and -tls-key must be provided together")
@@ -92,6 +129,7 @@ func main() {
 	go runBlobGC(blobs, *blobTTL)
 
 	h := hub.New(st)
+	go runRetentionSweeper(st, h)
 	if *apnsKey != "" {
 		pusher, err := apns.New(*apnsKey, *apnsKeyID, *apnsTeamID, *apnsTopic, *apnsProduction)
 		if err != nil {
@@ -113,6 +151,7 @@ func main() {
 	}
 
 	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)
+	apiServer.SetAttachmentQuota(*attachDailyBytes, *attachDailyCount)
 	if *supabaseURL != "" {
 		apiServer.SetSupabaseAuth(*supabaseURL, *supabaseAnonKey)
 		slog.Info("supabase social login enabled", "url", *supabaseURL)
@@ -187,6 +226,11 @@ func main() {
 		Addr:              *addr,
 		Handler:           servedHandler,
 		ReadHeaderTimeout: 10 * time.Second,
+		// No blanket ReadTimeout/WriteTimeout: the WebSocket is long-lived.
+		// Ordinary requests get per-request deadlines from the API handler
+		// (30 s read / 60 s write; 10 min for attachment transfers).
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 16 << 10,
 		// Discard stdlib HTTP error logs — they include client IP addresses
 		// (e.g. TLS handshake failures from port scanners) which would persist
 		// in the systemd journal and be recoverable under a warrant.

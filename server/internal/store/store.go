@@ -11,7 +11,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -44,11 +46,33 @@ const maxDevicesPerAccount = 5
 
 const maxGroupMembers = 256
 
+// QueueTTL is how long an undelivered envelope is kept before PurgeExpired
+// drops it.
+const QueueTTL = 14 * 24 * time.Hour
+
 const (
-	queueTTLMillis         = int64((30 * 24 * time.Hour) / time.Millisecond)
+	queueTTLMillis         = int64(QueueTTL / time.Millisecond)
 	maxQueuedEnvelopeBytes = 512 * 1024
 	maxQueuedPerDevice     = 500
+	// maxQueuedBytesPerDevice caps a device's total queued ciphertext, so the
+	// count cap can't be turned into 500 × 512 KiB of storage per device.
+	maxQueuedBytesPerDevice = 50 << 20
+	// Abuse reports are kept for 180 days.
+	reportTTLMillis = int64((180 * 24 * time.Hour) / time.Millisecond)
+	// Stored nuke commands are only ever delivered inside the client's 5-minute
+	// freshness window (and replays are rejected by that timestamp check), so
+	// rows older than an hour serve no purpose and are purged.
+	nukeRetentionMillis = int64(time.Hour / time.Millisecond)
 )
+
+// coarseDayMillis returns the start (UTC) of the current day in unix ms. Row
+// creation times that aren't needed for expiry are stored at day granularity
+// so the database doesn't record exactly when an account or device appeared.
+func coarseDayMillis() int64 {
+	const day = int64(24 * time.Hour / time.Millisecond)
+	now := time.Now().UnixMilli()
+	return now - now%day
+}
 
 type Store struct {
 	db *pgxpool.Pool
@@ -63,7 +87,16 @@ func Open(dsn string) (*Store, error) {
 	}
 	cfg.MaxConns = 20
 	cfg.MinConns = 2
+	if !strings.Contains(dsn, "sslmode") && !isLocalDBHost(cfg.ConnConfig.Host) {
+		// pgx's default (sslmode=prefer) silently falls back to plaintext, and
+		// this connection carries every routing row and queued envelope.
+		slog.Warn("store: database host is not local and the DSN sets no sslmode; " +
+			"run PostgreSQL on the relay host (or a unix socket), or add sslmode=verify-full")
+	}
 	cfg.ConnConfig.Config.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if network == "unix" {
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		}
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
@@ -102,6 +135,16 @@ func Open(dsn string) (*Store, error) {
 }
 
 func (s *Store) Close() error { s.db.Close(); return nil }
+
+// isLocalDBHost reports whether a PostgreSQL host is this machine: loopback or
+// a unix-socket directory (an absolute path).
+func isLocalDBHost(host string) bool {
+	if host == "" || strings.HasPrefix(host, "/") || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 func (s *Store) migrate() error {
 	ctx := context.Background()
@@ -334,6 +377,21 @@ CREATE TABLE IF NOT EXISTS group_invites (
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_account, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports (reported_account, created_at)`,
+		// Monotonic per-account device-id counter: a removed device's id is
+		// never handed out again (peers may still hold sessions/receipts keyed
+		// by it). 0 = not yet initialised; allocation takes the max of this and
+		// the live MAX(device_id).
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS next_device_id BIGINT NOT NULL DEFAULT 0`,
+		// Legacy link tokens no longer hold the new device's password (it is
+		// generated at claim time); scrub any that were stored in plaintext.
+		`UPDATE device_link_tokens SET password = '' WHERE password <> ''`,
+		// Prekey rows no longer carry an upload time (it acted as a
+		// last-active signal); account/device creation times are kept only
+		// at day granularity.
+		`UPDATE signed_prekeys SET created_at = 0 WHERE created_at <> 0`,
+		`UPDATE kyber_prekeys SET created_at = 0 WHERE created_at <> 0`,
+		`UPDATE accounts SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
+		`UPDATE devices SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -430,7 +488,7 @@ func (s *Store) CreateAccount(username string, emailToken []byte, devicePassword
 	if err != nil {
 		return "", 0, err
 	}
-	now := time.Now().UnixMilli()
+	now := coarseDayMillis()
 	ctx := context.Background()
 
 	tx, err := s.db.Begin(ctx)
@@ -444,7 +502,7 @@ func (s *Store) CreateAccount(username string, emailToken []byte, devicePassword
 		emailVal = emailToken
 	}
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, username, email_token, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		`INSERT INTO accounts (id, username, email_token, account_password_hash, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, 1)`,
 		accountID, username, emailVal, accountHash, now); err != nil {
 		if isUniqueViolation(err) {
 			return "", 0, ErrUsernameTaken
@@ -504,11 +562,12 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (accou
 	}
 	defer tx.Rollback(ctx)
 
-	var maxDev int
-	tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) FROM devices WHERE account_id = $1`, accountID).Scan(&maxDev)
-	newDevID := uint32(maxDev + 1)
+	newDevID, err := allocateDeviceID(ctx, tx, accountID)
+	if err != nil {
+		return "", "", 0, "", err
+	}
 
-	now := time.Now().UnixMilli()
+	now := coarseDayMillis()
 	if _, err = tx.Exec(ctx,
 		`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
 		accountID, newDevID, mailboxID, deviceHash, now); err != nil {
@@ -584,7 +643,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 				return "", "", 0, "", false, err
 			}
 		}
-		now := time.Now().UnixMilli()
+		now := coarseDayMillis()
 		if _, e := tx.Exec(ctx,
 			`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
 			accountID, username, emailVal, supabaseUserID, accountHash, now); e != nil {
@@ -607,10 +666,11 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 	if err != nil {
 		return "", "", 0, "", false, err
 	}
-	var maxDev int
-	tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) FROM devices WHERE account_id = $1`, accountID).Scan(&maxDev)
-	deviceID = uint32(maxDev + 1)
-	now := time.Now().UnixMilli()
+	deviceID, err = allocateDeviceID(ctx, tx, accountID)
+	if err != nil {
+		return "", "", 0, "", false, err
+	}
+	now := coarseDayMillis()
 	if _, err = tx.Exec(ctx,
 		`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
 		accountID, deviceID, mailboxID, deviceHash, now); err != nil {
@@ -690,6 +750,41 @@ func (s *Store) LookupAccountByEmail(emailToken []byte) (accountID, username str
 	return accountID, username, err
 }
 
+// allocateDeviceID reserves the next device id for an account inside tx. Ids
+// are monotonic per account: accounts.next_device_id records the highest id
+// ever handed out, so a removed device's id is never reused (MAX(device_id)+1
+// would recycle it after the highest device is removed). Accounts created
+// before the counter existed start from their current MAX(device_id). Returns
+// ErrNotFound when the account doesn't exist.
+func allocateDeviceID(ctx context.Context, tx pgx.Tx, accountID string) (uint32, error) {
+	var next int64
+	err := tx.QueryRow(ctx, `
+		UPDATE accounts SET next_device_id = GREATEST(next_device_id,
+			(SELECT COALESCE(MAX(device_id), 0) FROM devices WHERE account_id = $1)) + 1
+		WHERE id = $1
+		RETURNING next_device_id`, accountID).Scan(&next)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return uint32(next), nil
+}
+
+// checkDeviceCap returns ErrDeviceLimit when the account already has
+// maxDevicesPerAccount devices. Call with the account row locked.
+func checkDeviceCap(ctx context.Context, tx pgx.Tx, accountID string) error {
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM devices WHERE account_id = $1`, accountID).Scan(&count); err != nil {
+		return err
+	}
+	if count >= maxDevicesPerAccount {
+		return ErrDeviceLimit
+	}
+	return nil
+}
+
 // AddDevice registers an additional device for an existing account.
 func (s *Store) AddDevice(accountID, password string, expectedVersion int64) (uint32, int64, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -717,15 +812,15 @@ func (s *Store) AddDevice(accountID, password string, expectedVersion int64) (ui
 		return 0, 0, ErrDeviceListVersionMismatch
 	}
 
-	var next uint32
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) + 1 FROM devices WHERE account_id = $1`, accountID).Scan(&next); err != nil {
+	if err := checkDeviceCap(ctx, tx, accountID); err != nil {
 		return 0, 0, err
 	}
-	if next == 1 {
-		return 0, 0, ErrNotFound // account doesn't exist
+	next, err := allocateDeviceID(ctx, tx, accountID)
+	if err != nil {
+		return 0, 0, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		accountID, next, mailboxID, hash, time.Now().UnixMilli()); err != nil {
+		accountID, next, mailboxID, hash, coarseDayMillis()); err != nil {
 		return 0, 0, err
 	}
 	newVersion := currentVersion + 1
@@ -735,7 +830,11 @@ func (s *Store) AddDevice(accountID, password string, expectedVersion int64) (ui
 	return next, newVersion, tx.Commit(ctx)
 }
 
-func (s *Store) CreateDeviceLinkToken(accountID string, password string, expectedVersion int64) (token string, code string, expiresAt int64, err error) {
+// CreateDeviceLinkToken mints a legacy (forward-QR) link token. No device
+// password is stored with it: ClaimDeviceLinkToken generates the new device's
+// password at claim time and returns it once, so a database read never yields
+// a working credential.
+func (s *Store) CreateDeviceLinkToken(accountID string, expectedVersion int64) (token string, code string, expiresAt int64, err error) {
 	token, err = newSecureToken(32)
 	if err != nil {
 		return "", "", 0, err
@@ -770,8 +869,8 @@ func (s *Store) CreateDeviceLinkToken(accountID string, password string, expecte
 	if currentVersion != expectedVersion {
 		return "", "", 0, ErrDeviceListVersionMismatch
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO device_link_tokens (token, account_id, password, code, expected_version, expires_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		token, accountID, password, code, expectedVersion, expiresAt, now); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO device_link_tokens (token, account_id, password, code, expected_version, expires_at, created_at) VALUES ($1, $2, '', $3, $4, $5, $6)`,
+		token, accountID, code, expectedVersion, expiresAt, now); err != nil {
 		return "", "", 0, err
 	}
 	return token, code, expiresAt, tx.Commit(ctx)
@@ -794,9 +893,9 @@ func (s *Store) ClaimDeviceLinkToken(token string, code string) (*DeviceLinkClai
 	err = tx.QueryRow(ctx, `
 		DELETE FROM device_link_tokens
 		WHERE token = $1 AND code = $2
-		RETURNING account_id, password, expected_version, expires_at`,
+		RETURNING account_id, expected_version, expires_at`,
 		token, code,
-	).Scan(&claim.AccountID, &claim.Password, &expectedVersion, &expiresAt)
+	).Scan(&claim.AccountID, &expectedVersion, &expiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -805,6 +904,11 @@ func (s *Store) ClaimDeviceLinkToken(token string, code string) (*DeviceLinkClai
 	}
 	if expiresAt < now {
 		return nil, ErrNotFound
+	}
+	// The new device's password is generated here and returned exactly once.
+	claim.Password, err = newSecureToken(32)
+	if err != nil {
+		return nil, err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(claim.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -821,14 +925,14 @@ func (s *Store) ClaimDeviceLinkToken(token string, code string) (*DeviceLinkClai
 	if currentVersion != expectedVersion {
 		return nil, ErrDeviceListVersionMismatch
 	}
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) + 1 FROM devices WHERE account_id = $1`, claim.AccountID).Scan(&claim.DeviceID); err != nil {
+	if err := checkDeviceCap(ctx, tx, claim.AccountID); err != nil {
 		return nil, err
 	}
-	if claim.DeviceID == 1 {
-		return nil, ErrNotFound
+	if claim.DeviceID, err = allocateDeviceID(ctx, tx, claim.AccountID); err != nil {
+		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		claim.AccountID, claim.DeviceID, mailboxID, hash, now); err != nil {
+		claim.AccountID, claim.DeviceID, mailboxID, hash, coarseDayMillis()); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, currentVersion+1, claim.AccountID); err != nil {
@@ -928,7 +1032,7 @@ func (s *Store) AllocateLinkedDevice(accountID, password, deviceName string, exp
 	if err != nil {
 		return 0, err
 	}
-	now := time.Now().UnixMilli()
+	now := coarseDayMillis()
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -944,18 +1048,11 @@ func (s *Store) AllocateLinkedDevice(accountID, password, deviceName string, exp
 	if currentVersion != expectedVersion {
 		return 0, ErrDeviceListVersionMismatch
 	}
-	var count int
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM devices WHERE account_id = $1`, accountID).Scan(&count); err != nil {
+	if err := checkDeviceCap(ctx, tx, accountID); err != nil {
 		return 0, err
 	}
-	if count >= maxDevicesPerAccount {
-		return 0, ErrDeviceLimit
-	}
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(device_id), 0) + 1 FROM devices WHERE account_id = $1`, accountID).Scan(&deviceID); err != nil {
+	if deviceID, err = allocateDeviceID(ctx, tx, accountID); err != nil {
 		return 0, err
-	}
-	if deviceID == 1 {
-		return 0, ErrNotFound
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at, device_name) VALUES ($1, $2, $3, $4, $5, $6)`,
 		accountID, deviceID, mailboxID, hash, now, deviceName); err != nil {
@@ -1059,6 +1156,19 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 		return 0, ErrDeviceListVersionMismatch
 	}
 
+	// FK dependents and per-device data first, in the same transaction: its
+	// prekeys (signed/Kyber/one-time) and its queued envelopes. Its push
+	// tokens, auth key and mailbox id live on the device row itself.
+	for _, stmt := range []string{
+		`DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
+		`DELETE FROM signed_prekeys WHERE account_id = $1 AND device_id = $2`,
+		`DELETE FROM kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
+		`DELETE FROM message_queue WHERE account_id = $1 AND device_id = $2`,
+	} {
+		if _, err := tx.Exec(ctx, stmt, accountID, deviceID); err != nil {
+			return 0, err
+		}
+	}
 	tag, err := tx.Exec(ctx, `DELETE FROM devices WHERE account_id = $1 AND device_id = $2`, accountID, deviceID)
 	if err != nil {
 		return 0, err
@@ -1263,6 +1373,29 @@ func (s *Store) DeviceByMailbox(mailboxID string) (*Device, error) {
 	return &d, nil
 }
 
+// SealedTargetByMailbox resolves a mailbox id to its device AND the owning
+// account's sealed-sender access key in one query, so the unauthenticated
+// sealed path does the same database work whether or not the mailbox exists
+// (two dependent queries would make a known mailbox measurably slower).
+// accessKey is nil when the account has none set.
+func (s *Store) SealedTargetByMailbox(mailboxID string) (*Device, []byte, error) {
+	var d Device
+	var accessKey []byte
+	err := s.db.QueryRow(context.Background(), `
+		SELECT d.account_id, d.device_id, d.registration_id, COALESCE(d.mailbox_id, ''), a.access_key
+		FROM devices d JOIN accounts a ON a.id = d.account_id
+		WHERE d.mailbox_id = $1`,
+		mailboxID,
+	).Scan(&d.AccountID, &d.DeviceID, &d.RegistrationID, &d.MailboxID, &accessKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return &d, accessKey, nil
+}
+
 // RotateMailbox assigns a fresh opaque mailbox id to the device and returns it.
 // Peers pick up the new id on their next prekey-bundle fetch; sealed sends to
 // the old id fail (the sender re-fetches the bundle and retries). Rotating
@@ -1299,6 +1432,36 @@ func (s *Store) SetFCMToken(accountID string, deviceID uint32, token string) err
 	ctx := context.Background()
 	_, err := s.db.Exec(ctx, `UPDATE devices SET fcm_token = $1, push_kind = 'fcm' WHERE account_id = $2 AND device_id = $3`,
 		token, accountID, deviceID)
+	return err
+}
+
+// Push token kinds for ClearPushToken.
+const (
+	PushTokenAPNs = "apns"
+	PushTokenFCM  = "fcm"
+	PushTokenVoIP = "voip"
+)
+
+// ClearPushToken forgets a device's push token of the given kind after the
+// provider reported it permanently invalid (APNs 410 Unregistered /
+// BadDeviceToken in both environments, FCM UNREGISTERED). It only clears the
+// token if it still equals `token`, so a fresh token the device registered in
+// the meantime is never wiped.
+func (s *Store) ClearPushToken(accountID string, deviceID uint32, kind, token string) error {
+	var column string
+	switch kind {
+	case PushTokenAPNs:
+		column = "apns_token"
+	case PushTokenFCM:
+		column = "fcm_token"
+	case PushTokenVoIP:
+		column = "voip_token"
+	default:
+		return fmt.Errorf("store: unknown push token kind %q", kind)
+	}
+	_, err := s.db.Exec(context.Background(),
+		`UPDATE devices SET `+column+` = NULL WHERE account_id = $1 AND device_id = $2 AND `+column+` = $3`,
+		accountID, deviceID, token)
 	return err
 }
 
@@ -1468,6 +1631,8 @@ type PreKeyBundle struct {
 
 // SetKeys replaces the device's identity key, registration id, signed prekey
 // and last-resort Kyber prekey, and appends one-time prekeys to its pool.
+// Prekey rows carry no upload time (created_at = 0): rewriting it on every
+// upload made the table a per-device "last active" log.
 func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32, identityKey []byte, spk SignedPreKey, kyber SignedPreKey, oneTime []OneTimePreKey, replaceOneTime bool) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -1486,20 +1651,20 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO signed_prekeys (account_id, device_id, key_id, public_key, signature, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES ($1, $2, $3, $4, $5, 0)
 		ON CONFLICT (account_id, device_id) DO UPDATE SET
 			key_id = EXCLUDED.key_id, public_key = EXCLUDED.public_key,
-			signature = EXCLUDED.signature, created_at = EXCLUDED.created_at`,
-		accountID, deviceID, spk.KeyID, spk.PublicKey, spk.Signature, time.Now().UnixMilli()); err != nil {
+			signature = EXCLUDED.signature`,
+		accountID, deviceID, spk.KeyID, spk.PublicKey, spk.Signature); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO kyber_prekeys (account_id, device_id, key_id, public_key, signature, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES ($1, $2, $3, $4, $5, 0)
 		ON CONFLICT (account_id, device_id) DO UPDATE SET
 			key_id = EXCLUDED.key_id, public_key = EXCLUDED.public_key,
-			signature = EXCLUDED.signature, created_at = EXCLUDED.created_at`,
-		accountID, deviceID, kyber.KeyID, kyber.PublicKey, kyber.Signature, time.Now().UnixMilli()); err != nil {
+			signature = EXCLUDED.signature`,
+		accountID, deviceID, kyber.KeyID, kyber.PublicKey, kyber.Signature); err != nil {
 		return err
 	}
 	// A client that knows its local key store is fresh (first launch after
@@ -1535,8 +1700,11 @@ func (s *Store) OneTimePreKeyCount(accountID string, deviceID uint32) (int, erro
 }
 
 // TakePreKeyBundles returns a bundle for each requested device, consuming one
-// one-time prekey per bundle when available.
-func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32) ([]PreKeyBundle, error) {
+// one-time prekey per bundle when available. allowOneTime (nil = always) is
+// asked only when the device actually has a one-time prekey to hand out; if it
+// returns false the bundle is served without one (signed + last-resort Kyber
+// prekey only) and the pool is left untouched.
+func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOneTime func(deviceID uint32) bool) ([]PreKeyBundle, error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -1599,6 +1767,8 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32) ([]PreKe
 			// Pool exhausted: degraded but valid.
 		case err != nil:
 			return nil, err
+		case allowOneTime != nil && !allowOneTime(devID):
+			// Hand-out budget spent: serve the bundle without a one-time key.
 		default:
 			if _, err := tx.Exec(ctx, `DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2 AND key_id = $3`,
 				accountID, devID, otk.KeyID); err != nil {
@@ -1615,22 +1785,23 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32) ([]PreKe
 // Offline message queue
 // ---------------------------------------------------------------------------
 
-// Enqueue stores a serialized envelope for a device until it is acked.
+// Enqueue stores a serialized envelope for a device until it is acked. A device
+// may hold at most maxQueuedPerDevice envelopes and maxQueuedBytesPerDevice
+// bytes of queued ciphertext; beyond either, ErrQueueFull. Expired rows are
+// reaped by PurgeExpired (hourly), not on this hot path.
 func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope []byte) error {
 	ctx := context.Background()
 	if len(envelope) > maxQueuedEnvelopeBytes {
 		return ErrEnvelopeTooLarge
 	}
-	if err := s.deleteExpiredQueuedEnvelopes(ctx); err != nil {
-		return err
-	}
 	var queued int
+	var queuedBytes int64
 	if err := s.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM message_queue WHERE account_id = $1 AND device_id = $2`,
-		accountID, deviceID).Scan(&queued); err != nil {
+		`SELECT COUNT(*), COALESCE(SUM(octet_length(envelope)), 0) FROM message_queue WHERE account_id = $1 AND device_id = $2`,
+		accountID, deviceID).Scan(&queued, &queuedBytes); err != nil {
 		return err
 	}
-	if queued >= maxQueuedPerDevice {
+	if queued >= maxQueuedPerDevice || queuedBytes+int64(len(envelope)) > maxQueuedBytesPerDevice {
 		return ErrQueueFull
 	}
 	_, err := s.db.Exec(ctx, `
@@ -1641,30 +1812,57 @@ func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope 
 	return err
 }
 
-// QueuedEnvelopes returns all pending envelopes for a device, oldest first.
-func (s *Store) QueuedEnvelopes(accountID string, deviceID uint32) ([][]byte, error) {
-	ctx := context.Background()
-	if err := s.deleteExpiredQueuedEnvelopes(ctx); err != nil {
-		return nil, err
+// QueuedEnvelope is one row of a device's offline queue.
+type QueuedEnvelope struct {
+	ID        string
+	CreatedAt int64
+	Envelope  []byte // serialized relay.v1.Envelope
+}
+
+// QueueCursor positions a queue read strictly after a given envelope (the
+// queue is ordered by (created_at, envelope_id)). The zero value starts at the
+// oldest envelope.
+type QueueCursor struct {
+	CreatedAt  int64
+	EnvelopeID string
+}
+
+// QueuedEnvelopesPage returns up to limit of a device's pending envelopes after
+// cursor, oldest first, stopping early once the page holds maxBytes of
+// ciphertext (a page always carries at least one envelope when any remain).
+// more reports whether further envelopes exist past the returned page; resume
+// with the cursor of its last element. Unexpired rows only. Rows are streamed
+// from the database, so memory is bounded by the page, not the queue.
+func (s *Store) QueuedEnvelopesPage(accountID string, deviceID uint32, after QueueCursor, limit, maxBytes int) (page []QueuedEnvelope, more bool, err error) {
+	if limit <= 0 {
+		limit = 1
 	}
+	ctx := context.Background()
+	cutoff := time.Now().UnixMilli() - queueTTLMillis
 	rows, err := s.db.Query(ctx, `
-		SELECT envelope FROM message_queue
-		WHERE account_id = $1 AND device_id = $2
-		ORDER BY created_at, envelope_id`,
-		accountID, deviceID)
+		SELECT envelope_id, created_at, envelope FROM message_queue
+		WHERE account_id = $1 AND device_id = $2 AND created_at >= $3
+		  AND (created_at, envelope_id) > ($4, $5)
+		ORDER BY created_at, envelope_id
+		LIMIT $6`,
+		accountID, deviceID, cutoff, after.CreatedAt, after.EnvelopeID, limit+1)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
-	var out [][]byte
+	total := 0
 	for rows.Next() {
-		var b []byte
-		if err := rows.Scan(&b); err != nil {
-			return nil, err
+		var q QueuedEnvelope
+		if err := rows.Scan(&q.ID, &q.CreatedAt, &q.Envelope); err != nil {
+			return nil, false, err
 		}
-		out = append(out, b)
+		if len(page) == limit || (len(page) > 0 && total+len(q.Envelope) > maxBytes) {
+			return page, true, nil // rows.Close (deferred) discards the rest
+		}
+		page = append(page, q)
+		total += len(q.Envelope)
 	}
-	return out, rows.Err()
+	return page, false, rows.Err()
 }
 
 // Dequeue removes an envelope after the client has acked it.
@@ -1675,14 +1873,35 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 	return err
 }
 
-func (s *Store) deleteExpiredQueuedEnvelopes(ctx context.Context) error {
-	cutoff := time.Now().UnixMilli() - queueTTLMillis
-	if _, err := s.db.Exec(ctx, `DELETE FROM message_queue WHERE created_at < $1`, cutoff); err != nil {
-		return err
+// PurgeExpired deletes every row that has outlived its retention window. Run
+// hourly by relayd so expired data doesn't linger until some request happens
+// to touch the table:
+//
+//   - message_queue: envelopes older than 14 days
+//   - encrypted_group_invites, provisioning_sessions, device_link_tokens: expired
+//   - contact_invites: expired or already used (single-use)
+//   - reports: older than 180 days
+//   - nuke_commands: older than an hour (delivered or stale; see nukeRetentionMillis)
+func (s *Store) PurgeExpired() error {
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+	for _, q := range []struct {
+		sql string
+		arg int64
+	}{
+		{`DELETE FROM message_queue WHERE created_at < $1`, now - queueTTLMillis},
+		{`DELETE FROM encrypted_group_invites WHERE expires_at < $1`, now},
+		{`DELETE FROM provisioning_sessions WHERE expires_at < $1`, now},
+		{`DELETE FROM device_link_tokens WHERE expires_at < $1`, now},
+		{`DELETE FROM contact_invites WHERE expires_at < $1 OR used_at <> 0`, now},
+		{`DELETE FROM reports WHERE created_at < $1`, now - reportTTLMillis},
+		{`DELETE FROM nuke_commands WHERE created_at < $1`, now - nukeRetentionMillis},
+	} {
+		if _, err := s.db.Exec(ctx, q.sql, q.arg); err != nil {
+			return err
+		}
 	}
-	// Also prune expired (encrypted) group invite blobs.
-	_, err := s.db.Exec(ctx, `DELETE FROM encrypted_group_invites WHERE expires_at < $1`, time.Now().UnixMilli())
-	return err
+	return nil
 }
 
 const groupInviteTTL = 7 * 24 * time.Hour

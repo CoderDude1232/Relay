@@ -6,6 +6,7 @@
 package hub
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/relayapp/relay-server/gen/relaypb"
+	"github.com/relayapp/relay-server/internal/limitkey"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/store"
 	"google.golang.org/protobuf/proto"
@@ -60,6 +62,9 @@ type Hub struct {
 	// Writing activity timestamps to disk would create metadata a warrant
 	// could retrieve; losing them on restart is an acceptable trade-off.
 	lastSeen map[string]int64 // accountID → Unix ms
+
+	shares *queueShares   // per-(sender, destination) queue occupancy
+	pushes *pushCoalescer // per-device push coalescing
 }
 
 func New(st *store.Store) *Hub {
@@ -67,6 +72,31 @@ func New(st *store.Store) *Hub {
 		store:    st,
 		sessions: make(map[string]Session),
 		lastSeen: make(map[string]int64),
+		shares:   newQueueShares(maxQueuedPerSender),
+		pushes:   newPushCoalescer(pushCoalesceWindow),
+	}
+}
+
+// Prune drops stale in-memory bookkeeping (queue shares of envelopes that have
+// since expired, idle push-coalescing state). relayd calls it hourly.
+func (h *Hub) Prune(queueTTL time.Duration) {
+	h.shares.prune(queueTTL)
+	h.pushes.prune()
+}
+
+// tokenInvalid reports whether a push error says the device token is
+// permanently dead (the pusher's error implements TokenInvalid() bool).
+func tokenInvalid(err error) bool {
+	var ti interface{ TokenInvalid() bool }
+	return errors.As(err, &ti) && ti.TokenInvalid()
+}
+
+// clearDeadToken forgets a token the provider rejected as permanently invalid.
+func (h *Hub) clearDeadToken(accountID string, deviceID uint32, kind, token string) {
+	if err := h.store.ClearPushToken(accountID, deviceID, kind, token); err != nil {
+		slog.Warn("push: clearing invalid token failed", "err", privlog.Error(err))
+	} else {
+		slog.Debug("push: cleared invalid token", "kind", kind)
 	}
 }
 
@@ -103,11 +133,15 @@ func (h *Hub) PushCallToAccount(accountID, callID, callerAccount, callerName, ki
 				continue
 			}
 			t := token
+			devID := d.DeviceID
 			go func() {
 				if err := h.fcmPusher.PushCall(t, callID, callerAccount, callerName, kind); err != nil {
 					slog.Warn("call push (fcm) failed", "err", privlog.Error(err))
+					if tokenInvalid(err) {
+						h.clearDeadToken(accountID, devID, store.PushTokenFCM, t)
+					}
 				} else {
-					slog.Info("call push sent", "kind", "fcm")
+					slog.Debug("call push sent", "kind", "fcm")
 				}
 			}()
 		default: // apns — PushKit uses the device's separate VoIP token
@@ -119,11 +153,15 @@ func (h *Hub) PushCallToAccount(accountID, callID, callerAccount, callerName, ki
 				continue
 			}
 			t := voipToken
+			devID := d.DeviceID
 			go func() {
 				if err := h.voipPusher.PushVoIP(t, callID, callerAccount, callerName, kind); err != nil {
 					slog.Warn("call push (voip) failed", "err", privlog.Error(err))
+					if tokenInvalid(err) {
+						h.clearDeadToken(accountID, devID, store.PushTokenVoIP, t)
+					}
 				} else {
-					slog.Info("call push sent", "kind", "voip")
+					slog.Debug("call push sent", "kind", "voip")
 				}
 			}()
 		}
@@ -134,16 +172,26 @@ func key(accountID string, deviceID uint32) string {
 	return fmt.Sprintf("%s/%d", accountID, deviceID)
 }
 
-// Register attaches a live session and returns any envelopes queued while
-// the device was offline (already serialized), oldest first. The caller
-// delivers them, then sends QueueEmpty.
-func (h *Hub) Register(accountID string, deviceID uint32, s Session) ([][]byte, error) {
+// Register attaches a live session for the device. If the device already had
+// a live session (a reconnect racing the old socket's timeout, or a second
+// connection with the same credentials), the previous one is closed so there
+// is exactly one socket per device. The caller then drains the offline queue
+// (in pages, from the store) and sends QueueEmpty.
+func (h *Hub) Register(accountID string, deviceID uint32, s Session) {
+	k := key(accountID, deviceID)
 	h.mu.Lock()
-	h.sessions[key(accountID, deviceID)] = s
+	prev := h.sessions[k]
+	h.sessions[k] = s
 	h.lastSeen[accountID] = time.Now().UnixMilli()
 	h.mu.Unlock()
-	slog.Info("ws: session registered")
-	return h.store.QueuedEnvelopes(accountID, deviceID)
+	if prev != nil && prev != s {
+		// Outside the lock: closing runs the old session's Unregister, which
+		// is a no-op now that the map points at the new session.
+		if c, ok := prev.(Closer); ok {
+			c.Close("replaced by a newer connection")
+		}
+	}
+	slog.Debug("ws: session registered")
 }
 
 // IsOnline reports whether any device of the account has a live session.
@@ -167,7 +215,7 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 	k := key(accountID, deviceID)
 	if h.sessions[k] == s {
 		delete(h.sessions, k)
-		slog.Info("ws: session unregistered")
+		slog.Debug("ws: session unregistered")
 		h.lastSeen[accountID] = time.Now().UnixMilli()
 	}
 }
@@ -203,10 +251,31 @@ func (h *Hub) DisconnectAccount(accountID string, reason string) int {
 			c.Close(reason)
 		}
 	}
+	h.shares.releaseWhere(func(d string) bool { return strings.HasPrefix(d, prefix) })
 	if len(victims) > 0 {
-		slog.Info("ws: account sessions disconnected", "count", len(victims))
+		slog.Debug("ws: account sessions disconnected", "count", len(victims))
 	}
 	return len(victims)
+}
+
+// DisconnectDevice detaches and closes one device's live session (if any) and
+// forgets its queue-share bookkeeping. Used when the device is removed from its
+// account so an already-authenticated socket can't outlive it. Reports whether
+// a session was closed.
+func (h *Hub) DisconnectDevice(accountID string, deviceID uint32, reason string) bool {
+	k := key(accountID, deviceID)
+	h.mu.Lock()
+	s := h.sessions[k]
+	delete(h.sessions, k)
+	h.mu.Unlock()
+	h.shares.releaseWhere(func(d string) bool { return d == k })
+	if s == nil {
+		return false
+	}
+	if c, ok := s.(Closer); ok {
+		c.Close(reason)
+	}
+	return true
 }
 
 // LastSeen returns the most recent connect/disconnect time for the account
@@ -218,10 +287,23 @@ func (h *Hub) LastSeen(accountID string) int64 {
 	return h.lastSeen[accountID]
 }
 
-// Deliver routes one envelope to one device. Non-ephemeral envelopes are
-// queued first so a crash between here and the socket write loses nothing.
+// Deliver routes one envelope to one device without per-sender queue
+// accounting. Prefer DeliverFrom.
 func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) error {
+	return h.DeliverFrom("", accountID, deviceID, env)
+}
+
+// DeliverFrom routes one envelope to one device. Non-ephemeral envelopes are
+// queued first so a crash between here and the socket write loses nothing.
+//
+// sender identifies who is sending for queue fairness — an authenticated
+// account id, or a source-IP bucket for sealed sends ("" = unaccounted). It is
+// only ever used hashed. If that sender already holds maxQueuedPerSender
+// unacked envelopes in this device's queue, ErrSenderQuota is returned and
+// nothing is queued or pushed.
+func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relaypb.Envelope) error {
 	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}}
+	devKey := key(accountID, deviceID)
 
 	var blob []byte
 	if !env.Ephemeral {
@@ -230,7 +312,17 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 		if err != nil {
 			return err
 		}
+		reserved := false
+		if sender != "" {
+			if !h.shares.reserve(limitkey.Hash("queue-share", sender, devKey), devKey, env.Id) {
+				return ErrSenderQuota
+			}
+			reserved = true
+		}
 		if err := h.store.Enqueue(env.Id, accountID, deviceID, blob); err != nil {
+			if reserved {
+				h.shares.release(devKey, env.Id)
+			}
 			return err
 		}
 	}
@@ -245,27 +337,30 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 			// device wakes immediately rather than waiting for the 60s pong
 			// timeout to expire and the next reconnect to drain the queue.
 			slog.Debug("hub: session backlogged, also pushing")
-			if h.pusher != nil && !env.Ephemeral {
-				h.notifyOffline(accountID, deviceID, blob)
+			if !env.Ephemeral {
+				h.notifyOffline(accountID, deviceID, env, blob)
 			}
 		}
 		return nil
 	}
 
-	// Offline: wake the device via APNs so its NSE can decrypt the envelope.
-	if h.pusher != nil && !env.Ephemeral {
-		h.notifyOffline(accountID, deviceID, blob)
+	// Offline: wake the device (APNs/FCM) so it fetches the envelope.
+	if !env.Ephemeral {
+		h.notifyOffline(accountID, deviceID, env, blob)
 	}
 	return nil
 }
 
-func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) {
+func (h *Hub) notifyOffline(accountID string, deviceID uint32, env *relaypb.Envelope, envelope []byte) {
+	if h.pusher == nil && h.fcmPusher == nil {
+		return
+	}
 	kind, token, err := h.store.PushTarget(accountID, deviceID)
 	if err != nil || token == "" {
 		if err != nil {
 			slog.Warn("push: token lookup failed", "err", privlog.Error(err))
 		} else {
-			slog.Info("push: offline device has no token")
+			slog.Debug("push: offline device has no token")
 		}
 		return
 	}
@@ -276,7 +371,7 @@ func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) 
 	switch kind {
 	case "fcm":
 		if h.fcmPusher == nil {
-			slog.Info("push: fcm device but no fcm sender configured")
+			slog.Debug("push: fcm device but no fcm sender configured")
 			return
 		}
 		send = h.fcmPusher.Push
@@ -290,20 +385,35 @@ func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) 
 	// Content-free wake by default: the device fetches + decrypts the envelope
 	// from the relay, so the push provider never carries message data. A device
 	// may opt in to ciphertext-in-push (faster) via its push-content preference.
+	//
+	// Only a SEALED envelope (no sender fields) is ever embedded: the push
+	// provider must not learn who messaged whom. Stripping the sender from an
+	// authenticated-path envelope would leave the recipient unable to decrypt
+	// it from the payload, so such envelopes get a content-free wake instead
+	// and are fetched from the queue like the default mode.
 	payload := []byte(nil)
 	if include, err := h.store.PushIncludeContent(accountID, deviceID); err != nil {
 		slog.Warn("push: push-content lookup failed", "err", privlog.Error(err))
-	} else if include {
+	} else if include && env.SenderAccount == "" && env.SenderDevice == 0 {
 		payload = envelope
 	}
-	slog.Info("push: waking offline device", "kind", kind)
-	go func() {
+	tokenKind := store.PushTokenAPNs
+	if kind == "fcm" {
+		tokenKind = store.PushTokenFCM
+	}
+	slog.Debug("push: waking offline device", "kind", kind)
+	// Coalesce bursts: at most one push per device per pushCoalesceWindow,
+	// plus one trailing push so the newest message always gets a wake.
+	h.pushes.submit(key(accountID, deviceID), func() {
 		if err := send(token, payload); err != nil {
 			slog.Warn("push failed", "kind", kind, "err", privlog.Error(err))
+			if tokenInvalid(err) {
+				h.clearDeadToken(accountID, deviceID, tokenKind, token)
+			}
 		} else {
-			slog.Info("push sent", "kind", kind)
+			slog.Debug("push sent", "kind", kind)
 		}
-	}()
+	})
 }
 
 // BroadcastNuke sends a NukeCommand frame to every live session of the account.
@@ -311,6 +421,9 @@ func (h *Hub) notifyOffline(accountID string, deviceID uint32, envelope []byte) 
 func (h *Hub) BroadcastNuke(accountID string, nuke *relaypb.NukeCommand) {
 	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Nuke{Nuke: nuke}}
 	h.broadcastToAccount(accountID, frame)
+	// StoreNuke purged the account's queues; forget their share bookkeeping.
+	prefix := accountID + "/"
+	h.shares.releaseWhere(func(d string) bool { return strings.HasPrefix(d, prefix) })
 }
 
 // BroadcastDeviceListChanged notifies every live session of the account except
@@ -340,7 +453,12 @@ func (h *Hub) broadcastToAccount(accountID string, frame *relaypb.ServerFrame) {
 	}
 }
 
-// Ack removes a delivered envelope from the device's queue.
+// Ack removes a delivered envelope from the device's queue and frees the
+// sender's queue share.
 func (h *Hub) Ack(accountID string, deviceID uint32, envelopeID string) error {
-	return h.store.Dequeue(envelopeID, accountID, deviceID)
+	if err := h.store.Dequeue(envelopeID, accountID, deviceID); err != nil {
+		return err
+	}
+	h.shares.release(key(accountID, deviceID), envelopeID)
+	return nil
 }

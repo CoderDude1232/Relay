@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -141,5 +142,35 @@ func TestPushFallsBackToOtherEnvironment(t *testing.T) {
 	// A token neither environment accepts still fails.
 	if err := p.Push("deadtoken", nil); err == nil {
 		t.Fatal("expected failure for a token neither host accepts")
+	}
+}
+
+func TestDeadTokenIsReportedInvalid(t *testing.T) {
+	path, _ := writeTestKey(t)
+	bad := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/gonetoken") {
+			w.WriteHeader(http.StatusGone)
+			_, _ = w.Write([]byte(`{"reason":"Unregistered"}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"reason":"BadDeviceToken"}`))
+	})
+	prod := httptest.NewServer(bad)
+	defer prod.Close()
+	sandbox := httptest.NewServer(bad)
+	defer sandbox.Close()
+	p, err := New(path, "K", "T", "topic", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.host, p.altHost = prod.URL, sandbox.URL
+
+	for _, tok := range []string{"deadtoken", "gonetoken"} {
+		err := p.Push(tok, nil)
+		var te *TokenError
+		if !errors.As(err, &te) || !te.TokenInvalid() {
+			t.Fatalf("%s: got %v, want a *TokenError", tok, err)
+		}
 	}
 }
