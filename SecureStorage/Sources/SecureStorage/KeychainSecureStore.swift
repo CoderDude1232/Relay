@@ -348,16 +348,75 @@ extension KeychainSecureStore: IdentityCredentialProviding {
     /// linking, so this device shares the account's identity key rather than
     /// generating its own. Must be called before anything reads
     /// `identityKeyPair()` (which would otherwise auto-generate a fresh one).
-    /// Refuses to overwrite an existing identity — a device that already has one
-    /// must not have it silently replaced. The serialized private key lives only
-    /// inside the Keychain item; it is never logged.
-    public func installProvisionedIdentity(_ serialized: Data) throws {
+    ///
+    /// By default refuses to overwrite an existing identity — a device that
+    /// already has one must not have it silently replaced. Keychain items
+    /// survive sign-out and app deletion, so a phone that ever ran Relay still
+    /// holds a stale identity: the link flow passes `replacingExisting: true`
+    /// (or calls `wipeIdentity()` first) to adopt the account's identity. When
+    /// replacing, the stale registration id is dropped too so a fresh one is
+    /// generated for this device. The serialized private key lives only inside
+    /// the Keychain item; it is never logged.
+    public func installProvisionedIdentity(_ serialized: Data, replacingExisting: Bool = false) throws {
         // Validate before persisting; a malformed payload should fail loudly.
         _ = try IdentityKeyPair(bytes: serialized)
         if try read(Item.identityKeyPair) != nil {
-            throw KeychainError.identityAlreadyExists
+            guard replacingExisting else {
+                throw KeychainError.identityAlreadyExists
+            }
+            try deleteSecret(for: Item.registrationId)
         }
         try write(Item.identityKeyPair, data: serialized)
+    }
+
+    // MARK: - Wiping
+
+    /// Deletes this install's per-account identity material from the Keychain:
+    ///
+    /// * `identity-key-pair` — the identity private/public key pair
+    /// * `registration-id`   — the libsignal registration id
+    /// * the device authorization key (Secure Enclave / Keychain P-256 key
+    ///   used for `Relay-Sig` request signing); a new one is created on demand
+    ///
+    /// NOT deleted: the database master key (wrapped/plain) and its Secure
+    /// Enclave wrapping key, and generic secrets stored via `storeSecret`
+    /// (e.g. saved account credentials) — callers delete those by name. Use
+    /// `wipeAllSecrets()` for a full reset.
+    ///
+    /// Call on sign-out (after closing the database/service) and before
+    /// installing a provisioned identity on a phone that may have run Relay
+    /// before. The next `identityKeyPair()` / `registrationId()` generates
+    /// fresh values. Idempotent: missing items are not an error.
+    public func wipeIdentity() throws {
+        try deleteSecret(for: Item.identityKeyPair)
+        try deleteSecret(for: Item.registrationId)
+        try deleteKey(tag: Item.deviceAuthKeyTag)
+    }
+
+    /// Full reset: everything `wipeIdentity()` deletes, PLUS the database
+    /// master key (wrapped and plain variants), the Secure Enclave wrapping
+    /// key, and every generic secret stored under this store's service
+    /// (including anything written via `storeSecret`). Any existing database
+    /// file becomes undecryptable — delete it as well. Idempotent.
+    public func wipeAllSecrets() throws {
+        try wipeIdentity()
+        try deleteKey(tag: Item.enclaveKeyTag)
+        var query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: config.service,
+        ]
+        if let group = config.accessGroup { query[kSecAttrAccessGroup] = group }
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw StorageError.keychain(status: status)
+        }
+    }
+
+    private func deleteKey(tag: String) throws {
+        let status = SecItemDelete(keyQuery(tag: tag) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw StorageError.keychain(status: status)
+        }
     }
 }
 

@@ -299,6 +299,11 @@ public struct StoredMessage: Sendable, Equatable, Identifiable {
 }
 
 public final class MessageStore: @unchecked Sendable {
+    /// `sender_account` of locally generated system lines (call events, group
+    /// membership, notices). Mirrors `MessagingService.systemSender`. They are
+    /// stored as incoming/received but are never unread and never get receipts.
+    public static let systemSender = "__system__"
+
     private let db: Database
 
     public init(database: Database) {
@@ -359,6 +364,7 @@ public final class MessageStore: @unchecked Sendable {
                     WHERE m.conversation_id = c.id
                       AND m.is_outgoing = 0
                       AND m.deleted = 0
+                      AND m.sender_account IS NOT '\(Self.systemSender)'
                       AND m.timestamp > c.read_at),
                    c.archived, c.label,
                    c.screen_security, c.notification_sound, c.peer_screen_security
@@ -400,7 +406,11 @@ public final class MessageStore: @unchecked Sendable {
 
     public func markConversationUnread(_ conversationId: String) throws {
         let latest = try db.query(
-            "SELECT COALESCE(MAX(timestamp), 1) - 1 FROM messages WHERE conversation_id = ? AND is_outgoing = 0 AND deleted = 0",
+            """
+            SELECT COALESCE(MAX(timestamp), 1) - 1 FROM messages
+            WHERE conversation_id = ? AND is_outgoing = 0 AND deleted = 0
+              AND sender_account IS NOT '\(Self.systemSender)'
+            """,
             [.text(conversationId)]
         ).first?.first?.int64 ?? 0
         try db.run("UPDATE conversations SET read_at = ? WHERE id = ?", [.integer(latest), .text(conversationId)])
@@ -751,7 +761,7 @@ public final class MessageStore: @unchecked Sendable {
             if exists { return false }
             let createdAt = Int64(Date().timeIntervalSince1970 * 1000)
             // System messages (call events, group membership lines) never disappear.
-            let ttl = senderAccount == "__system__" ? 0 : try disappearingSeconds(conversationId: conversationId)
+            let ttl = senderAccount == Self.systemSender ? 0 : try disappearingSeconds(conversationId: conversationId)
             let expiresAt: SQLValue = ttl > 0 ? .integer(createdAt + ttl * 1000) : .null
             try db.run(
                 """

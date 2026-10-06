@@ -4,7 +4,10 @@
 //
 //  A thin wrapper over the SQLCipher C API: keyed open, prepared
 //  statements, and transactions. One connection, serialized by an internal
-//  lock — session/ratchet state must never race.
+//  recursive lock — session/ratchet state must never race. The lock is held
+//  for the WHOLE of a `transaction` body (BEGIN…COMMIT), and every
+//  `query`/`run` takes it too, so a transaction excludes all other threads
+//  while the owning thread can still run statements inside it.
 //
 
 import Foundation
@@ -57,7 +60,16 @@ public enum SQLValue: Sendable, Equatable {
 
 public final class Database: @unchecked Sendable {
     private var handle: OpaquePointer?
-    private let lock = NSLock()
+    /// Recursive so the thread that owns an open transaction can keep
+    /// issuing statements (and nested transactions) inside it.
+    private let lock = NSRecursiveLock()
+    /// Nesting depth of `transaction` calls on the lock-owning thread. Only
+    /// read/written while `lock` is held.
+    private var transactionDepth = 0
+
+    /// Milliseconds a contended writer (the other process — app vs NSE —
+    /// holding the file lock) waits before failing with SQLITE_BUSY.
+    public static let busyTimeoutMilliseconds: Int32 = 5000
 
     /// Opens (creating if needed) an encrypted database at `path`. Throws
     /// `StorageError.wrongKey` when the file exists but the key can't
@@ -69,20 +81,26 @@ public final class Database: @unchecked Sendable {
             sqlite3_close(handle)
             throw StorageError.openFailed(message)
         }
+        // App and NSE open the same file; make a contended reader/writer wait
+        // rather than fail immediately with SQLITE_BUSY. Set before anything
+        // touches the file so even the key-check read below waits.
+        sqlite3_busy_timeout(handle, Self.busyTimeoutMilliseconds)
         do {
             // Keying must happen before any other statement touches the file.
             try run("PRAGMA key = \"x'\(key.hex)'\";")
-            // First real read fails with NOTADB if the key is wrong.
-            guard (try? query("SELECT count(*) FROM sqlite_master;")) != nil else {
-                sqlite3_close(handle)
-                handle = nil
+            // First real read fails with NOTADB if the key is wrong. A busy/
+            // locked failure (other process mid-write past the timeout) is
+            // NOT a wrong key — surface it as-is so callers can retry.
+            do {
+                _ = try query("SELECT count(*) FROM sqlite_master;")
+            } catch StorageError.sqlite(let code, let message)
+                where code == SQLITE_BUSY || code == SQLITE_LOCKED {
+                throw StorageError.sqlite(code: code, message: message)
+            } catch {
                 throw StorageError.wrongKey
             }
             try run("PRAGMA journal_mode = WAL;")
             try run("PRAGMA foreign_keys = ON;")
-            // App and NSE open the same file; make a contended writer wait
-            // rather than fail immediately with SQLITE_BUSY.
-            try run("PRAGMA busy_timeout = 3000;")
         } catch {
             sqlite3_close(handle)
             handle = nil
@@ -165,15 +183,43 @@ public final class Database: @unchecked Sendable {
     }
 
     /// Runs `body` inside a transaction, rolling back on error.
+    ///
+    /// The connection lock is held for the entire body, so statements from
+    /// other threads can neither interleave with nor be rolled back by this
+    /// transaction; they simply wait. Calls made from inside `body` on the
+    /// same thread (including nested `transaction` calls) proceed normally.
+    /// A nested call becomes a SAVEPOINT: its failure rolls back only its
+    /// own work and rethrows; the outer transaction decides the rest.
     public func transaction<T>(_ body: () throws -> T) throws -> T {
-        try run("BEGIN IMMEDIATE;")
-        do {
-            let result = try body()
-            try run("COMMIT;")
-            return result
-        } catch {
-            try? run("ROLLBACK;")
-            throw error
+        lock.lock()
+        defer { lock.unlock() }
+
+        if transactionDepth == 0 {
+            try run("BEGIN IMMEDIATE;")
+            transactionDepth = 1
+            defer { transactionDepth = 0 }
+            do {
+                let result = try body()
+                try run("COMMIT;")
+                return result
+            } catch {
+                try? run("ROLLBACK;")
+                throw error
+            }
+        } else {
+            let savepoint = "relay_sp_\(transactionDepth)"
+            try run("SAVEPOINT \(savepoint);")
+            transactionDepth += 1
+            defer { transactionDepth -= 1 }
+            do {
+                let result = try body()
+                try run("RELEASE \(savepoint);")
+                return result
+            } catch {
+                try? run("ROLLBACK TO \(savepoint);")
+                try? run("RELEASE \(savepoint);")
+                throw error
+            }
         }
     }
 
