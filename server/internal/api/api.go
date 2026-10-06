@@ -265,7 +265,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/group-invites", s.auth(s.handleCreateEncryptedGroupInvite))
 	mux.HandleFunc("POST /v1/group-invites/claim", s.auth(s.handleClaimEncryptedGroupInvite))
 	mux.HandleFunc("GET /v1/ws", s.auth(s.handleWebSocket))
-	return stripVisitorIPHeaders(limitRequestBody(mux))
+	return stripVisitorIPHeaders(requestDeadlines(limitRequestBody(mux)))
 }
 
 // ---------------------------------------------------------------------------

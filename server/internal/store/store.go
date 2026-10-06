@@ -46,9 +46,12 @@ const maxDevicesPerAccount = 5
 
 const maxGroupMembers = 256
 
+// QueueTTL is how long an undelivered envelope is kept before PurgeExpired
+// drops it.
+const QueueTTL = 14 * 24 * time.Hour
+
 const (
-	// Undelivered envelopes are dropped after 14 days.
-	queueTTLMillis         = int64((14 * 24 * time.Hour) / time.Millisecond)
+	queueTTLMillis        = int64(QueueTTL / time.Millisecond)
 	maxQueuedEnvelopeBytes = 512 * 1024
 	maxQueuedPerDevice     = 500
 	// maxQueuedBytesPerDevice caps a device's total queued ciphertext, so the
