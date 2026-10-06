@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -30,6 +29,7 @@ import (
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/limitkey"
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
@@ -62,6 +62,10 @@ type Server struct {
 	// Blinded discovery. When set, the directory endpoints evaluate the OPRF and
 	// resolve tokens; the server (re)builds the directory index under this key.
 	oprf *oprf.Key
+
+	// Per-account attachment upload budgets (count/day at allocation,
+	// bytes/day at upload).
+	attachQuota *attachmentQuota
 }
 
 // sealedIssuer holds the server certificate (signed by the trust root) and its
@@ -78,9 +82,16 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 			urls = append(urls, u)
 		}
 	}
-	s := &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret}
+	s := &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret,
+		attachQuota: newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount)}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
 	return s
+}
+
+// SetAttachmentQuota sets the per-account daily attachment upload budgets:
+// total ciphertext bytes and number of allocations per rolling day.
+func (s *Server) SetAttachmentQuota(dailyBytes int64, dailyCount int) {
+	s.attachQuota = newAttachmentQuota(dailyBytes, dailyCount)
 }
 
 // SetSupabaseAuth enables the social-login account endpoint by pointing the
@@ -263,12 +274,20 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Devic
 
 func (s *Server) auth(next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Failed-auth throttling: a source that keeps failing is cut off before
+		// any bcrypt / signature work is done (see authFailIPLimiter).
+		ip := clientIP(r)
+		if authFailIPLimiter.exhausted(ip) {
+			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
+			return
+		}
 		// Preferred: signature auth (proves possession of the device's auth private
 		// key without sending a reusable secret). Falls through to Basic during the
 		// transition so existing clients keep working.
 		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
 			dev, err := s.authenticateSignature(r)
 			if err != nil {
+				authFailIPLimiter.allow(ip)
 				httpError(w, http.StatusUnauthorized, "signature authentication failed")
 				return
 			}
@@ -288,11 +307,19 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 		}
 		devID, err := strconv.ParseUint(devStr, 10, 32)
 		if err != nil {
+			authFailIPLimiter.allow(ip)
 			httpError(w, http.StatusUnauthorized, "bad device id")
+			return
+		}
+		deviceKey := accountID + "." + devStr
+		if authFailDeviceLimiter.exhausted(deviceKey) {
+			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
 			return
 		}
 		dev, err := s.store.Authenticate(accountID, uint32(devID), pass)
 		if err != nil {
+			authFailIPLimiter.allow(ip)
+			authFailDeviceLimiter.allow(deviceKey)
 			httpError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
@@ -306,7 +333,7 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	// Rate limit: 5 registrations per source IP per hour.
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !accountCreationLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "registration rate limit exceeded; try again later")
 		return
@@ -356,7 +383,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 // passwordless social-login user recover their account on any device instead of
 // colliding with their own email on a fresh registration.
 func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !accountCreationLimiter.allow("oauth:" + ip) {
 		httpError(w, http.StatusTooManyRequests, "registration rate limit exceeded; try again later")
 		return
@@ -467,7 +494,7 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 // without learning the sender's identity. The delivered envelope carries no
 // sender fields; the recipient recovers the sender by decrypting the sealed blob.
 func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !sealedSendIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
@@ -758,7 +785,7 @@ func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 	// Rate-limit recovery attempts (same bucket as account creation per IP).
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !accountCreationLimiter.allow("recover:" + ip) {
 		httpError(w, http.StatusTooManyRequests, "recovery rate limit exceeded; try again later")
 		return
@@ -935,7 +962,7 @@ func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
 // handleCreateProvisioningSession mints a blind mailbox for the reversed
 // linking flow. Unauthenticated: the new device has no account yet.
 func (s *Server) handleCreateProvisioningSession(w http.ResponseWriter, r *http.Request) {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !provisioningLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "too many device-linking attempts; try again later")
 		return
@@ -1268,7 +1295,7 @@ func (s *Server) handleCallOffer(w http.ResponseWriter, r *http.Request, dev *st
 // username availability during sign-up before they have credentials.
 // Rate-limited by source IP to prevent bulk enumeration.
 func (s *Server) handleLookupUsername(w http.ResponseWriter, r *http.Request) {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientIP(r)
 	if !usernameLookupLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
 		return
@@ -1869,6 +1896,7 @@ func newSlidingWindowLimiter(limit int, window time.Duration) *slidingWindowLimi
 }
 
 func (l *slidingWindowLimiter) allow(key string) bool {
+	key = limitkey.Hash(key) // never hold a raw IP / account id / pair in memory
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -1893,6 +1921,7 @@ func (l *slidingWindowLimiter) allow(key string) bool {
 // their window. Called periodically so low-frequency callers (e.g. one-time
 // source IPs hitting the registration endpoint) don't leak memory forever.
 func (s *Server) PruneStaleLimiterKeys() {
+	s.pruneTokenBuckets()
 	for _, l := range []*slidingWindowLimiter{
 		accountCreationLimiter,
 		preKeyFetchLimiter,
