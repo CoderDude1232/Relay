@@ -7,7 +7,28 @@ import Foundation
 import LocalAuthentication
 
 enum BiometricGate {
-    static func authenticate(reason: String) async -> Bool {
+    /// Shown when a sensitive action needs a device passcode that isn't set.
+    static let passcodeRequiredMessage =
+        "This needs a device passcode, so that only you can approve it. Set a passcode in Settings → Face ID & Passcode, then try again."
+
+    /// True when the device has a passcode (and so can authenticate the owner).
+    static var isPasscodeSet: Bool {
+        var error: NSError?
+        if LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) { return true }
+        // Locked out / biometry problems still mean a passcode exists.
+        return (error as? LAError)?.code != .passcodeNotSet
+    }
+
+    /// Asks the device owner to authenticate (Face ID / Touch ID, falling back
+    /// to the passcode).
+    ///
+    /// - Parameter requirePasscode: With no passcode set there is nothing to
+    ///   authenticate against. For app lock / chat lock that means there is
+    ///   nothing to protect, so the default lets the user through. Pass `true`
+    ///   for actions that must prove the owner is present — device-linking
+    ///   approval, emergency wipe — so they FAIL when no passcode is set
+    ///   (check `isPasscodeSet` first to explain why).
+    static func authenticate(reason: String, requirePasscode: Bool = false) async -> Bool {
         let context = LAContext()
         context.localizedCancelTitle = "Cancel"
 
@@ -17,9 +38,10 @@ enum BiometricGate {
         // own media and chats with no way back.
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            // No passcode set at all: there is nothing to authenticate against,
-            // so the lock can't protect anything — let the user through.
-            return (error as? LAError)?.code == .passcodeNotSet
+            if (error as? LAError)?.code == .passcodeNotSet {
+                return !requirePasscode
+            }
+            return false
         }
 
         return await withCheckedContinuation { continuation in

@@ -217,9 +217,18 @@ struct SettingsView: View {
                 titleVisibility: .visible
             ) {
                 Button("Wipe All Devices", role: .destructive) {
+                    // Wiping every device must prove the owner is present:
+                    // refuse (with an explanation) when no passcode is set.
+                    guard BiometricGate.isPasscodeSet else {
+                        nukeError = BiometricGate.passcodeRequiredMessage
+                        return
+                    }
                     nukeInProgress = true
                     Task {
-                        let ok = await BiometricGate.authenticate(reason: "Confirm emergency wipe of all devices")
+                        let ok = await BiometricGate.authenticate(
+                            reason: "Confirm emergency wipe of all devices",
+                            requirePasscode: true
+                        )
                         guard ok else {
                             nukeInProgress = false
                             return
