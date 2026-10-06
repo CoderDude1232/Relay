@@ -159,9 +159,6 @@ final class MessagingService {
     private var isDrainingQueue = false
     /// Account IDs the local user has blocked. Persisted in the encrypted kv table.
     private(set) var blockedAccounts: Set<String> = []
-    /// Unused since presence polling was removed; kept for source compatibility.
-    /// active conversation's peer and used to show online dots in the list.
-    private(set) var presenceCache: [String: Presence] = [:]
     /// Conversation that tried to send to a replacement identity key before
     /// the user acknowledged the new safety number.
     private(set) var blockedSafetyWarningConversationId: String?
@@ -287,11 +284,10 @@ final class MessagingService {
     /// Triggers VoIP push notifications for multiple participants of a group call.
     func triggerGroupCallPushes(accounts: [String], callId: String, callerName: String, kind: CallKind) async {
         for account in accounts {
-            await triggerCallPush(account: account, callId: callId, callerName: callerName, kind: kind)
+            await triggerCallPush(account: account, callId: callId)
         }
     }
 
-    /// Triggers a server-side VoIP push to wake the callee's device.
     /// Wakes the callee's devices for an incoming call. The ring is anonymous:
     /// it goes to each device's mailbox with the callee's access key, like a
     /// sealed send, and carries only the call id — who is calling travels in
@@ -446,7 +442,8 @@ final class MessagingService {
             // Apply group/profile changes the notification extension stored
             // while we were backgrounded, before newer queued envelopes land.
             await drainPendingControlMessages(sendReceipts: false)
-            let socket = RelayWebSocket(baseURL: serverURL, credentials: credentials, session: session)
+            let socket = RelayWebSocket(baseURL: serverURL, credentials: credentials, session: session,
+                                        signer: DeviceAuthSigner(keychain: keychain))
             self.socket = socket
             for await event in await socket.connect() {
                 switch event {
@@ -3282,9 +3279,7 @@ final class MessagingService {
 
     // Presence polling is gone: asking the relay "is X online?" every few
     // seconds told it whose status we watch, and let anyone track anyone.
-    // These stubs keep the UI compiling until it drops the online indicator.
-    var peerPresence: Presence? { nil }
-    func presenceFor(account: String) -> Presence? { nil }
+    // The relay no longer offers it at all.
     private func startPresencePolling(peer: String) {}
     private func stopPresencePolling() {}
 

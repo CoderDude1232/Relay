@@ -148,14 +148,8 @@ struct ChatView: View {
         }
     }
 
-    /// "Online" or "Last seen …" under the title, for 1:1 chats.
-    private var presenceText: String? {
-        guard !isGroup, let presence = service.peerPresence else { return nil }
-        if presence.online { return "Online" }
-        guard presence.lastSeen > 0 else { return nil }
-        let date = Date(timeIntervalSince1970: Double(presence.lastSeen) / 1000)
-        return "Last seen \(date.formatted(.relative(presentation: .named)))"
-    }
+    /// Online / last-seen status no longer exists (the relay doesn't track it).
+    private var presenceText: String? { nil }
 
     private var rawScrollView: some View {
         ScrollViewReader { proxy in

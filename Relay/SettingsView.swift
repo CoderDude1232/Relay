@@ -428,16 +428,13 @@ struct PrivacySettingsView: View {
 
     var body: some View {
         List {
-            Section("Presence") {
+            Section("Activity") {
                 SettingsToggleRow(systemName: "ellipsis.bubble.fill", title: "Send Typing Indicators",
                                   info: "When on, people you're chatting with can see when you're typing. When off, you'll still see theirs.",
                                   isOn: $sendTyping)
                 SettingsToggleRow(systemName: "checkmark.circle.fill", title: "Read Receipts",
                                   info: "When on, people can see when you've read their messages.",
                                   isOn: Binding(get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 }))
-                SettingsToggleRow(systemName: "eye.slash.fill", title: "Hide Last Seen",
-                                  info: "When on, others can't see when you were last online.",
-                                  isOn: Binding(get: { service.hideLastSeen }, set: { service.hideLastSeen = $0 }))
             }
 
             Section("Messaging") {

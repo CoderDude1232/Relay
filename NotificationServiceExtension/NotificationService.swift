@@ -217,12 +217,19 @@ class NotificationService: UNNotificationServiceExtension {
             let engine = try? storage.makeCryptoEngine(accountId: account.accountId, deviceId: account.deviceId)
         else { return nil }
 
+        // Sign with this device's auth key (shared with the app through the App
+        // Group keychain): the relay refuses HTTP Basic once a key is set.
+        let keychain = KeychainSecureStore(configuration: KeychainConfiguration(accessGroup: appGroupId))
         let api = RelayAPIClient(
             baseURL: account.serverURL,
             credentials: RelayCredentials(
                 accountId: account.accountId,
                 deviceId: account.deviceId,
                 password: account.password
+            ),
+            signer: RelayClosureSigner(
+                sign: { try? keychain.signDeviceAuthorizationPayload($0) },
+                publicKey: { try? keychain.deviceAuthorizationPublicKey() }
             )
         )
         guard let envelopes = try? await api.fetchQueue(), !envelopes.isEmpty else { return nil }

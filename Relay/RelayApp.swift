@@ -10,6 +10,7 @@ import CoreSpotlight
 import Intents
 import OSLog
 import RelayKit
+import SecureStorage
 import SwiftUI
 import UIKit
 import UserNotifications

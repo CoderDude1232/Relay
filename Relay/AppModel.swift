@@ -400,10 +400,8 @@ final class AppModel {
     func checkUsername(_ username: String) async -> UsernameAvailability {
         let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
         do {
-            _ = try await api.lookupAccount(username: username)
-            return .taken      // 200 = exists
-        } catch RelayAPIError.http(let status, _) where status == 404 {
-            return .available  // not found = available
+            // Answers only yes/no — no account id comes back.
+            return try await api.usernameAvailable(username) ? .available : .taken
         } catch {
             return .unknown    // network trouble — registration still gates it
         }
@@ -426,12 +424,14 @@ final class AppModel {
 
     /// Registers a fresh account, publishes its first keys, and persists
     /// the credentials in the Keychain.
-    func register(serverURL: URL, username: String, email: String? = nil, displayName: String, password: String, accountPassword: String? = nil, supabaseUserId: String? = nil) async throws {
+    func register(serverURL: URL, username: String, supabaseAccessToken: String? = nil, displayName: String, password: String, accountPassword: String? = nil, supabaseUserId: String? = nil) async throws {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
 
         let credentials: RelayCredentials
         do {
-            credentials = try await api.register(username: username, email: email, password: password, accountPassword: accountPassword)
+            // The relay takes the email only from a Supabase-verified token,
+            // never from the client, so nobody can register someone else's.
+            credentials = try await api.register(username: username, supabaseAccessToken: supabaseAccessToken, password: password, accountPassword: accountPassword)
         } catch RelayAPIError.http(status: 409, _) {
             struct TakenError: LocalizedError {
                 let name: String
@@ -456,7 +456,7 @@ final class AppModel {
             password: password,
             serverURL: serverURL,
             username: username,
-            email: email,
+            email: nil,
             supabaseUserId: supabaseUserId
         )
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)

@@ -460,7 +460,7 @@ struct ConversationListView: View {
                     .buttonStyle(.plain)
                     .tag(conversation.id as String?)
                 } else {
-                ConversationRow(conversation: conversation, service: service, presenceCache: service.presenceCache)
+                ConversationRow(conversation: conversation, service: service)
                 .tag(conversation.id as String?)
                 .selectionDisabled()
                 .onTapGesture { selectedConversationId = conversation.id }
@@ -1208,7 +1208,6 @@ private struct UsernameSearchSheet: View {
 private struct ConversationRow: View {
     let conversation: Conversation
     let service: MessagingService
-    var presenceCache: [String: Presence] = [:]
 
     private var isRelayOfficial: Bool { conversation.peerAccount == service.relayOfficialAccount }
 
@@ -1225,10 +1224,8 @@ private struct ConversationRow: View {
         return service.peerAvatarData(forAccount: conversation.peerAccount)
     }
 
-    private var isOnline: Bool {
-        guard !conversation.isGroup else { return false }
-        return presenceCache[conversation.peerAccount]?.online == true
-    }
+    /// Online status isn't tracked any more (no presence on the relay).
+    private var isOnline: Bool { false }
 
     private var isBlocked: Bool {
         !conversation.isGroup && service.isBlocked(conversation.peerAccount)

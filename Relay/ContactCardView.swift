@@ -75,17 +75,6 @@ struct ContactCardView: View {
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
                         }
-                        if let presence = service.peerPresence {
-                            if presence.online {
-                                Text("Online")
-                                    .font(.caption)
-                                    .foregroundStyle(.green)
-                            } else if presence.lastSeen > 0 {
-                                Text("Last seen \(Date(timeIntervalSince1970: Double(presence.lastSeen) / 1000).formatted(.relative(presentation: .named)))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
