@@ -825,9 +825,9 @@ func (s *Store) CreateContactInvite(accountID string) (token string, expiresAt i
 }
 
 // ClaimContactInvite consumes a contact invite token, returning the inviter's
-// account id and username. Marks the token used in the same transaction so it
-// can never be redeemed twice. Returns ErrContactInviteInvalid if the token is
-// unknown, expired, or already used.
+// account id and username. Deletes the row in the same transaction, so the
+// token can never be redeemed twice and no redemption record is kept. Returns
+// ErrContactInviteInvalid if the token is unknown, expired, or already used.
 func (s *Store) ClaimContactInvite(token string) (accountID, username string, err error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -838,7 +838,7 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 
 	var expiresAt, usedAt int64
 	err = tx.QueryRow(ctx,
-		`SELECT account_id, expires_at, used_at FROM contact_invites WHERE token = $1`, token,
+		`DELETE FROM contact_invites WHERE token = $1 RETURNING account_id, expires_at, used_at`, token,
 	).Scan(&accountID, &expiresAt, &usedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrContactInviteInvalid
@@ -846,12 +846,12 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 	if err != nil {
 		return "", "", err
 	}
-	now := time.Now().UnixMilli()
-	if usedAt != 0 || now > expiresAt {
+	if usedAt != 0 || time.Now().UnixMilli() > expiresAt {
+		// Expired/legacy-used: the row is gone either way once we commit.
+		if err = tx.Commit(ctx); err != nil {
+			return "", "", err
+		}
 		return "", "", ErrContactInviteInvalid
-	}
-	if _, err = tx.Exec(ctx, `UPDATE contact_invites SET used_at = $1 WHERE token = $2`, now, token); err != nil {
-		return "", "", err
 	}
 	if err = tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1`, accountID).Scan(&username); err != nil {
 		return "", "", err

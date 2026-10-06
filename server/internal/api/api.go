@@ -224,7 +224,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/queue", s.auth(s.handleFetchQueue))
 	mux.HandleFunc("POST /v1/messages/ack", s.auth(s.handleAckMessage))
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
-	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
+	mux.HandleFunc("POST /v1/contact-invites/claim", s.handleClaimContactInvite) // unauthenticated: token is the capability
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
 	mux.HandleFunc("POST /v1/devices/link-invitations", s.auth(s.handleCreateDeviceLinkInvitation))
 	mux.HandleFunc("POST /v1/devices/link-claims", s.handleClaimDeviceLink)
@@ -258,10 +258,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("GET /v1/accounts/{account}", s.auth(s.handleLookupAccount))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
-	mux.HandleFunc("PUT /v1/attachments/{id}", s.auth(s.handleUploadAttachment))
-	mux.HandleFunc("GET /v1/attachments/{id}", s.auth(s.handleDownloadAttachment))
+	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
+	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability
 	mux.HandleFunc("POST /v1/group-invites", s.auth(s.handleCreateEncryptedGroupInvite))
-	mux.HandleFunc("POST /v1/group-invites/claim", s.auth(s.handleClaimEncryptedGroupInvite))
+	mux.HandleFunc("POST /v1/group-invites/claim", s.handleClaimEncryptedGroupInvite) // unauthenticated: token is the capability
 	mux.HandleFunc("GET /v1/ws", s.auth(s.handleWebSocket))
 	return stripVisitorIPHeaders(requestDeadlines(limitRequestBody(mux)))
 }
@@ -903,8 +903,15 @@ func (s *Server) handleCreateContactInvite(w http.ResponseWriter, r *http.Reques
 }
 
 // handleClaimContactInvite consumes a contact invite token, returning the
-// inviter's account id and username. Single-use: a second claim returns 404.
-func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+// inviter's account id and username. Single-use: the row is deleted on claim,
+// so a second claim returns 404. UNAUTHENTICATED — the token is the capability
+// — so the relay can't record which account redeemed whose invite.
+func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !inviteClaimIPLimiter.allow(ip) {
+		httpError(w, http.StatusTooManyRequests, "too many invite claims; try again later")
+		return
+	}
 	var req struct {
 		Token string `json:"token"`
 	}
@@ -1506,6 +1513,9 @@ func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, dev
 // Attachments (opaque encrypted blobs)
 // ---------------------------------------------------------------------------
 
+// handleCreateAttachment allocates an attachment id for the authenticated
+// device (charged to its daily attachment quota) and records it as reserved,
+// so the (unauthenticated) PUT can only write ids the relay handed out, once.
 func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	id, err := s.blobs.NewID()
 	if err != nil {
@@ -1514,6 +1524,10 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 	}
 	if !s.attachQuota.allocate(dev.AccountID, id) {
 		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
+		return
+	}
+	if err := s.blobs.Reserve(id); err != nil {
+		internalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -1531,15 +1545,28 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	id := r.PathValue("id")
-	fallback := ""
-	if dev != nil {
-		fallback = dev.AccountID
+// handleUploadAttachment stores the ciphertext for a reserved id. It is
+// UNAUTHENTICATED: the unguessable 128-bit id is the capability, so the upload
+// can't be tied to the uploader's account. Write-once: an id that was never
+// allocated, has expired, or was already written gets 404. Bytes are charged
+// to the allocating account's quota via the in-memory allocation record.
+func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	if !attachmentIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
 	}
-	owner, known := s.attachQuota.ownerKey(id, fallback)
+	id := r.PathValue("id")
+	owner, known := s.attachQuota.ownerKey(id, "")
 	if known && !s.attachQuota.uploadAllowed(owner) {
 		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
+		return
+	}
+	if err := s.blobs.Claim(id); err != nil {
+		if errors.Is(err, blob.ErrNotFound) {
+			httpError(w, http.StatusNotFound, "unknown or already-used attachment id")
+			return
+		}
+		internalError(w, err)
 		return
 	}
 	body := &countingReader{r: r.Body}
@@ -1562,8 +1589,13 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, 
 // handleDownloadAttachment streams the blob from disk (never buffering it in
 // memory) via http.ServeContent, which also serves Range requests so large
 // downloads can resume. No Last-Modified is sent: the upload time is not
-// disclosed.
-func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+// disclosed. UNAUTHENTICATED: knowing the id (shared only inside E2E-encrypted
+// content) is the capability, so downloads can't be linked to an account.
+func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	if !attachmentIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
 	f, err := s.blobs.Open(r.PathValue("id"))
 	switch {
 	case errors.Is(err, blob.ErrNotFound):
@@ -1611,9 +1643,12 @@ func (s *Server) handleCreateEncryptedGroupInvite(w http.ResponseWriter, r *http
 }
 
 // handleClaimEncryptedGroupInvite returns the opaque blob for a token so the
-// redeemer can decrypt it client-side with the fragment key. Multi-use until expiry.
-func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !groupJoinLimiter.allow(dev.AccountID) {
+// redeemer can decrypt it client-side with the fragment key. Multi-use until
+// expiry. UNAUTHENTICATED — the token is the capability — and rate-limited per
+// source IP, so the relay can't tell which account joined via which link.
+func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !inviteClaimIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "too many join attempts; try again later")
 		return
 	}
@@ -2118,7 +2153,8 @@ func (s *Server) PruneStaleLimiterKeys() {
 		accountCreationLimiter,
 		preKeyFetchLimiter,
 		groupCreateLimiter,
-		groupJoinLimiter,
+		inviteClaimIPLimiter,
+		attachmentIPLimiter,
 		callRingIPLimiter,
 		callRingMailboxLimiter,
 		lookupLimiter,
@@ -2179,8 +2215,12 @@ var preKeyFetchLimiter = newSlidingWindowLimiter(200, time.Hour)
 // 20 group creations per account per day.
 var groupCreateLimiter = newSlidingWindowLimiter(20, 24*time.Hour)
 
-// 50 invite-join attempts per account per hour to prevent token brute-forcing.
-var groupJoinLimiter = newSlidingWindowLimiter(50, time.Hour)
+// Unauthenticated invite claims (contact + group) per source IP per hour, to
+// bound token brute-forcing.
+var inviteClaimIPLimiter = newSlidingWindowLimiter(60, time.Hour)
+
+// Unauthenticated attachment GET/PUT per source IP per minute.
+var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 
 // Call rings are unauthenticated (access-key capability, like sealed sends):
 // bound them per source IP and per destination mailbox.

@@ -665,6 +665,43 @@ func TestSealedSendDelivery(t *testing.T) {
 	ring("0000000000000000000000000000dead", accessKey, http.StatusForbidden)
 }
 
+// TestAttachmentCapabilities: allocation is authenticated, but GET/PUT carry no
+// credentials (the id is the capability) and an id can be written exactly once.
+func TestAttachmentCapabilities(t *testing.T) {
+	env := newTestEnv(t)
+	alice := env.register(uniqueUsername("att"), "password-alice")
+
+	var alloc struct {
+		ID string `json:"id"`
+	}
+	env.doJSON("POST", "/v1/attachments", alice.authUser(), alice.password, nil, http.StatusCreated, &alloc)
+
+	raw := func(method, path string, body []byte) int {
+		req, err := http.NewRequest(method, env.srv.URL+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := raw("PUT", "/v1/attachments/"+alloc.ID, []byte("ciphertext")); got != http.StatusNoContent {
+		t.Fatalf("anonymous PUT of allocated id: %d", got)
+	}
+	if got := raw("PUT", "/v1/attachments/"+alloc.ID, []byte("overwrite")); got != http.StatusNotFound {
+		t.Fatalf("second PUT: %d, want 404 (write-once)", got)
+	}
+	if got := raw("PUT", "/v1/attachments/0123456789abcdef0123456789abcdef", []byte("x")); got != http.StatusNotFound {
+		t.Fatalf("PUT of unallocated id: %d, want 404", got)
+	}
+	if got := raw("GET", "/v1/attachments/"+alloc.ID, nil); got != http.StatusOK {
+		t.Fatalf("anonymous GET: %d", got)
+	}
+}
+
 func TestMailboxRotation(t *testing.T) {
 	env := newTestEnv(t)
 	bob := env.register("bob-rotate", "password-bob")
