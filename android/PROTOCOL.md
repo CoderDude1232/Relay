@@ -160,9 +160,17 @@ libsignal on the client, so the bytes matter:
 - `ServerCertificate.Certificate`: `{1: varint key_id, 2: bytes key(33)}`, signed by
   the trust root.
 - `SenderCertificate.Certificate`, in this exact emitted order:
+  `1: string sender_e164` (**the sender's Relay username**, omitted if none),
   `2: varint device_id`, `3: fixed64 expires` (**unix ms**), `4: bytes identity_key(33)`,
   `5: bytes signer` (the serialized ServerCertificate), `6: string sender_uuid`.
-  Field `1` (e164) is **omitted**.
+- **Usernames ride in `sender_e164`** (Relay has no phone numbers). After the cert
+  validates, read `senderE164` and cache it as the sender's username (iOS:
+  `EnvelopeProcessor.recordUsername`, kv `un:<account>`). This is how recipients
+  learn who wrote **without asking the relay** — never look a sender up by
+  account id on receipt (that ties sender to recipient). Ignore it on certs from
+  your own account. Pass **`null` as `localE164`** to `SealedSessionCipher`: libsignal
+  treats a matching local e164 as a self-send. Renames reach peers when the sender
+  next fetches a certificate (iOS refetches immediately after a rename).
 - `sender_uuid` carries the **relay account id string**. Correcting an earlier
   hedge in this document: account ids **are** RFC 4122 v4 UUIDs — the relay's
   `store.newUUID()` sets the version and variant nibbles explicitly. This is

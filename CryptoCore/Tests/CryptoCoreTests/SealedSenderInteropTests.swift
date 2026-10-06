@@ -18,10 +18,11 @@ import Testing
 
 struct SealedSenderInteropTests {
     // Fixed vector minted by the Go relay.
-    static let trustRootPub = "BWdgajRyxQ/xn3+qMKS/zM5Kiz/RakS2WQ6o2RuaqKJT"
-    static let senderCert = "Cr8BEAEZANjDLLsDAAAiIQVCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQippCiUIARIhBbQqGrMCOEwcpVwMDJKvNiiLWD1CaRiQP7+ePMD3828LEkB7Xe1jQjub929mCE02ON8Zu8qQpf0LtRXT6pRPsdX4wKS8K2X/XMa8vaU96VvtYykC+jCIVr8nTSVxJEzFoN8FMiQxMTExMTExMS0xMTExLTExMTEtMTExMS0xMTExMTExMTExMTESQMzYEPN9Qnn0Eh5jM2oTDPlKuvhCmN6U+FYcDpKyEWHRkVg+XmWYMEp62i5JVZODsf9NozIh468EmDgM88ptmow="
+    static let trustRootPub = "BUOKKb9z9A6av7zbLl67qMwzkN61i0dK+WN/1AjoP3gH"
+    static let senderCert = "Cs0BCgxpbnRlcm9wLXVzZXIQARkA2MMsuwMAACIhBUJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCKmkKJQgBEiEFAUMwn9eyG74PAKU7CS1KU2H9owxA9xBQ6Fx10RGW0gISQPn6OJrZLJQTZKws3ocCFhhc/xH3COIquPdSH2zl87n9FWDph/Qio4GUsOVhogiCiv+bQioJXt1Unu/9KQlZNwIyJDExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMRJAjpEEv8YK4VcAFMF+/7rAW9TuqnbLdYYH+WubtabUNR5sHvRSjDhxS6dpOzwn8ww7O7rULZNgcIZ1aW1KVu+WBQ=="
     static let identityKey = "BUJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJC"
     static let uuid = "11111111-1111-1111-1111-111111111111"
+    static let username = "interop-user"
     static let expiresMs: UInt64 = 4_102_444_800_000
 
     @Test func goMintedCertificateValidatesInLibsignal() throws {
@@ -38,6 +39,8 @@ struct SealedSenderInteropTests {
 
         // Fields decode to exactly what Go minted.
         #expect(cert.senderUuid == Self.uuid)
+        // Relay usernames ride in libsignal's sender_e164 field.
+        #expect(cert.senderE164 == Self.username)
         #expect(cert.deviceId == 1)
         #expect(cert.expiration == Self.expiresMs)
         #expect(cert.publicKey.serialize() == Data(base64Encoded: Self.identityKey)!)

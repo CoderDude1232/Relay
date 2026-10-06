@@ -909,10 +909,17 @@ func (s *Server) handleDeliveryCertificate(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusConflict, "device has not published an identity key")
 		return
 	}
+	// The relay-attested username travels inside the certificate, so
+	// recipients learn who wrote without asking the relay about the sender.
+	username, err := s.store.LookupUsername(dev.AccountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
 	expiresAt := time.Now().Add(7 * 24 * time.Hour).UnixMilli()
 	cert, err := sealedsender.MintSenderCertificate(
 		s.sealed.serverCert, s.sealed.serverCertKey,
-		dev.AccountID, dev.DeviceID, identityKey, uint64(expiresAt),
+		dev.AccountID, username, dev.DeviceID, identityKey, uint64(expiresAt),
 	)
 	if err != nil {
 		internalError(w, err)

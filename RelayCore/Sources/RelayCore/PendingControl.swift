@@ -23,6 +23,8 @@ public enum PendingControl: Codable, Sendable {
     /// A delivery receipt the app must send to `peerAccount` (the attested
     /// author). `conversationId` lets the app add the group context.
     case deliveryReceipt(peerAccount: String, conversationId: String?, timestamp: Int64)
+    /// Legacy: older builds queued a username lookup here. Usernames now come
+    /// from the sender certificate; kept so persisted items still decode.
     case backfillUsername(conversationId: String, account: String)
     case screenshotAlert(ScreenshotAlertInfo)
     case screenSecurity(ScreenSecurityInfo)
@@ -41,9 +43,6 @@ public enum PendingControlStore {
         var items: [PendingControl] = []
         if let ts = result.sideEffects.deliveryReceiptTimestamp, let peer = result.peerAccount, !peer.isEmpty {
             items.append(.deliveryReceipt(peerAccount: peer, conversationId: result.conversationId, timestamp: ts))
-        }
-        if let account = result.sideEffects.backfillUsernameForAccount, let conversationId = result.conversationId {
-            items.append(.backfillUsername(conversationId: conversationId, account: account))
         }
         if result.outcome == .stored, let conversationId = result.conversationId,
            let body = result.notification?.body, body.hasPrefix(notepadPrefix) {

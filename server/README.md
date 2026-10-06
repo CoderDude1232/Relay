@@ -236,7 +236,7 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `GET /v1/certificate/delivery` | sig | Mint a libsignal sealed-sender certificate (binds account id, device id, stored identity key; 7-day expiry) → `201 {certificate, expiresAt}`. `503` if sealed sender unconfigured, `409` if no keys. Requires `-sealed-sender-trust-key`; clients embed the trust-root public key (logged at startup). |
+| `GET /v1/certificate/delivery` | sig | Mint a libsignal sealed-sender certificate (binds account id, device id, stored identity key, and the current **username in the `sender_e164` field** so recipients learn it from the sealed message itself; 7-day expiry) → `201 {certificate, expiresAt}`. `503` if sealed sender unconfigured, `409` if no keys. Requires `-sealed-sender-trust-key`; clients embed the trust-root public key (logged at startup). |
 | `POST /v1/directory/oprf` | sig | `{blinded:[base64 ristretto255,…]}` (1–1024) → `{evaluated:[base64,…]}` (`k·B`). Blinded discovery step 1; the relay never learns the identifiers. Requires `-oprf-key`; `503` if unset. Metered **per element** (token bucket: 5000/account/day and 20000/IP/day, `429` when exhausted) plus 200 requests/account/hour. |
 | `POST /v1/directory/buckets` | sig | `{buckets:[uint16,…]}` (1–1024) → `{buckets:[{bucket, entries:[{tag, box}]}]}`. Blinded discovery step 2 — **the final OPRF tokens never leave the client**. See below. 200/account/hour, 400/IP/hour. (Replaces `POST /v1/directory/resolve`, which received the tokens.) |
 | `POST /v1/contact-invites` | sig | → `201 {token, expiresAt}` (7-day, single-use). Share as `https://relaymsg.app/c/<token>`. |

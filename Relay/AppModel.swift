@@ -387,6 +387,8 @@ final class AppModel {
             }
             throw TakenError(name: newUsername)
         }
+        // Recipients read our username from the sender certificate.
+        service.invalidateSenderCertificate()
         // Persist the new username across restarts.
         if let data = try? keychain.loadSecret(for: Self.accountSecretName),
            let saved = try? JSONDecoder().decode(SavedAccount.self, from: data) {

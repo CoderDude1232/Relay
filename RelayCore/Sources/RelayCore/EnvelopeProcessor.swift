@@ -43,11 +43,9 @@ public struct PollPayload: Codable, Sendable {
 /// Actions the caller may perform after processing. The NSE ignores these.
 public struct EnvelopeSideEffects: Sendable {
     public var deliveryReceiptTimestamp: Int64?
-    public var backfillUsernameForAccount: String?
 
-    public init(deliveryReceiptTimestamp: Int64? = nil, backfillUsernameForAccount: String? = nil) {
+    public init(deliveryReceiptTimestamp: Int64? = nil) {
         self.deliveryReceiptTimestamp = deliveryReceiptTimestamp
-        self.backfillUsernameForAccount = backfillUsernameForAccount
     }
 }
 
@@ -370,6 +368,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         // sealed blob's certificate instead of trusting a server-stamped field.
         let sender: ProtocolAddress
         let plaintext: Data
+        var attestedUsername: String?
         if envelope.senderAccount.isEmpty {
             guard let trustRoot = sealedSenderTrustRoot else {
                 throw EnvelopeProcessorError.sealedSenderUnavailable
@@ -390,6 +389,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             )
             sender = try ProtocolAddress(name: result.senderAccountId, deviceId: result.senderDeviceId)
             plaintext = result.plaintext
+            attestedUsername = result.senderUsername
         } else {
             sender = try ProtocolAddress(name: envelope.senderAccount, deviceId: envelope.senderDevice)
             plaintext = try engine.decrypt(envelope.message, from: sender)
@@ -416,6 +416,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         // the wire envelope carries no sender.
         if blockedAccounts.contains(attestedAccount) {
             return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+        }
+
+        // The relay-signed certificate names the sender's username, so we
+        // never have to ask the relay who wrote to us (which would tie sender
+        // to recipient). Not from our own devices: their cert names us.
+        if let attestedUsername, attestedAccount != ownAccountId {
+            recordUsername(attestedUsername, forAccount: attestedAccount)
         }
 
         // Group content is only accepted from current members of a group we
@@ -527,9 +534,6 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 // Send a delivery receipt back to the author (in a group the
                 // sender's account; the caller adds the group context).
                 effects.deliveryReceiptTimestamp = text.timestamp
-            }
-            if groupId == nil, !hasUsername(conversationId: conversationId) {
-                effects.backfillUsernameForAccount = attestedAccount
             }
             let preview = text.body.isEmpty && !attachments.isEmpty ? "📷 Photo" : text.body
             return ProcessedEnvelope(
@@ -776,10 +780,16 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         }
     }
 
-    private func hasUsername(conversationId: String) -> Bool {
-        let username = try? storage.database.query(
-            "SELECT peer_username FROM conversations WHERE id = ?", [.text(conversationId)]
-        ).first?.first?.string
-        return (username ?? nil) != nil
+    /// Stores a certificate-attested username in the same `un:<account>` cache
+    /// the app reads, and on the 1:1 conversation if there is one.
+    private func recordUsername(_ username: String, forAccount account: String) {
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+            [.text("un:\(account)"), .blob(Data(username.utf8))]
+        )
+        try? storage.database.run(
+            "UPDATE conversations SET peer_username = ? WHERE peer_account = ?",
+            [.text(username), .text(account)]
+        )
     }
 }

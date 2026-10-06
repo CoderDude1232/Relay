@@ -261,6 +261,9 @@ public final class CryptoEngine {
     public struct SealedSenderDecryptResult: Sendable {
         public let senderAccountId: String
         public let senderDeviceId: UInt32
+        /// The sender's username as attested by the relay in the validated
+        /// certificate (carried in libsignal's sender_e164 field), if present.
+        public let senderUsername: String?
         public let plaintext: Data
     }
 
@@ -365,6 +368,7 @@ public final class CryptoEngine {
         return SealedSenderDecryptResult(
             senderAccountId: sender.uuidString,
             senderDeviceId: sender.deviceId,
+            senderUsername: cert.senderE164.flatMap { $0.isEmpty ? nil : $0 },
             plaintext: plaintext
         )
     }

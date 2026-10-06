@@ -568,10 +568,9 @@ final class MessagingService {
                 // identity authenticated by decryption.
                 await sendReceipt(.delivery, timestamps: [timestamp], toPeer: result.peerAccount ?? envelope.senderAccount, groupId: groupId)
             }
-            if let account = result.sideEffects.backfillUsernameForAccount,
-               let conversationId = result.conversationId {
-                backfillUsernameIfNeeded(conversationId: conversationId, account: account)
-            }
+            // The processor may have just recorded the sender's certificate-
+            // attested username; drop any memoized fallback name.
+            if let peer = result.peerAccount { nameCache[peer] = nil }
             if let typingStarted = result.typingStarted {
                 applyPeerTyping(started: typingStarted, peerAccount: result.peerAccount,
                                 groupConversationId: result.conversationId)
@@ -3479,6 +3478,13 @@ final class MessagingService {
 
     /// Returns this device's sealed-sender certificate, fetching (and caching) a
     /// fresh one from the relay when absent or within a day of expiry.
+    /// Drops the cached sender certificate so the next send fetches a fresh
+    /// one — call after a username change, since the certificate carries the
+    /// username recipients see.
+    func invalidateSenderCertificate() {
+        cachedSenderCert = nil
+    }
+
     private func senderCertificate() async throws -> Data {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         if let cert = cachedSenderCert, cert.expiresAt - nowMs > 86_400_000 {
@@ -3853,20 +3859,6 @@ final class MessagingService {
             .map { (account: $0, status: receipts[$0]) }
             .sorted { (rank($0.status), displayName(forAccount: $0.account)) < (rank($1.status), displayName(forAccount: $1.account)) }
             .map { (name: displayName(forAccount: $0.account), status: label($0.status)) }
-    }
-
-    /// Conversations created by an incoming message know only the sender's
-    /// account id; resolve the human-readable username from the relay.
-    func backfillUsernameIfNeeded(conversationId: String, account: String) {
-        let existing = try? storage.database.query(
-            "SELECT peer_username FROM conversations WHERE id = ?", [.text(conversationId)]
-        ).first?.first?.string
-        guard existing == nil else { return }
-        Task {
-            guard let username = try? await api.lookupUsername(account: account) else { return }
-            _ = try? storage.messages.conversation(withPeer: account, username: username)
-            refreshConversations()
-        }
     }
 
     // MARK: - Safety-number verification

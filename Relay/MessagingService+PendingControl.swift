@@ -48,8 +48,8 @@ extension MessagingService {
                 let target = ReceiptTarget(peer: peer, groupId: conversationId.flatMap { group(for: $0)?.id })
                 if receipts[target] == nil { receiptOrder.append(target) }
                 receipts[target, default: []].append(timestamp)
-            case .backfillUsername(let conversationId, let account):
-                backfillUsernameIfNeeded(conversationId: conversationId, account: account)
+            case .backfillUsername:
+                break // legacy item; usernames now arrive in the sender certificate
             case .notepad(let conversationId, let content):
                 setNotepadContent(content, for: conversationId)
             case .groupUpdate(let info, let sender):

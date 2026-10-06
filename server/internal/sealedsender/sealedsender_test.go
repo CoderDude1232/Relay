@@ -32,7 +32,8 @@ func TestPrintInteropVector(t *testing.T) {
 	identityKey := append([]byte{djbType}, bytes.Repeat([]byte{0x42}, 32)...)
 	const uuid = "11111111-1111-1111-1111-111111111111"
 	const expiresMs = 4102444800000 // 2100-01-01, far future
-	senderCert, err := MintSenderCertificate(serverCert, serverKey.Private, uuid, 1, identityKey, expiresMs)
+	const username = "interop-user"
+	senderCert, err := MintSenderCertificate(serverCert, serverKey.Private, uuid, username, 1, identityKey, expiresMs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +42,7 @@ func TestPrintInteropVector(t *testing.T) {
 	t.Logf("INTEROP_SENDER_CERT=%s", enc(senderCert))
 	t.Logf("INTEROP_IDENTITY_KEY=%s", enc(identityKey))
 	t.Logf("INTEROP_UUID=%s", uuid)
+	t.Logf("INTEROP_USERNAME=%s", username)
 	t.Logf("INTEROP_EXPIRES_MS=%d", int64(expiresMs))
 }
 
@@ -132,7 +134,7 @@ func TestMintCertificatesVerify(t *testing.T) {
 	identityKey := append([]byte{djbType}, bytes.Repeat([]byte{0x42}, 32)...)
 	senderCert, err := MintSenderCertificate(
 		serverCert, serverKey.Private,
-		"11111111-1111-1111-1111-111111111111", 1, identityKey, 1_800_000_000_000,
+		"11111111-1111-1111-1111-111111111111", "alice", 1, identityKey, 1_800_000_000_000,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -150,5 +152,27 @@ func TestMintCertificatesVerify(t *testing.T) {
 	// client can validate the chain.
 	if !bytes.Contains(senderCert, serverCert) {
 		t.Fatal("sender certificate does not embed the server certificate")
+	}
+
+	// The username rides in field 1 (sender_e164) of the signed inner cert.
+	num, typ, n := protowire.ConsumeTag(innerSender)
+	if n < 0 || num != 1 || typ != protowire.BytesType {
+		t.Fatalf("first field = %d/%d, want username in field 1", num, typ)
+	}
+	if got, m := protowire.ConsumeString(innerSender[n:]); m < 0 || got != "alice" {
+		t.Fatalf("username field = %q, want alice", got)
+	}
+
+	// No username: field 1 is omitted entirely.
+	noName, err := MintSenderCertificate(
+		serverCert, serverKey.Private,
+		"11111111-1111-1111-1111-111111111111", "", 1, identityKey, 1_800_000_000_000,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	innerNoName, _ := parseWrapper(t, noName)
+	if num, _, _ := protowire.ConsumeTag(innerNoName); num == 1 {
+		t.Fatal("empty username should omit field 1")
 	}
 }

@@ -100,9 +100,14 @@ func MintServerCertificate(trustRootPrivate []byte, keyID uint32, serverPublic [
 // (senderUUID, deviceID, identityKey) with an expiry, signed by the server
 // certificate key. serverCertificate is the serialized ServerCertificate from
 // MintServerCertificate; identityKey is the sender's 33-byte identity public key.
+//
+// senderUsername, when non-empty, is carried in libsignal's sender_e164 field
+// (Relay has no phone numbers). Recipients read it from the validated
+// certificate, so a sender's username is attested by the relay and arrives
+// inside the sealed message — no lookup that would tie sender to recipient.
 func MintSenderCertificate(
 	serverCertificate, serverCertPrivate []byte,
-	senderUUID string, deviceID uint32, identityKey []byte, expiresMs uint64,
+	senderUUID, senderUsername string, deviceID uint32, identityKey []byte, expiresMs uint64,
 ) ([]byte, error) {
 	if len(identityKey) != 33 {
 		return nil, errors.New("sealedsender: identity key must be 33 bytes")
@@ -110,10 +115,15 @@ func MintSenderCertificate(
 	if senderUUID == "" {
 		return nil, errors.New("sealedsender: sender uuid required")
 	}
-	// SenderCertificate.Certificate fields, ascending: device(2), expires(3,
-	// fixed64), identityKey(4), signer certificate(5), uuidString(6). e164 (1)
-	// omitted. Field order is free — libsignal verifies over these exact bytes.
+	// SenderCertificate.Certificate fields, ascending: e164(1, used for the
+	// username), device(2), expires(3, fixed64), identityKey(4), signer
+	// certificate(5), uuidString(6). Field order is free — libsignal verifies
+	// over these exact bytes.
 	var cert []byte
+	if senderUsername != "" {
+		cert = protowire.AppendTag(cert, 1, protowire.BytesType)
+		cert = protowire.AppendString(cert, senderUsername)
+	}
 	cert = protowire.AppendTag(cert, 2, protowire.VarintType)
 	cert = protowire.AppendVarint(cert, uint64(deviceID))
 	cert = protowire.AppendTag(cert, 3, protowire.Fixed64Type)
