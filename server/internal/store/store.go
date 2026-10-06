@@ -51,7 +51,7 @@ const maxGroupMembers = 256
 const QueueTTL = 14 * 24 * time.Hour
 
 const (
-	queueTTLMillis        = int64(QueueTTL / time.Millisecond)
+	queueTTLMillis         = int64(QueueTTL / time.Millisecond)
 	maxQueuedEnvelopeBytes = 512 * 1024
 	maxQueuedPerDevice     = 500
 	// maxQueuedBytesPerDevice caps a device's total queued ciphertext, so the

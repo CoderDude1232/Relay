@@ -79,6 +79,9 @@ func (l *tokenBucketLimiter) exhausted(key string) bool {
 	hk := limitkey.Hash(key)
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.buckets[hk] == nil {
+		return false // never spent anything: full; don't allocate an entry
+	}
 	return l.refill(hk, time.Now()).tokens < 1
 }
 
