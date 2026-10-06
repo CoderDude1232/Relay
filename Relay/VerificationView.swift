@@ -168,6 +168,22 @@ struct VerificationView: View {
 
     @ViewBuilder
     private func actionButtons(_ state: VerificationState) -> some View {
+        if verification?.hasConflictingKeys == true {
+            Label {
+                Text("\(peerName) has a device using a different security key. A safety number can't confirm it, so verification is unavailable. Ask \(peerName) to check their linked devices and remove any they don't recognise.")
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+            .font(.footnote)
+            .padding()
+            .background(.orange.opacity(0.12), in: .rect(cornerRadius: 12))
+        } else {
+            verificationActions(state)
+        }
+    }
+
+    @ViewBuilder
+    private func verificationActions(_ state: VerificationState) -> some View {
         VStack(spacing: 12) {
             Button {
                 showingScanner = true

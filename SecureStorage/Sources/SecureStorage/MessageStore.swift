@@ -616,10 +616,19 @@ public final class MessageStore: @unchecked Sendable {
     ) throws {
         let adminsJSON = (try? JSONEncoder().encode(admins)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         try db.transaction {
-            // Ensure the conversation exists and is tagged as a group.
-            let existing = try db.query(
-                "SELECT id FROM conversations WHERE peer_account = ?", [.text(id)]
-            ).first?.first?.string
+            // Ensure the conversation exists and is tagged as a group. Group and
+            // 1:1 conversations share the peer_account key, so a group id equal
+            // to an existing 1:1 peer (or our own account, for Note to Self)
+            // must never convert that chat into a group — otherwise a forged
+            // group-create could make every later message in it fan out to the
+            // forger.
+            let existingRow = try db.query(
+                "SELECT id, group_id FROM conversations WHERE peer_account = ?", [.text(id)]
+            ).first
+            if let existingRow, existingRow[1].string == nil {
+                throw StorageError.conflict("group id collides with a 1:1 conversation")
+            }
+            let existing = existingRow?[0].string
             if existing == nil {
                 try db.run(
                     """

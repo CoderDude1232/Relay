@@ -20,6 +20,9 @@ public enum StorageError: Error, Equatable {
     case recordNotFound(String)
     case keychain(status: Int32)
     case secureEnclave(String)
+    /// The write would turn one kind of record into another (e.g. a 1:1
+    /// conversation into a group) — refused.
+    case conflict(String)
 }
 
 /// A 256-bit SQLCipher master key.

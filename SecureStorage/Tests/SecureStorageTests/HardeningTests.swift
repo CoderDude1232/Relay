@@ -301,3 +301,44 @@ struct SystemLineUnreadTests {
         #expect(try store.conversations().first?.unreadCount == 1)
     }
 }
+
+struct OwnAccountAndGroupGuardTests {
+    @Test func ownAccountDevicesMustCarryOurIdentityKey() throws {
+        let credentials = Credentials()
+        let storage = try SecureStore(path: tempPath(), key: .random(), credentials: credentials)
+        _ = try storage.makeCryptoEngine(accountId: "me", deviceId: 1)
+        let store = storage.signalStore
+        let context = NullContext()
+        let otherOwnDevice = try ProtocolAddress(name: "me", deviceId: 2)
+
+        // No trust-on-first-use for our own account: only our own key passes.
+        let rogue = IdentityKeyPair.generate().identityKey
+        #expect(try !store.isTrustedIdentity(rogue, for: otherOwnDevice, direction: .sending, context: context))
+        #expect(try !store.isTrustedIdentity(rogue, for: otherOwnDevice, direction: .receiving, context: context))
+        #expect(try store.isTrustedIdentity(
+            credentials.identity.identityKey, for: otherOwnDevice, direction: .receiving, context: context))
+    }
+
+    @Test func groupCannotTakeOverAOneToOneConversation() throws {
+        let storage = try SecureStore(path: tempPath(), key: .random(), credentials: Credentials())
+        let messages = storage.messages
+        _ = try messages.conversation(withPeer: "bob")
+
+        #expect(throws: StorageError.self) {
+            try messages.upsertGroup(
+                id: "bob", name: "Hijack", distributionId: UUID().uuidString,
+                revision: 1, members: ["bob", "mallory"]
+            )
+        }
+        #expect(try messages.group(id: "bob") == nil)
+        #expect(try messages.conversations().first { $0.peerAccount == "bob" }?.isGroup == false)
+
+        // A real group id still works.
+        let groupId = UUID().uuidString
+        try messages.upsertGroup(
+            id: groupId, name: "Friends", distributionId: UUID().uuidString,
+            revision: 1, members: ["bob", "me"]
+        )
+        #expect(try messages.group(id: groupId)?.members.sorted() == ["bob", "me"])
+    }
+}

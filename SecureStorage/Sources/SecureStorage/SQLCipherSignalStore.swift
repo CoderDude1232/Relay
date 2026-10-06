@@ -34,6 +34,12 @@ public protocol IdentityCredentialProviding: AnyObject {
 public final class SQLCipherSignalStore {
     private let db: Database
     private let credentials: any IdentityCredentialProviding
+    /// Our own account id. Every device of our own account shares our identity
+    /// key (linked devices receive it at provisioning), so a device of this
+    /// account presenting any other key is never trusted — no trust-on-first-use
+    /// for ourselves, or the relay could add a hidden device that receives a
+    /// sync copy of everything we send. Set once at startup, before any use.
+    public var localAccountName: String?
 
     public init(database: Database, credentials: any IdentityCredentialProviding) {
         self.db = database
@@ -135,6 +141,8 @@ extension SQLCipherSignalStore: IdentityKeyStore {
     }
 
     /// Trust policy (both directions):
+    /// - a device of our own account is trusted iff it presents our own
+    ///   identity key;
     /// - a device we already have a key for is trusted iff the key is unchanged;
     /// - a device id never seen for an account that has OTHER known devices is
     ///   trusted iff it presents one of the identity keys already stored for
@@ -147,6 +155,9 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         direction: Direction,
         context: StoreContext
     ) throws -> Bool {
+        if let localAccountName, address.name == localAccountName {
+            return identity == (try credentials.identityKeyPair().identityKey)
+        }
         if let known = try self.identity(for: address, context: context) {
             return known == identity
         }

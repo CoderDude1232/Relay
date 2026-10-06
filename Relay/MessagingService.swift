@@ -35,10 +35,13 @@ nonisolated struct ProfileLink: Codable, Hashable, Identifiable {
 
 enum MessagingError: LocalizedError {
     case attachmentTooLarge
+    case recipientCannotReceivePrivately
 
     var errorDescription: String? {
         switch self {
         case .attachmentTooLarge: return "Attachment exceeds the 25 MB size limit."
+        case .recipientCannotReceivePrivately:
+            return "This contact's app can't receive sealed messages, so it wasn't sent. Ask them to update Relay."
         }
     }
 }
@@ -63,6 +66,8 @@ private struct GroupInvitePayload: Codable {
     let members: [String]
     let distributionId: String
     let inviteKey: Data
+    /// Optional for links made by older builds.
+    let admins: [String]?
 }
 
 extension Data {
@@ -154,7 +159,7 @@ final class MessagingService {
     private var isDrainingQueue = false
     /// Account IDs the local user has blocked. Persisted in the encrypted kv table.
     private(set) var blockedAccounts: Set<String> = []
-    /// Presence snapshots keyed by account id; populated whenever we poll the
+    /// Unused since presence polling was removed; kept for source compatibility.
     /// active conversation's peer and used to show online dots in the list.
     private(set) var presenceCache: [String: Presence] = [:]
     /// Conversation that tried to send to a replacement identity key before
@@ -461,7 +466,6 @@ final class MessagingService {
                     } catch {
                         log.warning("prekey replenishment failed: \(PrivacyRedactor.error(error))")
                     }
-                    await rotateMailboxIfNeeded()
                     await ensureNoteToSelf()
                     ensureRelayAccount()
                 case .envelope(let envelope):
@@ -1039,6 +1043,16 @@ final class MessagingService {
             return
         }
         do {
+            // Sealed like any other send: an authenticated "A → A" frame at the
+            // same moment as a sealed send would tell the relay who sent it.
+            if sealedSenderEnabled, await recipientSupportsSealed(credentials.accountId) {
+                try await sendContentSealed(
+                    padded, toPeer: credentials.accountId,
+                    clientTimestamp: timestamp, ephemeral: false
+                )
+                log.debug("self-sync: sealed to \(devices.count) own device(s)")
+                return
+            }
             let payloads = try buildMailboxPayloads(padded, forPeer: credentials.accountId, devices: devices)
             let outcome = try await sendMailboxPayloads(payloads, clientTimestamp: timestamp)
             log.debug("self-sync: sent to \(devices.count) own device(s), outcome \(String(describing: outcome))")
@@ -1624,9 +1638,16 @@ final class MessagingService {
     /// Local authorization: only admins may change group state. Legacy groups
     /// with no recorded admins are treated as open (every member authorized).
     private func requireGroupAdmin(_ group: StoredGroup) throws {
-        guard group.admins.isEmpty || group.admins.contains(credentials.accountId) else {
+        guard Self.isGroupAdmin(credentials.accountId, in: group) else {
             throw GroupError.notAdmin
         }
+    }
+
+    /// An admin must be a current member. Legacy groups with no admin list
+    /// treat every *member* as an admin — never a non-member.
+    static func isGroupAdmin(_ account: String, in group: StoredGroup) -> Bool {
+        guard group.members.contains(account) else { return false }
+        return group.admins.isEmpty || group.admins.contains(account)
     }
 
     /// Creates a group entirely client-side: the id and sender-key epoch are
@@ -1688,10 +1709,20 @@ final class MessagingService {
             revision: existing.revision + 1, members: members,
             admins: existing.admins.filter { $0 != account }, isAnnounceOnly: existing.isAnnounceOnly
         )
+        // The removed member knows the current invite capability; mint a new
+        // one so they can't rejoin with it (remaining members get it below).
+        if groupInviteKey(groupId) != nil {
+            setGroupInviteKey(groupId, Self.randomInviteKey())
+        }
         refreshConversations()
         if let stored = try storage.messages.group(id: groupId) {
             try? await distributeSenderKeyIfNeeded(group: stored) // fresh epoch → redistribute to remaining
             await sendGroupUpdate(.remove, group: stored, target: account)
+            // Let the removed member know too — without the new invite key.
+            var notice = Relay_Content_GroupUpdate()
+            notice.action = .remove
+            notice.target = account
+            await sendGroupUpdateCustom(notice, group: stored, to: [account], includeInviteKey: false)
         }
         insertSystemLine("You removed \(displayName(forAccount: account))", inGroup: groupId)
     }
@@ -1759,9 +1790,7 @@ final class MessagingService {
         // Establish the invite capability if this is the group's first link, and
         // push it to members (silently) so they can verify joins.
         if groupInviteKey(groupId) == nil {
-            var key = Data(count: 32)
-            key.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
-            setGroupInviteKey(groupId, key)
+            setGroupInviteKey(groupId, Self.randomInviteKey())
             var announce = Relay_Content_GroupUpdate()
             announce.action = .unspecified // silent: carries only the invite key
             await sendGroupUpdateCustom(announce, group: group)
@@ -1769,7 +1798,7 @@ final class MessagingService {
         guard let inviteKey = groupInviteKey(groupId) else { throw GroupError.notFound }
         let payload = GroupInvitePayload(
             groupId: groupId, name: group.name, members: group.members,
-            distributionId: group.distributionId, inviteKey: inviteKey
+            distributionId: group.distributionId, inviteKey: inviteKey, admins: group.admins
         )
         let sealed = try AttachmentCipher.seal(try JSONEncoder().encode(payload))
         let (token, _) = try await api.createEncryptedGroupInvite(blob: sealed.ciphertext)
@@ -2065,9 +2094,19 @@ final class MessagingService {
     /// Builds and posts a signed remote-wipe command to the relay server.
     /// All devices on the account receive it and wipe themselves.
     func sendNukeCommand() async throws {
-        let commandId = UUID().uuidString
         let creationTimeMs = Int64(Date().timeIntervalSince1970 * 1000)
         let initiatingDeviceId = credentials.deviceId
+        // The relay checks a signature by this device's auth key, but that key
+        // is registered through the relay, so it proves nothing to our other
+        // devices. They trust only a signature by the account identity key,
+        // which only our own devices hold. It rides inside the command id
+        // ("<uuid>.<base64url sig>"), which the relay stores and relays verbatim.
+        let nonce = UUID().uuidString
+        let identitySignature = try engine.signWithIdentity(Data(nukeIdentityPayload(
+            accountId: credentials.accountId, nonce: nonce,
+            creationTimeMs: creationTimeMs, initiatingDeviceId: initiatingDeviceId
+        ).utf8))
+        let commandId = "\(nonce).\(identitySignature.base64URLEncodedString())"
         let payload = nukeCanonicalPayload(
             accountId: credentials.accountId,
             commandId: commandId,
@@ -2098,38 +2137,17 @@ final class MessagingService {
             log.warning("nuke: command timestamp out of acceptable range, ignoring")
             return
         }
-        // Verify the ECDSA-P256 signature using the initiating device's auth key.
-        do {
-            let authKey = try await api.deviceAuthKey(deviceId: nuke.initiatingDeviceId)
-            let payload = nukeCanonicalPayload(
-                accountId: nuke.accountId,
-                commandId: nuke.commandId,
-                creationTimeMs: nuke.creationTimeMs,
-                initiatingDeviceId: nuke.initiatingDeviceId
-            )
-            let keyAttrs: [CFString: Any] = [
-                kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
-                kSecAttrKeyClass: kSecAttrKeyClassPublic,
-            ]
-            var importError: Unmanaged<CFError>?
-            guard let secKey = SecKeyCreateWithData(authKey as CFData, keyAttrs as CFDictionary, &importError) else {
-                log.warning("nuke: failed to import initiating device auth key")
-                return
-            }
-            var verifyError: Unmanaged<CFError>?
-            let valid = SecKeyVerifySignature(
-                secKey,
-                .ecdsaSignatureMessageX962SHA256,
-                Data(payload.utf8) as CFData,
-                nuke.signature as CFData,
-                &verifyError
-            )
-            guard valid else {
-                log.warning("nuke: signature verification failed, ignoring")
-                return
-            }
-        } catch {
-            log.warning("nuke: could not fetch initiating device auth key: \(error)")
+        // Verify the account-identity signature carried in the command id. Only
+        // our own devices hold the identity private key; the relay doesn't.
+        let parts = nuke.commandId.split(separator: ".", maxSplits: 1).map(String.init)
+        guard parts.count == 2,
+              let signature = Data(base64URLEncoded: parts[1]),
+              engine.verifyOwnIdentitySignature(signature, message: Data(nukeIdentityPayload(
+                  accountId: nuke.accountId, nonce: parts[0],
+                  creationTimeMs: nuke.creationTimeMs, initiatingDeviceId: nuke.initiatingDeviceId
+              ).utf8))
+        else {
+            log.warning("nuke: identity signature missing or invalid, ignoring")
             return
         }
         log.info("nuke: verified command from device \(nuke.initiatingDeviceId), executing wipe")
@@ -2141,6 +2159,10 @@ final class MessagingService {
         // A device was added or removed. Clear the own-account session cache so
         // the next outgoing sync re-discovers the new device list immediately.
         resetSession(withPeer: credentials.accountId)
+    }
+
+    private func nukeIdentityPayload(accountId: String, nonce: String, creationTimeMs: Int64, initiatingDeviceId: UInt32) -> String {
+        ["relay-nuke-identity-v1", accountId, nonce, String(creationTimeMs), String(initiatingDeviceId)].joined(separator: "\n")
     }
 
     private func nukeCanonicalPayload(accountId: String, commandId: String, creationTimeMs: Int64, initiatingDeviceId: UInt32) -> String {
@@ -2187,13 +2209,19 @@ final class MessagingService {
             blob, key: Data(keyDigest.prefix(32)), digest: Data(keyDigest.suffix(32))
         )
         let payload = try JSONDecoder().decode(GroupInvitePayload.self, from: json)
+        guard Self.isValidGroupId(payload.groupId, ownAccount: credentials.accountId) else {
+            throw GroupError.notFound
+        }
 
         var members = payload.members
         if !members.contains(credentials.accountId) { members.append(credentials.accountId) }
         setGroupInviteKey(payload.groupId, payload.inviteKey)
         try storage.messages.upsertGroup(
             id: payload.groupId, name: payload.name, distributionId: payload.distributionId,
-            revision: 1, members: members, admins: []
+            revision: 1, members: members,
+            // Keep the group's real admins; an empty list would make every
+            // member an admin from this device's point of view.
+            admins: (payload.admins ?? []).filter { payload.members.contains($0) }
         )
         refreshConversations()
         for member in payload.members where member != credentials.accountId {
@@ -2329,7 +2357,23 @@ final class MessagingService {
         await sendGroupUpdateCustom(update, group: group)
     }
 
-    private func sendGroupUpdateCustom(_ update: Relay_Content_GroupUpdate, group: StoredGroup) async {
+    private static func randomInviteKey() -> Data {
+        var key = Data(count: 32)
+        let status = key.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed")
+        return key
+    }
+
+    /// A group id must be a random UUID that can't be mistaken for an account:
+    /// group and 1:1 conversations share one key space.
+    static func isValidGroupId(_ id: String, ownAccount: String) -> Bool {
+        UUID(uuidString: id) != nil && id != ownAccount && id != relayOfficialAccount
+    }
+
+    private func sendGroupUpdateCustom(
+        _ update: Relay_Content_GroupUpdate, group: StoredGroup,
+        to recipients: [String]? = nil, includeInviteKey: Bool = true
+    ) async {
         var u = update
         u.actor = credentials.accountId
         u.name = group.name
@@ -2340,14 +2384,14 @@ final class MessagingService {
         u.members = group.members
         u.admins = group.admins
         u.distributionID = group.distributionId
-        if let inviteKey = groupInviteKey(group.id) { u.inviteKey = inviteKey }
+        if includeInviteKey, let inviteKey = groupInviteKey(group.id) { u.inviteKey = inviteKey }
         var content = Relay_Content_Content()
         content.groupUpdate = u
         content.groupID = group.id
         content.senderAccountID = credentials.accountId
         content.senderDeviceID = credentials.deviceId
         guard let data = try? content.serializedData() else { return }
-        for member in group.members where member != credentials.accountId {
+        for member in recipients ?? group.members where member != credentials.accountId {
             try? await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
         }
     }
@@ -2417,8 +2461,21 @@ final class MessagingService {
         //    group's current invite capability. Legacy groups with an empty admin
         //    list are treated as open.
         let isBootstrap = (existing == nil)
-        let actorIsAdmin = existing.map { $0.admins.isEmpty || $0.admins.contains(actor) } ?? true
+        if isBootstrap {
+            // Only accept a brand-new group from someone who is in it, that
+            // includes us, and whose id can't collide with a 1:1 chat.
+            guard Self.isValidGroupId(info.groupId, ownAccount: credentials.accountId),
+                  info.members.contains(actor),
+                  info.members.contains(credentials.accountId),
+                  info.action == .create || info.action == .add
+            else {
+                log.warning("group update: rejected bootstrap for unknown group")
+                return
+            }
+        }
+        let actorIsAdmin = existing.map { Self.isGroupAdmin(actor, in: $0) } ?? true
         let isSelfDeparture = (info.action == .leave || info.action == .remove) && info.target == actor
+            && (existing?.members.contains(actor) ?? false)
         let isValidSelfJoin = info.action == .add && info.target == actor
             && !info.inviteKey.isEmpty && groupInviteKey(info.groupId) == info.inviteKey
         guard isBootstrap || actorIsAdmin || isSelfDeparture || isValidSelfJoin else {
@@ -2522,7 +2579,8 @@ final class MessagingService {
                 }
             }
             newMembers = members
-            newAdmins = info.admins.isEmpty ? (existing?.admins ?? [actor]) : info.admins
+            newAdmins = (info.admins.isEmpty ? (existing?.admins ?? [actor]) : info.admins)
+                .filter { newMembers.contains($0) }
             newName = info.name.isEmpty ? (existing?.name ?? "") : info.name
             // Adopt a rotated epoch (e.g. after a removal) so our next send uses a
             // fresh sender key the removed member can't read.
@@ -2852,14 +2910,17 @@ final class MessagingService {
         if !ephemeral {
             try requireAcknowledgedIdentity(forPeer: account)
         }
-        let payloadPlaintext = ephemeral ? plaintext : try ContentPadding.pad(plaintext)
-        // Sealed sender (default on): route through the unauthenticated delivery
-        // path so the relay never learns the sender — but ONLY for recipients that
-        // support it (i.e. have published a sealed-sender access key). Recipients
-        // on older builds, or when the sealed endpoint isn't deployed, won't have
-        // one, so we fall back to the authenticated WebSocket path and can still
-        // message them. Deciding per-recipient up front avoids double-sends.
-        if sealedSenderEnabled, await recipientSupportsSealed(account) {
+        // Pad ephemeral frames (typing, receipts) too, so their size doesn't
+        // tell the relay what kind of message they are.
+        let payloadPlaintext = try ContentPadding.pad(plaintext)
+        // Sealed sender: route through the unauthenticated delivery path so the
+        // relay never learns the sender. Fail closed — a recipient without an
+        // access key (or a relay that withholds it) must not silently get an
+        // authenticated send that reveals who is writing to whom.
+        if sealedSenderEnabled {
+            guard await recipientSupportsSealed(account) else {
+                throw MessagingError.recipientCannotReceivePrivately
+            }
             try await sendContentSealed(
                 payloadPlaintext, toPeer: account,
                 clientTimestamp: clientTimestamp, ephemeral: ephemeral
@@ -3051,7 +3112,17 @@ final class MessagingService {
                 continue
             }
             let address = try ProtocolAddress(name: account, deviceId: bundle.deviceId)
-            try guardIdentityReplacement(bundle.identityKey, peer: account, address: address)
+            if account == credentials.accountId {
+                // Our own devices share our identity key. A device on our
+                // account with any other key was not provisioned by us — never
+                // send it sync copies; tell the user once.
+                guard bundle.identityKey == (try engine.identityKey()) else {
+                    noteForeignOwnDevice(bundle.deviceId)
+                    continue
+                }
+            } else {
+                try guardIdentityReplacement(bundle.identityKey, peer: account, address: address)
+            }
             let hadIdentity = try storage.signalStore.identity(for: address, context: NullContext()) != nil
             // Always re-process: if the peer reinstalled (new identity/prekeys) or a
             // session is corrupted, the mismatch retry must establish a fresh session
@@ -3064,6 +3135,21 @@ final class MessagingService {
         if firstSeenIdentity {
             try acknowledgeCurrentIdentity(forPeer: account)
         }
+    }
+
+    /// Posts a one-time notice in the Relay chat about a device on our account
+    /// that doesn't hold our identity key (added by someone else, or linked
+    /// before devices shared one identity). It receives none of our messages.
+    private func noteForeignOwnDevice(_ deviceId: UInt32) {
+        log.warning("own-account device with a foreign identity key; excluded from sync")
+        let key = "relay.foreignOwnDevice.\(deviceId)"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        let id = ensureRelayAccount()
+        guard !id.isEmpty else { return }
+        insertRelayMessage(
+            "A device on your account (device \(deviceId)) isn't using your account's security key, so it won't receive your messages. If you didn't link it, remove it in Profile → Linked Devices and change your password.",
+            conversationId: id)
     }
 
     private func knownMailboxDevices(ofPeer account: String) async throws -> [PeerDevice] {
@@ -3175,34 +3261,13 @@ final class MessagingService {
 
     // MARK: - Presence
 
-    /// The open 1:1 peer's live connection state, refreshed every ~20s while
-    /// the chat is on screen. Nil in groups or before the first fetch.
-    private(set) var peerPresence: Presence?
-    private var presenceTask: Task<Void, Never>?
-
-    private func startPresencePolling(peer: String) {
-        presenceTask?.cancel()
-        peerPresence = nil
-        guard !hideLastSeen else { return }
-        presenceTask = Task { [weak self] in
-            while !Task.isCancelled {
-                if let presence = try? await self?.api.presence(account: peer) {
-                    self?.peerPresence = presence
-                    self?.presenceCache[peer] = presence
-                }
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
-            }
-        }
-    }
-
-    /// Latest cached presence for any account seen while a conversation with them was open.
-    func presenceFor(account: String) -> Presence? { presenceCache[account] }
-
-    private func stopPresencePolling() {
-        presenceTask?.cancel()
-        presenceTask = nil
-        peerPresence = nil
-    }
+    // Presence polling is gone: asking the relay "is X online?" every few
+    // seconds told it whose status we watch, and let anyone track anyone.
+    // These stubs keep the UI compiling until it drops the online indicator.
+    var peerPresence: Presence? { nil }
+    func presenceFor(account: String) -> Presence? { nil }
+    private func startPresencePolling(peer: String) {}
+    private func stopPresencePolling() {}
 
     private func postMentionNotification(body: String, senderAccount: String) {
         let content = UNMutableNotificationContent()
@@ -3378,19 +3443,6 @@ final class MessagingService {
     /// track a long-lived routing identifier. Gated on sealed sender: the sealed
     /// path auto-retries on the resulting stale-mailbox 403, whereas the plain
     /// WebSocket path has no such recovery, so we only rotate in private mode.
-    private func rotateMailboxIfNeeded() async {
-        guard sealedSenderEnabled else { return }
-        let key = "relay.lastMailboxRotation"
-        let now = Date().timeIntervalSince1970
-        let last = UserDefaults.standard.double(forKey: key)
-        guard now - last > 86_400 else { return }
-        do {
-            _ = try await api.rotateMailbox()
-            UserDefaults.standard.set(now, forKey: key)
-        } catch {
-            log.warning("mailbox rotation failed: \(PrivacyRedactor.error(error))")
-        }
-    }
 
     /// Returns this device's sealed-sender certificate, fetching (and caching) a
     /// fresh one from the relay when absent or within a day of expiry.
@@ -3793,6 +3845,15 @@ final class MessagingService {
     struct PeerVerification {
         let safetyNumber: SafetyNumber
         let state: VerificationState
+        /// The peer has devices presenting different identity keys. The safety
+        /// number covers only one of them, so it can't vouch for the others and
+        /// verification is refused until the extra device goes away.
+        var hasConflictingKeys = false
+    }
+
+    /// True when a peer's devices don't all share one identity key.
+    private func hasConflictingIdentityKeys(_ peer: String) -> Bool {
+        ((try? storage.signalStore.identityKeys(address: peer).count) ?? 0) > 1
     }
 
     /// The safety number and verification state for a conversation's peer,
@@ -3805,7 +3866,9 @@ final class MessagingService {
             if state == .unverified, try isIdentityChangeAwaitingAcknowledgement(forPeer: peer) {
                 state = .changed
             }
-            return PeerVerification(safetyNumber: safetyNumber, state: state)
+            let conflicting = hasConflictingIdentityKeys(peer)
+            if conflicting { state = .changed }
+            return PeerVerification(safetyNumber: safetyNumber, state: state, hasConflictingKeys: conflicting)
         } catch {
             log.error("safety number failed: \(PrivacyRedactor.error(error))")
             return nil
@@ -3816,6 +3879,9 @@ final class MessagingService {
     /// pending safety-number-changed warning).
     func setVerified(_ verified: Bool, conversationId: String) {
         guard let peer = resolvedPeerAccount(for: conversationId) else { return }
+        // Marking verified would also approve the device(s) the safety number
+        // doesn't cover.
+        if verified, hasConflictingIdentityKeys(peer) { return }
         do {
             try storage.signalStore.setVerified(verified, address: peer)
             if verified {
@@ -3831,6 +3897,7 @@ final class MessagingService {
     /// match, marks them verified. Returns whether it matched.
     func verifyScanned(_ encoding: Data, conversationId: String) -> Bool {
         guard let peer = resolvedPeerAccount(for: conversationId) else { return false }
+        guard !hasConflictingIdentityKeys(peer) else { return false }
         do {
             let matches = try engine.verifyScannedSafetyNumber(encoding, withPeer: peer)
             if matches {
@@ -4086,6 +4153,8 @@ final class MessagingService {
     // MARK: - Typing indicators (ephemeral)
 
     func sendTyping(_ action: Relay_Content_TypingMessage.Action, in conversationId: String) {
+        // Settings → Privacy → "Send typing indicators" (on unless turned off).
+        guard UserDefaults.standard.object(forKey: "relay.sendTyping") as? Bool ?? true else { return }
         Task {
             var content = Relay_Content_Content()
             content.typing.action = action

@@ -55,6 +55,19 @@ public final class CryptoEngine {
         try store.localRegistrationId(context: context)
     }
 
+    /// Signs `message` with this account's identity private key. Every device
+    /// of the account holds that key (provisioned at link time) and the relay
+    /// never does, so such a signature proves "one of my own devices".
+    public func signWithIdentity(_ message: Data) throws -> Data {
+        Data(try store.identityKeyPair(context: context).privateKey.generateSignature(message: message))
+    }
+
+    /// Verifies a signature made by `signWithIdentity` on any of our devices.
+    public func verifyOwnIdentitySignature(_ signature: Data, message: Data) -> Bool {
+        guard let pair = try? store.identityKeyPair(context: context) else { return false }
+        return (try? pair.identityKey.publicKey.verifySignature(message: message, signature: signature)) == true
+    }
+
     /// The serialized public identity key (what peers see and what safety
     /// numbers are computed from). The private half never leaves the store.
     public func identityKey() throws -> Data {

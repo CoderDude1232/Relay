@@ -214,7 +214,7 @@ struct GroupInfoView: View {
     /// recorded admins are open to every member.
     private var isAdmin: Bool {
         guard let group else { return false }
-        return group.admins.isEmpty || group.admins.contains(ownAccountId)
+        return MessagingService.isGroupAdmin(ownAccountId, in: group)
     }
 
     private var conversation: Conversation? {

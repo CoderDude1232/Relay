@@ -40,7 +40,10 @@ public final class SecureStore {
 
     /// A `CryptoEngine` running on the persistent stores.
     public func makeCryptoEngine(accountId: String, deviceId: UInt32) throws -> CryptoEngine {
-        CryptoEngine(
+        // Our own account's other devices must carry our identity key; tell the
+        // store whose account is "us" (see SQLCipherSignalStore.isTrustedIdentity).
+        signalStore.localAccountName = accountId
+        return CryptoEngine(
             store: signalStore,
             localAddress: try .init(name: accountId, deviceId: deviceId)
         )

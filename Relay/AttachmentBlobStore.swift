@@ -21,23 +21,36 @@ struct AttachmentBlobStore {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    private func url(for id: String) -> URL {
-        directory.appendingPathComponent(id)
+    /// Attachment ids arrive inside messages from other people, so they are
+    /// never trusted as file names: anything but a plain token (no "/", no
+    /// "..") is rejected, or an id like "../relay.db" could read or delete
+    /// files outside the cache.
+    static func isSafeId(_ id: String) -> Bool {
+        (1...128).contains(id.count) && id.allSatisfy { char in
+            char.isASCII && (char.isLetter || char.isNumber || char == "-" || char == "_")
+        }
+    }
+
+    private func url(for id: String) throws -> URL {
+        guard Self.isSafeId(id) else { throw CocoaError(.fileReadInvalidFileName) }
+        return directory.appendingPathComponent(id, isDirectory: false)
     }
 
     func exists(_ id: String) -> Bool {
-        FileManager.default.fileExists(atPath: url(for: id).path)
+        guard let url = try? url(for: id) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
     }
 
     func write(_ ciphertext: Data, for id: String) throws {
-        try ciphertext.write(to: url(for: id), options: [.atomic, .completeFileProtection])
+        try ciphertext.write(to: try url(for: id), options: [.atomic, .completeFileProtection])
     }
 
     func read(_ id: String) throws -> Data {
-        try Data(contentsOf: url(for: id))
+        try Data(contentsOf: try url(for: id))
     }
 
     func delete(_ id: String) {
-        try? FileManager.default.removeItem(at: url(for: id))
+        guard let url = try? url(for: id) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 }

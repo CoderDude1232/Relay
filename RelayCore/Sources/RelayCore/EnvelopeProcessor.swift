@@ -319,6 +319,20 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     /// 33-byte serialized public key of the sealed-sender trust root. Required
     /// to decrypt sealed messages (empty envelope sender); nil disables them.
     private let sealedSenderTrustRoot: Data?
+    static func isRelayBlobId(_ id: String) -> Bool {
+        id.count == 32 && id.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
+    }
+
+    private func isGroupControl(_ content: Relay_Content_Content) -> Bool {
+        switch content.body {
+        case .groupUpdate, .senderKeyDistribution: return true
+        default: return false
+        }
+    }
+
+    /// Mirrors `MessagingService.relayOfficialAccount`.
+    public static let relayOfficialAccount = "relay.official"
+
     private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "envelope")
 
     /// Body prefix marking a live-location update (mirrors the app's
@@ -376,24 +390,37 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         let content = try Relay_Content_Content(serializedBytes: plaintext)
         let groupId = content.groupID.isEmpty ? nil : content.groupID
 
-        // For sealed messages the certificate-recovered identity is authoritative;
-        // if the plaintext also names a sender, it must agree (else it's a spoof).
-        if envelope.senderAccount.isEmpty,
-           !content.senderAccountID.isEmpty,
-           content.senderAccountID != sender.name {
+        // The sender is whoever's session decrypted this: the certificate-
+        // recovered identity for sealed messages, the session address otherwise.
+        // A sender id inside the plaintext is only a claim — it must agree, or
+        // any contact could pose as anyone (including us, via a fake sync copy).
+        if !content.senderAccountID.isEmpty, content.senderAccountID != sender.name {
             throw EnvelopeProcessorError.senderSpoofed
         }
-
-        // Prefer the E2E-attested sender identity over the server-stamped
-        // envelope field (server could be compelled to lie). For sealed
-        // messages `sender.name` is the cert-recovered account.
-        let attestedAccount = content.senderAccountID.isEmpty ? sender.name : content.senderAccountID
+        let attestedAccount = sender.name
+        // The official "Relay" notices chat is local-only; nothing arriving
+        // over the network may land in it.
+        if attestedAccount == Self.relayOfficialAccount {
+            throw EnvelopeProcessorError.senderSpoofed
+        }
 
         // Now that we know who really sent this (post-decrypt), drop it if the
         // sender is blocked. Sealed messages can't be filtered any earlier since
         // the wire envelope carries no sender.
         if blockedAccounts.contains(attestedAccount) {
             return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+        }
+
+        // Group content is only accepted from current members of a group we
+        // know. Group updates (handled, with their own authorization, by the
+        // app) and sender-key distributions (harmless to store) are exempt.
+        if let groupId, !isGroupControl(content) {
+            guard let group = try? storage.messages.group(id: groupId),
+                  attestedAccount == ownAccountId || group.members.contains(attestedAccount)
+            else {
+                log.warning("dropping group content from a non-member or for an unknown group")
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            }
         }
 
         // Sync message: sent by own account to own other devices carrying a copy
@@ -452,7 +479,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             let quote: QuotedMessage? = text.hasQuote
                 ? QuotedMessage(targetTimestamp: text.quote.targetTimestamp, author: text.quote.author, text: text.quote.text)
                 : nil
-            let attachments = text.attachments.map { p in
+            // Relay blob ids are 32 lowercase hex chars. Anything else from a
+            // peer is dropped: the id is later used in a request path and as a
+            // cache file name.
+            let attachments = text.attachments.filter { Self.isRelayBlobId($0.id) }.map { p in
                 StoredAttachment(
                     id: p.id, key: p.key, digest: p.digest, contentType: p.contentType,
                     size: Int64(p.size), filename: p.filename.isEmpty ? nil : p.filename,
@@ -572,7 +602,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 target: update.target,
                 name: update.name,
                 description: update.description_p,
-                avatarId: update.hasAvatar ? update.avatar.id : "",
+                avatarId: update.hasAvatar && Self.isRelayBlobId(update.avatar.id) ? update.avatar.id : "",
                 avatarKey: update.hasAvatar ? update.avatar.key : Data(),
                 avatarDigest: update.hasAvatar ? update.avatar.digest : Data(),
                 members: update.members,
@@ -640,6 +670,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         case .profile(let profile):
             let avatar: ProfileInfo.Avatar? = profile.hasAvatar
+                && Self.isRelayBlobId(profile.avatar.id)
                 ? ProfileInfo.Avatar(id: profile.avatar.id, key: profile.avatar.key, digest: profile.avatar.digest)
                 : nil
             let info = ProfileInfo(
