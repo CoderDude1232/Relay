@@ -120,18 +120,13 @@ func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 }
 
 // PushVoIP sends a PushKit VoIP push that wakes the app and presents the
-// CallKit incoming-call UI. The payload must not contain content-available
-// (PushKit VoIP pushes are always treated as high-priority wakes by iOS).
-func (p *Pusher) PushVoIP(deviceToken, callID, callerAccount, callerName, kind string) error {
-	if kind == "" {
-		kind = "audio"
-	}
-	payload, err := json.Marshal(map[string]any{
-		"call_id":        callID,
-		"caller_account": callerAccount,
-		"caller_name":    callerName,
-		"kind":           kind,
-	})
+// CallKit incoming-call UI. The payload is exactly {"call_id": "<id>"}: no
+// caller account, name or call kind ever reaches Apple — the app reports a
+// generic incoming call and fills in the caller from the end-to-end-encrypted
+// offer. It must not contain content-available (PushKit VoIP pushes are always
+// treated as high-priority wakes by iOS).
+func (p *Pusher) PushVoIP(deviceToken, callID string) error {
+	payload, err := json.Marshal(map[string]string{"call_id": callID})
 	if err != nil {
 		return err
 	}

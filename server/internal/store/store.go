@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,7 @@ var (
 	ErrDeviceListVersionMismatch = errors.New("store: device list version mismatch")
 	ErrDuplicateNukeCommand      = errors.New("store: nuke command already executed")
 	ErrDeviceLimit               = errors.New("store: linked device limit reached")
+	ErrIdentityInUse             = errors.New("store: email or social-login identity already linked to an account")
 )
 
 // maxDevicesPerAccount caps how many devices (primary + linked) an account may
@@ -305,6 +307,14 @@ CREATE TABLE IF NOT EXISTS group_invites (
     PRIMARY KEY (token)
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_directory_account ON directory (account_id)`,
+		// Bucketed discovery: the client sends only a 16-bit bucket per lookup
+		// and matches locally. Each row carries its bucket, an 8-byte match tag
+		// and an AES-GCM box of (accountId, username) under a token-derived key —
+		// all computed at index time (rebuilt from scratch at every startup).
+		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS bucket INTEGER`,
+		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS tag BYTEA`,
+		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS box BYTEA`,
+		`CREATE INDEX IF NOT EXISTS idx_directory_bucket ON directory (bucket)`,
 		// Encrypted group invites: the relay stores an opaque ciphertext blob
 		// keyed by a token; the decrypt key travels in the invite URL fragment,
 		// so the server never learns the group id, name, or roster. Replaces the
@@ -397,7 +407,34 @@ CREATE TABLE IF NOT EXISTS group_invites (
 			return err
 		}
 	}
+	s.ensureUsernameCaseIndex(ctx)
 	return s.ensureMailboxIDs(ctx)
+}
+
+// ensureUsernameCaseIndex adds a unique index on lower(username) so "Bob" and
+// "bob" can't coexist (they'd also share one blinded-directory token, since
+// discovery normalizes case). If legacy case-variant duplicates already exist
+// the index can't be built; we log and carry on — registration and rename still
+// enforce case-insensitive uniqueness in code, and the directory never
+// reassigns a token from its first owner — instead of refusing to start.
+func (s *Store) ensureUsernameCaseIndex(ctx context.Context) {
+	var dupGroups int
+	if err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT lower(username) FROM accounts GROUP BY lower(username) HAVING COUNT(*) > 1
+		) d`).Scan(&dupGroups); err != nil {
+		slog.Warn("store: username case-collision check failed", "err", err)
+		return
+	}
+	if dupGroups > 0 {
+		slog.Warn("store: case-insensitive username index skipped; existing accounts collide on case — resolve manually",
+			"collidingNames", dupGroups)
+		return
+	}
+	if _, err := s.db.Exec(ctx,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username_lower ON accounts (lower(username))`); err != nil {
+		slog.Warn("store: could not create case-insensitive username index", "err", err)
+	}
 }
 
 func (s *Store) ensureMailboxIDs(ctx context.Context) error {
@@ -467,11 +504,16 @@ type DeviceLinkClaim struct {
 }
 
 // CreateAccount registers a new account and its primary device (device 1).
-// emailToken (the OPRF-keyed hash of the user's email) and accountPassword are
-// optional; pass nil/"" to omit. The plaintext email is never stored — only the
-// keyed token, used for equality lookups. accountPassword, if set, is stored as
-// a bcrypt hash for account recovery.
-func (s *Store) CreateAccount(username string, emailToken []byte, devicePassword, accountPassword string) (accountID string, deviceID uint32, err error) {
+// emailToken (the OPRF-keyed hash of a VERIFIED email — the API layer only
+// passes one after Supabase confirmed the address), supabaseUserID and
+// accountPassword are optional; pass nil/"" to omit. The plaintext email is
+// never stored. accountPassword, if set, is stored as a bcrypt hash for
+// account recovery.
+//
+// Usernames are unique case-insensitively. Returns ErrUsernameTaken when the
+// username is in use, ErrIdentityInUse when the email token or Supabase user id
+// already belongs to another account.
+func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID, devicePassword, accountPassword string) (accountID string, deviceID uint32, err error) {
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
 		return "", 0, err
@@ -497,17 +539,15 @@ func (s *Store) CreateAccount(username string, emailToken []byte, devicePassword
 	}
 	defer tx.Rollback(ctx)
 
-	var emailVal any
-	if len(emailToken) > 0 {
-		emailVal = emailToken
+	if taken, err := usernameTakenTx(ctx, tx, username, ""); err != nil {
+		return "", 0, err
+	} else if taken {
+		return "", 0, ErrUsernameTaken
 	}
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, username, email_token, account_password_hash, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, 1)`,
-		accountID, username, emailVal, accountHash, now); err != nil {
-		if isUniqueViolation(err) {
-			return "", 0, ErrUsernameTaken
-		}
-		return "", 0, err
+		`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, 1)`,
+		accountID, username, nullableBytes(emailToken), nullableString(supabaseUserID), accountHash, now); err != nil {
+		return "", 0, accountInsertError(err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
 		accountID, mailboxID, deviceHash, now); err != nil {
@@ -516,170 +556,262 @@ func (s *Store) CreateAccount(username string, emailToken []byte, devicePassword
 	return accountID, 1, tx.Commit(ctx)
 }
 
-// RecoverAccount verifies an account-level password by email and provisions a
-// new device, returning fresh device credentials. Does NOT bump device_list_version
-// so existing signed device-list assertions remain valid.
-func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (accountID, username string, deviceID uint32, devicePassword string, err error) {
+// accountInsertError maps a unique violation on the accounts table to the
+// right sentinel: the email-token or Supabase-user index → ErrIdentityInUse
+// (callers must not echo which); anything else (the username indexes) →
+// ErrUsernameTaken.
+func accountInsertError(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return err
+	}
+	switch pgErr.ConstraintName {
+	case "idx_accounts_email_token", "idx_accounts_supabase_user_id":
+		return ErrIdentityInUse
+	default:
+		return ErrUsernameTaken
+	}
+}
+
+func nullableBytes(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// rowQuerier is satisfied by both the pool and a transaction.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// usernameTakenTx reports whether another account (≠ exceptAccountID) already
+// holds username, compared case-insensitively.
+func usernameTakenTx(ctx context.Context, q rowQuerier, username, exceptAccountID string) (bool, error) {
+	var taken bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM accounts WHERE lower(username) = lower($1) AND id <> $2)`,
+		username, exceptAccountID).Scan(&taken)
+	return taken, err
+}
+
+// UsernameTaken reports whether any account holds username (case-insensitive).
+func (s *Store) UsernameTaken(username string) (bool, error) {
+	return usernameTakenTx(context.Background(), s.db, username, "")
+}
+
+// dummyRecoveryHash is compared against when an account (or its recovery
+// password) doesn't exist, so a recovery attempt costs one bcrypt either way
+// and response timing can't reveal whether an email is registered.
+var (
+	dummyRecoveryHashOnce sync.Once
+	dummyRecoveryHash     []byte
+)
+
+func burnRecoveryBcrypt(password string) {
+	dummyRecoveryHashOnce.Do(func() {
+		var raw [32]byte
+		rand.Read(raw[:])
+		dummyRecoveryHash, _ = bcrypt.GenerateFromPassword([]byte(hex.EncodeToString(raw[:])), bcrypt.DefaultCost)
+	})
+	_ = bcrypt.CompareHashAndPassword(dummyRecoveryHash, []byte(password))
+}
+
+// AddedDevice describes a device provisioned by recovery or social login.
+type AddedDevice struct {
+	AccountID         string
+	Username          string
+	DeviceID          uint32
+	MailboxID         string
+	DeviceListVersion int64
+}
+
+// addDeviceTx provisions a new device on accountID inside tx: it locks the
+// account row, enforces maxDevicesPerAccount, inserts the device and bumps
+// device_list_version (so signed device-list views are invalidated and the API
+// can broadcast DeviceListChanged).
+func addDeviceTx(ctx context.Context, tx pgx.Tx, accountID string, deviceHash []byte) (deviceID uint32, mailboxID string, version int64, err error) {
+	if err = tx.QueryRow(ctx, `SELECT device_list_version FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&version); errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", 0, ErrNotFound
+	} else if err != nil {
+		return 0, "", 0, err
+	}
+	if err = checkDeviceCap(ctx, tx, accountID); err != nil {
+		return 0, "", 0, err
+	}
+	if deviceID, err = allocateDeviceID(ctx, tx, accountID); err != nil {
+		return 0, "", 0, err
+	}
+	if mailboxID, err = newMailboxID(); err != nil {
+		return 0, "", 0, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		accountID, deviceID, mailboxID, deviceHash, coarseDayMillis()); err != nil {
+		return 0, "", 0, err
+	}
+	version++
+	if _, err = tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, version, accountID); err != nil {
+		return 0, "", 0, err
+	}
+	return deviceID, mailboxID, version, nil
+}
+
+// RecoverAccount verifies an account-level password by (verified) email token
+// and provisions a new device with a fresh random password. Every failure —
+// unknown email, no recovery password set, wrong password — returns
+// ErrAuthFailed after the same single bcrypt comparison, so neither the result
+// nor its timing reveals whether the email is registered. Enforces the device
+// cap (ErrDeviceLimit, only reachable with the right password) and bumps
+// device_list_version.
+func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev AddedDevice, devicePassword string, err error) {
 	ctx := context.Background()
 
 	var accountHash []byte
 	err = s.db.QueryRow(ctx,
 		`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
-	).Scan(&accountID, &username, &accountHash)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", 0, "", ErrAccountNotFound
+	).Scan(&dev.AccountID, &dev.Username, &accountHash)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && len(accountHash) == 0) {
+		burnRecoveryBcrypt(accountPassword)
+		return AddedDevice{}, "", ErrAuthFailed
 	}
 	if err != nil {
-		return "", "", 0, "", err
-	}
-	if len(accountHash) == 0 {
-		return "", "", 0, "", ErrNoRecoveryPassword
+		return AddedDevice{}, "", err
 	}
 	if bcrypt.CompareHashAndPassword(accountHash, []byte(accountPassword)) != nil {
-		return "", "", 0, "", ErrAuthFailed
+		return AddedDevice{}, "", ErrAuthFailed
 	}
 
-	// Generate a fresh random device password.
 	var raw [32]byte
 	if _, err = rand.Read(raw[:]); err != nil {
-		return "", "", 0, "", err
+		return AddedDevice{}, "", err
 	}
 	devicePassword = hex.EncodeToString(raw[:])
-
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
-		return "", "", 0, "", err
-	}
-
-	mailboxID, err := newMailboxID()
-	if err != nil {
-		return "", "", 0, "", err
+		return AddedDevice{}, "", err
 	}
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return "", "", 0, "", err
+		return AddedDevice{}, "", err
 	}
 	defer tx.Rollback(ctx)
-
-	newDevID, err := allocateDeviceID(ctx, tx, accountID)
+	dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, dev.AccountID, deviceHash)
 	if err != nil {
-		return "", "", 0, "", err
-	}
-
-	now := coarseDayMillis()
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		accountID, newDevID, mailboxID, deviceHash, now); err != nil {
-		return "", "", 0, "", err
+		return AddedDevice{}, "", err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return "", "", 0, "", err
+		return AddedDevice{}, "", err
 	}
-	return accountID, username, newDevID, devicePassword, nil
+	return dev, devicePassword, nil
 }
 
 // ProvisionOAuthAccount signs a Supabase-authenticated user into their relay
 // account, creating it on first use, and provisions a fresh device. The caller
-// MUST have already verified the Supabase access token, so supabaseUserID and
-// email are authoritative — this is what lets a passwordless OAuth user recover
-// on any device.
+// MUST have already verified the Supabase access token, so supabaseUserID is
+// authoritative; emailToken must be non-nil ONLY when Supabase reports the
+// email as confirmed.
 //
-// Resolution order: match by supabase_user_id, then by email (back-filling the
-// supabase_user_id so future logins match directly). If no account exists yet,
-// one is created — requestedUsername must be non-empty in that case, otherwise
-// ErrUsernameRequired is returned so the client can prompt for a username.
-// accountPassword, if non-empty, is stored as a recovery hash on account
-// creation only.
+// Resolution order: match by supabase_user_id, then by email token
+// (back-filling the supabase_user_id so future logins match directly). Email
+// adoption is safe because the relay only ever stores tokens of verified
+// emails; an existing link to a different Supabase user is never overwritten.
+// If no account exists yet, one is created — requestedUsername
+// must be non-empty in that case, otherwise ErrUsernameRequired is returned.
+// accountPassword, if non-empty, is stored as a recovery hash on creation only.
 //
-// A new device is always provisioned with the client-chosen devicePassword and
-// its (accountID, deviceID, mailboxID) returned. created reports whether a new
-// account was made.
-func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string) (accountID, username string, deviceID uint32, mailboxID string, created bool, err error) {
+// Adding a device to an existing account enforces the device cap and bumps
+// device_list_version. created reports whether a new account was made.
+func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string) (dev AddedDevice, created bool, err error) {
 	ctx := context.Background()
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
+	if err != nil {
+		return AddedDevice{}, false, err
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return "", "", 0, "", false, err
+		return AddedDevice{}, false, err
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Find an existing account by Supabase user id, then by email.
+	// 1. Find an existing account by Supabase user id, then by verified email.
 	err = tx.QueryRow(ctx,
 		`SELECT id, username FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
-	).Scan(&accountID, &username)
+	).Scan(&dev.AccountID, &dev.Username)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
 		err = tx.QueryRow(ctx,
 			`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
-		).Scan(&accountID, &username)
+		).Scan(&dev.AccountID, &dev.Username)
 		if err == nil {
-			// Back-fill the Supabase user id so future logins match by id even
-			// if the email later changes.
+			// Back-fill only an empty link; never overwrite another Supabase
+			// user's link (a second identity with the same confirmed email can
+			// sign in, but the original link is kept).
 			if _, e := tx.Exec(ctx,
-				`UPDATE accounts SET supabase_user_id = $1 WHERE id = $2`,
-				supabaseUserID, accountID); e != nil {
-				return "", "", 0, "", false, e
+				`UPDATE accounts SET supabase_user_id = $1 WHERE id = $2 AND (supabase_user_id IS NULL OR supabase_user_id = '')`,
+				supabaseUserID, dev.AccountID); e != nil {
+				return AddedDevice{}, false, e
 			}
 		}
 	}
 
 	switch {
 	case err == nil:
-		// Existing account — provision another device below.
+		// Existing account — provision another device (capped, versioned).
+		dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, dev.AccountID, deviceHash)
+		if err != nil {
+			return AddedDevice{}, false, err
+		}
 	case errors.Is(err, pgx.ErrNoRows):
 		// 2. No account yet — create one. A username is required.
 		if requestedUsername == "" {
-			return "", "", 0, "", false, ErrUsernameRequired
+			return AddedDevice{}, false, ErrUsernameRequired
 		}
-		accountID = newUUID()
-		username = requestedUsername
-		var emailVal any
-		if len(emailToken) > 0 {
-			emailVal = emailToken
+		if taken, e := usernameTakenTx(ctx, tx, requestedUsername, ""); e != nil {
+			return AddedDevice{}, false, e
+		} else if taken {
+			return AddedDevice{}, false, ErrUsernameTaken
 		}
+		dev.AccountID = newUUID()
+		dev.Username = requestedUsername
 		var accountHash []byte
 		if accountPassword != "" {
 			accountHash, err = bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
 			if err != nil {
-				return "", "", 0, "", false, err
+				return AddedDevice{}, false, err
 			}
 		}
 		now := coarseDayMillis()
 		if _, e := tx.Exec(ctx,
-			`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-			accountID, username, emailVal, supabaseUserID, accountHash, now); e != nil {
-			if isUniqueViolation(e) {
-				return "", "", 0, "", false, ErrUsernameTaken
-			}
-			return "", "", 0, "", false, e
+			`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, 1)`,
+			dev.AccountID, dev.Username, nullableBytes(emailToken), supabaseUserID, accountHash, now); e != nil {
+			return AddedDevice{}, false, accountInsertError(e)
+		}
+		if dev.MailboxID, err = newMailboxID(); err != nil {
+			return AddedDevice{}, false, err
+		}
+		dev.DeviceID = 1
+		if _, err = tx.Exec(ctx,
+			`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
+			dev.AccountID, dev.MailboxID, deviceHash, now); err != nil {
+			return AddedDevice{}, false, err
 		}
 		created = true
 	default:
-		return "", "", 0, "", false, err
+		return AddedDevice{}, false, err
 	}
 
-	// 3. Provision a fresh device on the account (device 1 for a new account).
-	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
-	if err != nil {
-		return "", "", 0, "", false, err
-	}
-	mailboxID, err = newMailboxID()
-	if err != nil {
-		return "", "", 0, "", false, err
-	}
-	deviceID, err = allocateDeviceID(ctx, tx, accountID)
-	if err != nil {
-		return "", "", 0, "", false, err
-	}
-	now := coarseDayMillis()
-	if _, err = tx.Exec(ctx,
-		`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		accountID, deviceID, mailboxID, deviceHash, now); err != nil {
-		return "", "", 0, "", false, err
-	}
 	if err = tx.Commit(ctx); err != nil {
-		return "", "", 0, "", false, err
+		return AddedDevice{}, false, err
 	}
-	return accountID, username, deviceID, mailboxID, created, nil
+	return dev, created, nil
 }
 
 // CreateContactInvite mints a single-use contact invite token for the account,
@@ -701,9 +833,9 @@ func (s *Store) CreateContactInvite(accountID string) (token string, expiresAt i
 }
 
 // ClaimContactInvite consumes a contact invite token, returning the inviter's
-// account id and username. Marks the token used in the same transaction so it
-// can never be redeemed twice. Returns ErrContactInviteInvalid if the token is
-// unknown, expired, or already used.
+// account id and username. Deletes the row in the same transaction, so the
+// token can never be redeemed twice and no redemption record is kept. Returns
+// ErrContactInviteInvalid if the token is unknown, expired, or already used.
 func (s *Store) ClaimContactInvite(token string) (accountID, username string, err error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -714,7 +846,7 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 
 	var expiresAt, usedAt int64
 	err = tx.QueryRow(ctx,
-		`SELECT account_id, expires_at, used_at FROM contact_invites WHERE token = $1`, token,
+		`DELETE FROM contact_invites WHERE token = $1 RETURNING account_id, expires_at, used_at`, token,
 	).Scan(&accountID, &expiresAt, &usedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrContactInviteInvalid
@@ -722,12 +854,12 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 	if err != nil {
 		return "", "", err
 	}
-	now := time.Now().UnixMilli()
-	if usedAt != 0 || now > expiresAt {
+	if usedAt != 0 || time.Now().UnixMilli() > expiresAt {
+		// Expired/legacy-used: the row is gone either way once we commit.
+		if err = tx.Commit(ctx); err != nil {
+			return "", "", err
+		}
 		return "", "", ErrContactInviteInvalid
-	}
-	if _, err = tx.Exec(ctx, `UPDATE contact_invites SET used_at = $1 WHERE token = $2`, now, token); err != nil {
-		return "", "", err
 	}
 	if err = tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1`, accountID).Scan(&username); err != nil {
 		return "", "", err
@@ -736,18 +868,6 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 		return "", "", err
 	}
 	return accountID, username, nil
-}
-
-// LookupAccountByEmail returns the accountID and username for the account whose
-// email hashes to emailToken (the OPRF-keyed token), or ErrAccountNotFound.
-func (s *Store) LookupAccountByEmail(emailToken []byte) (accountID, username string, err error) {
-	err = s.db.QueryRow(context.Background(),
-		`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
-	).Scan(&accountID, &username)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", ErrAccountNotFound
-	}
-	return accountID, username, err
 }
 
 // allocateDeviceID reserves the next device id for an account inside tx. Ids
@@ -1313,15 +1433,29 @@ func (s *Store) LookupAccountID(username string) (string, error) {
 
 // UpdateUsername changes the username of an account. Returns ErrUsernameTaken
 // if the new username is already in use by a different account.
+// Comparison is case-insensitive: "Bob" can't be taken while "bob" exists
+// (a holder may still change the case of their own name).
 func (s *Store) UpdateUsername(accountID, newUsername string) error {
 	ctx := context.Background()
-	_, err := s.db.Exec(ctx,
-		`UPDATE accounts SET username = $1 WHERE id = $2`,
-		newUsername, accountID)
-	if err != nil && isUniqueViolation(err) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if taken, err := usernameTakenTx(ctx, tx, newUsername, accountID); err != nil {
+		return err
+	} else if taken {
 		return ErrUsernameTaken
 	}
-	return err
+	if _, err := tx.Exec(ctx,
+		`UPDATE accounts SET username = $1 WHERE id = $2`,
+		newUsername, accountID); err != nil {
+		if isUniqueViolation(err) {
+			return ErrUsernameTaken
+		}
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // LookupUsername resolves an account id to its username.
@@ -1397,11 +1531,12 @@ func (s *Store) SealedTargetByMailbox(mailboxID string) (*Device, []byte, error)
 }
 
 // RotateMailbox assigns a fresh opaque mailbox id to the device and returns it.
-// Peers pick up the new id on their next prekey-bundle fetch; sealed sends to
-// the old id fail (the sender re-fetches the bundle and retries). Rotating
-// periodically breaks any long-lived routing identifier the relay could use to
-// correlate a mailbox with a device over time. The message queue is keyed by
-// (account, device), not mailbox, so queued deliveries are unaffected.
+// Only ever called on an explicit client request — mailbox ids are otherwise
+// stable (the relay knows mailbox → device anyway, so scheduled rotation bought
+// nothing but stale-mailbox failures). Peers pick up the new id on their next
+// prekey-bundle fetch; sealed sends to the old id fail (the sender re-fetches
+// and retries). The message queue is keyed by (account, device), not mailbox,
+// so queued deliveries are unaffected.
 func (s *Store) RotateMailbox(accountID string, deviceID uint32) (string, error) {
 	mailboxID, err := newMailboxID()
 	if err != nil {
@@ -2073,18 +2208,23 @@ const (
 	DirectoryKindEmail    int16 = 1
 )
 
-// DirectoryEntry is one OPRF token → account row for the blinded directory index.
+// DirectoryEntry is one OPRF token → account row for the blinded directory
+// index, with its precomputed bucket, match tag and sealed (accountId,
+// username) box.
 type DirectoryEntry struct {
 	Token     []byte
 	AccountID string
 	Kind      int16
+	Bucket    uint16
+	Tag       []byte
+	Box       []byte
 }
 
-// DirectoryMatch is a resolved directory hit returned to a querying client.
-type DirectoryMatch struct {
-	Token     []byte
-	AccountID string
-	Username  string
+// BucketEntry is one row of a directory bucket as served to clients.
+type BucketEntry struct {
+	Bucket uint16
+	Tag    []byte
+	Box    []byte
 }
 
 // AccountDirInfo is the identifier material the API layer needs to (re)build an
@@ -2100,7 +2240,7 @@ type AccountDirInfo struct {
 // API can (re)build the full directory index at startup.
 func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	rows, err := s.db.Query(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token FROM accounts`)
+		`SELECT id, COALESCE(username, ''), email_token FROM accounts ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2141,14 +2281,30 @@ func (s *Store) ReplaceDirectory(entries []DirectoryEntry) error {
 		return err
 	}
 	for _, e := range entries {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO directory (token, account_id, kind) VALUES ($1, $2, $3)
-             ON CONFLICT (token) DO UPDATE SET account_id = EXCLUDED.account_id, kind = EXCLUDED.kind`,
-			e.Token, e.AccountID, e.Kind); err != nil {
+		if err := upsertDirectoryEntry(ctx, tx, e); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// upsertDirectoryEntry inserts one directory row. A token already owned by a
+// DIFFERENT account is never reassigned (first owner keeps it; the collision is
+// logged) — otherwise registering a case-variant or otherwise colliding
+// identifier could hijack another user's discovery entry.
+func upsertDirectoryEntry(ctx context.Context, tx pgx.Tx, e DirectoryEntry) error {
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO directory (token, account_id, kind, bucket, tag, box) VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (token) DO UPDATE SET kind = EXCLUDED.kind, bucket = EXCLUDED.bucket, tag = EXCLUDED.tag, box = EXCLUDED.box
+         WHERE directory.account_id = EXCLUDED.account_id`,
+		e.Token, e.AccountID, e.Kind, int32(e.Bucket), e.Tag, e.Box)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Warn("store: directory token already owned by another account; not reassigned", "kind", e.Kind)
+	}
+	return nil
 }
 
 // SetDirectoryForAccount replaces one account's directory rows (live reindex on
@@ -2164,38 +2320,39 @@ func (s *Store) SetDirectoryForAccount(accountID string, entries []DirectoryEntr
 		return err
 	}
 	for _, e := range entries {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO directory (token, account_id, kind) VALUES ($1, $2, $3)
-             ON CONFLICT (token) DO UPDATE SET account_id = EXCLUDED.account_id, kind = EXCLUDED.kind`,
-			e.Token, e.AccountID, e.Kind); err != nil {
+		if err := upsertDirectoryEntry(ctx, tx, e); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
 }
 
-// ResolveDirectory returns the account (and current username) for each token
-// that matches a directory entry. Unmatched tokens are simply absent.
-func (s *Store) ResolveDirectory(tokens [][]byte) ([]DirectoryMatch, error) {
-	if len(tokens) == 0 {
+// DirectoryBuckets returns every directory row in the requested buckets (tag +
+// sealed box only — never the token or account id).
+func (s *Store) DirectoryBuckets(buckets []uint16) ([]BucketEntry, error) {
+	if len(buckets) == 0 {
 		return nil, nil
 	}
+	ids := make([]int32, len(buckets))
+	for i, b := range buckets {
+		ids[i] = int32(b)
+	}
 	rows, err := s.db.Query(context.Background(),
-		`SELECT d.token, d.account_id, COALESCE(a.username, '')
-         FROM directory d JOIN accounts a ON a.id = d.account_id
-         WHERE d.token = ANY($1)`,
-		tokens)
+		`SELECT bucket, tag, box FROM directory
+         WHERE bucket = ANY($1) AND tag IS NOT NULL AND box IS NOT NULL`, ids)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []DirectoryMatch
+	var out []BucketEntry
 	for rows.Next() {
-		var m DirectoryMatch
-		if err := rows.Scan(&m.Token, &m.AccountID, &m.Username); err != nil {
+		var e BucketEntry
+		var b int32
+		if err := rows.Scan(&b, &e.Tag, &e.Box); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		e.Bucket = uint16(b)
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

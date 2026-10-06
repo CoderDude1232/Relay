@@ -133,7 +133,7 @@ func TestPushFallsBackToOtherEnvironment(t *testing.T) {
 		t.Fatalf("hits prod=%d sandbox=%d, want 2/1", prodHits, sandboxHits)
 	}
 	// The working host is remembered: the next dev push skips production.
-	if err := p.PushVoIP("devtoken", "c1", "acct", "Name", "audio"); err != nil {
+	if err := p.PushVoIP("devtoken", "c1"); err != nil {
 		t.Fatalf("dev voip push: %v", err)
 	}
 	if prodHits != 2 || sandboxHits != 2 {

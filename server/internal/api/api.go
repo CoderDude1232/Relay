@@ -55,7 +55,7 @@ type Server struct {
 	// supabaseServiceKey (service-role) lets account deletion also delete the
 	// user's Supabase auth record, which holds their email. Optional.
 	supabaseServiceKey  string
-	verifySupabaseToken func(ctx context.Context, accessToken string) (userID, email string, err error)
+	verifySupabaseToken func(ctx context.Context, accessToken string) (supabaseUser, error)
 
 	// Sealed-sender certificate issuance. When set, GET /v1/certificate/delivery
 	// mints a libsignal-compatible sender certificate for the authenticated device.
@@ -120,7 +120,7 @@ func (s *Server) deleteSupabaseUser(ctx context.Context, userID string) {
 	}
 	req.Header.Set("apikey", s.supabaseServiceKey)
 	req.Header.Set("Authorization", "Bearer "+s.supabaseServiceKey)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := supabaseHTTPClient.Do(req)
 	if err != nil {
 		slog.Error("supabase user delete failed", "err", privlog.Error(err))
 		return
@@ -168,18 +168,28 @@ func (s *Server) SetOPRF(key *oprf.Key) error {
 	return s.store.ReplaceDirectory(entries)
 }
 
-// directoryEntries computes the OPRF token rows for an account's username/email.
+// directoryEntries computes the OPRF token rows for an account's username/email,
+// each with its bucket, match tag and a box sealing (accountId, username) under
+// a key derived from the token — so a bucket fetch is a plain read and only a
+// client that already holds the token can recognise or open its entry.
 func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry {
 	var entries []store.DirectoryEntry
-	if a.Username != "" {
+	add := func(token []byte, kind int16) {
+		box, err := oprf.SealDirectoryEntry(token, a.AccountID, a.Username)
+		if err != nil {
+			slog.Error("directory: seal entry failed", "err", privlog.Error(err))
+			return
+		}
 		entries = append(entries, store.DirectoryEntry{
-			Token: s.oprf.Token(a.Username), AccountID: a.AccountID, Kind: store.DirectoryKindUsername,
+			Token: token, AccountID: a.AccountID, Kind: kind,
+			Bucket: oprf.DirectoryBucket(token), Tag: oprf.DirectoryTag(token), Box: box,
 		})
 	}
+	if a.Username != "" {
+		add(s.oprf.Token(a.Username), store.DirectoryKindUsername)
+	}
 	if len(a.EmailToken) > 0 {
-		entries = append(entries, store.DirectoryEntry{
-			Token: a.EmailToken, AccountID: a.AccountID, Kind: store.DirectoryKindEmail,
-		})
+		add(a.EmailToken, store.DirectoryKindEmail)
 	}
 	return entries
 }
@@ -219,12 +229,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))
 	mux.HandleFunc("POST /v1/directory/oprf", s.auth(s.handleDirectoryOPRF))
-	mux.HandleFunc("POST /v1/directory/resolve", s.auth(s.handleDirectoryResolve))
+	mux.HandleFunc("POST /v1/directory/buckets", s.auth(s.handleDirectoryBuckets))
 	mux.HandleFunc("POST /v1/messages/sealed", s.handleSealedSend) // unauthenticated by design
 	mux.HandleFunc("GET /v1/queue", s.auth(s.handleFetchQueue))
 	mux.HandleFunc("POST /v1/messages/ack", s.auth(s.handleAckMessage))
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
-	mux.HandleFunc("POST /v1/contact-invites/claim", s.auth(s.handleClaimContactInvite))
+	mux.HandleFunc("POST /v1/contact-invites/claim", s.handleClaimContactInvite) // unauthenticated: token is the capability
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
 	mux.HandleFunc("POST /v1/devices/link-invitations", s.auth(s.handleCreateDeviceLinkInvitation))
 	mux.HandleFunc("POST /v1/devices/link-claims", s.handleClaimDeviceLink)
@@ -245,12 +255,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
 	mux.HandleFunc("PUT /v1/devices/voip", s.auth(s.handleSetVoIPToken))
 	mux.HandleFunc("PUT /v1/devices/me/push-content", s.auth(s.handleSetPushContent))
-	mux.HandleFunc("POST /v1/call/{account}", s.auth(s.handleCallOffer))
+	mux.HandleFunc("POST /v1/calls/ring", s.handleCallRing) // unauthenticated by design (access-key capability)
 	mux.HandleFunc("PUT /v1/keys", s.auth(s.handleSetKeys))
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
-	mux.HandleFunc("GET /v1/accounts/by-username/{username}", s.handleLookupUsername)
-	mux.HandleFunc("GET /v1/accounts/by-email/{email}", s.auth(s.handleLookupEmail))
+	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
 	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
@@ -258,18 +267,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/devices/{id}/auth-key", s.auth(s.handleGetDeviceAuthKey))
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("GET /v1/accounts/{account}", s.auth(s.handleLookupAccount))
-	mux.HandleFunc("GET /v1/presence/{account}", s.auth(s.handlePresence))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
-	mux.HandleFunc("PUT /v1/attachments/{id}", s.auth(s.handleUploadAttachment))
-	mux.HandleFunc("GET /v1/attachments/{id}", s.auth(s.handleDownloadAttachment))
+	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
+	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability
 	mux.HandleFunc("POST /v1/group-invites", s.auth(s.handleCreateEncryptedGroupInvite))
-	mux.HandleFunc("POST /v1/group-invites/claim", s.auth(s.handleClaimEncryptedGroupInvite))
+	mux.HandleFunc("POST /v1/group-invites/claim", s.handleClaimEncryptedGroupInvite) // unauthenticated: token is the capability
 	mux.HandleFunc("GET /v1/ws", s.auth(s.handleWebSocket))
 	return stripVisitorIPHeaders(requestDeadlines(limitRequestBody(mux)))
 }
 
 // ---------------------------------------------------------------------------
-// Auth: HTTP Basic with username "<accountID>.<deviceID>".
+// Auth: Relay-Sig (see sigauth.go), or HTTP Basic "<accountID>.<deviceID>"
+// only for a device that has not registered an auth key yet.
 // ---------------------------------------------------------------------------
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Device)
@@ -284,8 +293,7 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			return
 		}
 		// Preferred: signature auth (proves possession of the device's auth private
-		// key without sending a reusable secret). Falls through to Basic during the
-		// transition so existing clients keep working.
+		// key without sending a reusable secret).
 		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
 			dev, err := s.authenticateSignature(r)
 			if err != nil {
@@ -298,31 +306,33 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 		}
 		user, pass, ok := r.BasicAuth()
 		if !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="relay"`)
 			httpError(w, http.StatusUnauthorized, "missing credentials")
 			return
 		}
-		accountID, devStr, ok := strings.Cut(user, ".")
-		if !ok {
-			httpError(w, http.StatusUnauthorized, "auth username must be <accountID>.<deviceID>")
-			return
-		}
-		devID, err := strconv.ParseUint(devStr, 10, 32)
+		accountID, devID, err := parseCredential(user)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
-			httpError(w, http.StatusUnauthorized, "bad device id")
+			httpError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
-		deviceKey := accountID + "." + devStr
+		deviceKey := accountID + "." + strconv.FormatUint(uint64(devID), 10)
 		if authFailDeviceLimiter.exhausted(deviceKey) {
 			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
 			return
 		}
-		dev, err := s.store.Authenticate(accountID, uint32(devID), pass)
+		dev, err := s.store.Authenticate(accountID, devID, pass)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
 			authFailDeviceLimiter.allow(deviceKey)
 			httpError(w, http.StatusUnauthorized, "authentication failed")
+			return
+		}
+		// Basic is a bootstrap credential only: once a device has registered an
+		// auth key it must sign every request, so a leaked device password alone
+		// can no longer act as the device (or swap its auth key — rotating the key
+		// therefore requires a Relay-Sig request signed by the old key).
+		if len(dev.AuthPublicKey) > 0 {
+			httpError(w, http.StatusUnauthorized, "this device must use Relay-Sig authentication")
 			return
 		}
 		next(w, r, dev)
@@ -334,17 +344,23 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
-	// Rate limit: 5 registrations per source IP per hour.
+	// Rate limit: 20 registrations per source IP per hour.
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "registration rate limit exceeded; try again later")
 		return
 	}
 	var req struct {
-		Username        string `json:"username"`
-		Password        string `json:"password"`
-		Email           string `json:"email"`
-		AccountPassword string `json:"accountPassword"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		// Optional Supabase access token. When present the relay asks Supabase
+		// who it belongs to and links the account to that user; the email is
+		// kept (as its OPRF token) ONLY if Supabase reports it confirmed. A raw
+		// client-supplied email is never accepted — that let anyone pre-claim
+		// someone else's address (account pre-hijack via recovery/OAuth adoption).
+		SupabaseAccessToken string `json:"supabaseAccessToken"`
+		AccountPassword     string `json:"accountPassword"`
+		Email               string `json:"email"` // rejected; see above
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		!validUsername.MatchString(req.Username) ||
@@ -352,13 +368,40 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "username (1–64 alphanumeric/._- chars) and password (8–1024 chars) required")
 		return
 	}
+	if req.Email != "" {
+		httpError(w, http.StatusBadRequest, "email is not accepted; pass supabaseAccessToken to link a verified email")
+		return
+	}
 	if req.AccountPassword != "" && (len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes) {
 		httpError(w, http.StatusBadRequest, "accountPassword must be 8–1024 chars")
 		return
 	}
-	accountID, deviceID, err := s.store.CreateAccount(req.Username, s.emailToken(req.Email), req.Password, req.AccountPassword)
+	var emailToken []byte
+	var supabaseUserID string
+	if req.SupabaseAccessToken != "" {
+		if s.supabaseURL == "" {
+			httpError(w, http.StatusServiceUnavailable, "social login not configured")
+			return
+		}
+		user, err := s.verifySupabaseToken(r.Context(), req.SupabaseAccessToken)
+		if err != nil {
+			httpError(w, http.StatusUnauthorized, "invalid or expired sign-in token")
+			return
+		}
+		supabaseUserID = user.ID
+		if user.EmailConfirmed {
+			emailToken = s.emailToken(user.Email)
+		}
+	}
+	accountID, deviceID, err := s.store.CreateAccount(req.Username, emailToken, supabaseUserID, req.Password, req.AccountPassword)
 	if errors.Is(err, store.ErrUsernameTaken) {
 		httpError(w, http.StatusConflict, "username already taken")
+		return
+	}
+	if errors.Is(err, store.ErrIdentityInUse) {
+		// Only reachable by someone holding a valid, confirmed token for this
+		// identity. Deliberately generic: point them at sign-in.
+		httpError(w, http.StatusConflict, errSignInInstead)
 		return
 	}
 	if err != nil {
@@ -378,12 +421,16 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"accountId": accountID, "deviceId": deviceID, "mailboxId": mailboxID})
 }
 
+// errSignInInstead is the one response for "this sign-in identity can't create
+// a new account" — it never says whether (or which) account exists.
+const errSignInInstead = "could not create an account with this sign-in; sign in instead"
+
 // handleOAuthAccount signs a Supabase-authenticated user into their relay
 // account, creating it on first use, and provisions a fresh device. The request
 // carries the user's Supabase access token, which the server verifies directly
-// with Supabase; the returned id/email are authoritative. This lets a
-// passwordless social-login user recover their account on any device instead of
-// colliding with their own email on a fresh registration.
+// with Supabase; the returned id/email are authoritative. An existing account
+// is adopted by email only when Supabase reports the email confirmed (and the
+// relay only ever stores confirmed emails).
 func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow("oauth:" + ip) {
@@ -414,25 +461,34 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, email, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
+	user, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
 	if err != nil {
 		httpError(w, http.StatusUnauthorized, "invalid or expired social login token")
 		return
 	}
+	var emailToken []byte
+	if user.EmailConfirmed {
+		emailToken = s.emailToken(user.Email)
+	}
 
-	accountID, username, deviceID, mailboxID, created, err := s.store.ProvisionOAuthAccount(
-		userID, s.emailToken(email), req.Username, req.Password, req.AccountPassword)
-	if errors.Is(err, store.ErrUsernameRequired) {
+	dev, created, err := s.store.ProvisionOAuthAccount(
+		user.ID, emailToken, req.Username, req.Password, req.AccountPassword)
+	switch {
+	case errors.Is(err, store.ErrUsernameRequired):
 		// No account exists yet for this user and no username was supplied.
 		// Signal the client to prompt for one and retry.
 		httpError(w, http.StatusNotFound, "username required")
 		return
-	}
-	if errors.Is(err, store.ErrUsernameTaken) {
+	case errors.Is(err, store.ErrUsernameTaken):
 		httpError(w, http.StatusConflict, "username already taken")
 		return
-	}
-	if err != nil {
+	case errors.Is(err, store.ErrIdentityInUse):
+		httpError(w, http.StatusConflict, errSignInInstead)
+		return
+	case errors.Is(err, store.ErrDeviceLimit):
+		httpError(w, http.StatusConflict, "device limit reached; unlink a device first")
+		return
+	case err != nil:
 		internalError(w, err)
 		return
 	}
@@ -440,53 +496,69 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
-	}
-	if created {
-		s.reindexAccount(accountID) // index the new social-login user for discovery
+		s.reindexAccount(dev.AccountID) // index the new social-login user for discovery
 	}
 	writeJSON(w, status, map[string]any{
-		"accountId": accountID,
-		"deviceId":  deviceID,
-		"username":  username,
-		"mailboxId": mailboxID,
+		"accountId": dev.AccountID,
+		"deviceId":  dev.DeviceID,
+		"username":  dev.Username,
+		"mailboxId": dev.MailboxID,
 		"created":   created,
 	})
+	if !created {
+		s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, dev.DeviceID)
+	}
 }
 
+// supabaseUser is what the relay trusts from Supabase's /auth/v1/user.
+type supabaseUser struct {
+	ID             string
+	Email          string
+	EmailConfirmed bool
+}
+
+// supabaseHTTPClient bounds every server-to-server Supabase call.
+var supabaseHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // verifySupabaseTokenHTTP asks Supabase who an access token belongs to via a
-// server-to-server GET /auth/v1/user. Returns the authoritative user id and
-// email if the token is valid.
-func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string) (userID, email string, err error) {
+// server-to-server GET /auth/v1/user. Returns the authoritative user id, email
+// and whether that email has been confirmed (email_confirmed_at, or
+// confirmed_at for an email-only user).
+func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string) (supabaseUser, error) {
 	if s.supabaseURL == "" {
-		return "", "", errors.New("supabase auth not configured")
+		return supabaseUser{}, errors.New("supabase auth not configured")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.supabaseURL+"/auth/v1/user", nil)
 	if err != nil {
-		return "", "", err
+		return supabaseUser{}, err
 	}
 	req.Header.Set("apikey", s.supabaseAnonKey)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := supabaseHTTPClient.Do(req)
 	if err != nil {
-		return "", "", err
+		return supabaseUser{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("supabase user lookup failed: HTTP %d", resp.StatusCode)
+		return supabaseUser{}, fmt.Errorf("supabase user lookup failed: HTTP %d", resp.StatusCode)
 	}
 	var body struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
+		ID               string  `json:"id"`
+		Email            string  `json:"email"`
+		Phone            string  `json:"phone"`
+		EmailConfirmedAt *string `json:"email_confirmed_at"`
+		ConfirmedAt      *string `json:"confirmed_at"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", "", err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return supabaseUser{}, err
 	}
 	if body.ID == "" {
-		return "", "", errors.New("supabase returned no user id")
+		return supabaseUser{}, errors.New("supabase returned no user id")
 	}
-	return body.ID, body.Email, nil
+	set := func(p *string) bool { return p != nil && *p != "" }
+	confirmed := body.Email != "" &&
+		(set(body.EmailConfirmedAt) || (set(body.ConfirmedAt) && body.Phone == ""))
+	return supabaseUser{ID: body.ID, Email: body.Email, EmailConfirmed: confirmed}, nil
 }
 
 // sealedDummyAccessKey is compared against when a sealed send names an unknown
@@ -512,13 +584,16 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
+	// No client timestamp is accepted: a sender clock on the wire is a
+	// clock-offset fingerprint that could link anonymous sends to one device.
+	// Timestamps that matter (ordering, receipts) live inside the encrypted
+	// content; the envelope carries only the relay's receive time.
 	var req struct {
-		MailboxID       string `json:"mailboxId"`
-		Type            int32  `json:"type"`
-		Content         string `json:"content"`   // base64 sealed blob
-		AccessKey       string `json:"accessKey"` // base64, recipient's access key
-		Ephemeral       bool   `json:"ephemeral"`
-		ClientTimestamp int64  `json:"clientTimestamp"`
+		MailboxID string `json:"mailboxId"`
+		Type      int32  `json:"type"`
+		Content   string `json:"content"`   // base64 sealed blob
+		AccessKey string `json:"accessKey"` // base64, recipient's access key
+		Ephemeral bool   `json:"ephemeral"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MailboxID == "" {
 		httpError(w, http.StatusBadRequest, "mailboxId and content required")
@@ -538,21 +613,13 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
-	// Resolve the mailbox and verify the access key. Any failure returns the same
-	// 403 so the endpoint doesn't reveal whether a mailbox exists — and takes the
-	// same path: one query either way, and the constant-time comparison always
-	// runs (against a random dummy key when the mailbox or its key is unknown).
-	dest, stored, lookupErr := s.store.SealedTargetByMailbox(req.MailboxID)
-	known := lookupErr == nil && len(stored) == len(sealedDummyAccessKey)
-	if !known {
-		stored = sealedDummyAccessKey[:]
-	}
-	match := subtle.ConstantTimeCompare(stored, token) == 1
-	if !known || !match {
+	dest, ok := s.checkMailboxAccess(req.MailboxID, token)
+	if !ok {
 		httpError(w, http.StatusForbidden, "delivery rejected")
 		return
 	}
 
+	now := time.Now().UnixMilli()
 	env := &relaypb.Envelope{
 		Id: newEnvelopeID(),
 		// SenderAccount / SenderDevice intentionally left empty: the relay does
@@ -560,8 +627,8 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		// from the sealed blob.
 		Type:            relaypb.CiphertextType(req.Type),
 		Content:         content,
-		ClientTimestamp: req.ClientTimestamp,
-		ServerTimestamp: time.Now().UnixMilli(),
+		ClientTimestamp: now, // server-stamped, never the sender's clock
+		ServerTimestamp: now,
 		Ephemeral:       req.Ephemeral,
 	}
 	// Queue fairness for an anonymous sender is keyed by its source-IP bucket.
@@ -575,6 +642,25 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"serverTimestamp": env.ServerTimestamp})
+}
+
+// checkMailboxAccess is the unauthenticated-path capability check shared by
+// sealed sends and call rings: the presented key must equal the access key of
+// the account owning the mailbox. Any failure is the same false result and
+// takes the same path — one query either way, and the constant-time comparison
+// always runs (against a random dummy key when the mailbox or its key is
+// unknown) — so a caller can't tell an unknown mailbox from a wrong key.
+func (s *Server) checkMailboxAccess(mailboxID string, presented []byte) (*store.Device, bool) {
+	dest, stored, lookupErr := s.store.SealedTargetByMailbox(mailboxID)
+	known := lookupErr == nil && len(stored) == len(sealedDummyAccessKey)
+	if !known {
+		stored = sealedDummyAccessKey[:]
+	}
+	match := subtle.ConstantTimeCompare(stored, presented) == 1
+	if !known || !match {
+		return nil, false
+	}
+	return dest, true
 }
 
 // handleFetchQueue returns this device's currently-queued envelopes over the
@@ -680,9 +766,10 @@ func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev 
 }
 
 // handleRotateMailbox assigns the authenticated device a fresh mailbox id and
-// returns it. Clients call this periodically so the relay can't track a
-// long-lived routing identifier; peers pick up the new id on their next bundle
-// fetch, and sealed sends to the stale id fail-and-retry.
+// returns it. The relay never rotates mailboxes on its own (ids are stable);
+// this exists only for an explicit client request (e.g. after a suspected
+// mailbox-id leak). Peers pick up the new id on their next bundle fetch, and
+// sealed sends to the stale id fail-and-retry.
 func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	mailboxID, err := s.store.RotateMailbox(dev.AccountID, dev.DeviceID)
 	if err != nil {
@@ -694,7 +781,9 @@ func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev
 
 // handleDirectoryOPRF evaluates the OPRF over a batch of client-blinded elements
 // (returns E = k·B for each). The server learns nothing about the identifiers
-// the client is querying — only opaque curve points cross the wire.
+// the client is querying — only opaque curve points cross the wire. Every
+// evaluated element spends one unit of a per-account and a per-IP daily budget,
+// so the oracle can't be driven to enumerate identifiers offline.
 func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.oprf == nil {
 		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
@@ -711,17 +800,26 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if len(req.Blinded) == 0 || len(req.Blinded) > 1024 {
+	if len(req.Blinded) == 0 || len(req.Blinded) > maxDirectoryBatch {
 		httpError(w, http.StatusBadRequest, "blinded must contain 1..1024 elements")
 		return
 	}
-	out := make([]string, 0, len(req.Blinded))
+	elements := make([][]byte, 0, len(req.Blinded))
 	for _, b := range req.Blinded {
 		raw, err := base64.StdEncoding.DecodeString(b)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, "invalid blinded element")
 			return
 		}
+		elements = append(elements, raw)
+	}
+	ip := clientIP(r)
+	if !oprfBudget.take(len(elements), "acct:"+dev.AccountID, "ip:"+ip) {
+		httpError(w, http.StatusTooManyRequests, "discovery budget exhausted; try again later")
+		return
+	}
+	out := make([]string, 0, len(elements))
+	for _, raw := range elements {
 		eval, err := s.oprf.Evaluate(raw)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, "invalid blinded element")
@@ -732,58 +830,70 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 	writeJSON(w, http.StatusOK, map[string]any{"evaluated": out})
 }
 
-// handleDirectoryResolve returns the account (and current username) for each
-// token that matches the directory index. Tokens are OPRF outputs the client
-// derived after the oblivious evaluation; unmatched tokens yield no result, so
-// non-registered contacts stay private.
-func (s *Server) handleDirectoryResolve(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+// handleDirectoryBuckets returns the directory entries for the requested
+// 16-bit buckets. The client derives bucket(t) from each OPRF token t locally
+// and sends only that; tokens never leave the device. Each entry is a match
+// tag plus a box only a holder of the token can open, so the relay learns at
+// most which buckets were requested — not which identifiers, nor which matched.
+func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.oprf == nil {
 		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
 		return
 	}
-	if !directoryLimiter.allow(dev.AccountID) {
+	ip := clientIP(r)
+	if !directoryLimiter.allow(dev.AccountID) || !directoryIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "discovery rate limit exceeded; try again later")
 		return
 	}
 	var req struct {
-		Tokens []string `json:"tokens"`
+		Buckets []int `json:"buckets"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if len(req.Tokens) == 0 || len(req.Tokens) > 1024 {
-		httpError(w, http.StatusBadRequest, "tokens must contain 1..1024 elements")
+	if len(req.Buckets) == 0 || len(req.Buckets) > maxDirectoryBatch {
+		httpError(w, http.StatusBadRequest, "buckets must contain 1..1024 entries")
 		return
 	}
-	tokens := make([][]byte, 0, len(req.Tokens))
-	for _, t := range req.Tokens {
-		raw, err := base64.StdEncoding.DecodeString(t)
-		if err != nil {
-			httpError(w, http.StatusBadRequest, "invalid token")
+	seen := make(map[uint16]bool, len(req.Buckets))
+	buckets := make([]uint16, 0, len(req.Buckets))
+	for _, b := range req.Buckets {
+		if b < 0 || b > 0xffff {
+			httpError(w, http.StatusBadRequest, "bucket out of range")
 			return
 		}
-		tokens = append(tokens, raw)
+		if !seen[uint16(b)] {
+			seen[uint16(b)] = true
+			buckets = append(buckets, uint16(b))
+		}
 	}
-	matches, err := s.store.ResolveDirectory(tokens)
+	rows, err := s.store.DirectoryBuckets(buckets)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
-	type result struct {
-		Token     string `json:"token"`
-		AccountID string `json:"accountId"`
-		Username  string `json:"username"`
+	type entry struct {
+		Tag b64 `json:"tag"`
+		Box b64 `json:"box"`
 	}
-	results := make([]result, 0, len(matches))
-	for _, m := range matches {
-		results = append(results, result{
-			Token:     base64.StdEncoding.EncodeToString(m.Token),
-			AccountID: m.AccountID,
-			Username:  m.Username,
-		})
+	type bucket struct {
+		Bucket  uint16  `json:"bucket"`
+		Entries []entry `json:"entries"`
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+	byBucket := make(map[uint16][]entry, len(buckets))
+	for _, e := range rows {
+		byBucket[e.Bucket] = append(byBucket[e.Bucket], entry{Tag: e.Tag, Box: e.Box})
+	}
+	out := make([]bucket, 0, len(buckets))
+	for _, b := range buckets {
+		entries := byBucket[b]
+		if entries == nil {
+			entries = []entry{}
+		}
+		out = append(out, bucket{Bucket: b, Entries: entries})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"buckets": out})
 }
 
 // handleDeliveryCertificate mints a sealed-sender certificate for the
@@ -826,8 +936,15 @@ func (s *Server) handleCreateContactInvite(w http.ResponseWriter, r *http.Reques
 }
 
 // handleClaimContactInvite consumes a contact invite token, returning the
-// inviter's account id and username. Single-use: a second claim returns 404.
-func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+// inviter's account id and username. Single-use: the row is deleted on claim,
+// so a second claim returns 404. UNAUTHENTICATED — the token is the capability
+// — so the relay can't record which account redeemed whose invite.
+func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !inviteClaimIPLimiter.allow(ip) {
+		httpError(w, http.StatusTooManyRequests, "too many invite claims; try again later")
+		return
+	}
 	var req struct {
 		Token string `json:"token"`
 	}
@@ -847,8 +964,13 @@ func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"accountId": accountID, "username": username})
 }
 
+// handleRecoverAccount provisions a new device for the account whose verified
+// email matches, given its recovery password. Every recovery failure (unknown
+// email, no recovery password, wrong password) gets the same 401 after the
+// same bcrypt work, and repeated failures for one email back off
+// exponentially — applied identically whether or not the email is registered,
+// so neither status, timing nor lockout reveals account existence.
 func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
-	// Rate-limit recovery attempts (same bucket as account creation per IP).
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow("recover:" + ip) {
 		httpError(w, http.StatusTooManyRequests, "recovery rate limit exceeded; try again later")
@@ -858,7 +980,8 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		Email           string `json:"email"`
 		AccountPassword string `json:"accountPassword"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.AccountPassword == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.AccountPassword == "" ||
+		len(req.AccountPassword) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "email and accountPassword required")
 		return
 	}
@@ -867,40 +990,34 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "email recovery unavailable")
 		return
 	}
-	accountID, username, deviceID, devicePassword, err := s.store.RecoverAccount(token, req.AccountPassword)
+	lockKey := hex.EncodeToString(token)
+	if !recoveryLockout.permit(lockKey) {
+		httpError(w, http.StatusTooManyRequests, "too many recovery attempts; try again later")
+		return
+	}
+	dev, devicePassword, err := s.store.RecoverAccount(token, req.AccountPassword)
 	switch {
-	case errors.Is(err, store.ErrAccountNotFound):
-		httpError(w, http.StatusNotFound, "no account with that email")
-		return
-	case errors.Is(err, store.ErrNoRecoveryPassword):
-		httpError(w, http.StatusUnprocessableEntity, "account has no recovery password; use device linking instead")
-		return
 	case errors.Is(err, store.ErrAuthFailed):
-		httpError(w, http.StatusUnauthorized, "incorrect recovery password")
+		recoveryLockout.fail(lockKey)
+		httpError(w, http.StatusUnauthorized, "recovery failed")
+		return
+	case errors.Is(err, store.ErrDeviceLimit):
+		// Only reachable with the correct recovery password.
+		httpError(w, http.StatusConflict, "device limit reached; unlink a device first")
 		return
 	case err != nil:
 		internalError(w, err)
 		return
 	}
-	devices, err := s.store.ListDevices(accountID)
-	if err != nil {
-		internalError(w, err)
-		return
-	}
-	mailboxID := ""
-	for _, d := range devices {
-		if d.DeviceID == deviceID {
-			mailboxID = d.MailboxID
-			break
-		}
-	}
+	recoveryLockout.succeed(lockKey)
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"accountId":      accountID,
-		"username":       username,
-		"deviceId":       deviceID,
+		"accountId":      dev.AccountID,
+		"username":       dev.Username,
+		"deviceId":       dev.DeviceID,
 		"devicePassword": devicePassword,
-		"mailboxId":      mailboxID,
+		"mailboxId":      dev.MailboxID,
 	})
+	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, dev.DeviceID)
 }
 
 func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, dev *store.Device) {
@@ -1340,64 +1457,72 @@ func (s *Server) handleSetPushContent(w http.ResponseWriter, r *http.Request, de
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleCallOffer triggers a VoIP push to the target account so CallKit can
-// present the incoming-call UI before the E2EE offer envelope arrives over WS.
-func (s *Server) handleCallOffer(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	target := r.PathValue("account")
-	var req struct {
-		CallID     string `json:"callId"`
-		CallerName string `json:"callerName"`
-		Kind       string `json:"kind"` // "audio" or "video"
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CallID == "" {
-		httpError(w, http.StatusBadRequest, "callId required")
+// validCallID bounds the opaque call id echoed into the push payload.
+var validCallID = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+// handleCallRing wakes the callee's devices for an incoming call. It is
+// UNAUTHENTICATED by design, exactly like sealed sends: the caller proves it
+// may reach the callee by presenting the callee's access key for one of their
+// mailboxes, so the relay never learns who is calling whom. Unknown mailbox
+// and wrong key get the identical 403. The push carries only the call id; the
+// caller's identity reaches the callee solely inside the E2E-encrypted offer
+// (delivered as a sealed message).
+func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !callRingIPLimiter.allow(ip) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
-	s.hub.PushCallToAccount(target, req.CallID, dev.AccountID, req.CallerName, req.Kind)
+	var req struct {
+		DestinationMailbox string `json:"destinationMailbox"`
+		AccessKey          string `json:"accessKey"`
+		CallID             string `json:"callId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DestinationMailbox == "" ||
+		!validCallID.MatchString(req.CallID) {
+		httpError(w, http.StatusBadRequest, "destinationMailbox, accessKey and callId required")
+		return
+	}
+	key, err := base64.StdEncoding.DecodeString(req.AccessKey)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid access key")
+		return
+	}
+	if !callRingMailboxLimiter.allow(req.DestinationMailbox) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
+	dest, ok := s.checkMailboxAccess(req.DestinationMailbox, key)
+	if !ok {
+		httpError(w, http.StatusForbidden, "ring rejected")
+		return
+	}
+	s.hub.PushCallToAccount(dest.AccountID, req.CallID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleLookupUsername is intentionally unauthenticated so clients can check
-// username availability during sign-up before they have credentials.
-// Rate-limited by source IP to prevent bulk enumeration.
-func (s *Server) handleLookupUsername(w http.ResponseWriter, r *http.Request) {
+// handleUsernameAvailable answers "is this username free?" for sign-up and
+// rename. Unauthenticated (new users have no credentials) and rate-limited per
+// source IP. It returns only a boolean — never an account id — so it can't be
+// used to map usernames to accounts; comparison is case-insensitive, matching
+// how uniqueness is enforced.
+func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !usernameLookupLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
 		return
 	}
-	accountID, err := s.store.LookupAccountID(r.PathValue("username"))
-	if errors.Is(err, store.ErrNotFound) {
-		httpError(w, http.StatusNotFound, "no such user")
+	name := r.PathValue("name")
+	if !validUsername.MatchString(name) {
+		httpError(w, http.StatusBadRequest, "username must be 1–64 alphanumeric/._- characters")
 		return
 	}
+	taken, err := s.store.UsernameTaken(name)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accountId": accountID})
-}
-
-func (s *Server) handleLookupEmail(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !emailLookupLimiter.allow(dev.AccountID) {
-		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
-		return
-	}
-	token := s.emailToken(r.PathValue("email"))
-	if token == nil {
-		httpError(w, http.StatusServiceUnavailable, "email lookup unavailable")
-		return
-	}
-	accountID, username, err := s.store.LookupAccountByEmail(token)
-	if errors.Is(err, store.ErrAccountNotFound) {
-		httpError(w, http.StatusNotFound, "no such user")
-		return
-	}
-	if err != nil {
-		internalError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"accountId": accountID, "username": username})
+	writeJSON(w, http.StatusOK, map[string]bool{"available": !taken})
 }
 
 func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {
@@ -1417,25 +1542,13 @@ func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, dev
 	writeJSON(w, http.StatusOK, map[string]any{"username": username})
 }
 
-// handlePresence reports whether an account currently has a live connection
-// and, if not, when it was last seen (ms since epoch, 0 if never).
-// Rate-limited to limit metadata exposure to any single requester.
-func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !presenceLimiter.allow(dev.AccountID) {
-		httpError(w, http.StatusTooManyRequests, "presence rate limit exceeded; try again later")
-		return
-	}
-	account := r.PathValue("account")
-	online := s.hub.IsOnline(account)
-	// last_seen is in-memory only — not persisted to the DB.
-	lastSeen := s.hub.LastSeen(account)
-	writeJSON(w, http.StatusOK, map[string]any{"online": online, "lastSeen": lastSeen})
-}
-
 // ---------------------------------------------------------------------------
 // Attachments (opaque encrypted blobs)
 // ---------------------------------------------------------------------------
 
+// handleCreateAttachment allocates an attachment id for the authenticated
+// device (charged to its daily attachment quota) and records it as reserved,
+// so the (unauthenticated) PUT can only write ids the relay handed out, once.
 func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	id, err := s.blobs.NewID()
 	if err != nil {
@@ -1444,6 +1557,10 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 	}
 	if !s.attachQuota.allocate(dev.AccountID, id) {
 		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
+		return
+	}
+	if err := s.blobs.Reserve(id); err != nil {
+		internalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -1461,15 +1578,28 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	id := r.PathValue("id")
-	fallback := ""
-	if dev != nil {
-		fallback = dev.AccountID
+// handleUploadAttachment stores the ciphertext for a reserved id. It is
+// UNAUTHENTICATED: the unguessable 128-bit id is the capability, so the upload
+// can't be tied to the uploader's account. Write-once: an id that was never
+// allocated, has expired, or was already written gets 404. Bytes are charged
+// to the allocating account's quota via the in-memory allocation record.
+func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	if !attachmentIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
 	}
-	owner, known := s.attachQuota.ownerKey(id, fallback)
+	id := r.PathValue("id")
+	owner, known := s.attachQuota.ownerKey(id, "")
 	if known && !s.attachQuota.uploadAllowed(owner) {
 		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
+		return
+	}
+	if err := s.blobs.Claim(id); err != nil {
+		if errors.Is(err, blob.ErrNotFound) {
+			httpError(w, http.StatusNotFound, "unknown or already-used attachment id")
+			return
+		}
+		internalError(w, err)
 		return
 	}
 	body := &countingReader{r: r.Body}
@@ -1492,8 +1622,13 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, 
 // handleDownloadAttachment streams the blob from disk (never buffering it in
 // memory) via http.ServeContent, which also serves Range requests so large
 // downloads can resume. No Last-Modified is sent: the upload time is not
-// disclosed.
-func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+// disclosed. UNAUTHENTICATED: knowing the id (shared only inside E2E-encrypted
+// content) is the capability, so downloads can't be linked to an account.
+func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
+	if !attachmentIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
 	f, err := s.blobs.Open(r.PathValue("id"))
 	switch {
 	case errors.Is(err, blob.ErrNotFound):
@@ -1541,9 +1676,12 @@ func (s *Server) handleCreateEncryptedGroupInvite(w http.ResponseWriter, r *http
 }
 
 // handleClaimEncryptedGroupInvite returns the opaque blob for a token so the
-// redeemer can decrypt it client-side with the fragment key. Multi-use until expiry.
-func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !groupJoinLimiter.allow(dev.AccountID) {
+// redeemer can decrypt it client-side with the fragment key. Multi-use until
+// expiry. UNAUTHENTICATED — the token is the capability — and rate-limited per
+// source IP, so the relay can't tell which account joined via which link.
+func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !inviteClaimIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "too many join attempts; try again later")
 		return
 	}
@@ -2043,19 +2181,23 @@ func (l *slidingWindowLimiter) allow(key string) bool {
 // source IPs hitting the registration endpoint) don't leak memory forever.
 func (s *Server) PruneStaleLimiterKeys() {
 	s.pruneTokenBuckets()
+	recoveryLockout.prune()
+	oprfBudget.prune()
 	for _, l := range []*slidingWindowLimiter{
 		accountCreationLimiter,
 		preKeyFetchLimiter,
 		groupCreateLimiter,
-		groupJoinLimiter,
-		presenceLimiter,
+		inviteClaimIPLimiter,
+		attachmentIPLimiter,
+		callRingIPLimiter,
+		callRingMailboxLimiter,
 		lookupLimiter,
-		emailLookupLimiter,
 		usernameLookupLimiter,
 		keyUploadLimiter,
 		sealedSendIPLimiter,
 		sealedSendMailboxLimiter,
 		directoryLimiter,
+		directoryIPLimiter,
 		provisioningLimiter,
 		reportLimiter,
 	} {
@@ -2108,34 +2250,48 @@ var preKeyFetchLimiter = newSlidingWindowLimiter(200, time.Hour)
 // 20 group creations per account per day.
 var groupCreateLimiter = newSlidingWindowLimiter(20, 24*time.Hour)
 
-// 50 invite-join attempts per account per hour to prevent token brute-forcing.
-var groupJoinLimiter = newSlidingWindowLimiter(50, time.Hour)
+// Unauthenticated invite claims (contact + group) per source IP per hour, to
+// bound token brute-forcing.
+var inviteClaimIPLimiter = newSlidingWindowLimiter(60, time.Hour)
 
-// 300 presence lookups per account per minute.
-var presenceLimiter = newSlidingWindowLimiter(300, time.Minute)
+// Unauthenticated attachment GET/PUT per source IP per minute.
+var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
+
+// Call rings are unauthenticated (access-key capability, like sealed sends):
+// bound them per source IP and per destination mailbox.
+var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
+var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
 
 // lookupLimiter: general account/profile lookups per account per hour (search, profile fetches).
 var lookupLimiter = newSlidingWindowLimiter(600, time.Hour)
 
-// emailLookupLimiter: contact-discovery lookups per account per hour.
-// Contact sync fires one request per address book email — needs to cover
-// a full address book in a single sync pass without hitting the limit.
-var emailLookupLimiter = newSlidingWindowLimiter(3000, time.Hour)
-
 // usernameLookupLimiter: unauthenticated username-availability checks per IP per hour.
-// Debounced in the client, but generous enough for normal sign-up typing.
-var usernameLookupLimiter = newSlidingWindowLimiter(600, time.Hour)
+// Debounced in the client; enough for sign-up typing, too few for bulk probing.
+var usernameLookupLimiter = newSlidingWindowLimiter(120, time.Hour)
 
 // Sealed-sender delivery is unauthenticated, so rate-limit per source IP and per
 // destination mailbox to bound abuse on top of the access-key check.
 var sealedSendIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 var sealedSendMailboxLimiter = newSlidingWindowLimiter(120, time.Minute)
 
-// directoryLimiter: blinded-discovery requests (OPRF eval + resolve) per account
-// per hour. Batched (up to 1024 identifiers per request), so a full address-book
-// sync is a couple of calls; generous enough for that without enabling the OPRF
-// oracle to be hammered for offline enumeration.
+// directoryLimiter: blinded-discovery requests (OPRF eval + bucket fetch) per
+// account per hour. Batched (up to 1024 per request), so a full address-book
+// sync is a couple of calls.
 var directoryLimiter = newSlidingWindowLimiter(200, time.Hour)
+
+// directoryIPLimiter: bucket fetches per source IP per hour.
+var directoryIPLimiter = newSlidingWindowLimiter(400, time.Hour)
+
+// maxDirectoryBatch caps elements/buckets per discovery request.
+const maxDirectoryBatch = 1024
+
+// oprfBudget meters OPRF evaluations per ELEMENT (not per request): a few
+// thousand per account and per source IP per day — enough to sync a large
+// address book, far too few to enumerate the identifier space offline.
+var oprfBudget = newElementBudget(map[string]budgetSpec{
+	"acct:": {capacity: 5000, period: 24 * time.Hour},
+	"ip:":   {capacity: 20000, period: 24 * time.Hour},
+})
 
 // 100 key uploads per account per hour.
 var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)

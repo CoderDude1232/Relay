@@ -36,6 +36,7 @@ public actor RelayWebSocket {
     private let baseURL: URL
     private let credentials: RelayCredentials
     private let session: URLSession
+    private let signer: (any RelayRequestSigner)?
 
     private var task: URLSessionWebSocketTask?
     private var receiveLoop: Task<Void, Never>?
@@ -46,10 +47,16 @@ public actor RelayWebSocket {
     private var eventContinuation: AsyncStream<RelayEvent>.Continuation?
     private let log = Logger(subsystem: "com.relaytextingapp.RelayKit", category: "websocket")
 
-    public init(baseURL: URL, credentials: RelayCredentials, session: URLSession = .shared) {
+    /// - Parameter signer: the device auth key. The upgrade is signed with
+    ///   Relay-Sig v2; once a device has registered its auth key the relay
+    ///   refuses HTTP Basic, so pass the same signer as the REST client. Basic is
+    ///   used only when no signer is given (a device with no auth key yet).
+    public init(baseURL: URL, credentials: RelayCredentials, session: URLSession = RelayTLS.sharedSession,
+                signer: (any RelayRequestSigner)? = nil) {
         self.baseURL = baseURL
         self.credentials = credentials
         self.session = session
+        self.signer = signer
     }
 
     /// Opens the socket and returns the event stream. The stream yields
@@ -76,7 +83,14 @@ public actor RelayWebSocket {
         // the WebSocket over HTTP/3/QUIC, which the server doesn't support for
         // WebSockets — the connection stalls and the socket is RST ("Socket is
         // not connected", POSIX 57). Plain TCP is correct for the WS handshake.
-        request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
+        if let signer {
+            // Sign the upgrade exactly as the server sees it: GET /v1/ws, empty body.
+            if !RelaySignature.sign(&request, credentials: credentials, signer: signer) {
+                log.warning("websocket upgrade signing failed")
+            }
+        } else {
+            request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
+        }
         log.info("connecting to websocket endpoint")
 
         let task = session.webSocketTask(with: request)

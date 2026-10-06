@@ -108,22 +108,12 @@ func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 }
 
 // PushCall wakes an Android device for an incoming call — the FCM analogue of
-// iOS PushKit, since Android has no VoIP push. It carries the same call
-// metadata the VoIP payload does (nothing more): the client starts a foreground
-// service and posts a full-screen-intent notification to ring. "type":"call"
-// lets the client tell a call wake from a message wake. caller_account is an id
-// the recipient already knows, so no new information is revealed.
-func (p *Pusher) PushCall(deviceToken, callID, callerAccount, callerName, kind string) error {
-	data := map[string]string{
-		"type":           "call",
-		"call_id":        callID,
-		"caller_account": callerAccount,
-		"kind":           kind,
-	}
-	if callerName != "" {
-		data["caller_name"] = callerName
-	}
-	return p.send(deviceToken, data)
+// iOS PushKit, since Android has no VoIP push. The data payload is only
+// {"type": "call", "call_id": "<id>"} ("type" just routes a call wake vs a
+// message wake): no caller account, name or kind reaches Google. The client
+// rings generically and learns the caller from the E2E-encrypted offer.
+func (p *Pusher) PushCall(deviceToken, callID string) error {
+	return p.send(deviceToken, map[string]string{"type": "call", "call_id": callID})
 }
 
 // send posts a data-only, high-priority FCM message (no "notification" block, so

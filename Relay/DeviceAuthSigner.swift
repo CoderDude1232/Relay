@@ -3,9 +3,10 @@
 //  Relay
 //
 //  Bridges RelayKit's per-request signer to the device's Secure-Enclave/Keychain
-//  authorization key, so authenticated REST calls can use `Relay-Sig` (a fresh
-//  per-request ECDSA-P256 signature) instead of a replayable HTTP Basic password.
-//  The same P256 key already backs signed device mutations.
+//  authorization key, so authenticated REST calls and the WebSocket upgrade use
+//  `Relay-Sig` v2 (a fresh per-request ECDSA-P256 signature over method, URI,
+//  identity and body hash). The relay refuses HTTP Basic once this key is
+//  registered. The same P256 key already backs signed device mutations.
 //
 
 import Foundation
@@ -20,5 +21,11 @@ struct DeviceAuthSigner: RelayRequestSigner, @unchecked Sendable {
 
     func signRelayRequest(_ message: Data) -> Data? {
         try? keychain.signDeviceAuthorizationPayload(message)
+    }
+
+    /// Lets RelayKit register this key on first use (the one Basic request a
+    /// device ever makes) if the app hasn't uploaded it yet.
+    func relayAuthPublicKey() -> Data? {
+        try? keychain.deviceAuthorizationPublicKey()
     }
 }

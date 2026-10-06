@@ -33,6 +33,9 @@ type testEnv struct {
 	t   *testing.T
 	srv *httptest.Server
 	api *Server
+	// clients by "<accountID>.<deviceID>" so doJSON can sign requests for a
+	// device that has registered an auth key (Basic is refused after that).
+	clients map[string]*client
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -53,7 +56,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	apiServer := New(st, hub.New(st), blobs, "", "")
 	srv := httptest.NewServer(apiServer.Handler())
 	t.Cleanup(srv.Close)
-	return &testEnv{t: t, srv: srv, api: apiServer}
+	return &testEnv{t: t, srv: srv, api: apiServer, clients: map[string]*client{}}
 }
 
 type client struct {
@@ -72,6 +75,7 @@ func (e *testEnv) register(username, password string) *client {
 	}
 	e.doJSON("POST", "/v1/accounts", "", "", map[string]string{"username": username, "password": password}, http.StatusCreated, &resp)
 	c := &client{env: e, accountID: resp.AccountID, deviceID: resp.DeviceID, password: password}
+	e.clients[c.authUser()] = c
 	c.uploadDeviceAuthKey()
 	return c
 }
@@ -82,12 +86,17 @@ func (e *testEnv) doJSON(method, path, user, pass string, body any, wantStatus i
 	if body != nil {
 		json.NewEncoder(&buf).Encode(body)
 	}
-	req, err := http.NewRequest(method, e.srv.URL+path, &buf)
+	bodyBytes := buf.Bytes()
+	req, err := http.NewRequest(method, e.srv.URL+path, bytes.NewReader(bodyBytes))
 	if err != nil {
 		e.t.Fatal(err)
 	}
 	if user != "" {
-		req.SetBasicAuth(user, pass)
+		if c := e.clients[user]; c != nil && c.authKey != nil {
+			c.sign(req, bodyBytes)
+		} else {
+			req.SetBasicAuth(user, pass)
+		}
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -179,9 +188,9 @@ type wsConn struct {
 func (c *client) connectWS() *wsConn {
 	c.env.t.Helper()
 	url := "ws" + strings.TrimPrefix(c.env.srv.URL, "http") + "/v1/ws"
-	hdr := http.Header{}
-	hdr.Set("Authorization", "Basic "+basicAuth(c.authUser(), c.password))
-	conn, _, err := websocket.DefaultDialer.Dial(url, hdr)
+	probe, _ := http.NewRequest("GET", c.env.srv.URL+"/v1/ws", nil)
+	c.sign(probe, nil)
+	conn, _, err := websocket.DefaultDialer.Dial(url, probe.Header)
 	if err != nil {
 		c.env.t.Fatal(err)
 	}
@@ -199,12 +208,6 @@ func (c *client) connectWS() *wsConn {
 			c.env.t.Fatalf("unexpected frame during drain: %T", p)
 		}
 	}
-}
-
-func basicAuth(user, pass string) string {
-	req, _ := http.NewRequest("GET", "http://x", nil)
-	req.SetBasicAuth(user, pass)
-	return strings.TrimPrefix(req.Header.Get("Authorization"), "Basic ")
 }
 
 func (w *wsConn) readFrame() *relaypb.ServerFrame {
@@ -454,20 +457,25 @@ func TestGroupLifecycle(t *testing.T) {
 
 // TestOAuthAccountProvisioning covers the social-login flow: first sign-in
 // creates the account, a later sign-in from a "new device" (no local creds)
-// recovers the same account instead of colliding on the email, and an existing
-// password-created account is adopted by email and back-filled with the
-// Supabase user id.
+// recovers the same account (bumping the device list), an account registered
+// with a confirmed email is adopted by email from another Supabase identity,
+// and an UNconfirmed email never adopts anything.
 func TestOAuthAccountProvisioning(t *testing.T) {
 	env := newTestEnv(t)
-	// Stub Supabase verification: the token is "userID|email".
+	// Stub Supabase verification: the token is "userID|email"; user ids starting
+	// with "nc-" have an unconfirmed email.
 	env.api.SetSupabaseAuth("https://stub.supabase.co", "anon")
-	env.api.verifySupabaseToken = func(_ context.Context, token string) (string, string, error) {
+	env.api.verifySupabaseToken = func(_ context.Context, token string) (supabaseUser, error) {
 		id, email, ok := strings.Cut(token, "|")
 		if !ok || id == "" {
-			return "", "", fmt.Errorf("bad stub token")
+			return supabaseUser{}, fmt.Errorf("bad stub token")
 		}
-		return id, email, nil
+		return supabaseUser{ID: id, Email: email, EmailConfirmed: !strings.HasPrefix(id, "nc-")}, nil
 	}
+	sfx := uniqueUsername("")
+	alice, bob := "alice"+sfx, "bob"+sfx
+	u1, u2, u3 := "u1"+sfx, "u2"+sfx, "u3"+sfx
+	emailA, emailB := "a"+sfx+"@x.com", "b"+sfx+"@x.com"
 
 	type oauthResp struct {
 		AccountID string `json:"accountId"`
@@ -478,47 +486,72 @@ func TestOAuthAccountProvisioning(t *testing.T) {
 
 	// Missing username on first sign-in → 404 (client should prompt).
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u1|a@x.com", "password": "device-pw-123"},
+		map[string]string{"accessToken": u1 + "|" + emailA, "password": "device-pw-123"},
 		http.StatusNotFound, nil)
 
 	// First sign-in with a username → creates the account (201).
 	var first oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u1|a@x.com", "username": "alice", "password": "device-pw-123"},
+		map[string]string{"accessToken": u1 + "|" + emailA, "username": alice, "password": "device-pw-123"},
 		http.StatusCreated, &first)
-	if !first.Created || first.Username != "alice" || first.DeviceID != 1 {
+	if !first.Created || first.Username != alice || first.DeviceID != 1 {
 		t.Fatalf("first sign-in: %+v", first)
 	}
 
-	// Second sign-in from a fresh device (no username) → recovers same account,
-	// provisions a new device, does NOT collide on email.
+	// Second sign-in from a fresh device (no username) → same account, new device.
 	var second oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u1|a@x.com", "password": "device-pw-456"},
+		map[string]string{"accessToken": u1 + "|" + emailA, "password": "device-pw-456"},
 		http.StatusOK, &second)
 	if second.Created || second.AccountID != first.AccountID || second.DeviceID != 2 {
 		t.Fatalf("second sign-in did not recover account: %+v (first=%+v)", second, first)
 	}
 
-	// An account created the old way (password path, same email, different user
-	// id) is adopted by email and back-filled with the Supabase user id.
+	// Registration never accepts a raw email.
 	env.doJSON("POST", "/v1/accounts", "", "",
-		map[string]string{"username": "bob", "password": "bob-pw-1234", "email": "b@x.com"},
+		map[string]string{"username": bob, "password": "bob-pw-1234", "email": emailB},
+		http.StatusBadRequest, nil)
+	// Register with a Supabase token whose email is confirmed → email linked.
+	env.doJSON("POST", "/v1/accounts", "", "",
+		map[string]string{"username": bob, "password": "bob-pw-1234", "supabaseAccessToken": u2 + "|" + emailB},
 		http.StatusCreated, nil)
+
+	// An unconfirmed email never adopts the account (no id match → username required).
+	env.doJSON("POST", "/v1/accounts/oauth", "", "",
+		map[string]string{"accessToken": "nc-" + u3 + "|" + emailB, "password": "device-pw-000"},
+		http.StatusNotFound, nil)
+
+	// Another Supabase identity with the same CONFIRMED email signs in to bob.
 	var adopt oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u2|b@x.com", "password": "device-pw-789"},
+		map[string]string{"accessToken": u3 + "|" + emailB, "password": "device-pw-789"},
 		http.StatusOK, &adopt)
-	if adopt.Created || adopt.Username != "bob" || adopt.DeviceID != 2 {
+	if adopt.Created || adopt.Username != bob || adopt.DeviceID != 2 {
 		t.Fatalf("email adoption failed: %+v", adopt)
 	}
-	// A subsequent sign-in now matches by Supabase user id directly.
+	// u2's sign-in still matches by its (kept) Supabase user id link.
 	var again oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
-		map[string]string{"accessToken": "u2|b@x.com", "password": "device-pw-999"},
+		map[string]string{"accessToken": u2 + "|" + emailB, "password": "device-pw-999"},
 		http.StatusOK, &again)
 	if again.AccountID != adopt.AccountID || again.DeviceID != 3 {
-		t.Fatalf("id match after backfill failed: %+v", again)
+		t.Fatalf("id match failed: %+v", again)
+	}
+
+	// Case-variant usernames collide.
+	env.doJSON("POST", "/v1/accounts", "", "",
+		map[string]string{"username": strings.ToUpper(bob), "password": "pw-12345678"},
+		http.StatusConflict, nil)
+	var avail struct {
+		Available bool `json:"available"`
+	}
+	env.doJSON("GET", "/v1/usernames/"+strings.ToUpper(alice)+"/available", "", "", nil, http.StatusOK, &avail)
+	if avail.Available {
+		t.Fatal("case-variant of a taken username reported available")
+	}
+	env.doJSON("GET", "/v1/usernames/free"+sfx+"/available", "", "", nil, http.StatusOK, &avail)
+	if !avail.Available {
+		t.Fatal("unused username reported taken")
 	}
 }
 
@@ -613,6 +646,59 @@ func TestSealedSendDelivery(t *testing.T) {
 	}
 	if string(w.queued[0].Content) != string(content) {
 		t.Fatalf("content mismatch")
+	}
+	// The sender's clock never reaches the wire: the relay stamps its own time.
+	if w.queued[0].ClientTimestamp != w.queued[0].ServerTimestamp {
+		t.Fatalf("sealed envelope carries a client clock: %d vs %d", w.queued[0].ClientTimestamp, w.queued[0].ServerTimestamp)
+	}
+
+	// Call rings use the same unauthenticated access-key capability.
+	ring := func(mb string, key []byte, want int) {
+		env.doJSON("POST", "/v1/calls/ring", "", "", map[string]any{
+			"destinationMailbox": mb,
+			"accessKey":          base64.StdEncoding.EncodeToString(key),
+			"callId":             "3f1c2d9e-0000-4000-8000-000000000001",
+		}, want, nil)
+	}
+	ring(mailbox, accessKey, http.StatusNoContent)
+	ring(mailbox, bytes.Repeat([]byte{0x22}, 32), http.StatusForbidden)
+	ring("0000000000000000000000000000dead", accessKey, http.StatusForbidden)
+}
+
+// TestAttachmentCapabilities: allocation is authenticated, but GET/PUT carry no
+// credentials (the id is the capability) and an id can be written exactly once.
+func TestAttachmentCapabilities(t *testing.T) {
+	env := newTestEnv(t)
+	alice := env.register(uniqueUsername("att"), "password-alice")
+
+	var alloc struct {
+		ID string `json:"id"`
+	}
+	env.doJSON("POST", "/v1/attachments", alice.authUser(), alice.password, nil, http.StatusCreated, &alloc)
+
+	raw := func(method, path string, body []byte) int {
+		req, err := http.NewRequest(method, env.srv.URL+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := raw("PUT", "/v1/attachments/"+alloc.ID, []byte("ciphertext")); got != http.StatusNoContent {
+		t.Fatalf("anonymous PUT of allocated id: %d", got)
+	}
+	if got := raw("PUT", "/v1/attachments/"+alloc.ID, []byte("overwrite")); got != http.StatusNotFound {
+		t.Fatalf("second PUT: %d, want 404 (write-once)", got)
+	}
+	if got := raw("PUT", "/v1/attachments/0123456789abcdef0123456789abcdef", []byte("x")); got != http.StatusNotFound {
+		t.Fatalf("PUT of unallocated id: %d, want 404", got)
+	}
+	if got := raw("GET", "/v1/attachments/"+alloc.ID, nil); got != http.StatusOK {
+		t.Fatalf("anonymous GET: %d", got)
 	}
 }
 
@@ -711,30 +797,45 @@ func TestBlindedDirectory(t *testing.T) {
 	th.Write(n.Encode(nil))
 	token := th.Sum(nil)
 
-	var resResp struct {
-		Results []struct {
-			Token     string `json:"token"`
-			AccountID string `json:"accountId"`
-			Username  string `json:"username"`
-		} `json:"results"`
+	// The token never leaves the client: only its 16-bit bucket is sent; the
+	// client matches the tag and opens the box locally.
+	fetch := func(tok []byte) (acct, user string, found bool) {
+		var resp struct {
+			Buckets []struct {
+				Bucket  int `json:"bucket"`
+				Entries []struct {
+					Tag string `json:"tag"`
+					Box string `json:"box"`
+				} `json:"entries"`
+			} `json:"buckets"`
+		}
+		env.doJSON("POST", "/v1/directory/buckets", alice.authUser(), alice.password,
+			map[string]any{"buckets": []int{int(oprf.DirectoryBucket(tok))}}, http.StatusOK, &resp)
+		if len(resp.Buckets) != 1 || resp.Buckets[0].Bucket != int(oprf.DirectoryBucket(tok)) {
+			t.Fatalf("bucket response: %+v", resp)
+		}
+		want := base64.StdEncoding.EncodeToString(oprf.DirectoryTag(tok))
+		for _, e := range resp.Buckets[0].Entries {
+			if e.Tag != want {
+				continue
+			}
+			box, _ := base64.StdEncoding.DecodeString(e.Box)
+			a, u, err := oprf.OpenDirectoryEntry(tok, box)
+			if err != nil {
+				t.Fatalf("open box: %v", err)
+			}
+			return a, u, true
+		}
+		return "", "", false
 	}
-	env.doJSON("POST", "/v1/directory/resolve", alice.authUser(), alice.password,
-		map[string]any{"tokens": []string{base64.StdEncoding.EncodeToString(token)}},
-		http.StatusOK, &resResp)
-	if len(resResp.Results) != 1 || resResp.Results[0].Username != "bob-dir" {
-		t.Fatalf("expected to resolve bob-dir, got %+v", resResp.Results)
+	if _, user, ok := fetch(token); !ok || user != "bob-dir" {
+		t.Fatalf("expected to resolve bob-dir, got %q (found=%v)", user, ok)
 	}
 
-	// An unknown token resolves to nothing — non-registered contacts stay private.
+	// An unknown token matches nothing — non-registered contacts stay private.
 	junk := make([]byte, 32)
 	rand.Read(junk)
-	var empty struct {
-		Results []json.RawMessage `json:"results"`
-	}
-	env.doJSON("POST", "/v1/directory/resolve", alice.authUser(), alice.password,
-		map[string]any{"tokens": []string{base64.StdEncoding.EncodeToString(junk)}},
-		http.StatusOK, &empty)
-	if len(empty.Results) != 0 {
-		t.Fatalf("unknown token should not resolve, got %d results", len(empty.Results))
+	if _, _, ok := fetch(junk); ok {
+		t.Fatal("unknown token resolved")
 	}
 }
