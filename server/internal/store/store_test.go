@@ -75,7 +75,7 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 	if _, _, err := s.CreateContactInvite(victim); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := s.CreateDeviceLinkToken(victim, "link-pw", 0); err != nil {
+	if _, _, _, err := s.CreateDeviceLinkToken(victim, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.StoreNuke(NukeRecord{AccountID: victim, CommandID: uniqueName("nuke"), CreationTimeMs: 1, InitiatingDeviceID: 1, Signature: []byte("s")}); err != nil {

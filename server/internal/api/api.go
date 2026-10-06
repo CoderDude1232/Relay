@@ -13,9 +13,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -487,6 +489,17 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 	return body.ID, body.Email, nil
 }
 
+// sealedDummyAccessKey is compared against when a sealed send names an unknown
+// mailbox (or an account with no access key), so the comparison work is the
+// same either way. Random per process; it can never match because a known
+// mailbox's real key is used instead and an unknown one is rejected regardless.
+var sealedDummyAccessKey = func() (k [32]byte) {
+	if _, err := rand.Read(k[:]); err != nil {
+		panic("api: crypto/rand failed: " + err.Error())
+	}
+	return k
+}()
+
 // handleSealedSend delivers a sealed-sender message. It is UNAUTHENTICATED by
 // design — the relay must not learn who sent the message. The sender proves it's
 // allowed to reach the destination by presenting the recipient's access key
@@ -526,14 +539,16 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Resolve the mailbox and verify the access key. Any failure returns the same
-	// 403 so the endpoint doesn't reveal whether a mailbox exists.
-	dest, err := s.store.DeviceByMailbox(req.MailboxID)
-	if err != nil {
-		httpError(w, http.StatusForbidden, "delivery rejected")
-		return
+	// 403 so the endpoint doesn't reveal whether a mailbox exists — and takes the
+	// same path: one query either way, and the constant-time comparison always
+	// runs (against a random dummy key when the mailbox or its key is unknown).
+	dest, stored, lookupErr := s.store.SealedTargetByMailbox(req.MailboxID)
+	known := lookupErr == nil && len(stored) == len(sealedDummyAccessKey)
+	if !known {
+		stored = sealedDummyAccessKey[:]
 	}
-	stored, err := s.store.AccessKey(dest.AccountID)
-	if err != nil || len(stored) == 0 || subtle.ConstantTimeCompare(stored, token) != 1 {
+	match := subtle.ConstantTimeCompare(stored, token) == 1
+	if !known || !match {
 		httpError(w, http.StatusForbidden, "delivery rejected")
 		return
 	}
@@ -549,7 +564,12 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		ServerTimestamp: time.Now().UnixMilli(),
 		Ephemeral:       req.Ephemeral,
 	}
-	if err := s.hub.Deliver(dest.AccountID, dest.DeviceID, env); err != nil {
+	// Queue fairness for an anonymous sender is keyed by its source-IP bucket.
+	if err := s.hub.DeliverFrom("ip:"+ip, dest.AccountID, dest.DeviceID, env); err != nil {
+		if errors.Is(err, hub.ErrSenderQuota) || errors.Is(err, store.ErrQueueFull) {
+			httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+			return
+		}
 		slog.Error("sealed send: deliver failed", "err", privlog.Error(err))
 		internalError(w, err)
 		return
@@ -562,17 +582,61 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 // TCP WebSocket can't connect (congested networks / stadiums). Does not dequeue
 // — the client acks each envelope via POST /v1/messages/ack, preserving
 // at-least-once delivery. The WebSocket stays the primary live path.
+//
+// Paged: `?limit=N` (1–100, default 100) caps the envelope count, and a page
+// also stops once it holds 4 MiB of ciphertext. The response carries
+// `more` (bool) and, when more is true, an opaque `cursor`; pass it back as
+// `?cursor=` to read the next page. Acking is independent of paging.
 func (s *Server) handleFetchQueue(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	envs, err := s.store.QueuedEnvelopes(dev.AccountID, dev.DeviceID)
+	limit := queuePageMaxEnvelopes
+	if q := r.URL.Query().Get("limit"); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 1 {
+			httpError(w, http.StatusBadRequest, "limit must be a positive integer")
+			return
+		}
+		limit = min(n, queuePageMaxEnvelopes)
+	}
+	var after store.QueueCursor
+	if c := r.URL.Query().Get("cursor"); c != "" {
+		var ok bool
+		if after, ok = parseQueueCursor(c); !ok {
+			httpError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+	}
+	page, more, err := s.store.QueuedEnvelopesPage(dev.AccountID, dev.DeviceID, after, limit, queuePageMaxBytes)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
-	out := make([]string, 0, len(envs))
-	for _, e := range envs {
-		out = append(out, base64.StdEncoding.EncodeToString(e))
+	out := make([]string, 0, len(page))
+	for _, e := range page {
+		out = append(out, base64.StdEncoding.EncodeToString(e.Envelope))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"envelopes": out})
+	resp := map[string]any{"envelopes": out, "more": more}
+	if more && len(page) > 0 {
+		last := page[len(page)-1]
+		resp["cursor"] = formatQueueCursor(store.QueueCursor{CreatedAt: last.CreatedAt, EnvelopeID: last.ID})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// Queue cursors are opaque to clients: "<createdAtMs>.<envelopeId>".
+func formatQueueCursor(c store.QueueCursor) string {
+	return strconv.FormatInt(c.CreatedAt, 10) + "." + c.EnvelopeID
+}
+
+func parseQueueCursor(v string) (store.QueueCursor, bool) {
+	ts, id, ok := strings.Cut(v, ".")
+	if !ok || len(id) == 0 || len(id) > 64 {
+		return store.QueueCursor{}, false
+	}
+	n, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil || n < 0 {
+		return store.QueueCursor{}, false
+	}
+	return store.QueueCursor{CreatedAt: n, EnvelopeID: id}, true
 }
 
 // handleAckMessage removes a delivered envelope from this device's queue (the
@@ -585,7 +649,7 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request, dev *s
 		httpError(w, http.StatusBadRequest, "envelopeId required")
 		return
 	}
-	if err := s.store.Dequeue(req.EnvelopeID, dev.AccountID, dev.DeviceID); err != nil {
+	if err := s.hub.Ack(dev.AccountID, dev.DeviceID, req.EnvelopeID); err != nil {
 		internalError(w, err)
 		return
 	}
@@ -877,6 +941,10 @@ func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request, dev *st
 			httpError(w, http.StatusConflict, "device list changed; refresh and try again")
 			return
 		}
+		if errors.Is(err, store.ErrDeviceLimit) {
+			httpError(w, http.StatusConflict, "linked device limit reached; unlink a device first")
+			return
+		}
 		internalError(w, err)
 		return
 	}
@@ -908,12 +976,7 @@ func (s *Server) handleCreateDeviceLinkInvitation(w http.ResponseWriter, r *http
 		httpError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	password, err := newLinkPassword()
-	if err != nil {
-		internalError(w, err)
-		return
-	}
-	token, code, expiresAt, err := s.store.CreateDeviceLinkToken(dev.AccountID, password, req.Auth.ExpectedVersion)
+	token, code, expiresAt, err := s.store.CreateDeviceLinkToken(dev.AccountID, req.Auth.ExpectedVersion)
 	if err != nil {
 		if errors.Is(err, store.ErrDeviceListVersionMismatch) {
 			httpError(w, http.StatusConflict, "device list changed; refresh and try again")
@@ -945,6 +1008,10 @@ func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, store.ErrDeviceListVersionMismatch) {
 		httpError(w, http.StatusConflict, "device list changed; create a new link code")
+		return
+	}
+	if errors.Is(err, store.ErrDeviceLimit) {
+		httpError(w, http.StatusConflict, "linked device limit reached; unlink a device first")
 		return
 	}
 	if err != nil {
@@ -1115,6 +1182,8 @@ func (s *Server) handleRemoveDevice(w http.ResponseWriter, r *http.Request, dev 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+	// The removed device's credentials are gone; drop its live socket too.
+	s.hub.DisconnectDevice(dev.AccountID, uint32(id), "device removed")
 	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_REMOVED, uint32(id))
 }
 
@@ -1155,14 +1224,6 @@ func deviceMutationPayload(accountID string, expectedVersion int64, action strin
 		strconv.FormatUint(uint64(targetDeviceID), 10),
 		password,
 	}, "\n")
-}
-
-func newLinkPassword() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
 func (s *Server) handleSetDeviceAuthKey(w http.ResponseWriter, r *http.Request, dev *store.Device) {
@@ -1211,12 +1272,17 @@ func (s *Server) handleGetDeviceAuthKey(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"authPublicKey": base64.StdEncoding.EncodeToString(key)})
 }
 
+// validAPNsToken matches an APNs / PushKit device token: hex, 64–200 chars
+// (32 bytes today; Apple documents tokens as variable length). Anything else
+// would only be spliced into the APNs request path.
+var validAPNsToken = regexp.MustCompile(`^[0-9a-fA-F]{64,200}$`)
+
 func (s *Server) handleSetAPNSToken(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
-		httpError(w, http.StatusBadRequest, "token required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validAPNsToken.MatchString(req.Token) {
+		httpError(w, http.StatusBadRequest, "token must be 64–200 hex characters")
 		return
 	}
 	if err := s.store.SetAPNSToken(dev.AccountID, dev.DeviceID, req.Token); err != nil {
@@ -1245,8 +1311,8 @@ func (s *Server) handleSetVoIPToken(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
-		httpError(w, http.StatusBadRequest, "token required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validAPNsToken.MatchString(req.Token) {
+		httpError(w, http.StatusBadRequest, "token must be 64–200 hex characters")
 		return
 	}
 	if err := s.store.SetVoIPToken(dev.AccountID, dev.DeviceID, req.Token); err != nil {
@@ -1370,17 +1436,47 @@ func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request, dev *sto
 // Attachments (opaque encrypted blobs)
 // ---------------------------------------------------------------------------
 
-func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	id, err := s.blobs.NewID()
 	if err != nil {
 		internalError(w, err)
 		return
 	}
+	if !s.attachQuota.allocate(dev.AccountID, id) {
+		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
-func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
-	err := s.blobs.Put(r.PathValue("id"), r.Body)
+// countingReader counts bytes read through it (attachment byte quota).
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	id := r.PathValue("id")
+	fallback := ""
+	if dev != nil {
+		fallback = dev.AccountID
+	}
+	owner, known := s.attachQuota.ownerKey(id, fallback)
+	if known && !s.attachQuota.uploadAllowed(owner) {
+		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
+		return
+	}
+	body := &countingReader{r: r.Body}
+	err := s.blobs.Put(id, body)
+	if known && body.n > 0 {
+		s.attachQuota.charge(id, owner, body.n)
+	}
 	switch {
 	case errors.Is(err, blob.ErrTooLarge):
 		httpError(w, http.StatusRequestEntityTooLarge, "attachment too large")
@@ -1393,17 +1489,21 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
+// handleDownloadAttachment streams the blob from disk (never buffering it in
+// memory) via http.ServeContent, which also serves Range requests so large
+// downloads can resume. No Last-Modified is sent: the upload time is not
+// disclosed.
 func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request, _ *store.Device) {
-	data, err := s.blobs.Get(r.PathValue("id"))
+	f, err := s.blobs.Open(r.PathValue("id"))
 	switch {
 	case errors.Is(err, blob.ErrNotFound):
 		httpError(w, http.StatusNotFound, "no such attachment")
 	case err != nil:
 		internalError(w, err)
 	default:
+		defer f.Close()
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-		w.Write(data)
+		http.ServeContent(w, r, "", time.Time{}, f)
 	}
 }
 
@@ -1562,7 +1662,22 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		}
 		deviceIDs = []uint32{uint32(id)}
 	}
-	bundles, err := s.store.TakePreKeyBundles(account, deviceIDs)
+	// One-time prekey budgets (cross-account only): once the target device's
+	// hourly budget or the requester's is spent, the bundle is still served,
+	// just without a one-time prekey (see preKeyTargetOTKLimiter).
+	var allowOneTime func(uint32) bool
+	if dev.AccountID != account {
+		allowOneTime = func(deviceID uint32) bool {
+			if preKeyRequesterOTKLimiter.exhausted(dev.AccountID) {
+				return false
+			}
+			if !preKeyTargetOTKLimiter.allow(account + "/" + strconv.FormatUint(uint64(deviceID), 10)) {
+				return false
+			}
+			return preKeyRequesterOTKLimiter.allow(dev.AccountID)
+		}
+	}
+	bundles, err := s.store.TakePreKeyBundles(account, deviceIDs, allowOneTime)
 	if errors.Is(err, store.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "unknown account/device or keys not yet uploaded")
 		return
@@ -1857,17 +1972,23 @@ func verifyNukeSignature(authPublicKey []byte, accountID, commandID string, crea
 const turnTTL = 3600 // seconds
 
 // handleTurnCredentials issues time-limited TURN credentials using coturn's
-// REST API HMAC format: username="{expiry}:{accountId}", password=HMAC-SHA1.
+// REST API HMAC format: username="{expiry}:{random}", password=HMAC-SHA1.
 // Returns 404 if TURN is not configured on this server.
-func (s *Server) handleTurnCredentials(w http.ResponseWriter, _ *http.Request, dev *store.Device) {
+func (s *Server) handleTurnCredentials(w http.ResponseWriter, _ *http.Request, _ *store.Device) {
 	if len(s.turnURLs) == 0 || s.turnSecret == "" {
 		httpError(w, http.StatusNotFound, "TURN not configured on this server")
 		return
 	}
 	expiry := time.Now().Unix() + turnTTL
-	// Use first 8 chars of account ID as an opaque user hint — long enough for
-	// coturn ACLs, short enough to limit metadata in the username field.
-	username := strconv.FormatInt(expiry, 10) + ":" + dev.AccountID[:min(8, len(dev.AccountID))]
+	// The part after the expiry is 16 random hex chars, NOT derived from the
+	// account: the TURN server (and its logs) must not be able to tie relayed
+	// call traffic to a relay account. coturn only needs it to be unique-ish.
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		internalError(w, err)
+		return
+	}
+	username := strconv.FormatInt(expiry, 10) + ":" + hex.EncodeToString(nonce[:])
 	mac := hmac.New(sha1.New, []byte(s.turnSecret))
 	mac.Write([]byte(username))
 	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))

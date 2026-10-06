@@ -3,12 +3,14 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/relayapp/relay-server/gen/relaypb"
+	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/store"
 	"google.golang.org/protobuf/proto"
@@ -20,6 +22,15 @@ const (
 	pingPeriod     = 45 * time.Second
 	maxFrameSize   = 512 * 1024 // generous for text; media moves over HTTP later
 	sendBufferSize = 256
+)
+
+// Offline-queue paging, shared by the WebSocket drain and GET /v1/queue: a
+// page holds at most queuePageMaxEnvelopes envelopes and stops early once it
+// reaches queuePageMaxBytes of ciphertext, so neither path ever loads a whole
+// (up to 50 MB) queue into memory.
+const (
+	queuePageMaxEnvelopes = 100
+	queuePageMaxBytes     = 4 << 20
 )
 
 var upgrader = websocket.Upgrader{
@@ -35,6 +46,9 @@ type wsSession struct {
 	conn *websocket.Conn
 	out  chan *relaypb.ServerFrame
 	done chan struct{}
+	// writerDone is closed when writePump exits (write error / timeout), so a
+	// blocked sendBlocking can't wait forever on a dead connection.
+	writerDone chan struct{}
 }
 
 func (s *wsSession) Send(frame *relaypb.ServerFrame) bool {
@@ -45,6 +59,21 @@ func (s *wsSession) Send(frame *relaypb.ServerFrame) bool {
 		return false
 	default:
 		return false // buffer full; queued envelopes survive in the store
+	}
+}
+
+// sendBlocking enqueues a frame for the writer, waiting for buffer space
+// instead of dropping it. Used by the session's own goroutine (queue drain,
+// QueueEmpty, SendResponses) so a slow reader gets backpressure rather than
+// silently lost frames. Returns false once the connection is gone.
+func (s *wsSession) sendBlocking(frame *relaypb.ServerFrame) bool {
+	select {
+	case s.out <- frame:
+		return true
+	case <-s.done:
+		return false
+	case <-s.writerDone:
+		return false
 	}
 }
 
@@ -64,17 +93,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		return // Upgrade already wrote the error response
 	}
 	sess := &wsSession{
-		conn: conn,
-		out:  make(chan *relaypb.ServerFrame, sendBufferSize),
-		done: make(chan struct{}),
+		conn:       conn,
+		out:        make(chan *relaypb.ServerFrame, sendBufferSize),
+		done:       make(chan struct{}),
+		writerDone: make(chan struct{}),
 	}
 
-	queued, err := s.hub.Register(dev.AccountID, dev.DeviceID, sess)
-	if err != nil {
-		slog.Error("ws: queue drain failed", "err", privlog.Error(err))
-		conn.Close()
-		return
-	}
+	s.hub.Register(dev.AccountID, dev.DeviceID, sess)
 	defer func() {
 		s.hub.Unregister(dev.AccountID, dev.DeviceID, sess)
 		close(sess.done)
@@ -121,17 +146,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		return
 	}
 
-	// Drain the offline queue, then mark it empty. These go through the
-	// same buffered channel as live traffic to keep ordering.
-	for _, blob := range queued {
-		env := &relaypb.Envelope{}
-		if err := proto.Unmarshal(blob, env); err != nil {
-			slog.Error("ws: corrupt queued envelope dropped", "err", privlog.Error(err))
-			continue
-		}
-		sess.Send(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}})
+	// Drain the offline queue page by page, then mark it empty. These go
+	// through the same buffered channel as live traffic to keep ordering, but
+	// with backpressure (sendBlocking): nothing is dropped when the buffer is
+	// full, and only one page is held in memory at a time.
+	if !s.drainQueue(dev, sess) {
+		return
 	}
-	sess.Send(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_QueueEmpty{QueueEmpty: &relaypb.QueueEmpty{}}})
+	if !sess.sendBlocking(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_QueueEmpty{QueueEmpty: &relaypb.QueueEmpty{}}}) {
+		return
+	}
 
 	// Read loop.
 	conn.SetReadLimit(maxFrameSize)
@@ -154,9 +178,19 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		}
 		switch p := frame.Payload.(type) {
 		case *relaypb.ClientFrame_Send:
-			resp := s.handleSend(dev, p.Send)
+			var resp *relaypb.SendResponse
+			if wsSendLimiter.allow(dev.AccountID) {
+				resp = s.handleSend(dev, p.Send)
+			} else {
+				resp = &relaypb.SendResponse{
+					Status:          relaypb.SendStatus_SEND_STATUS_RATE_LIMITED,
+					ServerTimestamp: time.Now().UnixMilli(),
+				}
+			}
 			resp.ReplyTo = frame.Id
-			sess.Send(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_SendResponse{SendResponse: resp}})
+			if !sess.sendBlocking(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_SendResponse{SendResponse: resp}}) {
+				return
+			}
 		case *relaypb.ClientFrame_Ack:
 			if err := s.hub.Ack(dev.AccountID, dev.DeviceID, p.Ack.EnvelopeId); err != nil {
 				slog.Error("ws: ack failed", "err", privlog.Error(err))
@@ -165,9 +199,42 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	}
 }
 
+// drainQueue streams the device's offline queue to the session in pages.
+// Returns false if the connection went away (or the store failed) mid-drain.
+func (s *Server) drainQueue(dev *store.Device, sess *wsSession) bool {
+	var cursor store.QueueCursor
+	for {
+		page, more, err := s.store.QueuedEnvelopesPage(dev.AccountID, dev.DeviceID, cursor, queuePageMaxEnvelopes, queuePageMaxBytes)
+		if err != nil {
+			slog.Error("ws: queue drain failed", "err", privlog.Error(err))
+			return false
+		}
+		for _, q := range page {
+			cursor = store.QueueCursor{CreatedAt: q.CreatedAt, EnvelopeID: q.ID}
+			env := &relaypb.Envelope{}
+			if err := proto.Unmarshal(q.Envelope, env); err != nil {
+				slog.Error("ws: corrupt queued envelope dropped", "err", privlog.Error(err))
+				continue
+			}
+			if !sess.sendBlocking(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}}) {
+				return false
+			}
+		}
+		if !more {
+			return true
+		}
+	}
+}
+
 func (sess *wsSession) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
+	// On a write failure, tear the socket down so the read loop (and any
+	// blocked sendBlocking) unwinds instead of waiting on a dead writer.
+	defer func() {
+		close(sess.writerDone)
+		sess.conn.Close()
+	}()
 	for {
 		select {
 		case frame := <-sess.out:
@@ -236,7 +303,13 @@ func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *rel
 		ServerTimestamp: now,
 		Ephemeral:       req.Ephemeral,
 	}
-	if err := s.hub.Deliver(destination.AccountID, destination.DeviceID, env); err != nil {
+	if err := s.hub.DeliverFrom(sender.AccountID, destination.AccountID, destination.DeviceID, env); err != nil {
+		if errors.Is(err, hub.ErrSenderQuota) || errors.Is(err, store.ErrQueueFull) {
+			// This sender's share of the recipient's queue (or the whole
+			// queue) is full; retry later.
+			resp.Status = relaypb.SendStatus_SEND_STATUS_RATE_LIMITED
+			return resp
+		}
 		slog.Error("send: deliver failed", "err", privlog.Error(err))
 		resp.Status = relaypb.SendStatus_SEND_STATUS_UNSPECIFIED
 		return resp
