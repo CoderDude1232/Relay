@@ -1364,9 +1364,13 @@ struct ChatView: View {
                 height: image.map { Int($0.size.height * $0.scale) } ?? 0
             )
         }
-        guard let image = UIImage(data: data) else { return nil }
+        // Re-encode rather than forwarding the library's original bytes: that
+        // drops EXIF/GPS and other metadata (where and on what the photo was
+        // taken) and turns HEIC into the JPEG the content type promises.
+        guard let image = UIImage(data: data),
+              let clean = image.jpegData(compressionQuality: 0.9) else { return nil }
         return MessagingService.PendingAttachment(
-            data: data,
+            data: clean,
             contentType: "image/jpeg",
             filename: nil,
             width: Int(image.size.width * image.scale),

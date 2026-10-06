@@ -279,7 +279,7 @@ struct ContactCardView: View {
                 Button("Block", role: .destructive) { service.blockAccount(account) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Blocked contacts can't message or call you, and won't see when you're online. You can unblock them later in Settings.")
+                Text("Blocked contacts can't message or call you. You can unblock them later in Settings.")
             }
             .sheet(isPresented: $showingReport) {
                 ReportContactSheet(service: service, account: account, displayName: displayName)

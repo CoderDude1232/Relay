@@ -1224,8 +1224,6 @@ private struct ConversationRow: View {
         return service.peerAvatarData(forAccount: conversation.peerAccount)
     }
 
-    /// Online status isn't tracked any more (no presence on the relay).
-    private var isOnline: Bool { false }
 
     private var isBlocked: Bool {
         !conversation.isGroup && service.isBlocked(conversation.peerAccount)
@@ -1310,12 +1308,6 @@ private struct ConversationRow: View {
                             .foregroundStyle(.white)
                             .padding(3)
                             .background(Color.secondary.opacity(0.8), in: .circle)
-                    } else if isOnline {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 13, height: 13)
-                            .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
-                            .accessibilityLabel("Online")
                     }
                 }
             }

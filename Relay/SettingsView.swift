@@ -364,7 +364,7 @@ private struct ChatsSettingsView: View {
                     SettingsNavRow(systemName: "person.crop.circle.badge.minus", color: .accentColor, title: "Blocked Contacts")
                 }
             } footer: {
-                Text("Blocked accounts can't message or call you, and won't see when you're online.")
+                Text("Blocked accounts can't message or call you.")
             }
         }
         .navigationTitle("Chats")
