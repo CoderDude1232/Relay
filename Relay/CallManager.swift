@@ -308,10 +308,18 @@ final class CallManager: NSObject {
             log.error("startCall: CXStartCallAction rejected: \(PrivacyRedactor.error(error))")
         }
 
+        // Every await below can outlive the call (CallKit or the user may end
+        // it meanwhile); bail out rather than invite the peer to a dead call.
+        func stillOurs() -> Bool {
+            if case .outgoing(let id, _, _) = state, id == callId { return true }
+            return false
+        }
+        guard stillOurs() else { return }
         if kind == .video {
             await requestCameraAccessIfNeeded()
         }
         configureAudioSessionForCall()
+        guard stillOurs() else { return }
         guard let pc = await makePeerConnection() else {
             failPeerConnectionSetup(notifyPeer: false)
             return
@@ -327,6 +335,10 @@ final class CallManager: NSObject {
             return
         }
         try? await pc.setLocalDescription(offer)
+        guard stillOurs() else {
+            log.info("startCall: call ended before the invite was sent")
+            return
+        }
         log.info("startCall: offer ready, sending + triggering push")
 
         var msg = Relay_Content_CallMessage()

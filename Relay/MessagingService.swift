@@ -1035,9 +1035,11 @@ final class MessagingService {
         var devices: [PeerDevice]
         do {
             try await refreshSessions(withPeer: credentials.accountId)
-            let allOwn = try await knownMailboxDevices(ofPeer: credentials.accountId)
+            // Not knownMailboxDevices: with no other devices the list is simply
+            // empty (the refresh skips this device), which isn't an error.
             // Exclude this device — we already have the message stored locally.
-            devices = allOwn.filter { $0.id != credentials.deviceId }
+            devices = knownDevices(ofPeer: credentials.accountId)
+                .filter { $0.id != credentials.deviceId && !($0.mailboxId ?? "").isEmpty }
         } catch {
             log.warning("self-sync: resolve own devices failed: \(PrivacyRedactor.error(error))")
             return
