@@ -5,7 +5,10 @@
 //  Client half of the ristretto255 DH-OPRF used for blinded contact discovery.
 //  We never send a plaintext username/email to the relay: we blind H1(x) with a
 //  random scalar, let the server evaluate it under its secret key, unblind, and
-//  derive a lookup token. This MUST match the server's `internal/oprf` package
+//  derive a lookup token. The token itself never leaves the device either:
+//  `RelayAPIClient.directoryResolve(tokens:)` sends only each token's 16-bit
+//  bucket and matches/decrypts the returned entries locally (see RelayKit's
+//  DirectoryBuckets.swift). This MUST match the server's `internal/oprf` package
 //  byte-for-byte — same domain tags, normalization, hashes, and ristretto
 //  encodings (see the interop test).
 //

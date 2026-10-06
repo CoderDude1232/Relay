@@ -26,15 +26,47 @@ public enum RelayTLS {
         "VIcPByBHSod3xIeNOgMo7e4AybcXVYSSLkd4YDmW5cw=",
     ]
 
-    /// A URLSession configured for the relay.
+    /// A URLSession configured for the relay's **authenticated** traffic.
     /// - `pins` empty (default): system trust — correct for production Let's Encrypt certs.
     /// - `pins` non-empty: SPKI-pinned — use for dev self-signed certs.
+    /// Ephemeral: no URL cache, cookies or credential storage touch disk.
     public static func makeSession(pins: [String] = []) -> URLSession {
+        makeEphemeralSession(pins: pins)
+    }
+
+    /// A SEPARATE ephemeral session for anonymous requests (sealed sends, call
+    /// rings, attachment GET/PUT, invite claims, sign-up). It never shares a
+    /// connection, cookie or cache with the authenticated session, so the relay
+    /// can't tie an anonymous request to the logged-in connection it arrived
+    /// alongside. Create one per process and reuse it.
+    public static func makeAnonymousSession(pins: [String] = []) -> URLSession {
+        makeEphemeralSession(pins: pins)
+    }
+
+    /// Process-wide default authenticated session (system trust, ephemeral).
+    public static let sharedSession: URLSession = makeSession()
+
+    /// Process-wide default anonymous session (system trust).
+    public static let sharedAnonymousSession: URLSession = makeAnonymousSession()
+
+    static func ephemeralConfiguration() -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.urlCredentialStorage = nil
+        return config
+    }
+
+    private static func makeEphemeralSession(pins: [String]) -> URLSession {
+        let config = ephemeralConfiguration()
         if pins.isEmpty {
-            return URLSession(configuration: .default)
+            return URLSession(configuration: config)
         }
         let delegate = SPKIPinningDelegate(pins: Set(pins))
-        return URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 }
 
