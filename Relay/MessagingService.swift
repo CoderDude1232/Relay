@@ -292,17 +292,24 @@ final class MessagingService {
     }
 
     /// Triggers a server-side VoIP push to wake the callee's device.
-    func triggerCallPush(account: String, callId: String, callerName: String, kind: CallKind) async {
+    /// Wakes the callee's devices for an incoming call. The ring is anonymous:
+    /// it goes to each device's mailbox with the callee's access key, like a
+    /// sealed send, and carries only the call id — who is calling travels in
+    /// the end-to-end encrypted OFFER.
+    func triggerCallPush(account: String, callId: String) async {
         do {
-            try await api.triggerCallPush(
-                account: account,
-                callID: callId,
-                callerName: callerName,
-                callerAccount: credentials.accountId,
-                kind: kind.rawValue
-            )
+            if peerAccessKeys[account] == nil { try await refreshSessions(withPeer: account) }
+            guard let accessKey = peerAccessKeys[account] else { return }
+            for device in try await knownMailboxDevices(ofPeer: account) {
+                guard let mailbox = device.mailboxId, !mailbox.isEmpty else { continue }
+                do {
+                    try await api.ringCall(destinationMailbox: mailbox, accessKey: accessKey, callId: callId)
+                } catch {
+                    log.warning("call ring failed: \(PrivacyRedactor.error(error))")
+                }
+            }
         } catch {
-            log.warning("call push trigger failed: \(PrivacyRedactor.error(error))")
+            log.warning("call ring setup failed: \(PrivacyRedactor.error(error))")
         }
     }
 
@@ -1841,7 +1848,7 @@ final class MessagingService {
         }
         // User-presence gate: adding a device shares this account's identity, so
         // require an explicit biometric confirmation before sealing anything.
-        guard await BiometricGate.authenticate(reason: "Confirm linking a new device to your Relay account.") else {
+        guard await BiometricGate.authenticate(reason: "Confirm linking a new device to your Relay account.", requirePasscode: true) else {
             throw LinkingError.notAuthorized
         }
         let password = Self.newDevicePassword()
@@ -2201,7 +2208,9 @@ final class MessagingService {
     /// fragment key, bootstraps the group locally, then announces our join to the
     /// members — echoing the invite capability so our (non-admin) self-add is
     /// accepted. `fragment` is the base64url key‖digest from the link's `#...`.
-    func joinGroupByInvite(token: String, fragment: String) async throws -> String {
+    /// Claims and decrypts a group invite so the user can see what they're
+    /// joining. Stores nothing and contacts no member.
+    func previewGroupInvite(token: String, fragment: String) async throws -> GroupInvitePreview {
         guard let keyDigest = Data(base64URLEncoded: fragment), keyDigest.count == 64 else {
             throw RelayAPIError.malformedResponse
         }
@@ -2210,6 +2219,15 @@ final class MessagingService {
             blob, key: Data(keyDigest.prefix(32)), digest: Data(keyDigest.suffix(32))
         )
         let payload = try JSONDecoder().decode(GroupInvitePayload.self, from: json)
+        guard Self.isValidGroupId(payload.groupId, ownAccount: credentials.accountId) else {
+            throw GroupError.notFound
+        }
+        return GroupInvitePreview(groupName: payload.name, memberCount: payload.members.count, payload: json)
+    }
+
+    /// Joins the group from a previewed invite the user confirmed.
+    func acceptGroupInvite(_ preview: GroupInvitePreview) async throws -> String {
+        let payload = try JSONDecoder().decode(GroupInvitePayload.self, from: preview.payload)
         guard Self.isValidGroupId(payload.groupId, ownAccount: credentials.accountId) else {
             throw GroupError.notFound
         }
@@ -3272,8 +3290,10 @@ final class MessagingService {
 
     private func postMentionNotification(body: String, senderAccount: String) {
         let content = UNMutableNotificationContent()
+        let preview = NotificationPreviewSetting.current
         content.title = "You were mentioned"
-        content.body = body
+        content.body = preview.showsContent ? body
+            : (preview.showsSenderName ? "by \(displayName(forAccount: senderAccount))" : "")
         content.sound = .default
         let id = "mention-\(senderAccount)-\(Int64(Date().timeIntervalSince1970 * 1000))"
         UNUserNotificationCenter.current().add(
@@ -4153,9 +4173,19 @@ final class MessagingService {
 
     // MARK: - Typing indicators (ephemeral)
 
+    /// Conversations we've told "started typing" and not yet "stopped".
+    private var typingStartedSent: Set<String> = []
+
     func sendTyping(_ action: Relay_Content_TypingMessage.Action, in conversationId: String) {
-        // Settings → Privacy → "Send typing indicators" (on unless turned off).
-        guard UserDefaults.standard.object(forKey: "relay.sendTyping") as? Bool ?? true else { return }
+        // Settings → Privacy → "Send typing indicators". When off, still send
+        // the .stopped for a .started that went out before it was turned off.
+        if !PrivacyPreferences.sendTypingEnabled {
+            guard action == .stopped, typingStartedSent.remove(conversationId) != nil else { return }
+        } else if action == .started {
+            typingStartedSent.insert(conversationId)
+        } else {
+            typingStartedSent.remove(conversationId)
+        }
         Task {
             var content = Relay_Content_Content()
             content.typing.action = action
@@ -4244,8 +4274,7 @@ final class MessagingService {
                 id: conv.id,
                 displayName: name,
                 initials: ShareBridge.makeInitials(name),
-                isGroup: conv.groupId != nil,
-                peerAccount: conv.peerAccount
+                isGroup: conv.groupId != nil
             )
         }
         ShareBridge.writeConversations(summaries)
@@ -4289,7 +4318,9 @@ final class MessagingService {
     // user messages via Relay and can show them as suggestions in the share sheet.
     private func donateInteraction(peerAccount account: String, conversationId: String) {
         let name = displayName(forAccount: account)
-        let handle = INPersonHandle(value: account, type: .unknown)
+        // Identify the person by conversation id, not account id: these
+        // donations live in Siri's store, outside the app.
+        let handle = INPersonHandle(value: conversationId, type: .unknown)
         let avatarImage = peerAvatarData(forAccount: account).flatMap { INImage(imageData: $0) }
         let person = INPerson(
             personHandle: handle,
@@ -4297,7 +4328,7 @@ final class MessagingService {
             displayName: name,
             image: avatarImage,
             contactIdentifier: nil,
-            customIdentifier: account
+            customIdentifier: conversationId
         )
         let intent = INSendMessageIntent(
             recipients: [person],

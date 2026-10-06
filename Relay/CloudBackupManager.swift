@@ -79,7 +79,8 @@ final class CloudBackupManager {
     func ensureRecoveryKey() -> String {
         if let existing = recoveryKeyData() { return Self.format(existing) }
         var bytes = Data(count: 32)
-        bytes.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        let status = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed")
         storeRecoveryKey(bytes)
         return Self.format(bytes)
     }

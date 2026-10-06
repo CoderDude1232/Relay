@@ -705,7 +705,10 @@ final class AppModel {
         // Traces the OS keeps for us outside the app's files: Siri/share-sheet
         // interaction donations, Spotlight entries, and delivered notifications.
         INInteraction.deleteAll(completion: nil)
-        CSSearchableIndex.default().deleteAllSearchableItems(completionHandler: nil)
+        SpotlightIndexer.deindexAll()
+        ShareBridge.clearAll()
+        TempMediaFiles.sweep()
+        PanicModeManager.shared.wipe()
         let center = UNUserNotificationCenter.current()
         center.removeAllDeliveredNotifications()
         center.removeAllPendingNotificationRequests()
