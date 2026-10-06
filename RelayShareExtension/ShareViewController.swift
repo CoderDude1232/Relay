@@ -203,7 +203,7 @@ private struct SharePickerView: View {
                         .buttonStyle(.plain)
                         .onAppear {
                             if !(preselectedAccount?.isEmpty ?? true),
-                               conv.peerAccount == preselectedAccount, !sending {
+                               conv.id == preselectedAccount, !sending {  // customIdentifier is the opaque conversation id
                                 sending = true
                                 onPick(conv.id)
                             }
