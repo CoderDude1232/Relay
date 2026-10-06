@@ -8,6 +8,7 @@
 import BackgroundTasks
 import CoreSpotlight
 import Intents
+import OSLog
 import RelayKit
 import SwiftUI
 import UIKit
@@ -32,6 +33,11 @@ struct RelayApp: App {
                     #if DEBUG
                     PrivacyRedactor.runSelfCheck()
                     #endif
+                    // Spotlight indexing is opt-in: clear anything an older
+                    // (index-by-default) build left in the system index.
+                    if !SpotlightIndexer.isEnabled { SpotlightIndexer.deindexAll() }
+                    // Decrypted media left behind by a killed session.
+                    TempMediaFiles.sweep()
                     appDelegate.model = model
                     // Drain any conversationId that arrived via notification tap
                     // before the model was wired (cold-start path).
@@ -133,9 +139,10 @@ struct RelayApp: App {
                             model.enterBackground()
                             appDelegate.scheduleBackgroundRefresh()
                         }
-                        // Refresh the encrypted iCloud backup when leaving the app.
+                        // Refresh the encrypted iCloud backup when leaving the app —
+                        // at most daily unless something changed.
                         if case .ready(let service) = model.phase {
-                            Task { await CloudBackupManager.shared.backupNow(service: service) }
+                            Task { await CloudBackupManager.shared.backupIfDue(service: service) }
                         }
                     case .active:
                         model.enterForeground()
@@ -156,14 +163,26 @@ struct RelayApp: App {
             await service.sendGroupCallMessage(msg, toAccounts: accounts)
         }
         callManager.ownAccountId = service.credentials.accountId
-        callManager.onTriggerPush = { account, callId, name, kind in
-            await service.triggerCallPush(account: account, callId: callId, callerName: name, kind: kind)
+        callManager.onTriggerPush = { account, callId in
+            // The VoIP push carries only the call id (no caller name/account/kind).
+            await service.triggerCallPush(account: account, callId: callId)
         }
         callManager.nameResolver = { account in
             service.displayName(forAccount: account)
         }
-        callManager.localDisplayNameProvider = {
-            service.myDisplayName ?? service.username ?? String(service.credentials.accountId.prefix(8))
+        callManager.isBlockedAccount = { account in
+            service.isBlocked(account)
+        }
+        callManager.groupMembersResolver = { groupId in
+            guard let conv = service.conversations.first(where: { $0.groupId == groupId }) else { return nil }
+            return service.group(for: conv.id)?.members
+        }
+        callManager.onAwaitingCallOffer = {
+            // A VoIP push woke us for an anonymous call: make sure the socket is
+            // up (no-op if already running) and replay any OFFER the NSE already
+            // decrypted, so the caller can be identified within the wait window.
+            service.start()
+            Task { await replayPendingCallOffersDuringWake(service) }
         }
         callManager.onRecordCall = { call in
             service.recordCall(call)
@@ -195,6 +214,7 @@ struct RelayApp: App {
 /// before any VoIP push can arrive on a killed-app launch.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     static let bgRefreshTaskId = "app.relaymsg.bg-refresh"
+    private static let log = Logger(subsystem: "app.relaymsg", category: "AppDelegate")
 
     let callManager = CallManager()
     let pushKitDelegate = PushKitDelegate()
@@ -231,17 +251,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         pushKitDelegate.start(callManager: callManager)
         UNUserNotificationCenter.current().delegate = self
+        // Both actions act on the account without opening the app, so they
+        // require the device to be unlocked (Face ID / passcode) first —
+        // otherwise anyone holding a locked phone could reply as the user.
         let replyAction = UNTextInputNotificationAction(
             identifier: "RELAY_QUICK_REPLY",
             title: "Reply",
-            options: [],
+            options: [.authenticationRequired],
             textInputButtonTitle: "Send",
             textInputPlaceholder: "Message"
         )
         let markReadAction = UNNotificationAction(
             identifier: "RELAY_MARK_READ",
             title: "Mark as Read",
-            options: []
+            options: [.authenticationRequired]
         )
         let msgCategory = UNNotificationCategory(
             identifier: "RELAY_MESSAGE",
@@ -328,6 +351,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: any Error
     ) {
-        NSLog("Relay: remote notification registration failed: \(error)")
+        Self.log.error("remote notification registration failed: \(PrivacyRedactor.error(error))")
     }
 }

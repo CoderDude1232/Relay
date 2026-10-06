@@ -182,6 +182,7 @@ struct FileAttachmentBubble: View {
     var senderName: String = ""
 
     @State private var preview: PreviewItem?
+    @State private var tempFileURL: URL?
     @State private var busy = false
     @State private var isUnlocked = false
 
@@ -201,10 +202,17 @@ struct FileAttachmentBubble: View {
             .frame(maxWidth: 280)
         }
         .buttonStyle(.plain)
-        .fullScreenCover(item: $preview) { item in
+        .fullScreenCover(item: $preview, onDismiss: cleanUpPreview) { item in
             QuickLookPreview(url: item.url, title: item.title)
                 .ignoresSafeArea()
         }
+        .onDisappear { if preview == nil { cleanUpPreview() } }
+    }
+
+    /// Deletes the decrypted temp file once the preview has closed.
+    private func cleanUpPreview() {
+        TempMediaFiles.remove(tempFileURL)
+        tempFileURL = nil
     }
 
     private var fileContent: some View {
@@ -247,15 +255,15 @@ struct FileAttachmentBubble: View {
             await service.downloadAttachment(attachment, in: conversationId)
         }
         guard let plaintext = service.attachmentPlaintext(attachment) else { return }
-        let rawName = attachment.filename.flatMap { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 } ?? "file"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(rawName)
         do {
-            try plaintext.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
-            preview = PreviewItem(url: url, title: senderName)
+            // Random filename + complete protection; deleted when the preview closes.
+            let url = try TempMediaFiles.write(plaintext, originalName: attachment.filename, fallbackExtension: "")
+            TempMediaFiles.remove(tempFileURL)
+            tempFileURL = url
+            preview = PreviewItem(url: url, title: attachment.filename ?? senderName)
         } catch {
-            Logger(subsystem: "com.relaytextingapp.Relay", category: "attachments")
-                .error("openPreview: write to tmp failed: \(error.localizedDescription)")
+            Logger(subsystem: "app.relaymsg", category: "attachments")
+                .error("openPreview: temp write failed: \(PrivacyRedactor.error(error))")
         }
     }
 }
@@ -306,11 +314,12 @@ struct VideoPlayerBubble: View {
             }
         }
         .buttonStyle(.plain)
-        .fullScreenCover(isPresented: $showingPlayer) {
+        .fullScreenCover(isPresented: $showingPlayer, onDismiss: cleanUpPlayerFile) {
             if let url = playerURL {
                 VideoPlayerSheet(url: url)
             }
         }
+        .onDisappear { if !showingPlayer { cleanUpPlayerFile() } }
     }
 
     private func load() async {
@@ -326,13 +335,17 @@ struct VideoPlayerBubble: View {
             await service.downloadAttachment(attachment, in: conversationId)
         }
         guard let plaintext = service.attachmentPlaintext(attachment) else { failed = true; return }
-        let rawVideoName = attachment.filename.flatMap { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 } ?? "video.mp4"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(rawVideoName)
         do {
-            try plaintext.write(to: url, options: .atomic)
-            playerURL = url
+            // Random filename + complete protection; deleted when the player closes.
+            playerURL = try TempMediaFiles.write(plaintext, originalName: attachment.filename, fallbackExtension: "mp4")
             showingPlayer = true
         } catch { failed = true }
+    }
+
+    /// Deletes the decrypted temp file; the next play decrypts again.
+    private func cleanUpPlayerFile() {
+        TempMediaFiles.remove(playerURL)
+        playerURL = nil
     }
 }
 

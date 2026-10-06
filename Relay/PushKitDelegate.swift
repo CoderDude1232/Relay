@@ -26,7 +26,7 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
     private let registry = PKPushRegistry(queue: .main)
     private var callManager: CallManager?
     private var apiClient: RelayAPIClient?
-    private var pendingCall: (callId: String, callerAccount: String, callerName: String, kind: CallKind)?
+    private var pendingCallId: String?
     // Cached so we can upload the token even if apiClient arrives after PushKit fires.
     private var cachedVoIPToken: String?
     private let log = Logger(subsystem: "app.relaymsg", category: "PushKit")
@@ -39,9 +39,9 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
     func start(callManager: CallManager) {
         self.callManager = callManager
         registry.desiredPushTypes = [.voIP]
-        if let p = pendingCall {
-            pendingCall = nil
-            callManager.reportIncomingCall(callId: p.callId, callerAccount: p.callerAccount, callerName: p.callerName, kind: p.kind)
+        if let callId = pendingCallId {
+            pendingCallId = nil
+            callManager.reportIncomingPushCall(callId: callId, pushCompletion: {})
         }
     }
 
@@ -106,19 +106,16 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
 
     // MARK: - Shared handler
 
+    /// The VoIP push carries ONLY an opaque `call_id`. Any caller name, account
+    /// or call kind in the payload is ignored: the push travels via Apple and
+    /// the relay, so nothing in it is trusted. CallManager reports a generic
+    /// "Relay" call immediately and learns the real caller from the end-to-end
+    /// encrypted OFFER with the same call id (or ends the call if none arrives).
     nonisolated private func handleVoIPPayload(_ dict: [AnyHashable: Any], completion: @escaping () -> Void) {
-        let callId = (dict["call_id"] as? String)
-            ?? (dict["callId"] as? String)
-            ?? UUID().uuidString
-        let callerAccount = (dict["caller_account"] as? String)
-            ?? (dict["callerAccount"] as? String)
-            ?? (dict["from"] as? String)
-            ?? ""
-        let callerName = (dict["caller_name"] as? String)
-            ?? (dict["callerName"] as? String)
-            ?? "Unknown"
-        let rawKind = (dict["kind"] as? String) ?? (dict["call_kind"] as? String) ?? "audio"
-        let kind: CallKind = rawKind == "video" ? .video : .audio
+        let rawCallId = (dict["call_id"] as? String) ?? ""
+        // Accept only a sane, bounded id; anything else still has to be reported
+        // to CallKit (PushKit contract) but is ended immediately.
+        let callId = Self.isPlausibleCallId(rawCallId) ? rawCallId : ""
 
         // Running on the main queue. MainActor.assumeIsolated does NOT dispatch;
         // it asserts we are already on the main actor and runs synchronously,
@@ -128,21 +125,20 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
             if let cm = callManager {
                 // Pass completion through — CallManager calls it inside
                 // reportNewIncomingCall's callback (the correct place per Apple docs).
-                cm.reportIncomingCall(
-                    callId: callId,
-                    callerAccount: callerAccount,
-                    callerName: callerName,
-                    kind: kind,
-                    pushCompletion: completion
-                )
+                cm.reportIncomingPushCall(callId: callId, pushCompletion: completion)
             } else {
                 // App just launched; AppDelegate.start() hasn't run yet.
-                // Store the call — start() will flush it. Call completion immediately
-                // since we can't satisfy the CallKit requirement yet; the pending
-                // flush will report to CallKit as soon as the manager is ready.
-                pendingCall = (callId, callerAccount, callerName, kind)
+                // Store the call id — start() will flush it.
+                pendingCallId = callId
                 completion()
             }
+        }
+    }
+
+    nonisolated private static func isPlausibleCallId(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= 64 else { return false }
+        return id.unicodeScalars.allSatisfy {
+            $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_")
         }
     }
 }

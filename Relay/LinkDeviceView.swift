@@ -29,6 +29,7 @@ struct LinkDeviceView: View {
     private enum Phase: Equatable {
         case options          // choose sync toggles, then start scanning
         case scanning
+        case confirming       // scanned; waiting for the user to approve
         case provisioning
         case done
         case failed(String)
@@ -37,6 +38,8 @@ struct LinkDeviceView: View {
     @State private var phase: Phase = .options
     @State private var syncConversations = true
     @State private var syncHistory = false
+    /// The scanned code awaiting the user's explicit approval.
+    @State private var pendingLink: LinkQRPayload?
 
     var body: some View {
         NavigationStack {
@@ -46,6 +49,8 @@ struct LinkDeviceView: View {
                     optionsView
                 case .scanning:
                     scannerView
+                case .confirming:
+                    confirmView
                 case .provisioning:
                     ProgressView("Linking device…")
                         .padding(.top, 60)
@@ -135,22 +140,10 @@ struct LinkDeviceView: View {
                 phase = .failed("That QR code isn't a Relay device link code.")
                 return
             }
-            phase = .provisioning
-            Task {
-                do {
-                    try await service.provisionScannedDevice(
-                        sessionId: qr.sessionId,
-                        ephemeralPublicKey: qr.ephemeralPublicKey,
-                        newDeviceServerURL: qr.serverURL,
-                        deviceName: qr.deviceName,
-                        syncConversations: syncConversations,
-                        syncHistory: syncHistory
-                    )
-                    phase = .done
-                } catch {
-                    phase = .failed(error.localizedDescription)
-                }
-            }
+            // Never provision straight from a scan: show what is being linked
+            // and what it will receive, and require an explicit confirmation.
+            pendingLink = qr
+            phase = .confirming
         }
         .ignoresSafeArea()
         .overlay(alignment: .bottom) {
@@ -160,6 +153,95 @@ struct LinkDeviceView: View {
                 .padding()
                 .background(.ultraThinMaterial, in: .capsule)
                 .padding(.bottom, 40)
+        }
+    }
+
+    /// The name the new device reported in its QR code ("iPhone", "iPad", …).
+    /// Self-reported, so it is shown as a hint, never trusted.
+    private var pendingDeviceName: String {
+        let raw = (pendingLink?.deviceName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = String(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(40))
+        return cleaned.isEmpty ? "Unnamed device" : cleaned
+    }
+
+    private var confirmView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(spacing: 10) {
+                    Image(systemName: "iphone.and.arrow.forward")
+                        .font(.system(size: 46, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.tint)
+                    Text("Link “\(pendingDeviceName)”?")
+                        .font(.title2.weight(.bold))
+                        .multilineTextAlignment(.center)
+                    Text("Only continue if this is your own device and you are holding it right now. Someone who tricks you into scanning their code gets full access to your account.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("This device will receive").font(.headline)
+                    Label("Your account identity — it can send and receive messages as you", systemImage: "key.fill")
+                    if syncConversations {
+                        Label("Your conversation list (up to 50 chats)", systemImage: "bubble.left.and.bubble.right.fill")
+                    }
+                    if syncHistory {
+                        Label("Recent message history (up to 50 messages per chat)", systemImage: "clock.arrow.circlepath")
+                    }
+                    Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Settings → Linked Devices.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.ultraThinMaterial, in: .rect(cornerRadius: 14))
+
+                Button {
+                    confirmLink()
+                } label: {
+                    Text("Link This Device").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+
+                Button("Cancel", role: .cancel) {
+                    pendingLink = nil
+                    phase = .options
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .padding()
+        }
+    }
+
+    private func confirmLink() {
+        guard let qr = pendingLink else { phase = .options; return }
+        // Approving a new device must prove the owner is present: with no
+        // device passcode there's nothing to authenticate against, so refuse.
+        guard BiometricGate.isPasscodeSet else {
+            phase = .failed(BiometricGate.passcodeRequiredMessage)
+            return
+        }
+        pendingLink = nil
+        phase = .provisioning
+        Task {
+            do {
+                try await service.provisionScannedDevice(
+                    sessionId: qr.sessionId,
+                    ephemeralPublicKey: qr.ephemeralPublicKey,
+                    newDeviceServerURL: qr.serverURL,
+                    deviceName: qr.deviceName,
+                    syncConversations: syncConversations,
+                    syncHistory: syncHistory
+                )
+                phase = .done
+            } catch {
+                phase = .failed(error.localizedDescription)
+            }
         }
     }
 }

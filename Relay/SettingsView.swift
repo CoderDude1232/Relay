@@ -217,9 +217,18 @@ struct SettingsView: View {
                 titleVisibility: .visible
             ) {
                 Button("Wipe All Devices", role: .destructive) {
+                    // Wiping every device must prove the owner is present:
+                    // refuse (with an explanation) when no passcode is set.
+                    guard BiometricGate.isPasscodeSet else {
+                        nukeError = BiometricGate.passcodeRequiredMessage
+                        return
+                    }
                     nukeInProgress = true
                     Task {
-                        let ok = await BiometricGate.authenticate(reason: "Confirm emergency wipe of all devices")
+                        let ok = await BiometricGate.authenticate(
+                            reason: "Confirm emergency wipe of all devices",
+                            requirePasscode: true
+                        )
                         guard ok else {
                             nukeInProgress = false
                             return
@@ -293,7 +302,7 @@ private struct AccountSettingsView: View {
                         .lineLimit(1)
                 }
                 Button {
-                    UIPasteboard.general.string = "https://\(addLink)"
+                    SecurePasteboard.copy("https://\(addLink)")
                     linkCopied = true
                     Task { try? await Task.sleep(for: .seconds(2)); linkCopied = false }
                 } label: {
@@ -408,13 +417,21 @@ private struct DataStorageSettingsView: View {
 struct PrivacySettingsView: View {
     let service: MessagingService
     @Environment(CallManager.self) private var callManager
-    @State private var privateCallMode = UserDefaults.standard.object(forKey: "relay.privateCallMode") as? Bool ?? true
-    @State private var notificationPrivacy: String = UserDefaults(suiteName: AppModel.appGroupId)?.string(forKey: "relay.notificationPrivacy") ?? "full"
-    @AppStorage("privacy.incognitoKeyboard") private var incognitoKeyboard = false
+    @State private var privateCallMode = CallManager.isPrivateCallModeEnabled
+    @State private var showDirectCallsWarning = false
+    @AppStorage(CallManager.callsInRecentsKey) private var callsInRecents = false
+    @State private var notificationPrivacy: String = NotificationPreviewSetting.current.rawValue
+    @AppStorage(PrivacyPreferences.incognitoKeyboardKey) private var incognitoKeyboard = true
+    @AppStorage(PrivacyPreferences.sendTypingKey) private var sendTyping = true
+    @AppStorage(PrivacyPreferences.linkPreviewsKey) private var linkPreviews = true
+    @AppStorage(PrivacyPreferences.spotlightIndexingKey) private var spotlightIndexing = false
 
     var body: some View {
         List {
             Section("Presence") {
+                SettingsToggleRow(systemName: "ellipsis.bubble.fill", title: "Send Typing Indicators",
+                                  info: "When on, people you're chatting with can see when you're typing. When off, you'll still see theirs.",
+                                  isOn: $sendTyping)
                 SettingsToggleRow(systemName: "checkmark.circle.fill", title: "Read Receipts",
                                   info: "When on, people can see when you've read their messages.",
                                   isOn: Binding(get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 }))
@@ -428,8 +445,23 @@ struct PrivacySettingsView: View {
                                   info: "Adds a small random delay before each message sends, making it harder to correlate your activity by timing.",
                                   isOn: Binding(get: { service.sendJitterEnabled }, set: { service.sendJitterEnabled = $0 }))
                 SettingsToggleRow(systemName: "keyboard", title: "Incognito Keyboard",
-                                  info: "Asks the system keyboard not to learn from or store what you type in Relay.",
+                                  info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
+                SettingsToggleRow(systemName: "link", title: "Generate Link Previews",
+                                  info: "When on, Relay fetches a preview for links you send, which connects your device to that website. Previews are never fetched for links you receive.",
+                                  isOn: $linkPreviews)
+            }
+
+            Section {
+                SettingsToggleRow(systemName: "magnifyingglass", title: "Show Chats in Search",
+                                  info: "Adds your chat names to iPhone Search (Spotlight). The search index is stored by iOS outside Relay's encryption. Hidden chats are never added.",
+                                  isOn: Binding(get: { spotlightIndexing }, set: { enabled in
+                                      spotlightIndexing = enabled
+                                      if enabled { service.refreshConversations() } // re-index now
+                                      else { SpotlightIndexer.deindexAll() }
+                                  }))
+            } header: {
+                Text("System Integration")
             }
 
             Section("Notifications") {
@@ -453,10 +485,36 @@ struct PrivacySettingsView: View {
                                   isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
             }
 
-            Section("Calls") {
-                SettingsToggleRow(systemName: "phone.fill", title: "Private Call Mode",
-                                  info: "Routes calls through Relay's servers so your IP address stays hidden from the other person. Calls may connect a little slower.",
-                                  isOn: Binding(get: { privateCallMode }, set: { privateCallMode = $0; callManager.privateCallMode = $0 }))
+            Section {
+                SettingsToggleRow(systemName: "phone.fill", title: "Relay-Only Calls",
+                                  info: "Routes every call through Relay's relay server so the other person never sees your IP address. If the relay server can't be reached, the call fails instead of connecting directly.",
+                                  isOn: Binding(get: { privateCallMode }, set: { newValue in
+                                      if newValue {
+                                          privateCallMode = true
+                                          callManager.privateCallMode = true
+                                      } else {
+                                          showDirectCallsWarning = true
+                                      }
+                                  }))
+                SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Show Calls in Recents",
+                                  info: "Adds Relay calls to the Phone app's Recents list, which can sync to your other Apple devices through iCloud.",
+                                  isOn: $callsInRecents)
+            } header: {
+                Text("Calls")
+            } footer: {
+                if !privateCallMode {
+                    Text("Direct calls are on: the people you call can see your IP address, which can reveal your approximate location.")
+                        .foregroundStyle(.red)
+                }
+            }
+            .confirmationDialog("Allow direct calls?", isPresented: $showDirectCallsWarning, titleVisibility: .visible) {
+                Button("Allow Direct Calls", role: .destructive) {
+                    privateCallMode = false
+                    callManager.privateCallMode = false
+                }
+                Button("Keep Relay-Only", role: .cancel) {}
+            } message: {
+                Text("Direct calls can connect faster, but they reveal your IP address — and with it your approximate location and network — to the person you're calling.")
             }
 
             Section("Media") {
@@ -1155,8 +1213,11 @@ struct PanicSetupSheet: View {
         guard pin.count >= 4 else { error = "PIN must be at least 4 digits."; return }
         guard pin.allSatisfy({ $0.isASCII && $0.isNumber }) else { error = "PIN must contain digits only."; return }
         guard pin == confirm else { error = "PINs do not match."; return }
-        manager.enable(pin: pin)
-        dismiss()
+        let chosen = pin
+        Task {
+            await manager.enableAsync(pin: chosen)
+            dismiss()
+        }
     }
 }
 

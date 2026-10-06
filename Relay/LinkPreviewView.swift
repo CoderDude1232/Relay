@@ -96,7 +96,8 @@ struct LinkPreviewView: View {
             // Only fetch for links we sent. Fetching a received link would
             // contact a server the sender chose, revealing our IP address and
             // that we read the message — incoming cards show the domain only.
-            guard isOutgoing else { return }
+            // Settings → Privacy → Generate Link Previews can turn off even these.
+            guard isOutgoing, PrivacyPreferences.linkPreviewsEnabled else { return }
             let provider = LPMetadataProvider()
             provider.shouldFetchSubresources = false
             provider.timeout = 8

@@ -56,6 +56,7 @@ final class CloudBackupManager {
 
     private static let enabledKey = "relay.icloudBackup.enabled"
     private static let lastBackupKey = "relay.icloudBackup.lastAt"
+    private static let lastDigestKey = "relay.icloudBackup.lastDigest"
     private static let keychainAccount = "relay.icloudBackup.recoveryKey"
     private static let containerId = "iCloud.app.relaymsg"
     private static let recordType = "Backup"
@@ -103,11 +104,16 @@ final class CloudBackupManager {
                 status = .failed("Sign in to iCloud to back up.")
                 return
             }
-            let key = backupKey(from: recoveryKeyData() ?? {
-                let k = Data(hexOrEmpty: ensureRecoveryKey()); return k
-            }())
+            let recoveryKey = recoveryKeyData() ?? Data(hexOrEmpty: ensureRecoveryKey())
+            let key = backupKey(from: recoveryKey)
             let snapshot = service.exportBackupSnapshot()
-            let plaintext = try JSONEncoder().encode(snapshot)
+            let snapshotJSON = try Self.encoder.encode(snapshot)
+            let digest = Self.contentDigest(snapshotJSON, key: key)
+            let now = Date()
+            // The timestamp travels INSIDE the ciphertext — CloudKit only sees
+            // an opaque blob plus a format number.
+            let envelope = BackupEnvelopeV2(updatedAt: now, snapshot: snapshot)
+            let plaintext = try Self.encoder.encode(envelope)
             let sealed = try AES.GCM.seal(plaintext, using: key).combined!
 
             let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -115,19 +121,64 @@ final class CloudBackupManager {
             try sealed.write(to: tmp, options: .completeFileProtection)
             defer { try? FileManager.default.removeItem(at: tmp) }
 
-            let recordID = CKRecord.ID(recordName: Self.recordName(service.credentials.accountId))
+            // Record name is derived from the recovery key, not the account id,
+            // so the CloudKit record can't be linked to a Relay account.
+            let recordID = CKRecord.ID(recordName: Self.recordName(recoveryKey: recoveryKey))
             let record = CKRecord(recordType: Self.recordType, recordID: recordID)
             record["payload"] = CKAsset(fileURL: tmp)
-            record["updatedAt"] = Date() as CKRecordValue
-            record["format"] = 1 as CKRecordValue
+            record["format"] = 2 as CKRecordValue
 
             // .allKeys overwrites the previous snapshot regardless of change tag.
             _ = try await database.modifyRecords(saving: [record], deleting: [], savePolicy: .allKeys)
-            lastBackup = Date()
-            status = .success(Date())
+            // Best effort: remove a pre-v2 record that was named after the account id.
+            let legacyID = CKRecord.ID(recordName: Self.legacyRecordName(service.credentials.accountId))
+            _ = try? await database.modifyRecords(saving: [], deleting: [legacyID])
+            lastBackup = now
+            UserDefaults.standard.set(digest, forKey: Self.lastDigestKey)
+            status = .success(now)
         } catch {
             status = .failed(Self.friendly(error))
         }
+    }
+
+    /// Background-transition entry point: backs up at most once a day unless
+    /// the content changed (and never more than every 15 minutes), instead of
+    /// on every trip to the home screen.
+    func backupIfDue(service: MessagingService) async {
+        guard isEnabled else { return }
+        if let last = lastBackup {
+            let age = Date().timeIntervalSince(last)
+            if age < Self.minimumInterval { return }
+            if age < Self.dailyInterval {
+                guard let recoveryKey = recoveryKeyData(),
+                      let json = try? Self.encoder.encode(service.exportBackupSnapshot())
+                else { return }
+                let digest = Self.contentDigest(json, key: backupKey(from: recoveryKey))
+                if digest == UserDefaults.standard.string(forKey: Self.lastDigestKey) { return }
+            }
+        }
+        await backupNow(service: service)
+    }
+
+    private static let minimumInterval: TimeInterval = 15 * 60
+    private static let dailyInterval: TimeInterval = 24 * 60 * 60
+
+    private static var encoder: JSONEncoder {
+        let e = JSONEncoder()
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }
+
+    /// Keyed digest of the snapshot, used only to detect "nothing changed".
+    /// Keyed with the backup key so the stored value isn't a content fingerprint.
+    private static func contentDigest(_ data: Data, key: SymmetricKey) -> String {
+        Data(HMAC<SHA256>.authenticationCode(for: data, using: key)).base64EncodedString()
+    }
+
+    /// v2 plaintext: metadata lives inside the encryption.
+    private struct BackupEnvelopeV2: Codable {
+        let updatedAt: Date
+        let snapshot: MessagingService.BackupSnapshot
     }
 
     /// Debounced auto-backup, safe to call after any change / on background.
@@ -153,11 +204,14 @@ final class CloudBackupManager {
             guard try await accountAvailable() else {
                 throw BackupError.noICloud
             }
-            let recordID = CKRecord.ID(recordName: Self.recordName(accountId))
+            // v2 records are named from the recovery key; older backups were
+            // named after the account id — fall back to that once.
             let record: CKRecord
-            do {
-                record = try await database.record(for: recordID)
-            } catch let ckError as CKError where ckError.code == .unknownItem {
+            if let found = try await fetchRecord(named: Self.recordName(recoveryKey: recoveryKey)) {
+                record = found
+            } else if let legacy = try await fetchRecord(named: Self.legacyRecordName(accountId)) {
+                record = legacy
+            } else {
                 throw BackupError.noBackupFound
             }
             guard let asset = record["payload"] as? CKAsset, let url = asset.fileURL,
@@ -171,11 +225,19 @@ final class CloudBackupManager {
             } catch {
                 throw BackupError.wrongRecoveryKey
             }
-            let snapshot = try JSONDecoder().decode(MessagingService.BackupSnapshot.self, from: plaintext)
+            let snapshot: MessagingService.BackupSnapshot
+            let updatedAt: Date
+            if let envelope = try? JSONDecoder().decode(BackupEnvelopeV2.self, from: plaintext) {
+                snapshot = envelope.snapshot
+                updatedAt = envelope.updatedAt
+            } else {
+                snapshot = try JSONDecoder().decode(MessagingService.BackupSnapshot.self, from: plaintext)
+                updatedAt = (record["updatedAt"] as? Date) ?? Date()
+            }
             service.importBackupSnapshot(snapshot)
             storeRecoveryKey(recoveryKey) // keep backing up from here on
             isEnabled = true
-            lastBackup = (record["updatedAt"] as? Date) ?? Date()
+            lastBackup = updatedAt
             status = .success(Date())
         } catch {
             status = .failed(Self.friendly(error))
@@ -202,7 +264,28 @@ final class CloudBackupManager {
         try await CKContainer(identifier: Self.containerId).accountStatus() == .available
     }
 
-    private static func recordName(_ accountId: String) -> String { "relay-backup-\(accountId)" }
+    private func fetchRecord(named name: String) async throws -> CKRecord? {
+        do {
+            return try await database.record(for: CKRecord.ID(recordName: name))
+        } catch let ckError as CKError where ckError.code == .unknownItem {
+            return nil
+        }
+    }
+
+    /// v2 record name: HMAC-SHA256(recovery key, constant). Stable for a given
+    /// recovery key (so restore can find it from the key alone) and unlinkable
+    /// to the Relay account id.
+    private static func recordName(recoveryKey: Data) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(
+            for: Data("relay-icloud-backup-record-v2".utf8),
+            using: SymmetricKey(data: recoveryKey)
+        )
+        return "rb2-" + Data(mac).prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Pre-v2 record name (contained the account id). Read for restore and
+    /// deleted after the first v2 backup.
+    private static func legacyRecordName(_ accountId: String) -> String { "relay-backup-\(accountId)" }
 
     private static func friendly(_ error: Error) -> String {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

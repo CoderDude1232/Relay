@@ -29,7 +29,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastFinished() {
-        writeState(active: false)
+        // Removes the frame AND the state file — nothing is left behind.
         removeLatestFrame()
     }
 
@@ -51,19 +51,24 @@ final class SampleHandler: RPBroadcastSampleHandler {
         let uiImage = UIImage(cgImage: cgImage)
         guard let data = uiImage.jpegData(compressionQuality: 0.62) else { return }
 
-        let frameURL = containerURL.appendingPathComponent(Self.frameFilename)
-        let tempURL = containerURL.appendingPathComponent("\(Self.frameFilename).tmp")
+        // A screen frame can show anything (messages, codes, photos): write it
+        // with complete Data Protection (unreadable while locked), atomically
+        // (temp + rename), and keep it out of backups. It is deleted when the
+        // broadcast ends.
+        var frameURL = containerURL.appendingPathComponent(Self.frameFilename)
         do {
-            try data.write(to: tempURL, options: .atomic)
-            if FileManager.default.fileExists(atPath: frameURL.path) {
-                _ = try FileManager.default.replaceItemAt(frameURL, withItemAt: tempURL)
-            } else {
-                try FileManager.default.moveItem(at: tempURL, to: frameURL)
-            }
+            try data.write(to: frameURL, options: [.atomic, .completeFileProtection])
+            Self.excludeFromBackup(&frameURL)
             lastFrameSentAt = now
         } catch {
-            try? FileManager.default.removeItem(at: tempURL)
+            // Locked or out of space: drop this frame.
         }
+    }
+
+    private static func excludeFromBackup(_ url: inout URL) {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
     }
 
     private func scaledImage(_ image: CIImage, maxDimension: CGFloat) -> CIImage {
@@ -76,16 +81,22 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     private func writeState(active: Bool) {
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId) else { return }
-        let url = containerURL.appendingPathComponent(Self.stateFilename)
+        var url = containerURL.appendingPathComponent(Self.stateFilename)
         let state: [String: Any] = [
             "active": active,
             "updatedAt": Date().timeIntervalSince1970,
         ]
-        (state as NSDictionary).write(to: url, atomically: true)
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0) else { return }
+        try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        Self.excludeFromBackup(&url)
     }
 
+    /// Deletes the last frame (and any temp file an older build left behind).
     private func removeLatestFrame() {
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId) else { return }
-        try? FileManager.default.removeItem(at: containerURL.appendingPathComponent(Self.frameFilename))
+        let fm = FileManager.default
+        try? fm.removeItem(at: containerURL.appendingPathComponent(Self.frameFilename))
+        try? fm.removeItem(at: containerURL.appendingPathComponent("\(Self.frameFilename).tmp"))
+        try? fm.removeItem(at: containerURL.appendingPathComponent(Self.stateFilename))
     }
 }

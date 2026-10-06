@@ -83,7 +83,17 @@ final class CallManager: NSObject {
 
     var onSendCallMessage: ((Relay_Content_CallMessage, String) async -> Bool)?
     var onSendGroupCallMessage: ((Relay_Content_CallMessage, [String]) async -> Void)?
-    var onTriggerPush: ((String, String, String, CallKind) async -> Void)?  // (account, callId, name, kind)
+    /// Wakes the callee's device(s) with a VoIP push. (account, callId) — the push
+    /// carries ONLY the call id; caller identity travels inside the E2E OFFER.
+    var onTriggerPush: ((String, String) async -> Void)?
+    /// True when calls from this account must be dropped (blocked contact).
+    var isBlockedAccount: ((String) -> Bool)?
+    /// Returns the locally stored member list for a group id (nil = unknown group).
+    /// Group-call signals are accepted only from members of that roster.
+    var groupMembersResolver: ((String) -> [String]?)?
+    /// Called when a VoIP push reported a (still anonymous) incoming call, so the
+    /// app can reconnect and replay NSE-persisted OFFERs to learn the caller.
+    var onAwaitingCallOffer: (() -> Void)?
 
     // MARK: Group call state
     private(set) var isInGroupCall = false
@@ -91,6 +101,9 @@ final class CallManager: NSObject {
     private(set) var groupRingInfo: GroupRingInfo? = nil
     private(set) var groupCallKind: CallKind = .audio
     private(set) var groupCallDisplayName: String = "Group Call"
+    /// Set when a group call couldn't start/join (e.g. relay-only mode with no
+    /// TURN server). The UI shows it once and clears it.
+    var groupCallFailureMessage: String?
     var ownAccountId: String?
     private var groupCallId: String?
     private var groupCallGroupId: String?
@@ -101,27 +114,77 @@ final class CallManager: NSObject {
     private var groupPeerDelegates: [String: GroupPCDelegate] = [:]
     /// Resolves an account UUID to a human display name for CallKit / CallView labels.
     var nameResolver: ((String) -> String)?
-    /// Local user's display name for the caller label in VoIP pushes.
-    var localDisplayNameProvider: (() -> String)?
     /// Persists call records after the call reaches a terminal state.
     var onRecordCall: ((StoredCall) -> Void)?
     /// Returns fresh TURN credentials from the server; nil if TURN not configured.
     var onFetchTurnCredentials: (() async throws -> TurnCredentials?)?
 
-    /// When true, forces TURN-relay-only ICE policy so the peer never sees the
-    /// device's real IP. Default ON; enforced only when a TURN server is actually
-    /// available (see `shouldForceRelay`) so calls still connect if TURN is down.
+    nonisolated static let privateCallModeKey = "relay.privateCallMode"
+    nonisolated static let callsInRecentsKey = "relay.callsInRecents"
+
+    /// When true (the default), calls use TURN-relay-only ICE: the other person
+    /// only ever sees Relay's TURN server, never this device's IP address. If no
+    /// TURN server is available the call FAILS rather than silently falling back
+    /// to direct (IP-revealing) candidates. Turning this off is an explicit opt-out.
     var privateCallMode: Bool {
-        get { UserDefaults.standard.object(forKey: "relay.privateCallMode") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "relay.privateCallMode") }
+        get { Self.isPrivateCallModeEnabled }
+        set { UserDefaults.standard.set(newValue, forKey: Self.privateCallModeKey) }
     }
 
-    /// Relay-only policy is safe only when we actually have a TURN server; with
-    /// `.relay` and no TURN, a call gathers no candidates and never connects.
-    private func shouldForceRelay(_ servers: [RTCIceServer]) -> Bool {
-        guard privateCallMode else { return false }
-        return servers.contains { $0.urlStrings.contains { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") } }
+    nonisolated static var isPrivateCallModeEnabled: Bool {
+        UserDefaults.standard.object(forKey: privateCallModeKey) as? Bool ?? true
     }
+
+    /// Whether Relay calls appear in the system Phone app's Recents (and iCloud
+    /// call-history sync). Default OFF — call metadata stays inside Relay.
+    nonisolated static var includeCallsInRecents: Bool {
+        UserDefaults.standard.bool(forKey: callsInRecentsKey)
+    }
+
+    private static let noRelayServerMessage =
+        "Private calling needs Relay’s relay server, which isn’t reachable right now. Try again shortly. (You can allow direct calls in Settings → Privacy, but that reveals your IP address to the other person.)"
+
+    private static func hasTurnServer(_ servers: [RTCIceServer]) -> Bool {
+        servers.contains { $0.urlStrings.contains { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") } }
+    }
+
+    /// True when `candidateSDP` is a TURN-relayed candidate (the only kind that
+    /// may leave this device while relay-only mode is on).
+    nonisolated static func isRelayCandidate(_ candidateSDP: String) -> Bool {
+        candidateSDP.contains(" typ relay")
+    }
+
+    /// Removes every non-relay `a=candidate` line from an SDP when relay-only
+    /// mode is on, as a belt-and-braces guard against host/srflx addresses
+    /// riding along inside an offer/answer.
+    nonisolated static func sanitizeSDP(_ sdp: String) -> String {
+        guard isPrivateCallModeEnabled else { return sdp }
+        let separator = sdp.contains("\r\n") ? "\r\n" : "\n"
+        return sdp.components(separatedBy: separator).filter { line in
+            guard line.hasPrefix("a=candidate:") else { return true }
+            return isRelayCandidate(line)
+        }.joined(separator: separator)
+    }
+
+    /// Set when the last peer-connection creation failed for a user-facing reason.
+    private var peerConnectionFailureReason: String?
+
+    /// Opaque CallKit handle: a random per-call value. Never the account id or
+    /// display name — CallKit handles can reach system call history.
+    private static func opaqueHandle() -> CXHandle {
+        CXHandle(type: .generic, value: UUID().uuidString)
+    }
+
+    /// Call-screen caller label, honoring the notification-preview privacy level.
+    private func callKitCallerName(_ name: String?) -> String {
+        guard NotificationPreviewSetting.current.showsSenderName, let name, !name.isEmpty else { return "Relay" }
+        return name
+    }
+
+    /// Timer that ends an anonymous VoIP-reported call if its E2E OFFER never arrives.
+    private var offerWaitTask: Task<Void, Never>?
+    /// Group roster (minus self) for the current group call.
+    private var groupCallMembers: Set<String> = []
 
     // Short-lived TURN credential cache (avoids a fetch on every peer-connection creation).
     private var cachedTurnCredentials: (creds: TurnCredentials, expiresAt: Date)?
@@ -176,9 +239,23 @@ final class CallManager: NSObject {
         }
     }
 
-    // The provider config is stored so we can call setConfiguration() before
-    // reportNewIncomingCall as the iOS 18.4.1+ workaround for unreliable didActivate.
-    private let providerConfig: CXProviderConfiguration
+    // The provider config is rebuilt and re-applied before every report: it is
+    // the iOS 18.4.1+ workaround for unreliable didActivate, and it picks up the
+    // current "Show in Recents" preference.
+    private func makeProviderConfiguration() -> CXProviderConfiguration {
+        Self.providerConfiguration()
+    }
+
+    private static func providerConfiguration() -> CXProviderConfiguration {
+        let config = CXProviderConfiguration()
+        config.supportsVideo = true
+        config.maximumCallsPerCallGroup = 1
+        config.supportedHandleTypes = [.generic]
+        // Keep Relay calls out of the Phone app's Recents (and iCloud call
+        // history) unless the user explicitly opts in.
+        config.includesCallsInRecents = includeCallsInRecents
+        return config
+    }
 
     override init() {
         RTCInitializeSSL()
@@ -186,12 +263,7 @@ final class CallManager: NSObject {
         let decoderFactory = RTCDefaultVideoDecoderFactory()
         factory = RTCPeerConnectionFactory(encoderFactory: encoderFactory, decoderFactory: decoderFactory)
 
-        let config = CXProviderConfiguration()
-        config.supportsVideo = true
-        config.maximumCallsPerCallGroup = 1
-        config.supportedHandleTypes = [.generic]
-        providerConfig = config
-        provider = CXProvider(configuration: config)
+        provider = CXProvider(configuration: Self.providerConfiguration())
         super.init()
         provider.setDelegate(self, queue: nil)
         // Must be set before any peer connection is created. When true,
@@ -221,10 +293,17 @@ final class CallManager: NSObject {
         state = .outgoing(callId: callId, peerAccount: peerAccount, peerName: peerName)
         log.info("startCall: peer and call id redacted")
 
-        let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: peerName))
+        // Opaque handle: CallKit (and, if enabled, Recents) never sees the
+        // peer's account id. The visible name is set locally via
+        // localizedCallerName below.
+        let action = CXStartCallAction(call: uuid, handle: Self.opaqueHandle())
         action.isVideo = kind == .video
         do {
             try await callController.requestTransaction(with: action)
+            let update = CXCallUpdate()
+            update.localizedCallerName = callKitCallerName(peerName)
+            update.hasVideo = kind == .video
+            provider.reportCall(with: uuid, updated: update)
         } catch {
             log.error("startCall: CXStartCallAction rejected: \(PrivacyRedactor.error(error))")
         }
@@ -233,7 +312,10 @@ final class CallManager: NSObject {
             await requestCameraAccessIfNeeded()
         }
         configureAudioSessionForCall()
-        guard let pc = await makePeerConnection() else { terminate(fromRemote: false); return }
+        guard let pc = await makePeerConnection() else {
+            failPeerConnectionSetup(notifyPeer: false)
+            return
+        }
         peerConnection = pc
         addLocalMedia(to: pc, kind: kind)
 
@@ -250,13 +332,14 @@ final class CallManager: NSObject {
         var msg = Relay_Content_CallMessage()
         msg.type = .offer
         msg.callID = callId
-        msg.sdp = offer.sdp
+        msg.sdp = Self.sanitizeSDP(offer.sdp)
         msg.ice = Self.metadataJSON(kind: kind)
         guard await (onSendCallMessage?(msg, peerAccount) ?? false) else {
             failCall("Couldn’t send the call invite.", notifyPeer: false)
             return
         }
-        await onTriggerPush?(peerAccount, callId, localDisplayNameProvider?() ?? "Relay", kind)
+        // The VoIP push carries only the call id — no caller name, account or kind.
+        await onTriggerPush?(peerAccount, callId)
         log.info("startCall: invite sent; waiting for answer")
 
         // Auto-hang-up if callee never answers within 45 seconds.
@@ -272,40 +355,157 @@ final class CallManager: NSObject {
 
     // MARK: - Incoming call (from VoIP push or WS envelope)
 
-    /// Reports an incoming call to CallKit.
-    /// - Parameter pushCompletion: The PushKit push handler completion. When provided it is
-    ///   called inside `reportNewIncomingCall`'s callback — this is what Apple requires to
-    ///   satisfy the VoIP push contract. Callers from the WS path omit it.
+    /// Seconds an anonymous VoIP-reported call waits for its E2E OFFER before
+    /// it is ended (the push alone proves nothing about who is calling).
+    private static let offerWaitSeconds: Double = 10
+
+    /// VoIP push path. The push carries ONLY a call id, so nothing about the
+    /// caller is known (or trusted) yet: report a generic "Relay" call to CallKit
+    /// immediately — PushKit requires it — and wait for the end-to-end encrypted
+    /// OFFER with the same call id to reveal the caller. If none arrives within
+    /// `offerWaitSeconds`, the call is ended.
+    func reportIncomingPushCall(callId: String, pushCompletion: @escaping () -> Void) {
+        // Group calls never use VoIP pushes, and a call already registered over
+        // the WebSocket (it beat the push) needs no second report.
+        if isInGroupCall {
+            reportAndEndRejectedPushCall(completion: pushCompletion)
+            return
+        }
+        if case .incoming(let existingId, _, _) = state, existingId == callId {
+            pushCompletion()
+            return
+        }
+        guard case .idle = state, !callId.isEmpty else {
+            // Busy (or malformed push). We can't send BUSY — the caller is unknown
+            // until the OFFER arrives, and that OFFER is answered with BUSY by
+            // `reportIncomingCall` when it does.
+            reportAndEndRejectedPushCall(completion: pushCompletion)
+            return
+        }
+        let uuid = UUID()
+        activeCallUUID = uuid
+        storedCallPeer = nil
+        storedCallId = callId
+        storedCallStartedAt = Date()
+        storedCallConnectedAt = nil
+        storedCallKind = .audio
+        storedPeerName = nil
+        wasIncomingCall = true
+        resetDiagnostics()
+        state = .incoming(callId: callId, callerAccount: "", callerName: "Relay")
+        hasCallKitReport = true
+
+        let update = CXCallUpdate()
+        update.remoteHandle = Self.opaqueHandle()
+        update.localizedCallerName = "Relay"
+        update.hasVideo = false
+        provider.configuration = makeProviderConfiguration()
+        provider.reportNewIncomingCall(with: uuid, update: update) { [log] error in
+            if let error {
+                log.error("report incoming push call failed: \(PrivacyRedactor.error(error))")
+            }
+            pushCompletion()
+        }
+
+        offerWaitTask?.cancel()
+        offerWaitTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.offerWaitSeconds))
+            guard let self, !Task.isCancelled else { return }
+            guard self.storedCallId == callId, self.storedCallPeer?.isEmpty != false else { return }
+            self.log.warning("no OFFER arrived for VoIP-reported call; ending it")
+            self.endUnverifiedCall()
+        }
+        onAwaitingCallOffer?()
+    }
+
+    /// True while an anonymous VoIP-reported call is still waiting for its OFFER.
+    private var isAwaitingCallerIdentity: Bool {
+        wasIncomingCall && storedCallId != nil && storedCallPeer?.isEmpty != false
+    }
+
+    /// Ends an anonymous call whose caller never proved who they are (no OFFER,
+    /// or the OFFER came from a blocked account). Nothing is sent, recorded, or
+    /// shown as a missed call.
+    private func endUnverifiedCall() {
+        offerWaitTask?.cancel()
+        offerWaitTask = nil
+        stopRingtone()
+        callTimeoutTask?.cancel()
+        callTimeoutTask = nil
+        stopVideoCapture()
+        peerConnection?.close()
+        peerConnection = nil
+        if hasCallKitReport, let uuid = activeCallUUID {
+            provider.reportCall(with: uuid, endedAt: Date(), reason: .failed)
+        }
+        activeCallUUID = nil
+        hasCallKitReport = false
+        pendingOffer = nil
+        pendingRemoteCandidates.removeAll()
+        hasRemoteDescription = false
+        storedCallPeer = nil
+        storedCallId = nil
+        storedCallStartedAt = nil
+        storedCallConnectedAt = nil
+        storedCallKind = .audio
+        storedPeerName = nil
+        hasAnsweredCall = false
+        wasIncomingCall = false
+        isMuted = false
+        isSpeaker = false
+        isVideoEnabled = true
+        isScreenSharing = false
+        resetDiagnostics()
+        state = .idle
+    }
+
+    /// Binds the verified sender of an OFFER to an anonymous VoIP-reported call
+    /// and updates CallKit with the locally resolved name. Returns false (and
+    /// ends the call) if the caller is blocked.
+    private func bindCallerToPushCall(_ account: String, kind: CallKind) -> Bool {
+        offerWaitTask?.cancel()
+        offerWaitTask = nil
+        if isBlockedAccount?(account) == true {
+            log.info("dropping call from a blocked account")
+            endUnverifiedCall()
+            return false
+        }
+        let name = nameResolver?(account) ?? "Unknown"
+        storedCallPeer = account
+        storedPeerName = name
+        storedCallKind = kind
+        if case .incoming(let callId, _, _) = state {
+            state = .incoming(callId: callId, callerAccount: account, callerName: name)
+        }
+        if hasCallKitReport, let uuid = activeCallUUID {
+            let update = CXCallUpdate()
+            update.localizedCallerName = callKitCallerName(name)
+            update.hasVideo = kind == .video
+            provider.reportCall(with: uuid, updated: update)
+        }
+        return true
+    }
+
+    /// WebSocket / replayed-OFFER path: the caller is already authenticated by
+    /// the E2E envelope.
     func reportIncomingCall(
         callId: String,
         callerAccount: String,
         callerName: String,
-        kind: CallKind = .audio,
-        pushCompletion: (() -> Void)? = nil
+        kind: CallKind = .audio
     ) {
-        // Group calls never use VoIP pushes. If a stale 1:1 VoIP push arrives
-        // while the group call UI is active, silently satisfy PushKit and exit.
-        if isInGroupCall {
-            pushCompletion?()
+        if isBlockedAccount?(callerAccount) == true {
+            log.info("ignoring call from a blocked account")
             return
         }
-        // If the WS already registered this exact call (it beat the VoIP push),
-        // don't re-report to CallKit and don't send BUSY — just satisfy PushKit.
-        if case .incoming(let existingId, _, _) = state, existingId == callId {
-            pushCompletion?()
-            return
-        }
+        if isInGroupCall { return }
+        if case .incoming(let existingId, _, _) = state, existingId == callId { return }
         guard case .idle = state else {
             Task {
                 var msg = Relay_Content_CallMessage()
                 msg.type = .busy
                 msg.callID = callId
                 _ = await onSendCallMessage?(msg, callerAccount)
-            }
-            if let pushCompletion {
-                reportAndEndRejectedPushCall(callId: callId, callerName: callerName, completion: pushCompletion)
-            } else {
-                pushCompletion?()
             }
             return
         }
@@ -325,37 +525,36 @@ final class CallManager: NSObject {
         // push), skip the CallKit system UI. Our in-app CallView handles the incoming
         // call banner; showing the CallKit sheet on top creates a double UI. Audio is
         // activated manually in answerCall() instead of via provider(_:didActivate:).
-        let foreground = pushCompletion == nil && UIApplication.shared.applicationState == .active
-        if foreground {
+        if UIApplication.shared.applicationState == .active {
             startRingtone()
             return
         }
 
         hasCallKitReport = true
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: callerName)
+        update.remoteHandle = Self.opaqueHandle()
+        update.localizedCallerName = callKitCallerName(callerName)
         update.hasVideo = kind == .video
         // iOS 18.4.1+ bug: provider(_:didActivate:) is unreliable. Apple's
         // official workaround: call setConfiguration before reportNewIncomingCall
         // to force the audio session to activate correctly.
-        provider.configuration = providerConfig
-        // Call pushCompletion INSIDE this callback — not before it.
-        // Apple terminates apps that fail to call completion quickly,
-        // and blacklists them from future VoIP deliveries.
-        provider.reportNewIncomingCall(with: uuid, update: update) { [pushCompletion, log] error in
+        provider.configuration = makeProviderConfiguration()
+        provider.reportNewIncomingCall(with: uuid, update: update) { [log] error in
             if let error {
                 log.error("report incoming call failed: \(PrivacyRedactor.error(error))")
             }
-            pushCompletion?()
         }
     }
 
-    private func reportAndEndRejectedPushCall(callId: String, callerName: String, completion: @escaping () -> Void) {
+    /// Satisfies PushKit for a push we won't ring for: report a generic call
+    /// and end it immediately.
+    private func reportAndEndRejectedPushCall(completion: @escaping () -> Void) {
         let uuid = UUID()
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: callerName)
+        update.remoteHandle = Self.opaqueHandle()
+        update.localizedCallerName = "Relay"
         update.hasVideo = false
-        provider.configuration = providerConfig
+        provider.configuration = makeProviderConfiguration()
         provider.reportNewIncomingCall(with: uuid, update: update) { [provider, log] error in
             if let error {
                 log.error("report rejected incoming call failed: \(PrivacyRedactor.error(error))")
@@ -376,7 +575,10 @@ final class CallManager: NSObject {
             await requestCameraAccessIfNeeded()
         }
         configureAudioSessionForCall()
-        guard let pc = await makePeerConnection() else { terminate(fromRemote: false); return }
+        guard let pc = await makePeerConnection() else {
+            failPeerConnectionSetup(notifyPeer: true)
+            return
+        }
         peerConnection = pc
         addLocalMedia(to: pc, kind: storedCallKind)
         state = .connecting
@@ -407,7 +609,10 @@ final class CallManager: NSObject {
             await requestCameraAccessIfNeeded()
         }
         configureAudioSessionForCall()
-        guard let pc = await makePeerConnection() else { terminate(fromRemote: false); return }
+        guard let pc = await makePeerConnection() else {
+            failPeerConnectionSetup(notifyPeer: true)
+            return
+        }
         peerConnection = pc
         addLocalMedia(to: pc, kind: storedCallKind)
         state = .connecting
@@ -415,6 +620,14 @@ final class CallManager: NSObject {
             pendingOffer = nil
             await applyOffer(offer, from: answerPeer)
         }
+    }
+
+    /// Fails the call after `makePeerConnection` returned nil, surfacing the
+    /// relay-only reason when that's what blocked it.
+    private func failPeerConnectionSetup(notifyPeer: Bool) {
+        let reason = peerConnectionFailureReason ?? "Couldn’t set up this call."
+        peerConnectionFailureReason = nil
+        failCall(reason, notifyPeer: notifyPeer)
     }
 
     // MARK: - Incoming call message routing
@@ -441,12 +654,24 @@ final class CallManager: NSObject {
         await handleCallMessage(msg, from: info.callerAccount)
     }
 
+    /// A 1:1 control signal (ANSWER / ICE / HANGUP / BUSY) is honored only when
+    /// it comes from the stored call peer AND names the stored call id. Anything
+    /// else — another contact, a stale call, a guessed id — is ignored.
+    private func isFromCurrentCallPeer(_ msg: Relay_Content_CallMessage, account: String) -> Bool {
+        guard !account.isEmpty,
+              let peer = storedCallPeer, !peer.isEmpty, peer == account,
+              let callId = storedCallId, !callId.isEmpty, callId == msg.callID
+        else { return false }
+        return true
+    }
+
     func handleCallMessage(_ msg: Relay_Content_CallMessage, from account: String) async {
         // Route all group-call signals to the dedicated handler.
         if !msg.groupID.isEmpty || msg.type == .groupRing || msg.type == .groupJoin || msg.type == .groupLeave {
             await handleGroupCallMessage(msg, from: account)
             return
         }
+        guard !account.isEmpty else { return }
         switch msg.type {
         case .offer:
             let kind = Self.callKind(fromMetadata: msg.ice) ?? (Self.sdpContainsVideo(msg.sdp) ? .video : .audio)
@@ -463,26 +688,49 @@ final class CallManager: NSObject {
                 // and answer on the same callId. No CallKit state change, no BUSY —
                 // this is not a new call. Cancel any armed ICE-failure grace timer,
                 // since this OFFER is the recovery attempt.
+                if isAwaitingCallerIdentity {
+                    // Answered from CallKit before the OFFER revealed the caller.
+                    guard bindCallerToPushCall(account, kind: kind) else { return }
+                } else {
+                    guard storedCallPeer == account else {
+                        log.warning("ignoring OFFER from a non-participant")
+                        return
+                    }
+                }
                 iceRecoveryTask?.cancel()
                 iceRecoveryTask = nil
                 storedCallKind = kind
-                if storedCallPeer?.isEmpty != false { storedCallPeer = account }
                 updateCallKitVideoIfNeeded(kind: kind)
                 await applyOffer(msg, from: account)
             } else if case .incoming(let existingId, _, _) = state, existingId == msg.callID {
-                // VoIP push already registered this call; store SDP for when user answers.
-                storedCallKind = kind
-                if storedCallPeer?.isEmpty != false { storedCallPeer = account }
-                updateCallKitVideoIfNeeded(kind: kind)
+                // VoIP push (or an earlier copy of this OFFER) already registered
+                // this call; store SDP for when the user answers.
+                if isAwaitingCallerIdentity {
+                    guard bindCallerToPushCall(account, kind: kind) else { return }
+                } else {
+                    guard storedCallPeer == account else {
+                        log.warning("ignoring OFFER from a non-participant")
+                        return
+                    }
+                    storedCallKind = kind
+                    updateCallKitVideoIfNeeded(kind: kind)
+                }
                 pendingOffer = msg
             } else {
-                // Fresh incoming call via WS — resolve display name before reporting to CallKit.
-                let displayName = nameResolver?(account) ?? account
+                // Fresh incoming call via WS — resolve display name locally before reporting.
+                if isBlockedAccount?(account) == true { return }
+                let displayName = nameResolver?(account) ?? "Unknown"
                 reportIncomingCall(callId: msg.callID, callerAccount: account, callerName: displayName, kind: kind)
-                pendingOffer = msg
+                if case .incoming(let id, let caller, _) = state, id == msg.callID, caller == account {
+                    pendingOffer = msg
+                }
             }
 
         case .answer:
+            guard isFromCurrentCallPeer(msg, account: account), !wasIncomingCall else {
+                log.warning("ignoring ANSWER that doesn't match the current call")
+                return
+            }
             guard let pc = peerConnection else { return }
             let desc = RTCSessionDescription(type: .answer, sdp: msg.sdp)
             do {
@@ -500,6 +748,7 @@ final class CallManager: NSObject {
             }
 
         case .ice:
+            guard isFromCurrentCallPeer(msg, account: account) else { return }
             guard let candidate = parseIce(msg.ice) else { return }
             if let pc = peerConnection, hasRemoteDescription {
                 try? await pc.add(candidate)
@@ -510,9 +759,17 @@ final class CallManager: NSObject {
             }
 
         case .hangup:
+            guard isFromCurrentCallPeer(msg, account: account) else {
+                log.warning("ignoring HANGUP that doesn't match the current call")
+                return
+            }
             terminate(fromRemote: true)
 
         case .busy:
+            guard isFromCurrentCallPeer(msg, account: account), !wasIncomingCall else {
+                log.warning("ignoring BUSY that doesn't match the current call")
+                return
+            }
             terminate(fromRemote: true, outcomeOverride: .declined)
 
         case .ringing, .groupRing, .groupJoin, .groupLeave, .UNRECOGNIZED:
@@ -523,7 +780,7 @@ final class CallManager: NSObject {
     private func updateCallKitVideoIfNeeded(kind: CallKind) {
         guard kind == .video, hasCallKitReport, let uuid = activeCallUUID else { return }
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: storedPeerName ?? "Relay")
+        update.localizedCallerName = callKitCallerName(storedPeerName)
         update.hasVideo = true
         provider.reportCall(with: uuid, updated: update)
     }
@@ -597,7 +854,7 @@ final class CallManager: NSObject {
             var reply = Relay_Content_CallMessage()
             reply.type = .answer
             reply.callID = msg.callID
-            reply.sdp = answer.sdp
+            reply.sdp = Self.sanitizeSDP(answer.sdp)
             log.info("sending call ANSWER")
             guard await (onSendCallMessage?(reply, account) ?? false) else {
                 failCall("Couldn’t send the call answer.", notifyPeer: false)
@@ -658,6 +915,8 @@ final class CallManager: NSObject {
 
     private func failCall(_ reason: String, notifyPeer: Bool) {
         stopRingtone()
+        offerWaitTask?.cancel()
+        offerWaitTask = nil
         log.error("call failed: \(PrivacyRedactor.redactedString(reason))")
         callTimeoutTask?.cancel()
         callTimeoutTask = nil
@@ -710,6 +969,8 @@ final class CallManager: NSObject {
         outcomeOverride: StoredCallOutcome? = nil
     ) {
         stopRingtone()
+        offerWaitTask?.cancel()
+        offerWaitTask = nil
         callTimeoutTask?.cancel()
         callTimeoutTask = nil
         iceRecoveryTask?.cancel()
@@ -791,7 +1052,7 @@ final class CallManager: NSObject {
 
     private func postMissedCallNotification(callerName: String) {
         let content = UNMutableNotificationContent()
-        content.title = callerName
+        content.title = NotificationPreviewSetting.current.showsSenderName ? callerName : "Relay"
         content.body = "Missed call"
         content.sound = .default
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
@@ -889,16 +1150,31 @@ final class CallManager: NSObject {
 
     // MARK: - WebRTC helpers
 
-    private func makePeerConnection() async -> RTCPeerConnection? {
+    /// Builds the ICE configuration for a new peer connection. In relay-only
+    /// mode (the default) this returns nil — and sets
+    /// `peerConnectionFailureReason` — when no TURN server is available, so the
+    /// call fails instead of falling back to IP-revealing direct candidates.
+    private func makeRTCConfiguration() async -> RTCConfiguration? {
         let config = RTCConfiguration()
         let servers = await freshIceServers()
+        if privateCallMode {
+            guard Self.hasTurnServer(servers) else {
+                log.error("relay-only call mode is on but no TURN server is available; refusing to call")
+                peerConnectionFailureReason = Self.noRelayServerMessage
+                return nil
+            }
+            config.iceTransportPolicy = .relay
+        }
         config.iceServers = servers
         config.sdpSemantics = .unifiedPlan
         config.continualGatheringPolicy = .gatherContinually
         config.iceCandidatePoolSize = 4
-        if shouldForceRelay(servers) {
-            config.iceTransportPolicy = .relay
-        }
+        return config
+    }
+
+    private func makePeerConnection() async -> RTCPeerConnection? {
+        peerConnectionFailureReason = nil
+        guard let config = await makeRTCConfiguration() else { return nil }
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         guard let pc = factory.peerConnection(with: config, constraints: constraints, delegate: self) else {
             log.error("makePeerConnection: RTCPeerConnectionFactory returned nil")
@@ -924,7 +1200,7 @@ final class CallManager: NSObject {
                     return iceServers(from: creds)
                 }
             } catch {
-                log.warning("TURN credential fetch failed, falling back to relay/host candidates: \(PrivacyRedactor.error(error))")
+                log.warning("TURN credential fetch failed: \(PrivacyRedactor.error(error))")
             }
         }
         return Self.staticIceServers()
@@ -937,11 +1213,9 @@ final class CallManager: NSObject {
         if !turnURLs.isEmpty {
             servers.append(RTCIceServer(urlStrings: turnURLs, username: creds.username, credential: creds.credential))
         }
-        // Include (relay-operated) STUN: when private mode forces `.relay`, WebRTC
-        // ignores non-relay candidates anyway; when TURN is absent we DON'T force
-        // relay, so STUN is what lets the call connect. It's the relay's own STUN,
-        // not a third party, so it doesn't leak your IP to an outside provider.
-        if !stunURLs.isEmpty {
+        // Relay-operated STUN is useful only for direct (opt-out) calls; in
+        // relay-only mode it is never contacted.
+        if !stunURLs.isEmpty, !privateCallMode {
             servers.append(RTCIceServer(urlStrings: stunURLs))
         }
         return servers.isEmpty ? Self.staticIceServers() : servers
@@ -1110,6 +1384,8 @@ final class CallManager: NSObject {
             deviceBroadcastTask = nil
             screenVideoCapturer = nil
             isUsingDeviceBroadcast = false
+            // Don't leave the last screen frame lying in the App Group container.
+            if let url = Self.broadcastFrameURL() { try? FileManager.default.removeItem(at: url) }
             isScreenSharing = false
             updateDiagnostics { _ in }
             if restartCamera, isVideoEnabled, let capturer = localVideoCapturer {
@@ -1248,9 +1524,17 @@ final class CallManager: NSObject {
     /// Initiates a group call: sends GROUP_RING to all participants.
     func startGroupCall(groupId: String, groupName: String, participants: [String], kind: CallKind = .audio) async {
         guard case .idle = state, !isInGroupCall else { return }
+        // Relay-only mode: refuse up front if no TURN server is reachable.
+        guard await makeRTCConfiguration() != nil else {
+            groupCallFailureMessage = peerConnectionFailureReason ?? Self.noRelayServerMessage
+            peerConnectionFailureReason = nil
+            return
+        }
         let callId = UUID().uuidString
         groupCallId = callId
         groupCallGroupId = groupId
+        let roster = groupMembersResolver?(groupId) ?? participants
+        groupCallMembers = Set(roster.filter { $0 != ownAccountId && !$0.isEmpty })
         groupCallKind = kind
         groupCallDisplayName = groupName
         isInGroupCall = true
@@ -1281,6 +1565,13 @@ final class CallManager: NSObject {
     /// Accepts an incoming group call ring.
     func joinGroupCall() async {
         guard isInGroupCall, let info = groupRingInfo else { return }
+        guard await makeRTCConfiguration() != nil else {
+            groupCallFailureMessage = peerConnectionFailureReason ?? Self.noRelayServerMessage
+            peerConnectionFailureReason = nil
+            stopRingtone()
+            endGroupCallCleanup()
+            return
+        }
         groupRingInfo = nil
         stopRingtone()
         groupCallDisplayName = info.callerName
@@ -1298,7 +1589,7 @@ final class CallManager: NSObject {
         join.type = .groupJoin
         join.callID = info.callId
         join.groupID = info.groupId
-        let targets = (info.participants + [info.callerAccount]).filter { $0 != ownAccountId }
+        let targets = Array(groupCallMembers.union([info.callerAccount])).filter { $0 != ownAccountId }
         await onSendGroupCallMessage?(join, targets)
     }
 
@@ -1325,58 +1616,88 @@ final class CallManager: NSObject {
         endGroupCallCleanup()
     }
 
+    /// A group-call signal is honored only when it names the current group call
+    /// (call id + group id) and comes from a member of that group's locally
+    /// stored roster.
+    private func isFromCurrentGroupCallMember(_ msg: Relay_Content_CallMessage, account: String) -> Bool {
+        guard isInGroupCall,
+              !account.isEmpty, account != ownAccountId,
+              let callId = groupCallId, !callId.isEmpty, callId == msg.callID,
+              groupCallMembers.contains(account)
+        else { return false }
+        if !msg.groupID.isEmpty, msg.groupID != groupCallGroupId { return false }
+        return true
+    }
+
     private func handleGroupCallMessage(_ msg: Relay_Content_CallMessage, from account: String) async {
         switch msg.type {
         case .groupRing:
-            // If a stale VoIP push already pushed us into .incoming for this
-            // same callId, tear down the phantom 1:1 call and handle as group.
-            if case .incoming(let existingId, _, _) = state, existingId == msg.callID {
-                terminate(fromRemote: false, reportToCallKit: true)
+            // Only a member of a group we know may ring it, and never a blocked one.
+            guard !account.isEmpty, !msg.groupID.isEmpty, !msg.callID.isEmpty,
+                  let roster = groupMembersResolver?(msg.groupID),
+                  roster.contains(account),
+                  isBlockedAccount?(account) != true
+            else {
+                log.warning("ignoring GROUP_RING from a non-member or unknown group")
+                return
+            }
+            // If an anonymous VoIP push registered this same call id, it was
+            // never a real 1:1 call — drop the placeholder and ring as a group.
+            if case .incoming(let existingId, _, _) = state, existingId == msg.callID, isAwaitingCallerIdentity {
+                endUnverifiedCall()
             }
             guard !isInGroupCall, case .idle = state else { return }
-            let displayName = nameResolver?(account) ?? account
+            let displayName = nameResolver?(account) ?? "Unknown"
             groupCallId = msg.callID
             groupCallGroupId = msg.groupID
+            groupCallMembers = Set(roster.filter { $0 != ownAccountId && !$0.isEmpty })
             groupCallKind = Self.callKind(fromMetadata: msg.ice) ?? .audio
             isInGroupCall = true
             groupRingInfo = GroupRingInfo(
                 callId: msg.callID, groupId: msg.groupID,
                 callerAccount: account, callerName: displayName,
-                participants: msg.participants, kind: groupCallKind
+                // Never trust the ringer's participant list — use our roster.
+                participants: Array(groupCallMembers), kind: groupCallKind
             )
             startRingtone()
 
         case .groupJoin:
-            guard isInGroupCall, groupCallId == msg.callID, groupPeers[account] == nil else { return }
-            let peerName = nameResolver?(account) ?? account
+            guard isFromCurrentGroupCallMember(msg, account: account),
+                  groupRingInfo == nil,   // we haven't accepted the ring yet
+                  groupPeers[account] == nil
+            else { return }
+            let peerName = nameResolver?(account) ?? "Unknown"
             groupPeers[account] = GroupCallPeer(peerAccount: account, peerName: peerName)
             await initiateGroupPeerOffer(toPeer: account, callId: msg.callID)
 
         case .groupLeave:
-            guard isInGroupCall, groupCallId == msg.callID else { return }
+            guard isFromCurrentGroupCallMember(msg, account: account) else { return }
             closeGroupPeerConnection(forAccount: account)
             groupPeers.removeValue(forKey: account)
             groupPeerDelegates.removeValue(forKey: account)
 
         case .offer:
             // Mesh OFFER from a group peer — only process if addressed to us.
-            guard isInGroupCall, msg.targetAccount == ownAccountId else { return }
-            let peerName = nameResolver?(account) ?? account
+            guard isFromCurrentGroupCallMember(msg, account: account),
+                  groupRingInfo == nil,   // not until we've actually joined
+                  msg.targetAccount == ownAccountId
+            else { return }
+            let peerName = nameResolver?(account) ?? "Unknown"
             if groupPeers[account] == nil {
                 groupPeers[account] = GroupCallPeer(peerAccount: account, peerName: peerName)
             }
             await handleGroupPeerOffer(msg, from: account)
 
         case .answer:
-            guard isInGroupCall else { return }
+            guard isFromCurrentGroupCallMember(msg, account: account), groupPeers[account] != nil else { return }
             await handleGroupPeerAnswer(msg, from: account)
 
         case .ice:
-            guard isInGroupCall else { return }
+            guard isFromCurrentGroupCallMember(msg, account: account), groupPeers[account] != nil else { return }
             await handleGroupPeerICE(msg, from: account)
 
         case .hangup, .busy:
-            guard isInGroupCall, groupCallId == msg.callID else { return }
+            guard isFromCurrentGroupCallMember(msg, account: account) else { return }
             closeGroupPeerConnection(forAccount: account)
             groupPeers.removeValue(forKey: account)
             groupPeerDelegates.removeValue(forKey: account)
@@ -1400,7 +1721,7 @@ final class CallManager: NSObject {
         msg.type = .offer
         msg.callID = callId
         msg.groupID = groupCallGroupId ?? ""
-        msg.sdp = offer.sdp
+        msg.sdp = Self.sanitizeSDP(offer.sdp)
         msg.targetAccount = account
         _ = await onSendCallMessage?(msg, account)
     }
@@ -1426,7 +1747,7 @@ final class CallManager: NSObject {
             reply.type = .answer
             reply.callID = msg.callID
             reply.groupID = msg.groupID
-            reply.sdp = answer.sdp
+            reply.sdp = Self.sanitizeSDP(answer.sdp)
             reply.targetAccount = account
             _ = await onSendCallMessage?(reply, account)
         } catch {
@@ -1461,6 +1782,9 @@ final class CallManager: NSObject {
     private func makeGroupPeerConnection(forAccount account: String) async -> RTCPeerConnection? {
         let delegate = GroupPCDelegate(peerAccount: account)
         delegate.onICECandidate = { [weak self] candidate in
+            // Relay-only mode: never let a host/srflx/prflx candidate (which
+            // carries a real IP address) leave the device.
+            if Self.isPrivateCallModeEnabled, !Self.isRelayCandidate(candidate.sdp) { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 var msg = Relay_Content_CallMessage()
@@ -1495,13 +1819,12 @@ final class CallManager: NSObject {
         }
         groupPeerDelegates[account] = delegate
 
-        let config = RTCConfiguration()
-        let servers = await freshIceServers()
-        config.iceServers = servers
-        config.sdpSemantics = .unifiedPlan
-        config.continualGatheringPolicy = .gatherContinually
-        config.iceCandidatePoolSize = 4
-        if shouldForceRelay(servers) { config.iceTransportPolicy = .relay }
+        guard let config = await makeRTCConfiguration() else {
+            // Relay-only mode without a TURN server: never connect directly.
+            groupPeers.removeValue(forKey: account)
+            groupPeerDelegates.removeValue(forKey: account)
+            return nil
+        }
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         return factory.peerConnection(with: config, constraints: constraints, delegate: delegate)
     }
@@ -1539,6 +1862,7 @@ final class CallManager: NSObject {
         isInGroupCall = false
         groupCallId = nil
         groupCallGroupId = nil
+        groupCallMembers = []
         groupCallKind = .audio
         groupCallDisplayName = "Group Call"
         groupRingInfo = nil
@@ -1561,12 +1885,19 @@ extension CallManager: RTCPeerConnectionDelegate {
         let candidateType = sdp.contains("typ relay") ? "relay(TURN)" :
                             sdp.contains("typ srflx") ? "srflx(STUN)" :
                             sdp.contains("typ prflx") ? "prflx" : "host"
+        // Relay-only mode: drop any candidate that isn't TURN-relayed before it
+        // can be sent — host/srflx/prflx candidates carry this device's IPs.
+        let dropForPrivacy = CallManager.isPrivateCallModeEnabled && !CallManager.isRelayCandidate(sdp)
         Task { @MainActor in
             log.info("ICE candidate gathered type=\(candidateType)")
+            if dropForPrivacy {
+                log.info("dropping non-relay ICE candidate (relay-only mode)")
+                return
+            }
             // Use stored values — these are set at call start and valid through
             // all state transitions (.outgoing → .connecting → .active).
-            guard let peerAccount = storedCallPeer else { return }
-            let callId = storedCallId ?? ""
+            guard let peerAccount = storedCallPeer, !peerAccount.isEmpty,
+                  let callId = storedCallId, !callId.isEmpty else { return }
             let json = iceJSON(candidate)
             var msg = Relay_Content_CallMessage()
             msg.type = .ice
@@ -1663,7 +1994,7 @@ extension CallManager: CXProviderDelegate {
     // didActivate on outgoing calls — same fix applied to incoming in reportIncomingCall.
     nonisolated func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         Task { @MainActor in
-            provider.configuration = providerConfig
+            provider.configuration = makeProviderConfiguration()
             action.fulfill()
         }
     }

@@ -1,9 +1,12 @@
 //
 //  ShareBridge.swift
-//  RelayWidgetExtension
+//  Extension mirror of Relay/ShareBridge.swift (read side + pending-share
+//  writer). Keep the storage format in sync with the app's copy.
 //
-//  Mirror of Relay/ShareBridge.swift — read-only access to conversations and
-//  avatars written by the main app into the App Group container.
+//  Conversations are identified only by opaque local conversation ids (never a
+//  peer account id); files carry explicit Data Protection, live in directories
+//  excluded from backup, and a pending share is a protected file (never
+//  UserDefaults) that the app deletes once processed.
 //
 
 import Foundation
@@ -11,11 +14,10 @@ import Foundation
 let kShareAppGroup = "group.app.relaymsg"
 
 struct ShareConversationSummary: Codable, Identifiable {
-    let id: String
+    let id: String          // opaque local conversation id
     let displayName: String
     let initials: String
     let isGroup: Bool
-    let peerAccount: String
 }
 
 struct PendingShare: Codable {
@@ -28,34 +30,52 @@ struct PendingShare: Codable {
 }
 
 enum ShareBridge {
-    private static let conversationsKey = "relay.share.conversations"
-    private static let pendingKey = "relay.share.pending"
+    private static let legacyPendingKey = "relay.share.pending"
+    private static let shareDirName = "relay-share"
+    private static let avatarDirName = "relay-avatars"
+    private static let conversationsFile = "conversations.json"
+    private static let pendingShareFile = "pending-share.json"
 
-    private static var defaults: UserDefaults? { UserDefaults(suiteName: kShareAppGroup) }
-
-    static func writeConversations(_ list: [ShareConversationSummary]) {
-        guard let data = try? JSONEncoder().encode(list) else { return }
-        defaults?.set(data, forKey: conversationsKey)
+    private static var container: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: kShareAppGroup)
     }
 
     static func readConversations() -> [ShareConversationSummary] {
-        guard let data = defaults?.data(forKey: conversationsKey),
+        guard let url = container?.appendingPathComponent(shareDirName, isDirectory: true)
+                .appendingPathComponent(conversationsFile),
+              let data = try? Data(contentsOf: url),
               let list = try? JSONDecoder().decode([ShareConversationSummary].self, from: data)
         else { return [] }
         return list
     }
 
     static func writePendingShare(_ share: PendingShare) {
-        guard let data = try? JSONEncoder().encode(share) else { return }
-        defaults?.set(data, forKey: pendingKey)
-    }
+        UserDefaults(suiteName: kShareAppGroup)?.removeObject(forKey: legacyPendingKey)
+        guard let data = try? JSONEncoder().encode(share),
+              var dir = container?.appendingPathComponent(shareDirName, isDirectory: true)
+        else { return }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            )
+        }
+        var dirValues = URLResourceValues()
+        dirValues.isExcludedFromBackup = true
+        try? dir.setResourceValues(dirValues)
 
-    static func readAndClearPendingShare() -> PendingShare? {
-        guard let data = defaults?.data(forKey: pendingKey),
-              let share = try? JSONDecoder().decode(PendingShare.self, from: data)
-        else { return nil }
-        defaults?.removeObject(forKey: pendingKey)
-        return share
+        var url = dir.appendingPathComponent(pendingShareFile)
+        // Complete protection; if the device is locked right now, fall back to
+        // completeUnlessOpen (creatable while locked, unreadable until unlock).
+        do {
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+        } catch {
+            try? data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
     }
 
     static func makeInitials(_ name: String) -> String {
@@ -63,19 +83,10 @@ enum ShareBridge {
         return words.compactMap { $0.first.map(String.init) }.joined().uppercased()
     }
 
-    private static func avatarDir() -> URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: kShareAppGroup)?
-            .appendingPathComponent("relay-avatars", isDirectory: true)
-    }
-
-    static func writeAvatar(_ data: Data, forConversationId id: String) {
-        guard let dir = avatarDir() else { return }
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: dir.appendingPathComponent(id), options: .atomic)
-    }
-
     static func readAvatar(forConversationId id: String) -> Data? {
-        guard let url = avatarDir()?.appendingPathComponent(id) else { return nil }
+        guard let url = container?.appendingPathComponent(avatarDirName, isDirectory: true)
+                .appendingPathComponent(id)
+        else { return nil }
         return try? Data(contentsOf: url)
     }
 }

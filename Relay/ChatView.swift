@@ -102,7 +102,7 @@ struct ChatView: View {
     @State private var pinnedMessage: StoredMessage?
     @State private var showingStarred = false
     @State private var mentionQuery: String? = nil
-    @AppStorage("privacy.incognitoKeyboard") private var incognitoKeyboard = false
+    @AppStorage(PrivacyPreferences.incognitoKeyboardKey) private var incognitoKeyboard = true
     @State private var lastTypingSentAt: Date?
     @State private var isAtBottom = true
     @State private var scrollViewProxy: ScrollViewProxy?
@@ -1039,7 +1039,7 @@ struct ChatView: View {
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
         guard !text.isEmpty else { return }
-        UIPasteboard.general.string = text
+        SecurePasteboard.copy(text)
         clearMessageSelection()
     }
 
@@ -1914,7 +1914,7 @@ private struct MessageRow: View {
         }
         let isViewOnce = message.body.hasPrefix(MessagingService.viewOncePrefix)
         if !message.body.isEmpty && !isViewOnce {
-            items.append(.init(label: "Copy", icon: "doc.on.doc") { UIPasteboard.general.string = message.body })
+            items.append(.init(label: "Copy", icon: "doc.on.doc") { SecurePasteboard.copy(message.body) })
         }
         if (!message.body.isEmpty || !message.attachments.isEmpty) && !isViewOnce && !message.isDeleted {
             items.append(.init(label: "Forward", icon: "arrowshape.turn.up.right") { onForward() })
@@ -1958,7 +1958,11 @@ private struct MessageBubble: View {
     var embedsAlignment: Bool = true
 
     @Environment(ChatAppearance.self) private var appearance
+    /// The chat-level opener (in-app Safari for http/https) — used after the
+    /// user confirms a link from a received message.
+    @Environment(\.openURL) private var parentOpenURL
     @State private var reactionDetailEmoji: String?
+    @State private var pendingLinkURL: URL?
 
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
@@ -2032,6 +2036,38 @@ private struct MessageBubble: View {
                 service: service
             )
             .presentationDetents([.fraction(0.4)])
+        }
+        // Links in RECEIVED messages never open directly: markdown lets a
+        // sender show one URL and link another, so the real destination host
+        // is shown for confirmation first. Our own messages open as before.
+        .environment(\.openURL, OpenURLAction { url in
+            guard !message.isOutgoing else { return .systemAction }
+            pendingLinkURL = url
+            return .handled
+        })
+        .confirmationDialog(
+            pendingLinkURL.map { "Open link to \(LinkConfirmation.displayHost(for: $0))?" } ?? "",
+            isPresented: Binding(
+                get: { pendingLinkURL != nil },
+                set: { if !$0 { pendingLinkURL = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let url = pendingLinkURL {
+                Button("Open") {
+                    pendingLinkURL = nil
+                    parentOpenURL(url)
+                }
+                Button("Copy Link") {
+                    pendingLinkURL = nil
+                    SecurePasteboard.copy(url.absoluteString)
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingLinkURL = nil }
+        } message: {
+            if let url = pendingLinkURL {
+                Text(LinkConfirmation.message(for: url))
+            }
         }
     }
 
@@ -2729,6 +2765,7 @@ private struct AttachmentImageView: View {
     @State private var gifData: Data?
     @State private var failed = false
     @State private var preview: PreviewItem?
+    @State private var previewFileURL: URL?
     @State private var isUnlocked = false
 
     private var isGIF: Bool { attachment.contentType == "image/gif" }
@@ -2795,10 +2832,17 @@ private struct AttachmentImageView: View {
         .frame(width: 240, height: height)
         .clipShape(.rect(cornerRadius: 16))
         .task(id: attachment.id) { await load() }
-        .fullScreenCover(item: $preview) { item in
+        .fullScreenCover(item: $preview, onDismiss: cleanUpPreviewFile) { item in
             QuickLookPreview(url: item.url, title: senderName)
                 .ignoresSafeArea()
         }
+        .onDisappear { if preview == nil { cleanUpPreviewFile() } }
+    }
+
+    /// Deletes the decrypted temp file once the preview has closed.
+    private func cleanUpPreviewFile() {
+        TempMediaFiles.remove(previewFileURL)
+        previewFileURL = nil
     }
 
     private func load() async {
@@ -2830,17 +2874,15 @@ private struct AttachmentImageView: View {
         }
         guard let data = service.attachmentPlaintext(attachment) else { return }
         let ext = UTType(mimeType: attachment.contentType)?.preferredFilenameExtension ?? "jpg"
-        // Strip any directory traversal from server-provided filenames.
-        let rawName = attachment.filename.flatMap { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 }
-        let name = rawName ?? "\(attachment.id).\(ext)"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         do {
-            try data.write(to: url, options: .atomic)
-            try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+            // Random filename + complete protection; deleted when the preview closes.
+            let url = try TempMediaFiles.write(data, originalName: attachment.filename, fallbackExtension: ext)
+            TempMediaFiles.remove(previewFileURL)
+            previewFileURL = url
             preview = PreviewItem(url: url)
         } catch {
-            Logger(subsystem: "com.relaytextingapp.Relay", category: "chat")
-                .error("openPreview: write to tmp failed: \(error.localizedDescription)")
+            Logger(subsystem: "app.relaymsg", category: "chat")
+                .error("openPreview: temp write failed: \(PrivacyRedactor.error(error))")
         }
     }
 }
@@ -2930,7 +2972,7 @@ private struct PendingAttachmentPreviewSheet: View {
                     .padding(.vertical, 8)
                 }
 
-                TextField("Add a caption", text: $caption, axis: .vertical)
+                TextField("Add a caption", text: $caption, axis: .vertical).incognitoKeyboard()
                     .lineLimit(1...4)
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal, 16)
@@ -3222,18 +3264,44 @@ private struct LocationBubble: View {
         }
     }
 
+    /// Received locations don't load map tiles until the user asks: fetching
+    /// tiles tells Apple's map servers (with our IP) where the sender is.
+    @State private var mapRevealed = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Map(position: $position) {
-                Marker("", coordinate: coordinate)
-                    .tint(.red)
+            if isOutgoing || mapRevealed {
+                Map(position: $position) {
+                    Marker("", coordinate: coordinate)
+                        .tint(.red)
+                }
+                .frame(height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .disabled(true)
+                // Recenter as a live share moves.
+                .onChange(of: payload.lat) { _, _ in recenter() }
+                .onChange(of: payload.lng) { _, _ in recenter() }
+            } else {
+                Button {
+                    mapRevealed = true
+                } label: {
+                    VStack(spacing: 6) {
+                        Image(systemName: "map.fill")
+                            .font(.title2)
+                        Text("Tap to show map")
+                            .font(.caption.weight(.semibold))
+                        Text("Loads map tiles from Apple Maps")
+                            .font(.caption2)
+                            .opacity(0.7)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Shared location. Tap to show map.")
             }
-            .frame(height: 150)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .disabled(true)
-            // Recenter as a live share moves.
-            .onChange(of: payload.lat) { _, _ in recenter() }
-            .onChange(of: payload.lng) { _, _ in recenter() }
 
             HStack(spacing: 4) {
                 Image(systemName: payload.stop || payload.isExpired ? "location.slash.fill" : "location.fill")

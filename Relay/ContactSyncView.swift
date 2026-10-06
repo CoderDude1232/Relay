@@ -2,10 +2,9 @@
 //  ContactSyncView.swift
 //  Relay
 //
-//  Matches address book emails against Relay accounts via server lookup.
-//  Each email is checked against GET /v1/accounts/by-email — no bulk upload,
-//  no contact list stored on server. Lookups are authenticated so the server
-//  can rate-limit abuse.
+//  Matches address book emails against Relay accounts with blinded discovery.
+//  Runs ONLY when the user taps "Find contacts on Relay" (with a one-time
+//  explanation + consent that is remembered) — never automatically.
 //
 
 import Contacts
@@ -23,6 +22,7 @@ struct ContactSyncView: View {
     @State private var denied = false
     @State private var startingAccountId: String?
     @State private var messageError: String?
+    @State private var showingConsent = false
 
     enum SyncStatus: Equatable { case idle, loading, done, failed(String) }
 
@@ -37,9 +37,14 @@ struct ContactSyncView: View {
     var body: some View {
         List {
             Section {
-                Text("Relay checks your address book emails against accounts on the server. Your contacts are never uploaded — each email is looked up individually.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Button {
+                    requestSync()
+                } label: {
+                    Label("Find contacts on Relay", systemImage: "person.crop.circle.badge.checkmark")
+                }
+                .disabled(status == .loading)
+            } footer: {
+                Text(ContactDiscoveryConsent.explanation)
             }
 
             if status == .loading {
@@ -111,13 +116,16 @@ struct ContactSyncView: View {
         }
         .navigationTitle("Contact Syncing")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Sync") { Task { await sync() } }
-                    .disabled(status == .loading)
+        // Never runs on its own — only from the "Find contacts" button.
+        .alert("Find Contacts on Relay?", isPresented: $showingConsent) {
+            Button("Find Contacts") {
+                ContactDiscoveryConsent.grant()
+                Task { await sync() }
             }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text(ContactDiscoveryConsent.explanation)
         }
-        .task { await sync() }
         .alert("Couldn't Start Chat", isPresented: Binding(
             get: { messageError != nil },
             set: { if !$0 { messageError = nil } }
@@ -143,6 +151,16 @@ struct ContactSyncView: View {
             } catch {
                 messageError = error.localizedDescription
             }
+        }
+    }
+
+    /// Explicit user action only; the first time asks for informed consent,
+    /// which is remembered for later taps.
+    private func requestSync() {
+        if ContactDiscoveryConsent.isGranted {
+            Task { await sync() }
+        } else {
+            showingConsent = true
         }
     }
 

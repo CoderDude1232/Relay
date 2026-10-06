@@ -35,6 +35,7 @@ struct ConversationListView: View {
     // onChange again, re-prompting indefinitely.
     @State private var sessionUnlocked: Set<String> = []
     @State private var showingPanicPINError = false
+    @State private var panicLockoutUntil: Date?
     @State private var qrStartError: String?
     @State private var confirmBulkDelete = false
     @State private var deleteError: String?
@@ -91,7 +92,7 @@ struct ConversationListView: View {
                 }
             }
             .navigationTitle("Chats")
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search messages")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search messages").incognitoKeyboard()
             .onAppear {
                 // Handle notification taps that arrived while this view was off-screen
                 // (e.g. user was on a different tab when the notification fired).
@@ -192,25 +193,36 @@ struct ConversationListView: View {
                 SecureField("PIN", text: $panicPINInput)
                     .keyboardType(.numberPad)
                 Button("Unlock") {
-                    let ok = panicMode.activate(pin: panicPINInput)
+                    let pin = panicPINInput
                     panicPINInput = ""
-                    if !ok {
+                    Task {
+                        let result = await panicMode.activate(pin: pin)
+                        guard result != .unlocked else { return }
                         UINotificationFeedbackGenerator().notificationOccurred(.error)
-                        // Let the PIN alert finish dismissing before presenting the next one.
-                        Task {
-                            try? await Task.sleep(for: .milliseconds(350))
-                            showingPanicPINError = true
+                        if case .lockedOut(let until) = result {
+                            panicLockoutUntil = until
+                        } else {
+                            panicLockoutUntil = nil
                         }
+                        // Let the PIN alert finish dismissing before presenting the next one.
+                        try? await Task.sleep(for: .milliseconds(350))
+                        showingPanicPINError = true
                     }
                 }
                 Button("Cancel", role: .cancel) { panicPINInput = "" }
             }
-            .alert("Incorrect PIN", isPresented: $showingPanicPINError) {
-                Button("Try Again") {
-                    panicPINInput = ""
-                    showingPanicPIN = true
+            .alert(panicLockoutUntil == nil ? "Incorrect PIN" : "Too Many Attempts", isPresented: $showingPanicPINError) {
+                if panicLockoutUntil == nil {
+                    Button("Try Again") {
+                        panicPINInput = ""
+                        showingPanicPIN = true
+                    }
                 }
-                Button("Cancel", role: .cancel) {}
+                Button(panicLockoutUntil == nil ? "Cancel" : "OK", role: .cancel) {}
+            } message: {
+                if let until = panicLockoutUntil {
+                    Text("Try again \(until, format: .relative(presentation: .named)).")
+                }
             }
             .alert("Couldn't Start Chat", isPresented: Binding(
                 get: { qrStartError != nil },
@@ -511,6 +523,8 @@ struct ConversationListView: View {
                     if panicMode.isEnabled {
                         Button {
                             panicMode.hide(conversation.id)
+                            SpotlightIndexer.deindex(conversationId: conversation.id)
+                            ShareBridge.removeConversation(conversation.id)
                         } label: {
                             Label("Hide in Panic Mode", systemImage: "eye.slash")
                         }
@@ -629,7 +643,10 @@ private struct NewChatSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var contacts: [ContactEntry] = []
     @State private var authDenied = false
-    @State private var isLoadingContacts = true
+    @State private var isLoadingContacts = false
+    /// The user tapped "Find contacts on Relay" (and has consented).
+    @State private var discoveryStarted = false
+    @State private var showingDiscoveryConsent = false
     @State private var searchText = ""
     @State private var showingUsernameSearch = false
     @State private var startingContactEmail: String?
@@ -689,8 +706,18 @@ private struct NewChatSheet: View {
                         }
                     }
 
-                    // Contact sections
-                    if authDenied {
+                    // Contact sections — only after the user explicitly asks.
+                    if !discoveryStarted {
+                        Section {
+                            Button {
+                                requestContactDiscovery()
+                            } label: {
+                                Label("Find contacts on Relay", systemImage: "person.crop.circle.badge.checkmark")
+                            }
+                        } footer: {
+                            Text(ContactDiscoveryConsent.explanation)
+                        }
+                    } else if authDenied {
                         Section {
                             Label("Allow Contacts access in Settings → Relay to see who's on Relay.", systemImage: "person.slash")
                                 .font(.subheadline).foregroundStyle(.secondary)
@@ -739,7 +766,7 @@ private struct NewChatSheet: View {
                     }
                 }
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts").incognitoKeyboard()
             .navigationTitle("New Conversation")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -760,8 +787,34 @@ private struct NewChatSheet: View {
             } message: {
                 Text(addError ?? "")
             }
+            .alert("Find Contacts on Relay?", isPresented: $showingDiscoveryConsent) {
+                Button("Find Contacts") {
+                    ContactDiscoveryConsent.grant()
+                    startContactDiscovery()
+                }
+                Button("Not Now", role: .cancel) {}
+            } message: {
+                Text(ContactDiscoveryConsent.explanation)
+            }
         }
-        .task { await loadContacts() }
+        // No automatic contact access or lookup: see requestContactDiscovery().
+    }
+
+    /// Contact discovery runs only when the user taps "Find contacts on Relay".
+    /// The first time, they see what it does and must agree; the agreement is
+    /// remembered so later taps go straight to the lookup.
+    private func requestContactDiscovery() {
+        if ContactDiscoveryConsent.isGranted {
+            startContactDiscovery()
+        } else {
+            showingDiscoveryConsent = true
+        }
+    }
+
+    private func startContactDiscovery() {
+        discoveryStarted = true
+        isLoadingContacts = true
+        Task { await loadContacts() }
     }
 
     @ViewBuilder

@@ -11,7 +11,9 @@ import UIKit
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @State private var isObscured = false
-    @State private var isLocked = false
+    // Start locked on a cold launch when the app lock is on — otherwise a link
+    // or notification that launches the app would land before any unlock.
+    @State private var isLocked = UserDefaults.standard.bool(forKey: "relay.screenLockEnabled")
     @State private var backgroundedAt: Date? = nil
     @State private var isAuthenticating = false
 
@@ -27,6 +29,7 @@ struct ContentView: View {
                 OnboardingView()
             case .ready(let service):
                 MainTabView(service: service)
+                    .environment(\.relayAppLocked, isLocked)
             case .failed(let message):
                 ContentUnavailableView(
                     "Storage Unavailable",
@@ -58,6 +61,14 @@ struct ContentView: View {
                 .ignoresSafeArea()
                 .zIndex(101)
             }
+        }
+        .task {
+            // Cold launch with the app lock on: prompt right away.
+            guard isLocked, !isAuthenticating else { return }
+            isAuthenticating = true
+            let ok = await BiometricGate.authenticate(reason: "Unlock Relay")
+            isAuthenticating = false
+            if ok { isLocked = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             isObscured = true
@@ -143,6 +154,8 @@ struct MainTabView: View {
     @State private var selectedTab = 0
     @State private var joinGroupError: String?
     @State private var inviteError: String?
+    @State private var pendingLinkAction: PendingLinkAction?
+    @Environment(\.relayAppLocked) private var appLocked
     /// Missed calls at or before this instant (ms since epoch) have been seen;
     /// only newer ones count toward the Calls tab badge. Written by CallsView
     /// on appear and here whenever the Calls tab is selected.
@@ -190,34 +203,20 @@ struct MainTabView: View {
         missedCallsSeenAt = max(missedCallsSeenAt, newest, Date().timeIntervalSince1970 * 1000)
     }
 
-    /// Resolves any pending username / contact-invite / group-invite link and
-    /// opens the resulting chat through the notification-tap path
-    /// (ConversationListView consumes pendingNotificationConversationId).
+    /// Picks up any pending username / contact-invite / group-invite link and
+    /// asks the user to confirm it. Nothing is joined, claimed or started
+    /// without that confirmation, and links wait while the app lock is up.
     private func handlePendingLinks() {
+        guard !appLocked, pendingLinkAction == nil else { return }
         if let username = model.pendingDeepLinkUsername {
             model.pendingDeepLinkUsername = nil
-            Task {
-                do {
-                    let conversationId = try await service.startConversation(username: username)
-                    selectedTab = 0
-                    model.pendingNotificationConversationId = conversationId
-                } catch {
-                    deepLinkError = "@\(username) was not found on Relay."
-                }
-            }
+            pendingLinkAction = .username(username)
+            return
         }
         if let token = model.pendingContactInviteToken {
             model.pendingContactInviteToken = nil
-            Task {
-                do {
-                    let username = try await service.claimContactInvite(token: token)
-                    let conversationId = try await service.startConversation(username: username)
-                    selectedTab = 0
-                    model.pendingNotificationConversationId = conversationId
-                } catch {
-                    inviteError = "This invite link is invalid or has already been used."
-                }
-            }
+            pendingLinkAction = .contactInvite(token: token)
+            return
         }
         if let raw = model.pendingGroupInviteToken {
             model.pendingGroupInviteToken = nil
@@ -226,13 +225,48 @@ struct MainTabView: View {
             let fragment = parts.count > 1 ? String(parts[1]) : ""
             Task {
                 do {
-                    let conversationId = try await service.joinGroupByInvite(token: token, fragment: fragment)
-                    selectedTab = 0
-                    model.pendingNotificationConversationId = conversationId
+                    // Decrypts the invite to show its name and size. Does NOT join.
+                    let preview = try await service.previewGroupInvite(token: token, fragment: fragment)
+                    pendingLinkAction = .groupInvite(preview)
                 } catch {
                     joinGroupError = "Invite link is invalid or has already been used."
                 }
             }
+        }
+    }
+
+    /// Runs a link action the user just confirmed.
+    private func performConfirmedLink(_ action: PendingLinkAction) {
+        Task {
+            switch action {
+            case .username(let username):
+                do {
+                    let conversationId = try await service.startConversation(username: username)
+                    selectedTab = 0
+                    model.pendingNotificationConversationId = conversationId
+                } catch {
+                    deepLinkError = "@\(username) was not found on Relay."
+                }
+            case .contactInvite(let token):
+                do {
+                    let username = try await service.claimContactInvite(token: token)
+                    let conversationId = try await service.startConversation(username: username)
+                    selectedTab = 0
+                    model.pendingNotificationConversationId = conversationId
+                } catch {
+                    inviteError = "This invite link is invalid or has already been used."
+                }
+            case .groupInvite(let preview):
+                do {
+                    let conversationId = try await service.acceptGroupInvite(preview)
+                    selectedTab = 0
+                    model.pendingNotificationConversationId = conversationId
+                } catch {
+                    joinGroupError = "Couldn’t join this group. The invite may have expired."
+                }
+            }
+            // Another link may have queued up behind this one.
+            handlePendingLinks()
         }
     }
 
@@ -327,9 +361,24 @@ struct MainTabView: View {
         .onChange(of: model.pendingDeepLinkUsername) { _, _ in handlePendingLinks() }
         .onChange(of: model.pendingContactInviteToken) { _, _ in handlePendingLinks() }
         .onChange(of: model.pendingGroupInviteToken) { _, _ in handlePendingLinks() }
+        // Links that arrived while the app lock was up run once it's unlocked.
+        .onChange(of: appLocked) { _, locked in if !locked { handlePendingLinks() } }
         // Links opened on a cold start (or during onboarding) are set before this
         // view exists, so onChange never sees them — drain them on appear.
         .onAppear { handlePendingLinks() }
+        .sheet(item: $pendingLinkAction) { action in
+            LinkConfirmationSheet(
+                action: action,
+                onConfirm: {
+                    pendingLinkAction = nil
+                    performConfirmedLink(action)
+                },
+                onCancel: {
+                    pendingLinkAction = nil
+                    Task { @MainActor in handlePendingLinks() }
+                }
+            )
+        }
         .alert("User Not Found", isPresented: Binding(
             get: { deepLinkError != nil },
             set: { if !$0 { deepLinkError = nil } }
@@ -353,6 +402,14 @@ struct MainTabView: View {
             Button("OK", role: .cancel) { joinGroupError = nil }
         } message: {
             Text(joinGroupError ?? "")
+        }
+        .alert("Call Not Started", isPresented: Binding(
+            get: { callManager.groupCallFailureMessage != nil },
+            set: { if !$0 { callManager.groupCallFailureMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { callManager.groupCallFailureMessage = nil }
+        } message: {
+            Text(callManager.groupCallFailureMessage ?? "")
         }
     }
 }

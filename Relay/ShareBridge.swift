@@ -1,26 +1,49 @@
 //
 //  ShareBridge.swift
-//  Relay + RelayShareExtension
+//  Relay (main app)
 //
-//  IMPORTANT: This file is compiled into BOTH the main app target AND the
-//  RelayShareExtension target. Keep it free of any main-app-only imports.
+//  App Group bridge between the app and its extensions (Share, Siri intents,
+//  widget, notification content). Each extension compiles its own mirror of the
+//  shared part of this file — keep the storage format in sync with them.
+//
+//  Privacy rules for everything written here (the App Group container is
+//  outside the encrypted database):
+//  • Conversations are identified only by the opaque local conversation id —
+//    never by a peer's Relay account id.
+//  • Hidden (panic-mode) conversations are never written.
+//  • Files carry explicit Data Protection and the directories are excluded
+//    from iCloud/iTunes backups.
+//  • A pending share (text/image/file content) is a protected file, never
+//    UserDefaults, and is deleted as soon as it is read.
 //
 
 import Foundation
 
 let kShareAppGroup = "group.app.relaymsg"
 
-// Lightweight, unencrypted snapshot of a conversation written to App Group
-// storage by the main app so the Share Extension can display a picker.
+/// Lightweight snapshot of a conversation so extensions can show a picker.
 struct ShareConversationSummary: Codable, Identifiable {
-    let id: String          // conversation id (primary key in MessageStore)
+    let id: String          // opaque local conversation id
     let displayName: String
     let initials: String
     let isGroup: Bool
-    let peerAccount: String // used to match INSendMessageIntent recipients
+
+    init(id: String, displayName: String, initials: String, isGroup: Bool) {
+        self.id = id
+        self.displayName = displayName
+        self.initials = initials
+        self.isGroup = isGroup
+    }
+
+    /// Source-compatible initializer: `peerAccount` is accepted but NOT stored.
+    @available(*, deprecated, message: "peerAccount is no longer stored; drop the argument")
+    init(id: String, displayName: String, initials: String, isGroup: Bool, peerAccount: String) {
+        self.init(id: id, displayName: displayName, initials: initials, isGroup: isGroup)
+    }
 }
 
-// Content + target chosen in the Share Extension; processed by the main app.
+/// Content + target chosen in the Share Extension / Siri / quick reply;
+/// processed (and deleted) by the main app.
 struct PendingShare: Codable {
     let conversationId: String
     let text: String?
@@ -30,38 +53,89 @@ struct PendingShare: Codable {
     let filename: String?
 }
 
-enum ShareBridge {
-    private static let conversationsKey = "relay.share.conversations"
-    private static let pendingKey = "relay.share.pending"
+nonisolated enum ShareBridge {
     private static let unreadCountKey = "relay.share.unreadCount"
+    // Legacy UserDefaults keys (pre-file storage) — removed on sight.
+    private static let legacyConversationsKey = "relay.share.conversations"
+    private static let legacyPendingKey = "relay.share.pending"
+
+    private static let shareDirName = "relay-share"
+    private static let avatarDirName = "relay-avatars"
+    private static let conversationsFile = "conversations.json"
+    private static let pendingShareFile = "pending-share.json"
+    private static let broadcastFrameFile = "RelayBroadcastFrame.jpg"
 
     private static var defaults: UserDefaults? { UserDefaults(suiteName: kShareAppGroup) }
+    private static var container: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: kShareAppGroup)
+    }
 
+    // MARK: - Conversations
+
+    /// Writes the picker snapshot, minus hidden (panic-mode) conversations.
     static func writeConversations(_ list: [ShareConversationSummary]) {
-        guard let data = try? JSONEncoder().encode(list) else { return }
-        defaults?.set(data, forKey: conversationsKey)
+        let hidden = PanicModeManager.hiddenConversationIdsSnapshot()
+        let visible = list.filter { !hidden.contains($0.id) }
+        defaults?.removeObject(forKey: legacyConversationsKey)
+        guard let data = try? JSONEncoder().encode(visible),
+              let url = shareDir()?.appendingPathComponent(conversationsFile)
+        else { return }
+        // Readable after first unlock: the widget and Siri run while locked.
+        writeProtected(data, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
+        // Drop avatars of conversations that are now hidden.
+        for id in hidden { removeAvatar(forConversationId: id) }
     }
 
     static func readConversations() -> [ShareConversationSummary] {
-        guard let data = defaults?.data(forKey: conversationsKey),
+        guard let url = shareDir()?.appendingPathComponent(conversationsFile),
+              let data = try? Data(contentsOf: url),
               let list = try? JSONDecoder().decode([ShareConversationSummary].self, from: data)
         else { return [] }
         return list
     }
 
-    static func writePendingShare(_ share: PendingShare) {
-        guard let data = try? JSONEncoder().encode(share) else { return }
-        defaults?.set(data, forKey: pendingKey)
+    /// Removes one conversation (e.g. just hidden or deleted) from the snapshot.
+    static func removeConversation(_ id: String) {
+        let remaining = readConversations().filter { $0.id != id }
+        if let data = try? JSONEncoder().encode(remaining),
+           let url = shareDir()?.appendingPathComponent(conversationsFile) {
+            writeProtected(data, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
+        }
+        removeAvatar(forConversationId: id)
     }
 
-    // Returns the share and atomically removes it so callers don't process it twice.
-    static func readAndClearPendingShare() -> PendingShare? {
-        guard let data = defaults?.data(forKey: pendingKey),
-              let share = try? JSONDecoder().decode(PendingShare.self, from: data)
-        else { return nil }
-        defaults?.removeObject(forKey: pendingKey)
-        return share
+    // MARK: - Pending share
+
+    static func writePendingShare(_ share: PendingShare) {
+        defaults?.removeObject(forKey: legacyPendingKey)
+        guard let data = try? JSONEncoder().encode(share),
+              let url = shareDir()?.appendingPathComponent(pendingShareFile)
+        else { return }
+        // Complete protection: unreadable whenever the device is locked. If the
+        // device is locked right now (e.g. a Siri request), fall back to
+        // completeUnlessOpen, which can be created while locked but not read.
+        if !writeProtected(data, to: url, protection: .completeFileProtection) {
+            writeProtected(data, to: url, protection: .completeFileProtectionUnlessOpen)
+        }
     }
+
+    /// Returns the share and deletes it so it is processed exactly once.
+    static func readAndClearPendingShare() -> PendingShare? {
+        // One-time migration from the old UserDefaults location.
+        if let legacy = defaults?.data(forKey: legacyPendingKey) {
+            defaults?.removeObject(forKey: legacyPendingKey)
+            if let share = try? JSONDecoder().decode(PendingShare.self, from: legacy) { return share }
+        }
+        guard let url = shareDir()?.appendingPathComponent(pendingShareFile),
+              FileManager.default.fileExists(atPath: url.path)
+        else { return nil }
+        let data = try? Data(contentsOf: url)
+        guard let data else { return nil } // locked: leave it for later
+        try? FileManager.default.removeItem(at: url)
+        return try? JSONDecoder().decode(PendingShare.self, from: data)
+    }
+
+    // MARK: - Unread count (widget badge)
 
     static func writeUnreadCount(_ count: Int) {
         defaults?.set(count, forKey: unreadCountKey)
@@ -76,17 +150,13 @@ enum ShareBridge {
         return words.compactMap { $0.first.map(String.init) }.joined().uppercased()
     }
 
-    // MARK: - Avatar files (stored in App Group container for widget / content extension access)
-
-    private static func avatarDir() -> URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: kShareAppGroup)?
-            .appendingPathComponent("relay-avatars", isDirectory: true)
-    }
+    // MARK: - Avatar files (widget / notification content / NSE)
 
     static func writeAvatar(_ data: Data, forConversationId id: String) {
-        guard let dir = avatarDir() else { return }
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: dir.appendingPathComponent(id), options: .atomic)
+        guard !PanicModeManager.hiddenConversationIdsSnapshot().contains(id),
+              let url = avatarDir()?.appendingPathComponent(id)
+        else { return }
+        writeProtected(data, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
     }
 
     static func readAvatar(forConversationId id: String) -> Data? {
@@ -94,18 +164,64 @@ enum ShareBridge {
         return try? Data(contentsOf: url)
     }
 
-    // Removes the entire avatar directory; call on sign-out so the next
-    // account starts with no leftover images.
+    static func removeAvatar(forConversationId id: String) {
+        guard let url = container?.appendingPathComponent(avatarDirName, isDirectory: true)
+            .appendingPathComponent(id) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Removes the entire avatar directory.
     static func clearAvatars() {
-        guard let dir = avatarDir() else { return }
+        guard let dir = container?.appendingPathComponent(avatarDirName, isDirectory: true) else { return }
         try? FileManager.default.removeItem(at: dir)
     }
 
-    // Clears all App Group share state (conversations, unread count, avatars).
-    // Call on sign-out so a new account sees a clean slate everywhere.
+    /// Removes EVERYTHING Relay keeps in the App Group container outside the
+    /// encrypted database: conversation snapshot, pending share, unread count,
+    /// avatars, legacy UserDefaults keys and any leftover broadcast frame.
+    /// Call on sign-out, remote wipe and panic wipe.
     static func clearAll() {
-        defaults?.removeObject(forKey: conversationsKey)
+        defaults?.removeObject(forKey: legacyConversationsKey)
+        defaults?.removeObject(forKey: legacyPendingKey)
         defaults?.removeObject(forKey: unreadCountKey)
         clearAvatars()
+        guard let container else { return }
+        try? FileManager.default.removeItem(at: container.appendingPathComponent(shareDirName, isDirectory: true))
+        try? FileManager.default.removeItem(at: container.appendingPathComponent(broadcastFrameFile))
+    }
+
+    // MARK: - File helpers
+
+    private static func shareDir() -> URL? { protectedDir(named: shareDirName) }
+    private static func avatarDir() -> URL? { protectedDir(named: avatarDirName) }
+
+    /// Creates (if needed) an App Group subdirectory excluded from backups.
+    private static func protectedDir(named name: String) -> URL? {
+        guard var dir = container?.appendingPathComponent(name, isDirectory: true) else { return nil }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            )
+        }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+        return dir
+    }
+
+    @discardableResult
+    private static func writeProtected(_ data: Data, to url: URL, protection: Data.WritingOptions) -> Bool {
+        do {
+            try data.write(to: url, options: [.atomic, protection])
+            var fileURL = url
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? fileURL.setResourceValues(values)
+            return true
+        } catch {
+            return false
+        }
     }
 }
