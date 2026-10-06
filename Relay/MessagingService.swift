@@ -1500,6 +1500,9 @@ final class MessagingService {
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
             [.text("un:\(account)"), .blob(Data(username.utf8))]
         )
+        // displayName may have memoized the account-id fallback before the
+        // username arrived; drop it so the name shows without a relaunch.
+        nameCache[account] = nil
     }
 
     // MARK: - Draft persistence
