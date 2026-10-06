@@ -40,14 +40,14 @@ type Pusher interface {
 type FCMPusher interface {
 	Push(deviceToken string, envelope []byte) error
 	// PushCall wakes an Android device for an incoming call (the FCM analogue of
-	// PushKit): a high-priority data message carrying the call metadata.
-	PushCall(deviceToken, callID, callerAccount, callerName, kind string) error
+	// PushKit): a high-priority data message carrying ONLY the call id.
+	PushCall(deviceToken, callID string) error
 }
 
 // VoIPPusher sends a PushKit VoIP push to wake the app and present the
 // CallKit incoming-call UI. Optional; nil means calls only work in-foreground.
 type VoIPPusher interface {
-	PushVoIP(deviceToken, callID, callerAccount, callerName, kind string) error
+	PushVoIP(deviceToken, callID string) error
 }
 
 type Hub struct {
@@ -58,10 +58,9 @@ type Hub struct {
 
 	mu       sync.RWMutex
 	sessions map[string]Session // key: accountID/deviceID
-	// lastSeen is intentionally kept in-memory only.
-	// Writing activity timestamps to disk would create metadata a warrant
-	// could retrieve; losing them on restart is an acceptable trade-off.
-	lastSeen map[string]int64 // accountID → Unix ms
+	// No presence / last-seen is tracked at all: the relay exposes no
+	// online-status oracle (it would let anyone with an account id watch a
+	// user's activity pattern).
 
 	shares *queueShares   // per-(sender, destination) queue occupancy
 	pushes *pushCoalescer // per-device push coalescing
@@ -71,7 +70,6 @@ func New(st *store.Store) *Hub {
 	return &Hub{
 		store:    st,
 		sessions: make(map[string]Session),
-		lastSeen: make(map[string]int64),
 		shares:   newQueueShares(maxQueuedPerSender),
 		pushes:   newPushCoalescer(pushCoalesceWindow),
 	}
@@ -112,10 +110,10 @@ func (h *Hub) SetVoIPPusher(p VoIPPusher) { h.voipPusher = p }
 // PushCallToAccount wakes every device of accountID for an incoming call,
 // picking the transport each device registered — the same per-device branch
 // Deliver uses. iOS ('apns') gets a PushKit VoIP push (its separate VoIP token);
-// Android ('fcm') gets a high-priority FCM data message carrying the same call
-// metadata. Android has no PushKit, so without the FCM branch it would only ring
-// while already in the foreground.
-func (h *Hub) PushCallToAccount(accountID, callID, callerAccount, callerName, kind string) {
+// Android ('fcm') gets a high-priority FCM data message. The push carries ONLY
+// the call id — never who is calling: the caller's identity (and audio/video
+// kind) reach the callee solely inside the end-to-end-encrypted call offer.
+func (h *Hub) PushCallToAccount(accountID, callID string) {
 	devices, err := h.store.ListDevices(accountID)
 	if err != nil {
 		slog.Warn("call push: device lookup failed", "err", privlog.Error(err))
@@ -135,7 +133,7 @@ func (h *Hub) PushCallToAccount(accountID, callID, callerAccount, callerName, ki
 			t := token
 			devID := d.DeviceID
 			go func() {
-				if err := h.fcmPusher.PushCall(t, callID, callerAccount, callerName, kind); err != nil {
+				if err := h.fcmPusher.PushCall(t, callID); err != nil {
 					slog.Warn("call push (fcm) failed", "err", privlog.Error(err))
 					if tokenInvalid(err) {
 						h.clearDeadToken(accountID, devID, store.PushTokenFCM, t)
@@ -155,7 +153,7 @@ func (h *Hub) PushCallToAccount(accountID, callID, callerAccount, callerName, ki
 			t := voipToken
 			devID := d.DeviceID
 			go func() {
-				if err := h.voipPusher.PushVoIP(t, callID, callerAccount, callerName, kind); err != nil {
+				if err := h.voipPusher.PushVoIP(t, callID); err != nil {
 					slog.Warn("call push (voip) failed", "err", privlog.Error(err))
 					if tokenInvalid(err) {
 						h.clearDeadToken(accountID, devID, store.PushTokenVoIP, t)
@@ -182,8 +180,7 @@ func (h *Hub) Register(accountID string, deviceID uint32, s Session) {
 	h.mu.Lock()
 	prev := h.sessions[k]
 	h.sessions[k] = s
-	h.lastSeen[accountID] = time.Now().UnixMilli()
-	h.mu.Unlock()
+		h.mu.Unlock()
 	if prev != nil && prev != s {
 		// Outside the lock: closing runs the old session's Unregister, which
 		// is a no-op now that the map points at the new session.
@@ -216,8 +213,7 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 	if h.sessions[k] == s {
 		delete(h.sessions, k)
 		slog.Debug("ws: session unregistered")
-		h.lastSeen[accountID] = time.Now().UnixMilli()
-	}
+			}
 }
 
 // Closer is optionally implemented by a Session that can be forcibly torn down
@@ -242,7 +238,6 @@ func (h *Hub) DisconnectAccount(accountID string, reason string) int {
 			delete(h.sessions, k)
 		}
 	}
-	delete(h.lastSeen, accountID)
 	h.mu.Unlock()
 	// Close outside the lock: closing triggers the session's own Unregister,
 	// which takes h.mu (it is a no-op now since the entry is already gone).
@@ -276,15 +271,6 @@ func (h *Hub) DisconnectDevice(accountID string, deviceID uint32, reason string)
 		c.Close(reason)
 	}
 	return true
-}
-
-// LastSeen returns the most recent connect/disconnect time for the account
-// in milliseconds since epoch, or 0 if not seen since server start.
-// This is intentionally in-memory only — never persisted to disk.
-func (h *Hub) LastSeen(accountID string) int64 {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.lastSeen[accountID]
 }
 
 // Deliver routes one envelope to one device without per-sender queue

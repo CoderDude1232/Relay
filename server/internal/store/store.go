@@ -1523,11 +1523,12 @@ func (s *Store) SealedTargetByMailbox(mailboxID string) (*Device, []byte, error)
 }
 
 // RotateMailbox assigns a fresh opaque mailbox id to the device and returns it.
-// Peers pick up the new id on their next prekey-bundle fetch; sealed sends to
-// the old id fail (the sender re-fetches the bundle and retries). Rotating
-// periodically breaks any long-lived routing identifier the relay could use to
-// correlate a mailbox with a device over time. The message queue is keyed by
-// (account, device), not mailbox, so queued deliveries are unaffected.
+// Only ever called on an explicit client request — mailbox ids are otherwise
+// stable (the relay knows mailbox → device anyway, so scheduled rotation bought
+// nothing but stale-mailbox failures). Peers pick up the new id on their next
+// prekey-bundle fetch; sealed sends to the old id fail (the sender re-fetches
+// and retries). The message queue is keyed by (account, device), not mailbox,
+// so queued deliveries are unaffected.
 func (s *Store) RotateMailbox(accountID string, deviceID uint32) (string, error) {
 	mailboxID, err := newMailboxID()
 	if err != nil {

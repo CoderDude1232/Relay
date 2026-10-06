@@ -647,6 +647,22 @@ func TestSealedSendDelivery(t *testing.T) {
 	if string(w.queued[0].Content) != string(content) {
 		t.Fatalf("content mismatch")
 	}
+	// The sender's clock never reaches the wire: the relay stamps its own time.
+	if w.queued[0].ClientTimestamp != w.queued[0].ServerTimestamp {
+		t.Fatalf("sealed envelope carries a client clock: %d vs %d", w.queued[0].ClientTimestamp, w.queued[0].ServerTimestamp)
+	}
+
+	// Call rings use the same unauthenticated access-key capability.
+	ring := func(mb string, key []byte, want int) {
+		env.doJSON("POST", "/v1/calls/ring", "", "", map[string]any{
+			"destinationMailbox": mb,
+			"accessKey":          base64.StdEncoding.EncodeToString(key),
+			"callId":             "3f1c2d9e-0000-4000-8000-000000000001",
+		}, want, nil)
+	}
+	ring(mailbox, accessKey, http.StatusNoContent)
+	ring(mailbox, bytes.Repeat([]byte{0x22}, 32), http.StatusForbidden)
+	ring("0000000000000000000000000000dead", accessKey, http.StatusForbidden)
 }
 
 func TestMailboxRotation(t *testing.T) {

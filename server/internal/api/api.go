@@ -245,7 +245,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
 	mux.HandleFunc("PUT /v1/devices/voip", s.auth(s.handleSetVoIPToken))
 	mux.HandleFunc("PUT /v1/devices/me/push-content", s.auth(s.handleSetPushContent))
-	mux.HandleFunc("POST /v1/call/{account}", s.auth(s.handleCallOffer))
+	mux.HandleFunc("POST /v1/calls/ring", s.handleCallRing) // unauthenticated by design (access-key capability)
 	mux.HandleFunc("PUT /v1/keys", s.auth(s.handleSetKeys))
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
@@ -257,7 +257,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/devices/{id}/auth-key", s.auth(s.handleGetDeviceAuthKey))
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("GET /v1/accounts/{account}", s.auth(s.handleLookupAccount))
-	mux.HandleFunc("GET /v1/presence/{account}", s.auth(s.handlePresence))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.auth(s.handleUploadAttachment))
 	mux.HandleFunc("GET /v1/attachments/{id}", s.auth(s.handleDownloadAttachment))
@@ -575,13 +574,16 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
+	// No client timestamp is accepted: a sender clock on the wire is a
+	// clock-offset fingerprint that could link anonymous sends to one device.
+	// Timestamps that matter (ordering, receipts) live inside the encrypted
+	// content; the envelope carries only the relay's receive time.
 	var req struct {
-		MailboxID       string `json:"mailboxId"`
-		Type            int32  `json:"type"`
-		Content         string `json:"content"`   // base64 sealed blob
-		AccessKey       string `json:"accessKey"` // base64, recipient's access key
-		Ephemeral       bool   `json:"ephemeral"`
-		ClientTimestamp int64  `json:"clientTimestamp"`
+		MailboxID string `json:"mailboxId"`
+		Type      int32  `json:"type"`
+		Content   string `json:"content"`   // base64 sealed blob
+		AccessKey string `json:"accessKey"` // base64, recipient's access key
+		Ephemeral bool   `json:"ephemeral"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MailboxID == "" {
 		httpError(w, http.StatusBadRequest, "mailboxId and content required")
@@ -601,21 +603,13 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
-	// Resolve the mailbox and verify the access key. Any failure returns the same
-	// 403 so the endpoint doesn't reveal whether a mailbox exists — and takes the
-	// same path: one query either way, and the constant-time comparison always
-	// runs (against a random dummy key when the mailbox or its key is unknown).
-	dest, stored, lookupErr := s.store.SealedTargetByMailbox(req.MailboxID)
-	known := lookupErr == nil && len(stored) == len(sealedDummyAccessKey)
-	if !known {
-		stored = sealedDummyAccessKey[:]
-	}
-	match := subtle.ConstantTimeCompare(stored, token) == 1
-	if !known || !match {
+	dest, ok := s.checkMailboxAccess(req.MailboxID, token)
+	if !ok {
 		httpError(w, http.StatusForbidden, "delivery rejected")
 		return
 	}
 
+	now := time.Now().UnixMilli()
 	env := &relaypb.Envelope{
 		Id: newEnvelopeID(),
 		// SenderAccount / SenderDevice intentionally left empty: the relay does
@@ -623,8 +617,8 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		// from the sealed blob.
 		Type:            relaypb.CiphertextType(req.Type),
 		Content:         content,
-		ClientTimestamp: req.ClientTimestamp,
-		ServerTimestamp: time.Now().UnixMilli(),
+		ClientTimestamp: now, // server-stamped, never the sender's clock
+		ServerTimestamp: now,
 		Ephemeral:       req.Ephemeral,
 	}
 	// Queue fairness for an anonymous sender is keyed by its source-IP bucket.
@@ -638,6 +632,25 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"serverTimestamp": env.ServerTimestamp})
+}
+
+// checkMailboxAccess is the unauthenticated-path capability check shared by
+// sealed sends and call rings: the presented key must equal the access key of
+// the account owning the mailbox. Any failure is the same false result and
+// takes the same path — one query either way, and the constant-time comparison
+// always runs (against a random dummy key when the mailbox or its key is
+// unknown) — so a caller can't tell an unknown mailbox from a wrong key.
+func (s *Server) checkMailboxAccess(mailboxID string, presented []byte) (*store.Device, bool) {
+	dest, stored, lookupErr := s.store.SealedTargetByMailbox(mailboxID)
+	known := lookupErr == nil && len(stored) == len(sealedDummyAccessKey)
+	if !known {
+		stored = sealedDummyAccessKey[:]
+	}
+	match := subtle.ConstantTimeCompare(stored, presented) == 1
+	if !known || !match {
+		return nil, false
+	}
+	return dest, true
 }
 
 // handleFetchQueue returns this device's currently-queued envelopes over the
@@ -743,9 +756,10 @@ func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev 
 }
 
 // handleRotateMailbox assigns the authenticated device a fresh mailbox id and
-// returns it. Clients call this periodically so the relay can't track a
-// long-lived routing identifier; peers pick up the new id on their next bundle
-// fetch, and sealed sends to the stale id fail-and-retry.
+// returns it. The relay never rotates mailboxes on its own (ids are stable);
+// this exists only for an explicit client request (e.g. after a suspected
+// mailbox-id leak). Peers pick up the new id on their next bundle fetch, and
+// sealed sends to the stale id fail-and-retry.
 func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	mailboxID, err := s.store.RotateMailbox(dev.AccountID, dev.DeviceID)
 	if err != nil {
@@ -1403,20 +1417,47 @@ func (s *Server) handleSetPushContent(w http.ResponseWriter, r *http.Request, de
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleCallOffer triggers a VoIP push to the target account so CallKit can
-// present the incoming-call UI before the E2EE offer envelope arrives over WS.
-func (s *Server) handleCallOffer(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	target := r.PathValue("account")
-	var req struct {
-		CallID     string `json:"callId"`
-		CallerName string `json:"callerName"`
-		Kind       string `json:"kind"` // "audio" or "video"
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CallID == "" {
-		httpError(w, http.StatusBadRequest, "callId required")
+// validCallID bounds the opaque call id echoed into the push payload.
+var validCallID = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+// handleCallRing wakes the callee's devices for an incoming call. It is
+// UNAUTHENTICATED by design, exactly like sealed sends: the caller proves it
+// may reach the callee by presenting the callee's access key for one of their
+// mailboxes, so the relay never learns who is calling whom. Unknown mailbox
+// and wrong key get the identical 403. The push carries only the call id; the
+// caller's identity reaches the callee solely inside the E2E-encrypted offer
+// (delivered as a sealed message).
+func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !callRingIPLimiter.allow(ip) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
-	s.hub.PushCallToAccount(target, req.CallID, dev.AccountID, req.CallerName, req.Kind)
+	var req struct {
+		DestinationMailbox string `json:"destinationMailbox"`
+		AccessKey          string `json:"accessKey"`
+		CallID             string `json:"callId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DestinationMailbox == "" ||
+		!validCallID.MatchString(req.CallID) {
+		httpError(w, http.StatusBadRequest, "destinationMailbox, accessKey and callId required")
+		return
+	}
+	key, err := base64.StdEncoding.DecodeString(req.AccessKey)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid access key")
+		return
+	}
+	if !callRingMailboxLimiter.allow(req.DestinationMailbox) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
+	dest, ok := s.checkMailboxAccess(req.DestinationMailbox, key)
+	if !ok {
+		httpError(w, http.StatusForbidden, "ring rejected")
+		return
+	}
+	s.hub.PushCallToAccount(dest.AccountID, req.CallID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1459,21 +1500,6 @@ func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, dev
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"username": username})
-}
-
-// handlePresence reports whether an account currently has a live connection
-// and, if not, when it was last seen (ms since epoch, 0 if never).
-// Rate-limited to limit metadata exposure to any single requester.
-func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !presenceLimiter.allow(dev.AccountID) {
-		httpError(w, http.StatusTooManyRequests, "presence rate limit exceeded; try again later")
-		return
-	}
-	account := r.PathValue("account")
-	online := s.hub.IsOnline(account)
-	// last_seen is in-memory only — not persisted to the DB.
-	lastSeen := s.hub.LastSeen(account)
-	writeJSON(w, http.StatusOK, map[string]any{"online": online, "lastSeen": lastSeen})
 }
 
 // ---------------------------------------------------------------------------
@@ -2093,7 +2119,8 @@ func (s *Server) PruneStaleLimiterKeys() {
 		preKeyFetchLimiter,
 		groupCreateLimiter,
 		groupJoinLimiter,
-		presenceLimiter,
+		callRingIPLimiter,
+		callRingMailboxLimiter,
 		lookupLimiter,
 		usernameLookupLimiter,
 		keyUploadLimiter,
@@ -2155,8 +2182,10 @@ var groupCreateLimiter = newSlidingWindowLimiter(20, 24*time.Hour)
 // 50 invite-join attempts per account per hour to prevent token brute-forcing.
 var groupJoinLimiter = newSlidingWindowLimiter(50, time.Hour)
 
-// 300 presence lookups per account per minute.
-var presenceLimiter = newSlidingWindowLimiter(300, time.Minute)
+// Call rings are unauthenticated (access-key capability, like sealed sends):
+// bound them per source IP and per destination mailbox.
+var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
+var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
 
 // lookupLimiter: general account/profile lookups per account per hour (search, profile fetches).
 var lookupLimiter = newSlidingWindowLimiter(600, time.Hour)
