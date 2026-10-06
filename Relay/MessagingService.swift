@@ -3436,12 +3436,29 @@ final class MessagingService {
     }
 
     func setDisappearingSeconds(_ conversationId: String, seconds: Int64) {
+        let previous = conversations.first(where: { $0.id == conversationId })?.disappearingSeconds ?? 0
         do {
             try storage.messages.setDisappearingSeconds(conversationId, seconds: seconds)
+            if seconds != previous {
+                // The timer travels with each message we send from now on; note
+                // the change in the thread so it's clear which messages expire.
+                let text = seconds == 0
+                    ? "You turned off disappearing messages"
+                    : "You set disappearing messages to \(Self.durationLabel(seconds))"
+                insertSystemLine(text, conversationId: conversationId)
+            }
             refreshConversations()
         } catch {
             log.error("set disappearing messages failed: \(PrivacyRedactor.error(error))")
         }
+    }
+
+    private static func durationLabel(_ seconds: Int64) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 1
+        formatter.allowedUnits = [.weekOfMonth, .day, .hour, .minute, .second]
+        return formatter.string(from: TimeInterval(seconds)) ?? "\(seconds) seconds"
     }
 
     func setConversationPrivacy(

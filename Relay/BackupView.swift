@@ -7,6 +7,7 @@
 //  encrypted with a one-time password the user sets.
 //
 
+import Clibsodium
 import CryptoKit
 import RelayKit
 import SecureStorage
@@ -133,8 +134,8 @@ struct BackupView: View {
         .fileExporter(
             isPresented: $showingExporter,
             document: exportItem,
-            contentType: .json,
-            defaultFilename: "relay-backup-\(isoDate()).json"
+            contentType: .data,
+            defaultFilename: "relay-backup-\(isoDate()).relaybackup"
         ) { result in
             if case .failure(let e) = result { exportError = e.localizedDescription }
         }
@@ -171,24 +172,42 @@ struct BackupView: View {
         isExporting = false
     }
 
+    /// File layout: "RELAYBK2" | salt (16) | opslimit (UInt64 BE) |
+    /// memlimit (UInt64 BE) | AES-GCM nonce | ciphertext | tag.
+    /// The key comes from Argon2id over the password, so an attacker who gets
+    /// the file has to pay a memory-hard cost per password guess (a plain hash
+    /// would let them try billions per second).
     private func encryptExport(_ plaintext: Data, password: String) throws -> Data {
-        let salt = SymmetricKey(size: .bits256)
-        var saltBytes = [UInt8](repeating: 0, count: 32)
-        salt.withUnsafeBytes { saltBytes = Array($0) }
-        let keyData = saltBytes.withUnsafeBytes { saltPtr in
-            Array(HKDF<SHA256>.deriveKey(
-                inputKeyMaterial: SymmetricKey(data: Data(password.utf8)),
-                salt: Data(saltBytes),
-                outputByteCount: 32
-            ).withUnsafeBytes { Array($0) })
+        _ = sodium_init()
+        var salt = [UInt8](repeating: 0, count: Int(crypto_pwhash_SALTBYTES))
+        randombytes_buf(&salt, salt.count)
+        let opsLimit = UInt64(crypto_pwhash_OPSLIMIT_MODERATE)
+        let memLimit = UInt64(crypto_pwhash_MEMLIMIT_INTERACTIVE)
+        var keyBytes = [UInt8](repeating: 0, count: 32)
+        let passwordLength = UInt64(password.utf8.count)
+        let rc = password.withCString { pw in
+            crypto_pwhash(
+                &keyBytes, UInt64(keyBytes.count),
+                pw, passwordLength, salt,
+                opsLimit, Int(memLimit), crypto_pwhash_ALG_ARGON2ID13
+            )
         }
-        let key = SymmetricKey(data: Data(keyData))
+        guard rc == 0 else { throw BackupExportError.keyDerivationFailed }
+        let key = SymmetricKey(data: Data(keyBytes))
         let box = try AES.GCM.seal(plaintext, using: key)
-        var out = Data(saltBytes)
+        var out = Data("RELAYBK2".utf8)
+        out.append(contentsOf: salt)
+        withUnsafeBytes(of: opsLimit.bigEndian) { out.append(contentsOf: $0) }
+        withUnsafeBytes(of: memLimit.bigEndian) { out.append(contentsOf: $0) }
         out.append(contentsOf: box.nonce)
         out.append(box.ciphertext)
         out.append(box.tag)
         return out
+    }
+
+    enum BackupExportError: LocalizedError {
+        case keyDerivationFailed
+        var errorDescription: String? { "Couldn't secure the backup file. Please try again." }
     }
 
     private func isoDate() -> String {
@@ -199,7 +218,7 @@ struct BackupView: View {
 }
 
 struct BackupDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.json] }
+    static var readableContentTypes: [UTType] { [.data] }
     let data: Data
 
     init(data: Data) { self.data = data }
