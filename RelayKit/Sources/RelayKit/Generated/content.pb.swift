@@ -141,6 +141,22 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
     set {_uniqueStorage()._body = .pollVote(newValue)}
   }
 
+  public var screenshot: Relay_Content_ScreenshotAlert {
+    get {
+      if case .screenshot(let v)? = _storage._body {return v}
+      return Relay_Content_ScreenshotAlert()
+    }
+    set {_uniqueStorage()._body = .screenshot(newValue)}
+  }
+
+  public var screenSecurityUpdate: Relay_Content_ScreenSecurityUpdate {
+    get {
+      if case .screenSecurityUpdate(let v)? = _storage._body {return v}
+      return Relay_Content_ScreenSecurityUpdate()
+    }
+    set {_uniqueStorage()._body = .screenSecurityUpdate(newValue)}
+  }
+
   /// Set when this content belongs to a group; empty for 1:1. Group messages
   /// are encrypted with the sender's sender key (senderKey ciphertext);
   /// control content (SKDM, group updates) is sent over pairwise sessions.
@@ -178,8 +194,9 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
     set {_uniqueStorage()._expiresAfterMs = newValue}
   }
 
-  /// Peer account id of the original recipient; set only on sync copies sent to
-  /// own other devices. Empty on all messages sent to a peer.
+  /// Set only on sync copies sent to the sender's own other devices. Contains the
+  /// peer account id of the original recipient so the linked device can store the
+  /// message in the correct conversation as an outgoing message.
   public var syncRecipient: String {
     get {_storage._syncRecipient}
     set {_uniqueStorage()._syncRecipient = newValue}
@@ -200,6 +217,8 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
     case edit(Relay_Content_EditMessage)
     case poll(Relay_Content_PollMessage)
     case pollVote(Relay_Content_PollVote)
+    case screenshot(Relay_Content_ScreenshotAlert)
+    case screenSecurityUpdate(Relay_Content_ScreenSecurityUpdate)
 
   }
 
@@ -230,51 +249,98 @@ public nonisolated struct Relay_Content_SenderKeyDistribution: Sendable {
 /// Notifies members that a group's roster/metadata changed; recipients
 /// re-sync the authoritative roster from the relay. `revision` lets clients
 /// drop stale updates; the rest drives a human-readable system line.
-public nonisolated struct Relay_Content_GroupUpdate: Sendable {
+public nonisolated struct Relay_Content_GroupUpdate: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var revision: Int64 = 0
+  public var revision: Int64 {
+    get {_storage._revision}
+    set {_uniqueStorage()._revision = newValue}
+  }
 
-  public var action: Relay_Content_GroupUpdate.Action = .unspecified
+  public var action: Relay_Content_GroupUpdate.Action {
+    get {_storage._action}
+    set {_uniqueStorage()._action = newValue}
+  }
 
   /// account id that made the change
-  public var actor: String = String()
+  public var actor: String {
+    get {_storage._actor}
+    set {_uniqueStorage()._actor = newValue}
+  }
 
-  /// affected member (add/remove)
-  public var target: String = String()
+  /// affected member (add/remove/promote/demote)
+  public var target: String {
+    get {_storage._target}
+    set {_uniqueStorage()._target = newValue}
+  }
 
   /// group name (create/rename)
-  public var name: String = String()
+  public var name: String {
+    get {_storage._name}
+    set {_uniqueStorage()._name = newValue}
+  }
 
   /// group description (describe)
-  public var description_p: String = String()
+  public var description_p: String {
+    get {_storage._description_p}
+    set {_uniqueStorage()._description_p = newValue}
+  }
 
   /// group avatar blob pointer (avatar action)
   public var avatar: Relay_Content_AttachmentPointer {
-    get {_avatar ?? Relay_Content_AttachmentPointer()}
-    set {_avatar = newValue}
+    get {_storage._avatar ?? Relay_Content_AttachmentPointer()}
+    set {_uniqueStorage()._avatar = newValue}
   }
   /// Returns true if `avatar` has been explicitly set.
-  public var hasAvatar: Bool {self._avatar != nil}
+  public var hasAvatar: Bool {_storage._avatar != nil}
   /// Clears the value of `avatar`. Subsequent reads from it will return its default value.
-  public mutating func clearAvatar() {self._avatar = nil}
+  public mutating func clearAvatar() {_uniqueStorage()._avatar = nil}
 
-  /// Full member list after this change.
-  public var members: [String] = []
+  /// Full member list after this change. Included by the sender on CREATE, ADD,
+  /// REMOVE, and LEAVE so recipients can update their local roster.
+  public var members: [String] {
+    get {_storage._members}
+    set {_uniqueStorage()._members = newValue}
+  }
 
   /// Full admin list after this change (promote/demote actions).
-  public var admins: [String] = []
+  public var admins: [String] {
+    get {_storage._admins}
+    set {_uniqueStorage()._admins = newValue}
+  }
 
   /// New announce-only state (SET_ANNOUNCE_ONLY action).
-  public var announceOnly: Bool = false
+  public var announceOnly: Bool {
+    get {_storage._announceOnly}
+    set {_uniqueStorage()._announceOnly = newValue}
+  }
 
-  /// The group's current sender-key epoch (empty = unchanged).
-  public var distributionID: String = String()
+  /// New group screenshot-hide state (SET_SCREEN_SECURITY action, admin-set).
+  public var screenSecurity: Bool {
+    get {_storage._screenSecurity}
+    set {_uniqueStorage()._screenSecurity = newValue}
+  }
 
-  /// Group invite capability (empty = no active link).
-  public var inviteKey: Data = Data()
+  /// The group's current sender-key epoch. Carried E2E (was server-managed) so
+  /// clients agree on it without a server round-trip. On member REMOVE the actor
+  /// rotates this to a fresh id, forcing new sender keys the removed member can't
+  /// read. Empty on metadata-only actions (recipients keep their current id).
+  public var distributionID: String {
+    get {_storage._distributionID}
+    set {_uniqueStorage()._distributionID = newValue}
+  }
+
+  /// Group invite capability. Carried on normal updates so every member stores
+  /// it, and echoed by a link-joiner in their self-add so members can verify the
+  /// joiner actually held a valid invite link (they never learn the joiner is an
+  /// admin). Rotating it revokes outstanding links. Empty when the group has no
+  /// active invite link.
+  public var inviteKey: Data {
+    get {_storage._inviteKey}
+    set {_uniqueStorage()._inviteKey = newValue}
+  }
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -302,6 +368,8 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
     /// announce_only toggled
     case setAnnounceOnly // = 10
 
+    /// admin toggled group screenshot hiding
+    case setScreenSecurity // = 11
     case UNRECOGNIZED(Int)
 
     public init() {
@@ -321,6 +389,7 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
       case 8: self = .promoteAdmin
       case 9: self = .demoteAdmin
       case 10: self = .setAnnounceOnly
+      case 11: self = .setScreenSecurity
       default: self = .UNRECOGNIZED(rawValue)
       }
     }
@@ -338,6 +407,7 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
       case .promoteAdmin: return 8
       case .demoteAdmin: return 9
       case .setAnnounceOnly: return 10
+      case .setScreenSecurity: return 11
       case .UNRECOGNIZED(let i): return i
       }
     }
@@ -355,13 +425,14 @@ public nonisolated struct Relay_Content_GroupUpdate: Sendable {
       .promoteAdmin,
       .demoteAdmin,
       .setAnnounceOnly,
+      .setScreenSecurity,
     ]
 
   }
 
   public init() {}
 
-  fileprivate var _avatar: Relay_Content_AttachmentPointer? = nil
+  fileprivate var _storage = _StorageClass.defaultInstance
 }
 
 public nonisolated struct Relay_Content_TextMessage: Sendable {
@@ -456,11 +527,36 @@ public nonisolated struct Relay_Content_ProfileUpdate: Sendable {
   /// sender clock; newest wins
   public var timestamp: Int64 = 0
 
+  /// short "about" line shown under the name
+  public var status: String = String()
+
+  /// longer free-text profile bio
+  public var bio: String = String()
+
+  /// labelled profile links (site/handle)
+  public var links: [Relay_Content_ProfileLink] = []
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _avatar: Relay_Content_AttachmentPointer? = nil
+}
+
+/// A single labelled link on a profile (e.g. label "Website", url
+/// "https://example.com"). Distributed inside ProfileUpdate, so E2E.
+public nonisolated struct Relay_Content_ProfileLink: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var label: String = String()
+
+  public var url: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
 }
 
 /// A snapshot of the message being replied to. Self-contained (carries the
@@ -594,7 +690,8 @@ public nonisolated struct Relay_Content_ReceiptMessage: Sendable {
 /// Call signalling — all types use the same message; the type field selects
 /// the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
 /// offline devices. ANSWER, ICE, RINGING, and BUSY are sent ephemeral.
-/// GROUP_RING is non-ephemeral; GROUP_JOIN and GROUP_LEAVE are ephemeral.
+/// GROUP_RING is non-ephemeral (must wake offline devices). GROUP_JOIN and
+/// GROUP_LEAVE are ephemeral.
 public nonisolated struct Relay_Content_CallMessage: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -611,13 +708,13 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
   /// JSON-encoded RTCIceCandidate for ICE
   public var ice: String = String()
 
-  /// Group call conversation ID; empty for 1:1 calls.
+  /// Group call fields — empty for 1:1 calls.
   public var groupID: String = String()
 
-  /// Mesh OFFER/ANSWER/ICE: which participant this message targets.
+  /// mesh OFFER/ANSWER/ICE: which peer this is for
   public var targetAccount: String = String()
 
-  /// GROUP_RING: full participant list.
+  /// GROUP_RING: full participant list
   public var participants: [String] = []
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
@@ -630,8 +727,14 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
     case hangup // = 3
     case busy // = 4
     case ringing // = 5
+
+    /// initiator → all members: "join this group call"
     case groupRing // = 6
+
+    /// member → all: "I joined; initiate mesh SDP with me"
     case groupJoin // = 7
+
+    /// member → all: "I left the call"
     case groupLeave // = 8
     case UNRECOGNIZED(Int)
 
@@ -671,8 +774,15 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
 
     // The compiler won't synthesize support with the UNRECOGNIZED case.
     public static let allCases: [Relay_Content_CallMessage.TypeEnum] = [
-      .offer, .answer, .ice, .hangup, .busy, .ringing,
-      .groupRing, .groupJoin, .groupLeave,
+      .offer,
+      .answer,
+      .ice,
+      .hangup,
+      .busy,
+      .ringing,
+      .groupRing,
+      .groupJoin,
+      .groupLeave,
     ]
 
   }
@@ -693,6 +803,87 @@ public nonisolated struct Relay_Content_EditMessage: Sendable {
 
   /// Replacement body text.
   public var newBody: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// A poll sent in a conversation. Recipients cast votes via PollVote messages;
+/// vote tallies are aggregated client-side from received votes.
+public nonisolated struct Relay_Content_PollMessage: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var question: String = String()
+
+  public var options: [String] = []
+
+  /// When true, voters may select multiple options.
+  public var multiSelect: Bool = false
+
+  /// Sender's clock; used as the stable poll id that PollVote messages reference.
+  public var timestamp: Int64 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// A vote cast on a PollMessage identified by (poll_author, poll_timestamp).
+/// Sending a new vote for the same poll replaces the previous selection.
+public nonisolated struct Relay_Content_PollVote: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// account id of the poll creator
+  public var pollAuthor: String = String()
+
+  /// timestamp field from the PollMessage
+  public var pollTimestamp: Int64 = 0
+
+  /// zero-based option indices
+  public var selectedOptions: [UInt32] = []
+
+  /// sender's clock for ordering
+  public var timestamp: Int64 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Sent (always, regardless of the hide setting) when the sender takes a
+/// screenshot while a conversation is open. `group_id` (Content field 8) routes
+/// group vs 1:1. Recipients show an in-chat notice; non-ephemeral so it queues.
+public nonisolated struct Relay_Content_ScreenshotAlert: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// sender clock
+  public var timestamp: Int64 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// Syncs the sender's per-CHAT screenshot-hide preference to a 1:1 peer. The
+/// effective hide state on each device is the OR of both sides' preferences, so
+/// content stays hidden unless BOTH disable it. Groups instead use the
+/// admin-controlled GroupUpdate.SET_SCREEN_SECURITY flag.
+public nonisolated struct Relay_Content_ScreenSecurityUpdate: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var enabled: Bool = false
+
+  /// sender clock; newest wins
+  public var timestamp: Int64 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -752,36 +943,13 @@ public nonisolated struct Relay_Content_TypingMessage: Sendable {
   public init() {}
 }
 
-/// A poll message. Recipients cast votes via PollVote; tallies aggregated client-side.
-public nonisolated struct Relay_Content_PollMessage: Sendable {
-  public var question: String = String()
-  public var options: [String] = []
-  /// When true, voters may select multiple options.
-  public var multiSelect: Bool = false
-  /// Sender clock; stable poll id for PollVote references.
-  public var timestamp: Int64 = 0
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-  public init() {}
-}
-
-/// A vote cast on a poll identified by (pollAuthor, pollTimestamp).
-public nonisolated struct Relay_Content_PollVote: Sendable {
-  public var pollAuthor: String = String()
-  public var pollTimestamp: Int64 = 0
-  /// Zero-based option indices selected.
-  public var selectedOptions: [UInt32] = []
-  public var timestamp: Int64 = 0
-  public var unknownFields = SwiftProtobuf.UnknownStorage()
-  public init() {}
-}
-
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate nonisolated let _protobuf_package = "relay.content"
 
 nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Content"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0\u{1}profile\0\u{1}call\0\u{1}edit\0\u{1}padding\0\u{3}sender_account_id\0\u{3}sender_device_id\0\u{3}expires_after_ms\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0\u{1}profile\0\u{1}call\0\u{1}edit\0\u{1}padding\0\u{3}sender_account_id\0\u{3}sender_device_id\0\u{3}expires_after_ms\0\u{3}sync_recipient\0\u{1}poll\0\u{3}poll_vote\0\u{1}screenshot\0\u{3}screen_security_update\0")
 
   fileprivate class _StorageClass {
     var _body: Relay_Content_Content.OneOf_Body?
@@ -988,6 +1156,32 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
             _storage._body = .pollVote(v)
           }
         }()
+        case 19: try {
+          var v: Relay_Content_ScreenshotAlert?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .screenshot(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .screenshot(v)
+          }
+        }()
+        case 20: try {
+          var v: Relay_Content_ScreenSecurityUpdate?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .screenSecurityUpdate(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .screenSecurityUpdate(v)
+          }
+        }()
         default: break
         }
       }
@@ -1047,14 +1241,6 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
         guard case .edit(let v)? = _storage._body else { preconditionFailure() }
         try visitor.visitSingularMessageField(value: v, fieldNumber: 11)
       }()
-      case .poll?: try {
-        guard case .poll(let v)? = _storage._body else { preconditionFailure() }
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 17)
-      }()
-      case .pollVote?: try {
-        guard case .pollVote(let v)? = _storage._body else { preconditionFailure() }
-        try visitor.visitSingularMessageField(value: v, fieldNumber: 18)
-      }()
       default: break
       }
       if !_storage._padding.isEmpty {
@@ -1071,6 +1257,25 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
       }
       if !_storage._syncRecipient.isEmpty {
         try visitor.visitSingularStringField(value: _storage._syncRecipient, fieldNumber: 16)
+      }
+      switch _storage._body {
+      case .poll?: try {
+        guard case .poll(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 17)
+      }()
+      case .pollVote?: try {
+        guard case .pollVote(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 18)
+      }()
+      case .screenshot?: try {
+        guard case .screenshot(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 19)
+      }()
+      case .screenSecurityUpdate?: try {
+        guard case .screenSecurityUpdate(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 20)
+      }()
+      default: break
       }
     }
     try unknownFields.traverse(visitor: &visitor)
@@ -1134,95 +1339,160 @@ nonisolated extension Relay_Content_SenderKeyDistribution: SwiftProtobuf.Message
 
 nonisolated extension Relay_Content_GroupUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GroupUpdate"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}revision\0\u{1}action\0\u{1}actor\0\u{1}target\0\u{1}name\0\u{1}description\0\u{1}avatar\0\u{1}members\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}revision\0\u{1}action\0\u{1}actor\0\u{1}target\0\u{1}name\0\u{1}description\0\u{1}avatar\0\u{1}members\0\u{1}admins\0\u{3}announce_only\0\u{3}distribution_id\0\u{3}invite_key\0\u{3}screen_security\0")
+
+  fileprivate class _StorageClass {
+    var _revision: Int64 = 0
+    var _action: Relay_Content_GroupUpdate.Action = .unspecified
+    var _actor: String = String()
+    var _target: String = String()
+    var _name: String = String()
+    var _description_p: String = String()
+    var _avatar: Relay_Content_AttachmentPointer? = nil
+    var _members: [String] = []
+    var _admins: [String] = []
+    var _announceOnly: Bool = false
+    var _screenSecurity: Bool = false
+    var _distributionID: String = String()
+    var _inviteKey: Data = Data()
+
+      // This property is used as the initial default value for new instances of the type.
+      // The type itself is protecting the reference to its storage via CoW semantics.
+      // This will force a copy to be made of this reference when the first mutation occurs;
+      // hence, it is safe to mark this as `nonisolated(unsafe)`.
+      static nonisolated(unsafe) let defaultInstance = _StorageClass()
+
+    private init() {}
+
+    init(copying source: _StorageClass) {
+      _revision = source._revision
+      _action = source._action
+      _actor = source._actor
+      _target = source._target
+      _name = source._name
+      _description_p = source._description_p
+      _avatar = source._avatar
+      _members = source._members
+      _admins = source._admins
+      _announceOnly = source._announceOnly
+      _screenSecurity = source._screenSecurity
+      _distributionID = source._distributionID
+      _inviteKey = source._inviteKey
+    }
+  }
+
+  fileprivate mutating func _uniqueStorage() -> _StorageClass {
+    if !isKnownUniquelyReferenced(&_storage) {
+      _storage = _StorageClass(copying: _storage)
+    }
+    return _storage
+  }
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularInt64Field(value: &self.revision) }()
-      case 2: try { try decoder.decodeSingularEnumField(value: &self.action) }()
-      case 3: try { try decoder.decodeSingularStringField(value: &self.actor) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.target) }()
-      case 5: try { try decoder.decodeSingularStringField(value: &self.name) }()
-      case 6: try { try decoder.decodeSingularStringField(value: &self.description_p) }()
-      case 7: try { try decoder.decodeSingularMessageField(value: &self._avatar) }()
-      case 8: try { try decoder.decodeRepeatedStringField(value: &self.members) }()
-      case 9: try { try decoder.decodeRepeatedStringField(value: &self.admins) }()
-      case 10: try { try decoder.decodeSingularBoolField(value: &self.announceOnly) }()
-      case 11: try { try decoder.decodeSingularStringField(value: &self.distributionID) }()
-      case 12: try { try decoder.decodeSingularBytesField(value: &self.inviteKey) }()
-      default: break
+    _ = _uniqueStorage()
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      while let fieldNumber = try decoder.nextFieldNumber() {
+        // The use of inline closures is to circumvent an issue where the compiler
+        // allocates stack space for every case branch when no optimizations are
+        // enabled. https://github.com/apple/swift-protobuf/issues/1034
+        switch fieldNumber {
+        case 1: try { try decoder.decodeSingularInt64Field(value: &_storage._revision) }()
+        case 2: try { try decoder.decodeSingularEnumField(value: &_storage._action) }()
+        case 3: try { try decoder.decodeSingularStringField(value: &_storage._actor) }()
+        case 4: try { try decoder.decodeSingularStringField(value: &_storage._target) }()
+        case 5: try { try decoder.decodeSingularStringField(value: &_storage._name) }()
+        case 6: try { try decoder.decodeSingularStringField(value: &_storage._description_p) }()
+        case 7: try { try decoder.decodeSingularMessageField(value: &_storage._avatar) }()
+        case 8: try { try decoder.decodeRepeatedStringField(value: &_storage._members) }()
+        case 9: try { try decoder.decodeRepeatedStringField(value: &_storage._admins) }()
+        case 10: try { try decoder.decodeSingularBoolField(value: &_storage._announceOnly) }()
+        case 11: try { try decoder.decodeSingularStringField(value: &_storage._distributionID) }()
+        case 12: try { try decoder.decodeSingularBytesField(value: &_storage._inviteKey) }()
+        case 13: try { try decoder.decodeSingularBoolField(value: &_storage._screenSecurity) }()
+        default: break
+        }
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.revision != 0 {
-      try visitor.visitSingularInt64Field(value: self.revision, fieldNumber: 1)
-    }
-    if self.action != .unspecified {
-      try visitor.visitSingularEnumField(value: self.action, fieldNumber: 2)
-    }
-    if !self.actor.isEmpty {
-      try visitor.visitSingularStringField(value: self.actor, fieldNumber: 3)
-    }
-    if !self.target.isEmpty {
-      try visitor.visitSingularStringField(value: self.target, fieldNumber: 4)
-    }
-    if !self.name.isEmpty {
-      try visitor.visitSingularStringField(value: self.name, fieldNumber: 5)
-    }
-    if !self.description_p.isEmpty {
-      try visitor.visitSingularStringField(value: self.description_p, fieldNumber: 6)
-    }
-    try { if let v = self._avatar {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
-    } }()
-    if !self.members.isEmpty {
-      try visitor.visitRepeatedStringField(value: self.members, fieldNumber: 8)
-    }
-    if !self.admins.isEmpty {
-      try visitor.visitRepeatedStringField(value: self.admins, fieldNumber: 9)
-    }
-    if self.announceOnly != false {
-      try visitor.visitSingularBoolField(value: self.announceOnly, fieldNumber: 10)
-    }
-    if !self.distributionID.isEmpty {
-      try visitor.visitSingularStringField(value: self.distributionID, fieldNumber: 11)
-    }
-    if !self.inviteKey.isEmpty {
-      try visitor.visitSingularBytesField(value: self.inviteKey, fieldNumber: 12)
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every if/case branch local when no optimizations
+      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+      // https://github.com/apple/swift-protobuf/issues/1182
+      if _storage._revision != 0 {
+        try visitor.visitSingularInt64Field(value: _storage._revision, fieldNumber: 1)
+      }
+      if _storage._action != .unspecified {
+        try visitor.visitSingularEnumField(value: _storage._action, fieldNumber: 2)
+      }
+      if !_storage._actor.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._actor, fieldNumber: 3)
+      }
+      if !_storage._target.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._target, fieldNumber: 4)
+      }
+      if !_storage._name.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._name, fieldNumber: 5)
+      }
+      if !_storage._description_p.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._description_p, fieldNumber: 6)
+      }
+      try { if let v = _storage._avatar {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
+      } }()
+      if !_storage._members.isEmpty {
+        try visitor.visitRepeatedStringField(value: _storage._members, fieldNumber: 8)
+      }
+      if !_storage._admins.isEmpty {
+        try visitor.visitRepeatedStringField(value: _storage._admins, fieldNumber: 9)
+      }
+      if _storage._announceOnly != false {
+        try visitor.visitSingularBoolField(value: _storage._announceOnly, fieldNumber: 10)
+      }
+      if !_storage._distributionID.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._distributionID, fieldNumber: 11)
+      }
+      if !_storage._inviteKey.isEmpty {
+        try visitor.visitSingularBytesField(value: _storage._inviteKey, fieldNumber: 12)
+      }
+      if _storage._screenSecurity != false {
+        try visitor.visitSingularBoolField(value: _storage._screenSecurity, fieldNumber: 13)
+      }
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Relay_Content_GroupUpdate, rhs: Relay_Content_GroupUpdate) -> Bool {
-    if lhs.revision != rhs.revision {return false}
-    if lhs.action != rhs.action {return false}
-    if lhs.actor != rhs.actor {return false}
-    if lhs.target != rhs.target {return false}
-    if lhs.name != rhs.name {return false}
-    if lhs.description_p != rhs.description_p {return false}
-    if lhs._avatar != rhs._avatar {return false}
-    if lhs.members != rhs.members {return false}
-    if lhs.admins != rhs.admins {return false}
-    if lhs.announceOnly != rhs.announceOnly {return false}
-    if lhs.distributionID != rhs.distributionID {return false}
-    if lhs.inviteKey != rhs.inviteKey {return false}
+    if lhs._storage !== rhs._storage {
+      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
+        let _storage = _args.0
+        let rhs_storage = _args.1
+        if _storage._revision != rhs_storage._revision {return false}
+        if _storage._action != rhs_storage._action {return false}
+        if _storage._actor != rhs_storage._actor {return false}
+        if _storage._target != rhs_storage._target {return false}
+        if _storage._name != rhs_storage._name {return false}
+        if _storage._description_p != rhs_storage._description_p {return false}
+        if _storage._avatar != rhs_storage._avatar {return false}
+        if _storage._members != rhs_storage._members {return false}
+        if _storage._admins != rhs_storage._admins {return false}
+        if _storage._announceOnly != rhs_storage._announceOnly {return false}
+        if _storage._screenSecurity != rhs_storage._screenSecurity {return false}
+        if _storage._distributionID != rhs_storage._distributionID {return false}
+        if _storage._inviteKey != rhs_storage._inviteKey {return false}
+        return true
+      }
+      if !storagesAreEqual {return false}
+    }
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
 nonisolated extension Relay_Content_GroupUpdate.Action: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}CREATE\0\u{1}ADD\0\u{1}REMOVE\0\u{1}LEAVE\0\u{1}RENAME\0\u{1}DESCRIBE\0\u{1}AVATAR\0\u{3}PROMOTE_ADMIN\0\u{3}DEMOTE_ADMIN\0\u{3}SET_ANNOUNCE_ONLY\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}CREATE\0\u{1}ADD\0\u{1}REMOVE\0\u{1}LEAVE\0\u{1}RENAME\0\u{1}DESCRIBE\0\u{1}AVATAR\0\u{1}PROMOTE_ADMIN\0\u{1}DEMOTE_ADMIN\0\u{1}SET_ANNOUNCE_ONLY\0\u{1}SET_SCREEN_SECURITY\0")
 }
 
 nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
@@ -1341,7 +1611,7 @@ nonisolated extension Relay_Content_AttachmentPointer: SwiftProtobuf.Message, Sw
 
 nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProfileUpdate"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0\u{1}status\0\u{1}bio\0\u{1}links\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1352,6 +1622,9 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
       case 1: try { try decoder.decodeSingularStringField(value: &self.displayName) }()
       case 2: try { try decoder.decodeSingularMessageField(value: &self._avatar) }()
       case 3: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.status) }()
+      case 5: try { try decoder.decodeSingularStringField(value: &self.bio) }()
+      case 6: try { try decoder.decodeRepeatedMessageField(value: &self.links) }()
       default: break
       }
     }
@@ -1371,6 +1644,15 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if self.timestamp != 0 {
       try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 3)
     }
+    if !self.status.isEmpty {
+      try visitor.visitSingularStringField(value: self.status, fieldNumber: 4)
+    }
+    if !self.bio.isEmpty {
+      try visitor.visitSingularStringField(value: self.bio, fieldNumber: 5)
+    }
+    if !self.links.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.links, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1378,6 +1660,44 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if lhs.displayName != rhs.displayName {return false}
     if lhs._avatar != rhs._avatar {return false}
     if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.status != rhs.status {return false}
+    if lhs.bio != rhs.bio {return false}
+    if lhs.links != rhs.links {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_ProfileLink: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ProfileLink"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}label\0\u{1}url\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.label) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.url) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.label.isEmpty {
+      try visitor.visitSingularStringField(value: self.label, fieldNumber: 1)
+    }
+    if !self.url.isEmpty {
+      try visitor.visitSingularStringField(value: self.url, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_ProfileLink, rhs: Relay_Content_ProfileLink) -> Bool {
+    if lhs.label != rhs.label {return false}
+    if lhs.url != rhs.url {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -1549,18 +1869,13 @@ nonisolated extension Relay_Content_ReceiptMessage.TypeEnum: SwiftProtobuf._Prot
 
 nonisolated extension Relay_Content_CallMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CallMessage"
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    1: .same(proto: "type"),
-    2: .standard(proto: "call_id"),
-    3: .same(proto: "sdp"),
-    4: .same(proto: "ice"),
-    5: .standard(proto: "group_id"),
-    6: .standard(proto: "target_account"),
-    7: .same(proto: "participants"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}type\0\u{3}call_id\0\u{1}sdp\0\u{1}ice\0\u{3}group_id\0\u{3}target_account\0\u{1}participants\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularEnumField(value: &self.type) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.callID) }()
@@ -1613,17 +1928,7 @@ nonisolated extension Relay_Content_CallMessage: SwiftProtobuf.Message, SwiftPro
 }
 
 nonisolated extension Relay_Content_CallMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap: SwiftProtobuf._NameMap = [
-    0: .same(proto: "OFFER"),
-    1: .same(proto: "ANSWER"),
-    2: .same(proto: "ICE"),
-    3: .same(proto: "HANGUP"),
-    4: .same(proto: "BUSY"),
-    5: .same(proto: "RINGING"),
-    6: .same(proto: "GROUP_RING"),
-    7: .same(proto: "GROUP_JOIN"),
-    8: .same(proto: "GROUP_LEAVE"),
-  ]
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0OFFER\0\u{1}ANSWER\0\u{1}ICE\0\u{1}HANGUP\0\u{1}BUSY\0\u{1}RINGING\0\u{1}GROUP_RING\0\u{1}GROUP_JOIN\0\u{1}GROUP_LEAVE\0")
 }
 
 nonisolated extension Relay_Content_EditMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
@@ -1661,51 +1966,15 @@ nonisolated extension Relay_Content_EditMessage: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-nonisolated extension Relay_Content_TypingMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".TypingMessage"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}action\0\u{1}timestamp\0")
-
-  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    while let fieldNumber = try decoder.nextFieldNumber() {
-      // The use of inline closures is to circumvent an issue where the compiler
-      // allocates stack space for every case branch when no optimizations are
-      // enabled. https://github.com/apple/swift-protobuf/issues/1034
-      switch fieldNumber {
-      case 1: try { try decoder.decodeSingularEnumField(value: &self.action) }()
-      case 2: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
-      default: break
-      }
-    }
-  }
-
-  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if self.action != .unspecified {
-      try visitor.visitSingularEnumField(value: self.action, fieldNumber: 1)
-    }
-    if self.timestamp != 0 {
-      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 2)
-    }
-    try unknownFields.traverse(visitor: &visitor)
-  }
-
-  public static func ==(lhs: Relay_Content_TypingMessage, rhs: Relay_Content_TypingMessage) -> Bool {
-    if lhs.action != rhs.action {return false}
-    if lhs.timestamp != rhs.timestamp {return false}
-    if lhs.unknownFields != rhs.unknownFields {return false}
-    return true
-  }
-}
-
-nonisolated extension Relay_Content_TypingMessage.Action: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}ACTION_STARTED\0\u{1}ACTION_STOPPED\0")
-}
-
 nonisolated extension Relay_Content_PollMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".PollMessage"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}question\0\u{1}options\0\u{3}multi_select\0\u{1}timestamp\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.question) }()
       case 2: try { try decoder.decodeRepeatedStringField(value: &self.options) }()
@@ -1748,6 +2017,9 @@ nonisolated extension Relay_Content_PollVote: SwiftProtobuf.Message, SwiftProtob
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.pollAuthor) }()
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.pollTimestamp) }()
@@ -1782,4 +2054,108 @@ nonisolated extension Relay_Content_PollVote: SwiftProtobuf.Message, SwiftProtob
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
+}
+
+nonisolated extension Relay_Content_ScreenshotAlert: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ScreenshotAlert"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}timestamp\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.timestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_ScreenshotAlert, rhs: Relay_Content_ScreenshotAlert) -> Bool {
+    if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_ScreenSecurityUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ScreenSecurityUpdate"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}enabled\0\u{1}timestamp\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.enabled) }()
+      case 2: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.enabled != false {
+      try visitor.visitSingularBoolField(value: self.enabled, fieldNumber: 1)
+    }
+    if self.timestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_ScreenSecurityUpdate, rhs: Relay_Content_ScreenSecurityUpdate) -> Bool {
+    if lhs.enabled != rhs.enabled {return false}
+    if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_TypingMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".TypingMessage"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}action\0\u{1}timestamp\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularEnumField(value: &self.action) }()
+      case 2: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.action != .unspecified {
+      try visitor.visitSingularEnumField(value: self.action, fieldNumber: 1)
+    }
+    if self.timestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_TypingMessage, rhs: Relay_Content_TypingMessage) -> Bool {
+    if lhs.action != rhs.action {return false}
+    if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_TypingMessage.Action: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}ACTION_STARTED\0\u{1}ACTION_STOPPED\0")
 }

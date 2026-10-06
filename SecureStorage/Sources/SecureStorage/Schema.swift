@@ -339,5 +339,72 @@ enum Schema {
                 try db.run("PRAGMA user_version = 18;")
             }
         }
+
+        if version < 19 {
+            // Key peer identities by (address, device_id) instead of account
+            // alone. A peer with multiple devices publishes a distinct identity
+            // per device (or, post shared-identity, the same one) — keying by
+            // account made the second device look like a key replacement of the
+            // first, which raised UntrustedIdentity and blocked sends. SQLite
+            // can't alter a PRIMARY KEY in place, so recreate the table and
+            // migrate existing rows to device_id = 1 (they re-populate from the
+            // next bundle fetch). verified/verified_key are preserved per row.
+            try db.transaction {
+                try db.run("""
+                    CREATE TABLE remote_identities_v19 (
+                        address       TEXT NOT NULL,
+                        device_id     INTEGER NOT NULL,
+                        identity_key  BLOB NOT NULL,
+                        verified      INTEGER NOT NULL DEFAULT 0,
+                        verified_key  BLOB,
+                        first_seen_at INTEGER NOT NULL,
+                        PRIMARY KEY (address, device_id)
+                    );
+                    """)
+                try db.run("""
+                    INSERT INTO remote_identities_v19
+                        (address, device_id, identity_key, verified, verified_key, first_seen_at)
+                    SELECT address, 1, identity_key, verified, verified_key, first_seen_at
+                    FROM remote_identities;
+                    """)
+                try db.run("DROP TABLE remote_identities;")
+                try db.run("ALTER TABLE remote_identities_v19 RENAME TO remote_identities;")
+                try db.run("PRAGMA user_version = 19;")
+            }
+        }
+
+        if version < 20 {
+            // Peer profile: a short status line and a longer bio, distributed
+            // E2EE alongside display name + avatar (newest-wins by revision).
+            try db.transaction {
+                try db.run("ALTER TABLE profiles ADD COLUMN status TEXT;")
+                try db.run("ALTER TABLE profiles ADD COLUMN bio TEXT;")
+                try db.run("PRAGMA user_version = 20;")
+            }
+        }
+
+        if version < 21 {
+            // Peer profile: labelled links, stored as a JSON array of
+            // {label,url} objects, distributed E2EE inside ProfileUpdate.
+            try db.transaction {
+                try db.run("ALTER TABLE profiles ADD COLUMN links TEXT;")
+                try db.run("PRAGMA user_version = 21;")
+            }
+        }
+
+        if version < 22 {
+            // Screenshot protection. `screen_security` is the local user's own
+            // per-chat preference (already present); `peer_screen_security` mirrors
+            // the DM peer's preference so the effective state is the OR of both
+            // (content is hidden unless BOTH sides disable it). Groups get an
+            // admin-controlled flag on group_state. All default ON (privacy-first):
+            // existing conversations are flipped on, and the new columns default 1.
+            try db.transaction {
+                try db.run("ALTER TABLE conversations ADD COLUMN peer_screen_security INTEGER NOT NULL DEFAULT 0;")
+                try db.run("UPDATE conversations SET screen_security = 1;")
+                try db.run("ALTER TABLE group_state ADD COLUMN screen_security INTEGER NOT NULL DEFAULT 1;")
+                try db.run("PRAGMA user_version = 22;")
+            }
+        }
     }
 }

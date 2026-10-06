@@ -26,13 +26,30 @@ public struct PreKeyMaintainer: Sendable {
         self.batchSize = batchSize
     }
 
-    /// Uploads the device's very first key publication.
+    /// Uploads the device's very first key publication. The local key store is
+    /// fresh here (registration / linking / restore), so it replaces the relay's
+    /// one-time pool rather than appending — otherwise a prior install's
+    /// higher-id one-time keys survive on the relay, get served after the fresh
+    /// low-id keys are consumed, and every session built on them fails to decrypt
+    /// (the local store lacks their private halves).
     public func publishInitialKeys(
         api: RelayAPIClient,
         engine: CryptoEngine,
         allocator: any PreKeyIdAllocating
     ) async throws {
-        try await upload(api: api, engine: engine, allocator: allocator)
+        try await upload(api: api, engine: engine, allocator: allocator, replaceOneTime: true)
+    }
+
+    /// Rebuilds the entire published pool from scratch: a fresh signed/Kyber
+    /// prekey plus a full one-time batch, replacing whatever the relay holds.
+    /// Called reactively when an inbound message references a one-time prekey the
+    /// local store no longer has (a desync), to heal it for future sessions.
+    public func replacePublishedPool(
+        api: RelayAPIClient,
+        engine: CryptoEngine,
+        allocator: any PreKeyIdAllocating
+    ) async throws {
+        try await upload(api: api, engine: engine, allocator: allocator, replaceOneTime: true)
     }
 
     /// Re-publishes the identity, signed prekey and Kyber prekey (no one-time
@@ -71,7 +88,8 @@ public struct PreKeyMaintainer: Sendable {
     private func upload(
         api: RelayAPIClient,
         engine: CryptoEngine,
-        allocator: any PreKeyIdAllocating
+        allocator: any PreKeyIdAllocating,
+        replaceOneTime: Bool = false
     ) async throws {
         // One id for the signed prekey, one for the Kyber prekey, the rest
         // for the one-time pool.
@@ -81,6 +99,6 @@ public struct PreKeyMaintainer: Sendable {
             kyberPreKeyId: ids.lowerBound + 1,
             oneTimePreKeyIds: (ids.lowerBound + 2)..<ids.upperBound
         )
-        try await api.uploadKeys(publication)
+        try await api.uploadKeys(publication, replaceOneTimePreKeys: replaceOneTime)
     }
 }

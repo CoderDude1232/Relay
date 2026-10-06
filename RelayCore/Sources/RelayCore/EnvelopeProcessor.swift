@@ -60,7 +60,7 @@ public struct NotificationContent: Sendable {
 
 public enum GroupAction: Sendable {
     case create, add, remove, leave, rename, describe, avatar
-    case promoteAdmin, demoteAdmin, setAnnounceOnly
+    case promoteAdmin, demoteAdmin, setAnnounceOnly, setScreenSecurity
     case unknown
 }
 
@@ -80,6 +80,8 @@ public struct GroupUpdateInfo: Sendable {
     public let members: [String]
     public let admins: [String]
     public let announceOnly: Bool
+    /// New group screenshot-hide state (SET_SCREEN_SECURITY action).
+    public let screenSecurity: Bool
     public let revision: Int64
     /// The group's sender-key epoch after this change (empty = unchanged).
     public let distributionId: String
@@ -89,7 +91,8 @@ public struct GroupUpdateInfo: Sendable {
     public init(
         groupId: String, action: GroupAction, actor: String, target: String, name: String,
         description: String = "", avatarId: String = "", avatarKey: Data = Data(), avatarDigest: Data = Data(),
-        members: [String] = [], admins: [String] = [], announceOnly: Bool = false, revision: Int64 = 0,
+        members: [String] = [], admins: [String] = [], announceOnly: Bool = false,
+        screenSecurity: Bool = false, revision: Int64 = 0,
         distributionId: String = "", inviteKey: Data = Data()
     ) {
         self.groupId = groupId
@@ -104,9 +107,38 @@ public struct GroupUpdateInfo: Sendable {
         self.members = members
         self.admins = admins
         self.announceOnly = announceOnly
+        self.screenSecurity = screenSecurity
         self.revision = revision
         self.distributionId = distributionId
         self.inviteKey = inviteKey
+    }
+}
+
+/// The sender took a screenshot in a conversation (sent regardless of the hide
+/// setting). The caller shows an in-chat notice.
+public struct ScreenshotAlertInfo: Sendable {
+    public let conversationId: String
+    public let senderAccount: String
+    public let timestamp: Int64
+    public init(conversationId: String, senderAccount: String, timestamp: Int64) {
+        self.conversationId = conversationId
+        self.senderAccount = senderAccount
+        self.timestamp = timestamp
+    }
+}
+
+/// A 1:1 peer's screenshot-hide preference. The caller stores it as the peer's
+/// side of the OR that decides effective hiding.
+public struct ScreenSecurityInfo: Sendable {
+    public let conversationId: String
+    public let senderAccount: String
+    public let enabled: Bool
+    public let timestamp: Int64
+    public init(conversationId: String, senderAccount: String, enabled: Bool, timestamp: Int64) {
+        self.conversationId = conversationId
+        self.senderAccount = senderAccount
+        self.enabled = enabled
+        self.timestamp = timestamp
     }
 }
 
@@ -190,10 +222,32 @@ public struct ProfileInfo: Sendable {
         public let key: Data
         public let digest: Data
     }
+    public struct Link: Sendable {
+        public let label: String
+        public let url: String
+        public init(label: String, url: String) {
+            self.label = label
+            self.url = url
+        }
+    }
     public let account: String
     public let displayName: String
     public let avatar: Avatar?
     public let revision: Int64
+    public let status: String
+    public let bio: String
+    public let links: [Link]
+
+    public init(account: String, displayName: String, avatar: Avatar?, revision: Int64,
+                status: String = "", bio: String = "", links: [Link] = []) {
+        self.account = account
+        self.displayName = displayName
+        self.avatar = avatar
+        self.revision = revision
+        self.status = status
+        self.bio = bio
+        self.links = links
+    }
 }
 
 public struct ProcessedEnvelope: Sendable {
@@ -212,6 +266,8 @@ public struct ProcessedEnvelope: Sendable {
     public let callInfo: CallInfo?
     public let pollInfo: PollInfo?
     public let pollVoteInfo: PollVoteInfo?
+    public let screenshotAlert: ScreenshotAlertInfo?
+    public let screenSecurityUpdate: ScreenSecurityInfo?
 
     public init(
         outcome: Outcome,
@@ -224,7 +280,9 @@ public struct ProcessedEnvelope: Sendable {
         profile: ProfileInfo? = nil,
         callInfo: CallInfo? = nil,
         pollInfo: PollInfo? = nil,
-        pollVoteInfo: PollVoteInfo? = nil
+        pollVoteInfo: PollVoteInfo? = nil,
+        screenshotAlert: ScreenshotAlertInfo? = nil,
+        screenSecurityUpdate: ScreenSecurityInfo? = nil
     ) {
         self.outcome = outcome
         self.peerAccount = peerAccount
@@ -237,6 +295,8 @@ public struct ProcessedEnvelope: Sendable {
         self.callInfo = callInfo
         self.pollInfo = pollInfo
         self.pollVoteInfo = pollVoteInfo
+        self.screenshotAlert = screenshotAlert
+        self.screenSecurityUpdate = screenSecurityUpdate
     }
 }
 
@@ -492,6 +552,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 members: update.members,
                 admins: update.admins,
                 announceOnly: update.announceOnly,
+                screenSecurity: update.screenSecurity,
                 revision: update.revision,
                 distributionId: update.distributionID,
                 inviteKey: update.inviteKey
@@ -559,7 +620,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 account: attestedAccount,
                 displayName: profile.displayName,
                 avatar: avatar,
-                revision: profile.timestamp
+                revision: profile.timestamp,
+                status: profile.status,
+                bio: profile.bio,
+                links: profile.links.map { ProfileInfo.Link(label: $0.label, url: $0.url) }
             )
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, profile: info)
 
@@ -599,6 +663,27 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 typingStarted: groupId == nil ? (typing.action == .started) : nil
             )
 
+        case .screenshot(let shot):
+            // Non-ephemeral (queues); the caller inserts the in-chat notice.
+            let conversationId = try chatConversation()
+            return ProcessedEnvelope(
+                outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId,
+                screenshotAlert: ScreenshotAlertInfo(
+                    conversationId: conversationId,
+                    senderAccount: attestedAccount,
+                    timestamp: shot.timestamp))
+
+        case .screenSecurityUpdate(let upd):
+            // 1:1 peer preference sync; the caller stores it as the peer's side.
+            let conversationId = try chatConversation()
+            return ProcessedEnvelope(
+                outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId,
+                screenSecurityUpdate: ScreenSecurityInfo(
+                    conversationId: conversationId,
+                    senderAccount: attestedAccount,
+                    enabled: upd.enabled,
+                    timestamp: upd.timestamp))
+
         case .none:
             return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
         }
@@ -616,6 +701,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         case .promoteAdmin: .promoteAdmin
         case .demoteAdmin: .demoteAdmin
         case .setAnnounceOnly: .setAnnounceOnly
+        case .setScreenSecurity: .setScreenSecurity
         default: .unknown
         }
     }

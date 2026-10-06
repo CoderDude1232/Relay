@@ -449,7 +449,9 @@ public final class CryptoEngine {
     /// Builds the libsignal fingerprint between us and `remoteAccount` from
     /// the stored identities, or `nil` if the peer's identity is unknown.
     private func makeFingerprint(withPeer remoteAccount: String) throws -> Fingerprint? {
-        // deviceId is irrelevant: identities are keyed by account (name).
+        // The identity key belongs to the account and is shared across the
+        // peer's devices, so device 1 (the primary) holds the canonical key
+        // the safety number is computed from.
         let address = try ProtocolAddress(name: remoteAccount, deviceId: 1)
         guard let remoteIdentity = try store.identity(for: address, context: context) else { return nil }
         let localIdentity = try store.identityKeyPair(context: context).identityKey

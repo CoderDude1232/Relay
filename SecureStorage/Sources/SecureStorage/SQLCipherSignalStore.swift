@@ -56,14 +56,14 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         if existing == identity {
             return .newOrUnchanged
         }
-        // A changed key resets any prior verification.
+        // A changed key resets any prior verification (for this device).
         try db.run(
             """
-            INSERT INTO remote_identities (address, identity_key, verified, first_seen_at)
-            VALUES (?, ?, 0, ?)
-            ON CONFLICT (address) DO UPDATE SET identity_key = excluded.identity_key, verified = 0
+            INSERT INTO remote_identities (address, device_id, identity_key, verified, first_seen_at)
+            VALUES (?, ?, ?, 0, ?)
+            ON CONFLICT (address, device_id) DO UPDATE SET identity_key = excluded.identity_key, verified = 0
             """,
-            [.text(address.name), .blob(identity.serialize()), .integer(now())]
+            [.text(address.name), .integer(Int64(address.deviceId)), .blob(identity.serialize()), .integer(now())]
         )
         return existing == nil ? .newOrUnchanged : .replacedExisting
     }
@@ -82,8 +82,8 @@ extension SQLCipherSignalStore: IdentityKeyStore {
 
     public func identity(for address: ProtocolAddress, context: StoreContext) throws -> IdentityKey? {
         let rows = try db.query(
-            "SELECT identity_key FROM remote_identities WHERE address = ?",
-            [.text(address.name)]
+            "SELECT identity_key FROM remote_identities WHERE address = ? AND device_id = ?",
+            [.text(address.name), .integer(Int64(address.deviceId))]
         )
         guard let blob = rows.first?.first?.data else { return nil }
         return try IdentityKey(bytes: blob)
@@ -108,9 +108,10 @@ extension SQLCipherSignalStore {
         try verificationState(address: name) == .verified
     }
 
-    /// Marks a peer verified (recording the current identity key) or clears
-    /// verification (forgetting the recorded key, which also dismisses a
-    /// pending "changed" warning).
+    /// Marks every known device of a peer verified (recording each device's
+    /// current identity key) or clears verification across all of them (also
+    /// dismissing a pending "changed" warning). Verification is an account-level
+    /// judgement, so it aggregates over the peer's devices.
     public func setVerified(_ verified: Bool, address name: String) throws {
         if verified {
             try db.run(
@@ -125,20 +126,30 @@ extension SQLCipherSignalStore {
         }
     }
 
-    /// Resolves the verification state from the current vs. last-verified
-    /// identity key. `saveIdentity` resets `verified` to 0 on a key change
-    /// but leaves `verified_key` intact, so a mismatch surfaces as `.changed`.
+    /// Resolves the aggregate verification state over all of a peer's known
+    /// devices. `saveIdentity` resets a device's `verified` to 0 on a key change
+    /// but leaves its `verified_key` intact, so a mismatch surfaces as `.changed`.
+    /// - `.changed` if ANY known device's key changed since it was verified,
+    /// - `.verified` only if EVERY known device is currently verified,
+    /// - `.unverified` otherwise.
     public func verificationState(address name: String) throws -> VerificationState {
         let rows = try db.query(
             "SELECT verified, identity_key, verified_key FROM remote_identities WHERE address = ?",
             [.text(name)]
         )
-        guard let row = rows.first else { return .unverified }
-        if row[0].int64 == 1 { return .verified }
-        guard let verifiedKey = row[2].data, let currentKey = row[1].data else {
-            return .unverified
+        guard !rows.isEmpty else { return .unverified }
+        var allVerified = true
+        for row in rows {
+            let isVerified = row[0].int64 == 1
+            if !isVerified { allVerified = false }
+            // A device that was verified (has a verified_key) but whose current
+            // key differs is a safety-number change — surfaces immediately.
+            if let verifiedKey = row[2].data, let currentKey = row[1].data,
+               verifiedKey != currentKey {
+                return .changed
+            }
         }
-        return verifiedKey == currentKey ? .unverified : .changed
+        return allVerified ? .verified : .unverified
     }
 }
 

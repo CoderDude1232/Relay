@@ -343,4 +343,25 @@ extension KeychainSecureStore: IdentityCredentialProviding {
         try write(Item.registrationId, data: data)
         return value
     }
+
+    /// Installs an account identity provisioned from the primary device during
+    /// linking, so this device shares the account's identity key rather than
+    /// generating its own. Must be called before anything reads
+    /// `identityKeyPair()` (which would otherwise auto-generate a fresh one).
+    /// Refuses to overwrite an existing identity — a device that already has one
+    /// must not have it silently replaced. The serialized private key lives only
+    /// inside the Keychain item; it is never logged.
+    public func installProvisionedIdentity(_ serialized: Data) throws {
+        // Validate before persisting; a malformed payload should fail loudly.
+        _ = try IdentityKeyPair(bytes: serialized)
+        if try read(Item.identityKeyPair) != nil {
+            throw KeychainError.identityAlreadyExists
+        }
+        try write(Item.identityKeyPair, data: serialized)
+    }
+}
+
+public enum KeychainError: Error, Equatable {
+    /// An identity key already exists; refusing to overwrite it during linking.
+    case identityAlreadyExists
 }

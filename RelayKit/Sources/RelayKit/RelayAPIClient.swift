@@ -8,6 +8,7 @@
 
 import CryptoCore
 import Foundation
+import Security
 
 /// One resolved blinded-directory hit.
 public struct DirectoryMatch: Sendable, Equatable {
@@ -52,15 +53,26 @@ public struct Presence: Decodable, Sendable, Equatable {
     public let lastSeen: Int64
 }
 
+/// Signs the per-request canonical string with the device's P256 authorization
+/// key (the same key used for device mutations). Injected by the app, which
+/// owns the Keychain/Secure-Enclave key. Returns the raw ECDSA-P256 (ASN.1 DER)
+/// signature over SHA-256 of `message`, or nil to fall back to HTTP Basic.
+public protocol RelayRequestSigner: Sendable {
+    func signRelayRequest(_ message: Data) -> Data?
+}
+
 public struct RelayAPIClient: Sendable {
     public let baseURL: URL
     public let credentials: RelayCredentials?
     private let session: URLSession
+    private let signer: (any RelayRequestSigner)?
 
-    public init(baseURL: URL, credentials: RelayCredentials?, session: URLSession = .shared) {
+    public init(baseURL: URL, credentials: RelayCredentials?, session: URLSession = .shared,
+                signer: (any RelayRequestSigner)? = nil) {
         self.baseURL = baseURL
         self.credentials = credentials
         self.session = session
+        self.signer = signer
     }
 
     // MARK: - Accounts
@@ -363,7 +375,7 @@ public struct RelayAPIClient: Sendable {
         let r: Response = try await request(
             "POST",
             "v1/devices",
-            body: AddDeviceRequest(password: password, auth: authorization)
+            body: AddDeviceRequest(password: password, deviceName: nil, auth: authorization)
         )
         return r.deviceId
     }
@@ -383,6 +395,50 @@ public struct RelayAPIClient: Sendable {
             body: DeviceLinkClaimRequest(linkToken: linkToken, verificationCode: verificationCode),
             authenticated: false
         )
+    }
+
+    // MARK: - Reversed device linking (shared account identity)
+
+    /// New device: mints a blind provisioning session. Unauthenticated — the new
+    /// device has no account yet. Its `sessionId` + a locally generated ephemeral
+    /// public key go in the QR the primary scans.
+    public func createProvisioningSession() async throws -> ProvisioningSession {
+        try await request("POST", "v1/provisioning-sessions", body: nil as String?, authenticated: false)
+    }
+
+    /// New device: polls for the primary's encrypted payload. Returns nil while
+    /// the primary hasn't provisioned yet (204); throws `.http(404)` once the
+    /// session has expired or been consumed.
+    public func fetchProvisioningBlob(sessionId: String) async throws -> Data? {
+        let request = makeRequest("GET", "v1/provisioning-sessions/\(sessionId)", authenticated: false)
+        let (data, status) = try await send(request)
+        if status == 204 { return nil }
+        struct Response: Decodable { let blob: String }
+        guard let blob = Data(base64Encoded: try JSONDecoder().decode(Response.self, from: data).blob) else {
+            throw RelayAPIError.malformedResponse
+        }
+        return blob
+    }
+
+    /// Primary: deposits the encrypted provisioning payload for a session.
+    public func storeProvisioningBlob(sessionId: String, blob: Data) async throws {
+        try await requestExpectingNoContent(
+            "PUT",
+            "v1/provisioning-sessions/\(sessionId)",
+            body: ["blob": blob.base64EncodedString()]
+        )
+    }
+
+    /// Primary: creates the new device row after scanning the QR, supplying the
+    /// password (bound into the mutation signature). Returns the new device id.
+    public func linkDevice(password: String, deviceName: String? = nil, authorization: DeviceMutationAuthorization) async throws -> UInt32 {
+        struct Response: Decodable { let deviceId: UInt32 }
+        let r: Response = try await request(
+            "POST",
+            "v1/devices/link",
+            body: AddDeviceRequest(password: password, deviceName: deviceName, auth: authorization)
+        )
+        return r.deviceId
     }
 
     public func deviceList() async throws -> LinkedDeviceList {
@@ -460,9 +516,14 @@ public struct RelayAPIClient: Sendable {
 
     // MARK: - Prekeys
 
-    public func uploadKeys(_ publication: PreKeyPublication) async throws {
+    /// Uploads a key publication. `replaceOneTimePreKeys` tells the relay to
+    /// delete this device's existing one-time pool before storing the batch —
+    /// use it when the local store is fresh (install/restore) or a desync was
+    /// detected, so the relay can't serve an orphaned one-time key. Ordinary
+    /// top-ups leave it false and append.
+    public func uploadKeys(_ publication: PreKeyPublication, replaceOneTimePreKeys: Bool = false) async throws {
         try await requestExpectingNoContent(
-            "PUT", "v1/keys", body: PublicationDTO(publication)
+            "PUT", "v1/keys", body: PublicationDTO(publication, replaceOneTimePreKeys: replaceOneTimePreKeys)
         )
     }
 
@@ -549,14 +610,49 @@ public struct RelayAPIClient: Sendable {
         request.httpMethod = method
         request.assumesHTTP3Capable = true
         if authenticated, let credentials {
-            request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
+            applyAuth(to: &request, credentials: credentials)
         }
         return request
+    }
+
+    /// Prefers per-request Relay-Sig (nothing replayable transits the wire);
+    /// falls back to HTTP Basic when no signer is set or signing fails, so the
+    /// two schemes can coexist during rollout (the server accepts both).
+    private func applyAuth(to request: inout URLRequest, credentials: RelayCredentials) {
+        if let signer {
+            // Sign the exact string the server reconstructs: METHOD\nPATH\nTS\nNONCE.
+            // PATH must match the server's decoded r.URL.Path byte-for-byte.
+            let serverPath = request.url?.path(percentEncoded: false) ?? ""
+            let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
+            var nonceBytes = Data(count: 16)
+            nonceBytes.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+            let nonce = nonceBytes.base64EncodedString()
+            let canonical = "\(request.httpMethod ?? "GET")\n\(serverPath)\n\(timestamp)\n\(nonce)"
+            if let sig = signer.signRelayRequest(Data(canonical.utf8)) {
+                request.setValue("Relay-Sig \(credentials.accountId).\(credentials.deviceId):\(sig.base64EncodedString())",
+                                 forHTTPHeaderField: "Authorization")
+                request.setValue(timestamp, forHTTPHeaderField: "X-Relay-Timestamp")
+                request.setValue(nonce, forHTTPHeaderField: "X-Relay-Nonce")
+                return
+            }
+        }
+        request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, Int) {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RelayAPIError.malformedResponse }
+        // Relay-Sig rollout safety net: if a signed request is rejected (e.g. the
+        // device auth key isn't on the server yet, or clock skew), retry once
+        // with HTTP Basic. The retry clears the nonce header, so it can't loop.
+        if http.statusCode == 401, let credentials,
+           request.value(forHTTPHeaderField: "X-Relay-Nonce") != nil {
+            var basic = request
+            basic.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
+            basic.setValue(nil, forHTTPHeaderField: "X-Relay-Timestamp")
+            basic.setValue(nil, forHTTPHeaderField: "X-Relay-Nonce")
+            return try await send(basic)
+        }
         guard (200..<300).contains(http.statusCode) else {
             struct ErrorBody: Decodable { let error: String }
             let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error ?? ""
@@ -602,6 +698,8 @@ public struct TurnCredentials: Decodable, Sendable {
 public struct LinkedDevice: Decodable, Sendable, Identifiable {
     public let deviceId: UInt32
     public let mailboxId: String?
+    public let name: String?
+    public let createdAt: Int64?
     public var id: UInt32 { deviceId }
 }
 
@@ -622,6 +720,11 @@ public struct DeviceMutationAuthorization: Encodable, Sendable {
     }
 }
 
+public struct ProvisioningSession: Decodable, Sendable {
+    public let sessionId: String
+    public let expiresAt: Int64
+}
+
 public struct DeviceLinkInvitation: Decodable, Sendable {
     public let linkToken: String
     public let verificationCode: String
@@ -637,6 +740,7 @@ public struct DeviceLinkClaim: Decodable, Sendable {
 
 private struct AddDeviceRequest: Encodable {
     let password: String
+    let deviceName: String?
     let auth: DeviceMutationAuthorization
 }
 
@@ -701,13 +805,15 @@ private struct PublicationDTO: Encodable {
     let signedPreKey: SignedPreKeyDTO
     let kyberPreKey: SignedPreKeyDTO
     let oneTimePreKeys: [OneTimePreKeyDTO]
+    let replaceOneTimePreKeys: Bool
 
-    init(_ publication: PreKeyPublication) {
+    init(_ publication: PreKeyPublication, replaceOneTimePreKeys: Bool = false) {
         registrationId = publication.registrationId
         identityKey = publication.identityKey.base64EncodedString()
         signedPreKey = SignedPreKeyDTO(publication.signedPreKey)
         kyberPreKey = SignedPreKeyDTO(publication.kyberPreKey)
         oneTimePreKeys = publication.oneTimePreKeys.map(OneTimePreKeyDTO.init)
+        self.replaceOneTimePreKeys = replaceOneTimePreKeys
     }
 }
 

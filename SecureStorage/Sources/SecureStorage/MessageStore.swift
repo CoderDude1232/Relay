@@ -30,8 +30,12 @@ public struct Conversation: Sendable, Equatable, Identifiable {
     public let archived: Bool
     /// Optional user-assigned label (e.g. "Work", "Family").
     public let label: String?
-    /// Blur content in screenshots/screen recordings for this conversation.
+    /// The local user's own screenshot-hide preference for this conversation.
     public let screenSecurity: Bool
+    /// The DM peer's screenshot-hide preference (synced E2E). Effective hiding is
+    /// `screenSecurity || peerScreenSecurity` — both must disable to turn it off.
+    /// Unused for groups (they use the admin-controlled group flag).
+    public let peerScreenSecurity: Bool
     /// Custom notification sound name, nil = system default.
     public let notificationSound: String?
 
@@ -43,7 +47,7 @@ public struct Conversation: Sendable, Equatable, Identifiable {
         disappearingSeconds: Int64, mediaRequiresBiometric: Bool,
         requireBiometricChat: Bool, hidePreviews: Bool,
         unreadCount: Int, archived: Bool, label: String?,
-        screenSecurity: Bool, notificationSound: String?
+        screenSecurity: Bool, peerScreenSecurity: Bool, notificationSound: String?
     ) {
         self.id = id; self.peerAccount = peerAccount
         self.peerUsername = peerUsername
@@ -56,7 +60,9 @@ public struct Conversation: Sendable, Equatable, Identifiable {
         self.requireBiometricChat = requireBiometricChat
         self.hidePreviews = hidePreviews; self.unreadCount = unreadCount
         self.archived = archived; self.label = label
-        self.screenSecurity = screenSecurity; self.notificationSound = notificationSound
+        self.screenSecurity = screenSecurity
+        self.peerScreenSecurity = peerScreenSecurity
+        self.notificationSound = notificationSound
     }
 
     public var isGroup: Bool { groupId != nil }
@@ -74,11 +80,13 @@ public struct StoredGroup: Sendable, Equatable {
     public let members: [String]
     public let admins: [String]
     public let isAnnounceOnly: Bool
+    /// Admin-controlled screenshot-hide flag for the whole group.
+    public let screenSecurity: Bool
 
     public init(
         id: String, name: String, description: String = "", avatarData: Data? = nil,
         distributionId: String, revision: Int64, members: [String],
-        admins: [String] = [], isAnnounceOnly: Bool = false
+        admins: [String] = [], isAnnounceOnly: Bool = false, screenSecurity: Bool = true
     ) {
         self.id = id
         self.name = name
@@ -89,6 +97,7 @@ public struct StoredGroup: Sendable, Equatable {
         self.members = members
         self.admins = admins
         self.isAnnounceOnly = isAnnounceOnly
+        self.screenSecurity = screenSecurity
     }
 }
 
@@ -159,12 +168,20 @@ public struct StoredProfile: Sendable, Equatable {
     public let avatarId: String?
     public let avatarData: Data?
     public let revision: Int64
+    public let status: String?
+    public let bio: String?
+    /// JSON array of {label,url} objects; opaque to storage (app encodes/decodes).
+    public let linksJSON: String?
 
-    public init(displayName: String?, avatarId: String?, avatarData: Data?, revision: Int64) {
+    public init(displayName: String?, avatarId: String?, avatarData: Data?, revision: Int64,
+                status: String? = nil, bio: String? = nil, linksJSON: String? = nil) {
         self.displayName = displayName
         self.avatarId = avatarId
         self.avatarData = avatarData
         self.revision = revision
+        self.status = status
+        self.bio = bio
+        self.linksJSON = linksJSON
     }
 }
 
@@ -305,8 +322,9 @@ public final class MessageStore: @unchecked Sendable {
             return id
         }
         let id = UUID().uuidString
+        // screen_security defaults ON for new chats (privacy-first).
         try db.run(
-            "INSERT INTO conversations (id, peer_account, peer_username, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO conversations (id, peer_account, peer_username, created_at, screen_security) VALUES (?, ?, ?, ?, 1)",
             [
                 .text(id), .text(account),
                 username.map { .text($0) } ?? .null,
@@ -343,7 +361,7 @@ public final class MessageStore: @unchecked Sendable {
                       AND m.deleted = 0
                       AND m.timestamp > c.read_at),
                    c.archived, c.label,
-                   c.screen_security, c.notification_sound
+                   c.screen_security, c.notification_sound, c.peer_screen_security
             FROM conversations c
             ORDER BY c.pinned_at DESC NULLS LAST,
                      c.last_message_at DESC NULLS LAST,
@@ -369,6 +387,7 @@ public final class MessageStore: @unchecked Sendable {
                 archived: $0[15].int64 != 0,
                 label: $0[16].string,
                 screenSecurity: $0[17].int64 != 0,
+                peerScreenSecurity: $0[19].int64 != 0,
                 notificationSound: $0[18].string
             )
         }
@@ -509,24 +528,33 @@ public final class MessageStore: @unchecked Sendable {
         _ conversationId: String,
         mediaRequiresBiometric: Bool,
         requireBiometricChat: Bool,
-        hidePreviews: Bool,
-        screenSecurity: Bool
+        hidePreviews: Bool
     ) throws {
         try db.run(
             """
             UPDATE conversations
-            SET media_requires_biometric = ?, require_biometric_chat = ?, hide_previews = ?,
-                screen_security = ?
+            SET media_requires_biometric = ?, require_biometric_chat = ?, hide_previews = ?
             WHERE id = ?
             """,
             [
                 .integer(mediaRequiresBiometric ? 1 : 0),
                 .integer(requireBiometricChat ? 1 : 0),
                 .integer(hidePreviews ? 1 : 0),
-                .integer(screenSecurity ? 1 : 0),
                 .text(conversationId),
             ]
         )
+    }
+
+    /// The local user's own screenshot-hide preference for a conversation.
+    public func setConversationScreenSecurity(_ conversationId: String, enabled: Bool) throws {
+        try db.run("UPDATE conversations SET screen_security = ? WHERE id = ?",
+                   [.integer(enabled ? 1 : 0), .text(conversationId)])
+    }
+
+    /// The DM peer's screenshot-hide preference, synced from a ScreenSecurityUpdate.
+    public func setConversationPeerScreenSecurity(_ conversationId: String, enabled: Bool) throws {
+        try db.run("UPDATE conversations SET peer_screen_security = ? WHERE id = ?",
+                   [.integer(enabled ? 1 : 0), .text(conversationId)])
     }
 
     public func setNotificationSound(_ conversationId: String, sound: String?) throws {
@@ -585,8 +613,8 @@ public final class MessageStore: @unchecked Sendable {
             if existing == nil {
                 try db.run(
                     """
-                    INSERT INTO conversations (id, peer_account, peer_username, created_at, group_id)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO conversations (id, peer_account, peer_username, created_at, group_id, screen_security)
+                    VALUES (?, ?, ?, ?, ?, 1)
                     """,
                     [.text(UUID().uuidString), .text(id), .text(name),
                      .integer(Int64(Date().timeIntervalSince1970 * 1000)), .text(id)]
@@ -664,9 +692,16 @@ public final class MessageStore: @unchecked Sendable {
         )
     }
 
+    public func setGroupScreenSecurity(id: String, enabled: Bool) throws {
+        try db.run(
+            "UPDATE group_state SET screen_security = ? WHERE id = ?",
+            [.integer(enabled ? 1 : 0), .text(id)]
+        )
+    }
+
     public func group(id: String) throws -> StoredGroup? {
         guard let row = try db.query(
-            "SELECT name, description, avatar_data, distribution_id, revision, COALESCE(admins,'[]'), COALESCE(is_announce_only,0) FROM group_state WHERE id = ?", [.text(id)]
+            "SELECT name, description, avatar_data, distribution_id, revision, COALESCE(admins,'[]'), COALESCE(is_announce_only,0), COALESCE(screen_security,1) FROM group_state WHERE id = ?", [.text(id)]
         ).first else { return nil }
         let members = try db.query(
             "SELECT account_id FROM group_members WHERE group_id = ? ORDER BY account_id", [.text(id)]
@@ -682,7 +717,8 @@ public final class MessageStore: @unchecked Sendable {
             revision: row[4].int64 ?? 0,
             members: members,
             admins: admins,
-            isAnnounceOnly: (row[6].int64 ?? 0) != 0
+            isAnnounceOnly: (row[6].int64 ?? 0) != 0,
+            screenSecurity: (row[7].int64 ?? 1) != 0
         )
     }
 
@@ -900,10 +936,10 @@ public final class MessageStore: @unchecked Sendable {
 
     // MARK: - Profiles
 
-    /// A peer's self-set profile (display name + decrypted avatar bytes).
+    /// A peer's self-set profile (display name + decrypted avatar bytes + status/bio).
     public func peerProfile(account: String) throws -> StoredProfile? {
         let rows = try db.query(
-            "SELECT display_name, avatar_id, avatar_data, revision FROM profiles WHERE account_id = ?",
+            "SELECT display_name, avatar_id, avatar_data, revision, status, bio, links FROM profiles WHERE account_id = ?",
             [.text(account)]
         )
         guard let row = rows.first else { return nil }
@@ -911,7 +947,10 @@ public final class MessageStore: @unchecked Sendable {
             displayName: row[0].string,
             avatarId: row[1].string,
             avatarData: row[2].data,
-            revision: row[3].int64 ?? 0
+            revision: row[3].int64 ?? 0,
+            status: row[4].string,
+            bio: row[5].string,
+            linksJSON: row[6].string
         )
     }
 
@@ -919,12 +958,12 @@ public final class MessageStore: @unchecked Sendable {
     /// and avatar reuse before calling).
     public func upsertProfile(
         account: String, displayName: String?, avatarId: String?,
-        avatarData: Data?, revision: Int64
+        avatarData: Data?, revision: Int64, status: String?, bio: String?, linksJSON: String?
     ) throws {
         try db.run(
             """
-            INSERT OR REPLACE INTO profiles (account_id, display_name, avatar_id, avatar_data, revision)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO profiles (account_id, display_name, avatar_id, avatar_data, revision, status, bio, links)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 .text(account),
@@ -932,6 +971,9 @@ public final class MessageStore: @unchecked Sendable {
                 avatarId.map { SQLValue.text($0) } ?? .null,
                 avatarData.map { SQLValue.blob($0) } ?? .null,
                 .integer(revision),
+                status.map { SQLValue.text($0) } ?? .null,
+                bio.map { SQLValue.text($0) } ?? .null,
+                linksJSON.map { SQLValue.text($0) } ?? .null,
             ]
         )
     }
