@@ -4,6 +4,14 @@ On-device verification for the batch of built-but-unverified changes. Simulators
 can't do APNs or CloudKit, so the push/backup items need two **physical** iPhones
 (the pair in CLAUDE.md) plus a redeployed server.
 
+Simulator results, 2026-10-06 (test1/test2 on the iPhone 17 / 17 Pro sims,
+against the redeployed api.relaymsg.app): 1:1 send/reply/receipts, blinded
+username lookup, groups (create/send/reply/admin controls), invite link
+create + claim (via `relay://join/…`), block/unblock, photos (upload, download,
+biometric unlock), and push → NSE fetch/decrypt/ack all pass. Simulators on
+Apple silicon DO receive APNs here. Universal links (`https://relaymsg.app/…`)
+don't open the app until the site's AASA is fixed (old team/bundle id live).
+
 Preconditions:
 - Server redeployed with the latest `main`/branch build (contentless push,
   email-at-rest, encrypted groups, sealed sender, blinded discovery).
@@ -54,7 +62,8 @@ Preconditions:
 - [ ] With sealed sender ON (default), send 1:1 → recipient receives; server logs show
       an envelope with **empty sender fields**.
 - [ ] Block a sealed sender → their messages are dropped on receipt.
-- [ ] Toggle sealed sender OFF → sends fall back to the WS path; still delivered.
+- (Sealed sender is now mandatory — there is no toggle. A recipient without a
+  published access key gets "Not Delivered", never a non-sealed send.)
 
 ## Regression sweep (any transport/QUIC change)
 - [ ] Cold start on a poor network (Network Link Conditioner "Very Bad Network"):
