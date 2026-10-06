@@ -193,7 +193,10 @@ struct RelayApp: App {
         }
         let appModel = model
         service.onNukeReceived = {
-            await MainActor.run { appModel.signOut() }
+            await MainActor.run { appModel.signOut(removeFromServer: false) }
+        }
+        service.onRemovedFromAccount = {
+            await MainActor.run { appModel.signOut(removeFromServer: false) }
         }
         callManager.onFetchTurnCredentials = {
             try await service.apiClient.fetchTurnCredentials()

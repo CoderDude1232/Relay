@@ -157,6 +157,14 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
     set {_uniqueStorage()._body = .screenSecurityUpdate(newValue)}
   }
 
+  public var deviceInfo: Relay_Content_DeviceInfo {
+    get {
+      if case .deviceInfo(let v)? = _storage._body {return v}
+      return Relay_Content_DeviceInfo()
+    }
+    set {_uniqueStorage()._body = .deviceInfo(newValue)}
+  }
+
   /// Set when this content belongs to a group; empty for 1:1. Group messages
   /// are encrypted with the sender's sender key (senderKey ciphertext);
   /// control content (SKDM, group updates) is sent over pairwise sessions.
@@ -219,6 +227,7 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
     case pollVote(Relay_Content_PollVote)
     case screenshot(Relay_Content_ScreenshotAlert)
     case screenSecurityUpdate(Relay_Content_ScreenSecurityUpdate)
+    case deviceInfo(Relay_Content_DeviceInfo)
 
   }
 
@@ -943,13 +952,36 @@ public nonisolated struct Relay_Content_TypingMessage: Sendable {
   public init() {}
 }
 
+/// A device's human-readable label, shared ONLY with the sender's own other
+/// devices (sealed, end-to-end) so Linked Devices can say "iPhone 17 Pro ·
+/// Queensland, Australia". The relay never sees model or location: it stores
+/// no device names at all. Recipients accept it only from their own account.
+public nonisolated struct Relay_Content_DeviceInfo: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// marketing name, e.g. "iPhone 17 Pro"
+  public var model: String = String()
+
+  /// coarse place, e.g. "Queensland, Australia"; empty if unknown
+  public var region: String = String()
+
+  /// sender clock (ms); newest wins
+  public var updatedAt: Int64 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
 fileprivate nonisolated let _protobuf_package = "relay.content"
 
 nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Content"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0\u{1}profile\0\u{1}call\0\u{1}edit\0\u{1}padding\0\u{3}sender_account_id\0\u{3}sender_device_id\0\u{3}expires_after_ms\0\u{3}sync_recipient\0\u{1}poll\0\u{3}poll_vote\0\u{1}screenshot\0\u{3}screen_security_update\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}text\0\u{1}receipt\0\u{1}typing\0\u{1}reaction\0\u{3}sender_key_distribution\0\u{3}group_update\0\u{1}delete\0\u{3}group_id\0\u{1}profile\0\u{1}call\0\u{1}edit\0\u{1}padding\0\u{3}sender_account_id\0\u{3}sender_device_id\0\u{3}expires_after_ms\0\u{3}sync_recipient\0\u{1}poll\0\u{3}poll_vote\0\u{1}screenshot\0\u{3}screen_security_update\0\u{3}device_info\0")
 
   fileprivate class _StorageClass {
     var _body: Relay_Content_Content.OneOf_Body?
@@ -1182,6 +1214,19 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
             _storage._body = .screenSecurityUpdate(v)
           }
         }()
+        case 21: try {
+          var v: Relay_Content_DeviceInfo?
+          var hadOneofValue = false
+          if let current = _storage._body {
+            hadOneofValue = true
+            if case .deviceInfo(let m) = current {v = m}
+          }
+          try decoder.decodeSingularMessageField(value: &v)
+          if let v = v {
+            if hadOneofValue {try decoder.handleConflictingOneOf()}
+            _storage._body = .deviceInfo(v)
+          }
+        }()
         default: break
         }
       }
@@ -1274,6 +1319,10 @@ nonisolated extension Relay_Content_Content: SwiftProtobuf.Message, SwiftProtobu
       case .screenSecurityUpdate?: try {
         guard case .screenSecurityUpdate(let v)? = _storage._body else { preconditionFailure() }
         try visitor.visitSingularMessageField(value: v, fieldNumber: 20)
+      }()
+      case .deviceInfo?: try {
+        guard case .deviceInfo(let v)? = _storage._body else { preconditionFailure() }
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 21)
       }()
       default: break
       }
@@ -2158,4 +2207,44 @@ nonisolated extension Relay_Content_TypingMessage: SwiftProtobuf.Message, SwiftP
 
 nonisolated extension Relay_Content_TypingMessage.Action: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ACTION_UNSPECIFIED\0\u{1}ACTION_STARTED\0\u{1}ACTION_STOPPED\0")
+}
+
+nonisolated extension Relay_Content_DeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".DeviceInfo"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}region\0\u{3}updated_at\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.model) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.region) }()
+      case 3: try { try decoder.decodeSingularInt64Field(value: &self.updatedAt) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.model.isEmpty {
+      try visitor.visitSingularStringField(value: self.model, fieldNumber: 1)
+    }
+    if !self.region.isEmpty {
+      try visitor.visitSingularStringField(value: self.region, fieldNumber: 2)
+    }
+    if self.updatedAt != 0 {
+      try visitor.visitSingularInt64Field(value: self.updatedAt, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_DeviceInfo, rhs: Relay_Content_DeviceInfo) -> Bool {
+    if lhs.model != rhs.model {return false}
+    if lhs.region != rhs.region {return false}
+    if lhs.updatedAt != rhs.updatedAt {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
 }

@@ -345,6 +345,9 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// A short, non-PII device label (e.g. "iPhone", "iPad") the new device
 		// supplies at link time, shown in the owner's Linked Devices list.
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_name TEXT`,
+		// Device names now travel only between the account's own devices,
+		// end-to-end encrypted; drop any the relay stored before.
+		`UPDATE devices SET device_name = NULL WHERE device_name IS NOT NULL`,
 		// Email privacy: never store the email in plaintext. We keep only the
 		// OPRF-keyed token (the same keyed hash used for blinded discovery), which
 		// is a one-way, non-enumerable-without-the-key value. All email lookups
@@ -631,6 +634,48 @@ type AddedDevice struct {
 	DeviceID          uint32
 	MailboxID         string
 	DeviceListVersion int64
+	// ReplacedDevices are the account's previous devices, removed because a
+	// fresh sign-in (or recovery) starts a new identity rather than joining it.
+	ReplacedDevices []uint32
+}
+
+// replaceDevicesTx removes every device of accountID (with its prekeys and
+// queued envelopes) inside tx, returning their ids. A sign-in or recovery on a
+// fresh install has no copy of the account's identity key, so it can't join the
+// existing devices: like re-registering in Signal, it replaces them. Devices
+// that should coexist are added through device linking, which shares the key.
+// Before this, every re-sign-in left the old device behind as a ghost with a
+// different identity key (and could eventually hit the device cap).
+func replaceDevicesTx(ctx context.Context, tx pgx.Tx, accountID string) ([]uint32, error) {
+	rows, err := tx.Query(ctx, `SELECT device_id FROM devices WHERE account_id = $1 ORDER BY device_id`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []uint32
+	for rows.Next() {
+		var id uint32
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, stmt := range []string{
+		`DELETE FROM one_time_prekeys WHERE account_id = $1`,
+		`DELETE FROM signed_prekeys WHERE account_id = $1`,
+		`DELETE FROM kyber_prekeys WHERE account_id = $1`,
+		`DELETE FROM message_queue WHERE account_id = $1`,
+		`DELETE FROM devices WHERE account_id = $1`,
+	} {
+		if _, err := tx.Exec(ctx, stmt, accountID); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
 }
 
 // addDeviceTx provisions a new device on accountID inside tx: it locks the
@@ -704,6 +749,9 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 		return AddedDevice{}, "", err
 	}
 	defer tx.Rollback(ctx)
+	if dev.ReplacedDevices, err = replaceDevicesTx(ctx, tx, dev.AccountID); err != nil {
+		return AddedDevice{}, "", err
+	}
 	dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, dev.AccountID, deviceHash)
 	if err != nil {
 		return AddedDevice{}, "", err
@@ -764,7 +812,11 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 
 	switch {
 	case err == nil:
-		// Existing account — provision another device (capped, versioned).
+		// Existing account — this sign-in replaces its devices (see
+		// replaceDevicesTx), then provisions the new one (versioned).
+		if dev.ReplacedDevices, err = replaceDevicesTx(ctx, tx, dev.AccountID); err != nil {
+			return AddedDevice{}, false, err
+		}
 		dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, dev.AccountID, deviceHash)
 		if err != nil {
 			return AddedDevice{}, false, err
@@ -1143,7 +1195,7 @@ func (s *Store) FetchProvisioningBlob(sessionID string) ([]byte, error) {
 // against concurrent link/unlink. Returns the assigned device id. This is the
 // reversed-flow counterpart to ClaimDeviceLinkToken: the primary (already
 // authenticated) drives device creation directly after scanning the QR.
-func (s *Store) AllocateLinkedDevice(accountID, password, deviceName string, expectedVersion int64) (deviceID uint32, err error) {
+func (s *Store) AllocateLinkedDevice(accountID, password string, expectedVersion int64) (deviceID uint32, err error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return 0, err
@@ -1175,7 +1227,7 @@ func (s *Store) AllocateLinkedDevice(accountID, password, deviceName string, exp
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at, device_name) VALUES ($1, $2, $3, $4, $5, $6)`,
-		accountID, deviceID, mailboxID, hash, now, deviceName); err != nil {
+		accountID, deviceID, mailboxID, hash, now, nil); err != nil { // names are E2E (DeviceInfo), never stored
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, currentVersion+1, accountID); err != nil {
@@ -1256,9 +1308,9 @@ func (s *Store) ListDevices(accountID string) ([]Device, error) {
 
 // RemoveDevice deletes a device from an account. Device 1 (primary) cannot be removed.
 func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion int64) (int64, error) {
-	if deviceID == 1 {
-		return 0, errors.New("store: cannot remove primary device")
-	}
+	// Any device may be removed, device 1 included: "primary" was only a label
+	// (device 1 has no special protocol role), and a sign-out must be able to
+	// remove itself.
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

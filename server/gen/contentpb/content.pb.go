@@ -290,6 +290,7 @@ type Content struct {
 	//	*Content_PollVote
 	//	*Content_Screenshot
 	//	*Content_ScreenSecurityUpdate
+	//	*Content_DeviceInfo
 	Body isContent_Body `protobuf_oneof:"body"`
 	// Set when this content belongs to a group; empty for 1:1. Group messages
 	// are encrypted with the sender's sender key (senderKey ciphertext);
@@ -479,6 +480,15 @@ func (x *Content) GetScreenSecurityUpdate() *ScreenSecurityUpdate {
 	return nil
 }
 
+func (x *Content) GetDeviceInfo() *DeviceInfo {
+	if x != nil {
+		if x, ok := x.Body.(*Content_DeviceInfo); ok {
+			return x.DeviceInfo
+		}
+	}
+	return nil
+}
+
 func (x *Content) GetGroupId() string {
 	if x != nil {
 		return x.GroupId
@@ -581,6 +591,10 @@ type Content_ScreenSecurityUpdate struct {
 	ScreenSecurityUpdate *ScreenSecurityUpdate `protobuf:"bytes,20,opt,name=screen_security_update,json=screenSecurityUpdate,proto3,oneof"`
 }
 
+type Content_DeviceInfo struct {
+	DeviceInfo *DeviceInfo `protobuf:"bytes,21,opt,name=device_info,json=deviceInfo,proto3,oneof"`
+}
+
 func (*Content_Text) isContent_Body() {}
 
 func (*Content_Receipt) isContent_Body() {}
@@ -608,6 +622,8 @@ func (*Content_PollVote) isContent_Body() {}
 func (*Content_Screenshot) isContent_Body() {}
 
 func (*Content_ScreenSecurityUpdate) isContent_Body() {}
+
+func (*Content_DeviceInfo) isContent_Body() {}
 
 // Carries a libsignal Sender Key Distribution Message so a member can
 // decrypt this sender's group messages. Sent 1:1 (pairwise-encrypted) to
@@ -1858,11 +1874,75 @@ func (x *TypingMessage) GetTimestamp() int64 {
 	return 0
 }
 
+// A device's human-readable label, shared ONLY with the sender's own other
+// devices (sealed, end-to-end) so Linked Devices can say "iPhone 17 Pro ·
+// Queensland, Australia". The relay never sees model or location: it stores
+// no device names at all. Recipients accept it only from their own account.
+type DeviceInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Model         string                 `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`                           // marketing name, e.g. "iPhone 17 Pro"
+	Region        string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`                         // coarse place, e.g. "Queensland, Australia"; empty if unknown
+	UpdatedAt     int64                  `protobuf:"varint,3,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // sender clock (ms); newest wins
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeviceInfo) Reset() {
+	*x = DeviceInfo{}
+	mi := &file_content_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeviceInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeviceInfo) ProtoMessage() {}
+
+func (x *DeviceInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_content_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeviceInfo.ProtoReflect.Descriptor instead.
+func (*DeviceInfo) Descriptor() ([]byte, []int) {
+	return file_content_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *DeviceInfo) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *DeviceInfo) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *DeviceInfo) GetUpdatedAt() int64 {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return 0
+}
+
 var File_content_proto protoreflect.FileDescriptor
 
 const file_content_proto_rawDesc = "" +
 	"\n" +
-	"\rcontent.proto\x12\rrelay.content\"\xd0\b\n" +
+	"\rcontent.proto\x12\rrelay.content\"\x8e\t\n" +
 	"\aContent\x120\n" +
 	"\x04text\x18\x01 \x01(\v2\x1a.relay.content.TextMessageH\x00R\x04text\x129\n" +
 	"\areceipt\x18\x02 \x01(\v2\x1d.relay.content.ReceiptMessageH\x00R\areceipt\x126\n" +
@@ -1880,7 +1960,9 @@ const file_content_proto_rawDesc = "" +
 	"\n" +
 	"screenshot\x18\x13 \x01(\v2\x1e.relay.content.ScreenshotAlertH\x00R\n" +
 	"screenshot\x12[\n" +
-	"\x16screen_security_update\x18\x14 \x01(\v2#.relay.content.ScreenSecurityUpdateH\x00R\x14screenSecurityUpdate\x12\x19\n" +
+	"\x16screen_security_update\x18\x14 \x01(\v2#.relay.content.ScreenSecurityUpdateH\x00R\x14screenSecurityUpdate\x12<\n" +
+	"\vdevice_info\x18\x15 \x01(\v2\x19.relay.content.DeviceInfoH\x00R\n" +
+	"deviceInfo\x12\x19\n" +
 	"\bgroup_id\x18\b \x01(\tR\agroupId\x12\x18\n" +
 	"\apadding\x18\f \x01(\fR\apadding\x12*\n" +
 	"\x11sender_account_id\x18\r \x01(\tR\x0fsenderAccountId\x12(\n" +
@@ -2016,7 +2098,13 @@ const file_content_proto_rawDesc = "" +
 	"\x06Action\x12\x16\n" +
 	"\x12ACTION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eACTION_STARTED\x10\x01\x12\x12\n" +
-	"\x0eACTION_STOPPED\x10\x02B0Z.github.com/relayapp/relay-server/gen/contentpbb\x06proto3"
+	"\x0eACTION_STOPPED\x10\x02\"Y\n" +
+	"\n" +
+	"DeviceInfo\x12\x14\n" +
+	"\x05model\x18\x01 \x01(\tR\x05model\x12\x16\n" +
+	"\x06region\x18\x02 \x01(\tR\x06region\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\x03 \x01(\x03R\tupdatedAtB0Z.github.com/relayapp/relay-server/gen/contentpbb\x06proto3"
 
 var (
 	file_content_proto_rawDescOnce sync.Once
@@ -2031,7 +2119,7 @@ func file_content_proto_rawDescGZIP() []byte {
 }
 
 var file_content_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_content_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_content_proto_goTypes = []any{
 	(GroupUpdate_Action)(0),       // 0: relay.content.GroupUpdate.Action
 	(ReceiptMessage_Type)(0),      // 1: relay.content.ReceiptMessage.Type
@@ -2055,6 +2143,7 @@ var file_content_proto_goTypes = []any{
 	(*ScreenshotAlert)(nil),       // 19: relay.content.ScreenshotAlert
 	(*ScreenSecurityUpdate)(nil),  // 20: relay.content.ScreenSecurityUpdate
 	(*TypingMessage)(nil),         // 21: relay.content.TypingMessage
+	(*DeviceInfo)(nil),            // 22: relay.content.DeviceInfo
 }
 var file_content_proto_depIdxs = []int32{
 	7,  // 0: relay.content.Content.text:type_name -> relay.content.TextMessage
@@ -2071,20 +2160,21 @@ var file_content_proto_depIdxs = []int32{
 	18, // 11: relay.content.Content.poll_vote:type_name -> relay.content.PollVote
 	19, // 12: relay.content.Content.screenshot:type_name -> relay.content.ScreenshotAlert
 	20, // 13: relay.content.Content.screen_security_update:type_name -> relay.content.ScreenSecurityUpdate
-	0,  // 14: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
-	8,  // 15: relay.content.GroupUpdate.avatar:type_name -> relay.content.AttachmentPointer
-	11, // 16: relay.content.TextMessage.quote:type_name -> relay.content.Quote
-	8,  // 17: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
-	8,  // 18: relay.content.ProfileUpdate.avatar:type_name -> relay.content.AttachmentPointer
-	10, // 19: relay.content.ProfileUpdate.links:type_name -> relay.content.ProfileLink
-	1,  // 20: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
-	2,  // 21: relay.content.CallMessage.type:type_name -> relay.content.CallMessage.Type
-	3,  // 22: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
-	23, // [23:23] is the sub-list for method output_type
-	23, // [23:23] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	22, // 14: relay.content.Content.device_info:type_name -> relay.content.DeviceInfo
+	0,  // 15: relay.content.GroupUpdate.action:type_name -> relay.content.GroupUpdate.Action
+	8,  // 16: relay.content.GroupUpdate.avatar:type_name -> relay.content.AttachmentPointer
+	11, // 17: relay.content.TextMessage.quote:type_name -> relay.content.Quote
+	8,  // 18: relay.content.TextMessage.attachments:type_name -> relay.content.AttachmentPointer
+	8,  // 19: relay.content.ProfileUpdate.avatar:type_name -> relay.content.AttachmentPointer
+	10, // 20: relay.content.ProfileUpdate.links:type_name -> relay.content.ProfileLink
+	1,  // 21: relay.content.ReceiptMessage.type:type_name -> relay.content.ReceiptMessage.Type
+	2,  // 22: relay.content.CallMessage.type:type_name -> relay.content.CallMessage.Type
+	3,  // 23: relay.content.TypingMessage.action:type_name -> relay.content.TypingMessage.Action
+	24, // [24:24] is the sub-list for method output_type
+	24, // [24:24] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_content_proto_init() }
@@ -2107,6 +2197,7 @@ func file_content_proto_init() {
 		(*Content_PollVote)(nil),
 		(*Content_Screenshot)(nil),
 		(*Content_ScreenSecurityUpdate)(nil),
+		(*Content_DeviceInfo)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2114,7 +2205,7 @@ func file_content_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_content_proto_rawDesc), len(file_content_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   18,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

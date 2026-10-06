@@ -758,9 +758,42 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                     enabled: upd.enabled,
                     timestamp: upd.timestamp))
 
+        case .deviceInfo(let info):
+            // Only our own devices may label themselves for us; anyone else's
+            // DeviceInfo is ignored. Stored per sender device, newest wins.
+            guard attestedAccount == ownAccountId, !ownAccountId.isEmpty else {
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            }
+            recordDeviceLabel(info, forDevice: sender.deviceId)
+            return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount)
+
         case .none:
             return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
         }
+    }
+
+    /// The JSON shape the app's `DeviceLabel` decodes (kv `devinfo:<deviceId>`).
+    private struct StoredDeviceLabel: Codable {
+        let model: String
+        let region: String
+        let updatedAt: Int64
+    }
+
+    private func recordDeviceLabel(_ info: Relay_Content_DeviceInfo, forDevice deviceId: UInt32) {
+        let key = "devinfo:\(deviceId)"
+        if let existing = (try? storage.database.query("SELECT value FROM kv WHERE key = ?", [.text(key)]))?
+            .first?.first?.data,
+           let old = try? JSONDecoder().decode(StoredDeviceLabel.self, from: existing),
+           old.updatedAt >= info.updatedAt {
+            return
+        }
+        let label = StoredDeviceLabel(
+            model: String(info.model.prefix(64)),
+            region: String(info.region.prefix(96)),
+            updatedAt: info.updatedAt)
+        guard let data = try? JSONEncoder().encode(label) else { return }
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(data)])
     }
 
     private static func action(_ a: Relay_Content_GroupUpdate.Action) -> GroupAction {

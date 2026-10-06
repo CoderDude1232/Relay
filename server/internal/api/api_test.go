@@ -482,6 +482,11 @@ func TestOAuthAccountProvisioning(t *testing.T) {
 	if second.Created || second.AccountID != first.AccountID || second.DeviceID != 2 {
 		t.Fatalf("second sign-in did not recover account: %+v (first=%+v)", second, first)
 	}
+	// A fresh sign-in replaces the account's devices instead of leaving the
+	// old one behind as a ghost with a different identity key.
+	if devs, err := env.api.store.Devices(first.AccountID); err != nil || len(devs) != 1 || devs[0].DeviceID != 2 {
+		t.Fatalf("devices after re-sign-in = %+v (err %v), want only device 2", devs, err)
+	}
 
 	// Registration never accepts a raw email.
 	env.doJSON("POST", "/v1/accounts", "", "",

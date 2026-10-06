@@ -79,7 +79,7 @@ func TestDeviceCapOnEveryAddPath(t *testing.T) {
 	if _, _, err := s.AddDevice(acct, "one-too-many", v); !errors.Is(err, ErrDeviceLimit) {
 		t.Fatalf("AddDevice over cap: %v", err)
 	}
-	if _, err := s.AllocateLinkedDevice(acct, "one-too-many", "x", v); !errors.Is(err, ErrDeviceLimit) {
+	if _, err := s.AllocateLinkedDevice(acct, "one-too-many", v); !errors.Is(err, ErrDeviceLimit) {
 		t.Fatalf("AllocateLinkedDevice over cap: %v", err)
 	}
 	token, code, _, err := s.CreateDeviceLinkToken(acct, v)
@@ -214,5 +214,22 @@ func TestBundlesSkipKeylessDevice(t *testing.T) {
 	}
 	if _, err := s.TakePreKeyBundles(acct, []uint32{dev2}, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("keyless device by id: err = %v, want ErrNotFound", err)
+	}
+}
+
+// Device 1 is not special: it can be removed like any other device (a
+// sign-out removes itself, whichever id it has).
+func TestRemoveDeviceOne(t *testing.T) {
+	s := openTestStore(t)
+	acct, _, err := s.CreateAccount(uniqueName("rm1"), nil, "", "device-pw-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testKeys(t, s, acct, 1)
+	if _, err := s.RemoveDevice(acct, 1, 0); err != nil {
+		t.Fatalf("remove device 1: %v", err)
+	}
+	if devs, err := s.Devices(acct); err != nil || len(devs) != 0 {
+		t.Fatalf("devices after removing device 1 = %+v (err %v)", devs, err)
 	}
 }

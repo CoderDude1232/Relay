@@ -124,6 +124,12 @@ final class MessagingService {
     var onCallMessage: ((CallInfo) async -> Void)?
     /// Called when a verified nuke command is received. The closure must wipe local storage.
     var onNukeReceived: (() async -> Void)?
+    /// The relay removed THIS device (a fresh sign-in elsewhere replaced it, or
+    /// another device unlinked it): its credentials are dead, so sign out locally.
+    var onRemovedFromAccount: (() async -> Void)?
+    /// Set while this device is removing itself, so the relay's echo isn't
+    /// mistaken for an external removal.
+    var isRemovingSelf = false
 
     let storage: SecureStore
     private let keychain: KeychainSecureStore
@@ -357,6 +363,7 @@ final class MessagingService {
         }
         connectionTask = Task { await runConnectionLoop() }
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
+        Task { [weak self] in await self?.publishDeviceLabel(force: false) }
         startPathMonitor()
         expireTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -476,9 +483,18 @@ final class MessagingService {
                     await handleEnvelope(envelope)
                 case .nukeCommand(let nuke):
                     await handleNukeEvent(nuke)
-                case .deviceListChanged:
+                case .deviceListChanged(let change):
+                    if change.action == .removed, change.deviceId == credentials.deviceId {
+                        guard !isRemovingSelf else { break }
+                        await onRemovedFromAccount?()
+                        return
+                    }
                     // Refresh device list so fan-out stays in sync.
                     Task { try? await self.refreshDeviceList() }
+                    // A new device of ours needs our label to show us by name.
+                    if change.action == .added {
+                        Task { await self.publishDeviceLabel(force: true) }
+                    }
                 case .disconnected:
                     isDrainingQueue = false
                     break
@@ -1854,7 +1870,9 @@ final class MessagingService {
         }
         let password = Self.newDevicePassword()
         let authorization = try await deviceMutationAuthorization(action: "link", targetDeviceId: 0, password: password)
-        let deviceId = try await api.linkDevice(password: password, deviceName: deviceName, authorization: authorization)
+        // The name stays between our devices (it rode in the QR code); the relay
+        // stores no device names.
+        let deviceId = try await api.linkDevice(password: password, deviceName: nil, authorization: authorization)
 
         // The account identity key pair — shared with the new device so every
         // device of the account presents the same identity.
@@ -2176,6 +2194,57 @@ final class MessagingService {
 
     private func nukeCanonicalPayload(accountId: String, commandId: String, creationTimeMs: Int64, initiatingDeviceId: UInt32) -> String {
         ["relay-nuke-v1", accountId, commandId, String(creationTimeMs), String(initiatingDeviceId)].joined(separator: "\n")
+    }
+
+    /// Removes THIS device from the account on the relay (signed with its own
+    /// auth key) — the first step of signing out, so no ghost device is left
+    /// behind to collect messages and show up in the device list.
+    func removeThisDeviceFromServer() async throws {
+        isRemovingSelf = true
+        let authorization = try await deviceMutationAuthorization(
+            action: "remove", targetDeviceId: credentials.deviceId, password: "")
+        try await api.removeDevice(deviceId: credentials.deviceId, authorization: authorization)
+    }
+
+    // MARK: - Device labels (end-to-end, own devices only)
+
+    /// This device's stored label, or a model-only one.
+    var myDeviceLabel: DeviceLabel {
+        deviceLabel(forDevice: credentials.deviceId)
+            ?? DeviceLabel(model: DeviceModel.current, region: "", updatedAt: 0)
+    }
+
+    /// The label a device of ours shared with us (sealed; the relay never sees it).
+    func deviceLabel(forDevice deviceId: UInt32) -> DeviceLabel? {
+        guard let data = (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text("devinfo:\(deviceId)")]
+        ))?.first?.first?.data else { return nil }
+        return try? JSONDecoder().decode(DeviceLabel.self, from: data)
+    }
+
+    /// Refreshes this device's label (model + approximate region) and shares it
+    /// with our other devices over the sealed self-sync path. Without `force`,
+    /// only when it changed or is over a day old.
+    func publishDeviceLabel(force: Bool) async {
+        let region = await DeviceRegion.shared.currentRegion()
+        let previous = deviceLabel(forDevice: credentials.deviceId)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        var label = DeviceLabel(model: DeviceModel.current, region: region, updatedAt: now)
+        // Keep the last known region if we can't get one right now.
+        if label.region.isEmpty, let previous { label.region = previous.region }
+        let unchanged = previous.map { $0.model == label.model && $0.region == label.region } ?? false
+        let fresh = previous.map { now - $0.updatedAt < 86_400_000 } ?? false
+        if unchanged && fresh && !force { return }
+        if let data = try? JSONEncoder().encode(label) {
+            try? storage.database.run(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                [.text("devinfo:\(credentials.deviceId)"), .blob(data)])
+        }
+        var content = Relay_Content_Content()
+        content.deviceInfo.model = label.model
+        content.deviceInfo.region = label.region
+        content.deviceInfo.updatedAt = label.updatedAt
+        await sendSyncToOwnDevices(content: content, peer: "", timestamp: now)
     }
 
     func removeLinkedDevice(deviceId: UInt32) async throws {

@@ -266,7 +266,7 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingDeleteAccount) {
                 DeleteAccountSheet(service: service) {
-                    model.signOut()
+                    model.signOut(removeFromServer: false) // the account is already gone
                 }
             }
         }

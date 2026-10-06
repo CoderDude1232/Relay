@@ -15,11 +15,11 @@ extension MessagingService {
     }
 
     func noteSignedIn(username: String) {
-        postRelayNotice("You signed in to @\(username) on this device. Your other devices were told a new device joined. If this wasn't you, unlink it in Settings → Linked Devices.")
+        postRelayNotice("You signed in to @\(username) on this device. Any other devices signed in to this account were signed out — to use Relay on more than one device, add them with Link Device. If this wasn't you, sign out of your email account everywhere and change its password.")
     }
 
     func noteAccountRecovered(username: String) {
-        postRelayNotice("Your account @\(username) was recovered on this device with your email and account password. If this wasn't you, review Settings → Linked Devices now.")
+        postRelayNotice("Your account @\(username) was recovered on this device with your email and account password. Your other devices were signed out. If this wasn't you, someone knows your email and account password — recover your account again from your own device right away.")
     }
 
     func noteUsernameChanged(from old: String?, to new: String) {

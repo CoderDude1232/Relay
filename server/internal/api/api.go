@@ -505,8 +505,16 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		"mailboxId": dev.MailboxID,
 		"created":   created,
 	})
-	if !created {
-		s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, dev.DeviceID)
+	s.retireReplacedDevices(dev)
+}
+
+// retireReplacedDevices tells each device a fresh sign-in/recovery replaced
+// that it was removed (so a still-running app signs itself out), then drops
+// its socket. Its rows are already gone, so its credentials no longer work.
+func (s *Server) retireReplacedDevices(dev store.AddedDevice) {
+	for _, old := range dev.ReplacedDevices {
+		s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_REMOVED, old)
+		s.hub.DisconnectDevice(dev.AccountID, old, "replaced by a new sign-in")
 	}
 }
 
@@ -1024,7 +1032,7 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		"devicePassword": devicePassword,
 		"mailboxId":      dev.MailboxID,
 	})
-	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, dev.DeviceID)
+	s.retireReplacedDevices(dev)
 }
 
 func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, dev *store.Device) {
@@ -1234,11 +1242,9 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		httpError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	name := req.DeviceName
-	if len(name) > maxDeviceNameBytes {
-		name = name[:maxDeviceNameBytes]
-	}
-	deviceID, err := s.store.AllocateLinkedDevice(dev.AccountID, req.Password, name, req.Auth.ExpectedVersion)
+	// req.DeviceName is accepted for older clients but ignored: device names
+	// travel only between the account's own devices, end-to-end encrypted.
+	deviceID, err := s.store.AllocateLinkedDevice(dev.AccountID, req.Password, req.Auth.ExpectedVersion)
 	if errors.Is(err, store.ErrDeviceListVersionMismatch) {
 		httpError(w, http.StatusConflict, "device list changed; refresh and try again")
 		return
@@ -2236,8 +2242,6 @@ func (s *Server) PruneStaleLimiterKeys() {
 }
 
 const (
-	// maxDeviceNameBytes caps the linked-device label length.
-	maxDeviceNameBytes = 64
 	// maxProvisioningBlobBytes caps the sealed device-linking payload. The blob
 	// is identity + credentials + up to ~50 conversation stubs — a few KiB — so
 	// 64 KiB is generous while preventing a huge-blob DoS on the session table.

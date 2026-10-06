@@ -366,6 +366,7 @@ struct LinkedDevicesView: View {
     @State private var showingLinkSheet = false
     @State private var errorMessage: String?
     @State private var pendingUnlink: RelayKit.LinkedDevice?
+    @State private var canAskForRegion = DeviceRegion.shared.canAsk
     @State private var relinkNudgeDismissed = UserDefaults.standard.bool(forKey: Self.relinkNudgeDismissedKey)
 
     private static let relinkNudgeDismissedKey = "relay.relinkNudgeDismissed"
@@ -421,22 +422,32 @@ struct LinkedDevicesView: View {
                                 }
                             }
                             Spacer()
-                            if device.deviceId == 1 {
-                                Text("Primary")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
                         }
                         .padding(.vertical, 2)
+                        .deleteDisabled(device.deviceId == service.credentials.deviceId)
                     }
                     .onDelete { indexSet in
                         // Ask first — unlinking signs that device out for good.
-                        pendingUnlink = indexSet.map { devices[$0] }.first { $0.deviceId != 1 }
+                        // This device leaves via Sign Out instead.
+                        pendingUnlink = indexSet.map { devices[$0] }
+                            .first { $0.deviceId != service.credentials.deviceId }
                     }
                 } header: {
                     Text("Devices")
                 } footer: {
-                    Text("Swipe left to unlink a device. The primary device cannot be removed.")
+                    Text("Swipe left to unlink a device. Device names and regions are shared only between your own devices, end-to-end encrypted — Relay's servers never see them.")
+                }
+
+                if canAskForRegion {
+                    Section {
+                        Button {
+                            DeviceRegion.shared.requestAccess()
+                        } label: {
+                            Label("Show This Device's Region", systemImage: "location")
+                        }
+                    } footer: {
+                        Text("Adds an approximate region like \"Queensland, Australia\" to this device's name on your other devices. Uses approximate location only, and never leaves your devices unencrypted.")
+                    }
                 }
 
                 Section {
@@ -462,6 +473,13 @@ struct LinkedDevicesView: View {
             EditButton()
         }
         .task { await refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: .deviceRegionAuthorizationChanged)) { _ in
+            canAskForRegion = DeviceRegion.shared.canAsk
+            Task {
+                await service.publishDeviceLabel(force: true)
+                await refresh()
+            }
+        }
         .sheet(isPresented: $showingLinkSheet, onDismiss: { Task { await refresh() } }) {
             LinkDeviceView(service: service)
         }
@@ -498,22 +516,32 @@ struct LinkedDevicesView: View {
         loading = false
     }
 
+    /// The device's own end-to-end label (never from the relay).
+    private func label(_ d: RelayKit.LinkedDevice) -> DeviceLabel? {
+        d.deviceId == service.credentials.deviceId
+            ? service.myDeviceLabel
+            : service.deviceLabel(forDevice: d.deviceId)
+    }
+
     private func deviceIcon(_ d: RelayKit.LinkedDevice) -> String {
-        let name = d.name?.lowercased() ?? ""
-        if name.contains("ipad") { return "ipad" }
-        if name.contains("mac") { return "laptopcomputer" }
+        let model = label(d)?.model.lowercased() ?? ""
+        if model.contains("ipad") { return "ipad" }
+        if model.contains("mac") { return "laptopcomputer" }
         return "iphone"
     }
 
     private func deviceTitle(_ d: RelayKit.LinkedDevice) -> String {
-        let base = (d.name?.isEmpty == false ? d.name! : "Device \(d.deviceId)")
-        return d.deviceId == service.credentials.deviceId ? "\(base) (this device)" : base
+        label(d)?.displayName ?? "Device \(d.deviceId)"
     }
 
     private func deviceSubtitle(_ d: RelayKit.LinkedDevice) -> String? {
-        guard let ms = d.createdAt, ms > 0 else { return nil }
-        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
-        return "Linked \(date.formatted(date: .abbreviated, time: .omitted))"
+        var parts: [String] = []
+        if d.deviceId == service.credentials.deviceId { parts.append("This device") }
+        if let ms = d.createdAt, ms > 0 {
+            let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+            parts.append("Added \(date.formatted(date: .abbreviated, time: .omitted))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 }
 

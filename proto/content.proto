@@ -30,6 +30,7 @@ message Content {
     PollVote poll_vote = 18;
     ScreenshotAlert screenshot = 19;
     ScreenSecurityUpdate screen_security_update = 20;
+    DeviceInfo device_info = 21;
   }
   // Set when this content belongs to a group; empty for 1:1. Group messages
   // are encrypted with the sender's sender key (senderKey ciphertext);
@@ -292,4 +293,14 @@ message TypingMessage {
   }
   Action action = 1;
   int64 timestamp = 2;
+}
+
+// A device's human-readable label, shared ONLY with the sender's own other
+// devices (sealed, end-to-end) so Linked Devices can say "iPhone 17 Pro ·
+// Queensland, Australia". The relay never sees model or location: it stores
+// no device names at all. Recipients accept it only from their own account.
+message DeviceInfo {
+  string model = 1;      // marketing name, e.g. "iPhone 17 Pro"
+  string region = 2;     // coarse place, e.g. "Queensland, Australia"; empty if unknown
+  int64 updated_at = 3;  // sender clock (ms); newest wins
 }

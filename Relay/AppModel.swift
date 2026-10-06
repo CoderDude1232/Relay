@@ -578,7 +578,7 @@ final class AppModel {
             sessionId: info.sessionId,
             ephemeralPublicKey: ephemeral.publicKey,
             serverURL: RelayConfig.serverURL.absoluteString,
-            deviceName: UIDevice.current.model
+            deviceName: DeviceModel.current
         )
         let qr = String(data: try JSONEncoder().encode(qrPayload), encoding: .utf8) ?? ""
         return (qr, info.sessionId, ephemeral)
@@ -680,7 +680,27 @@ final class AppModel {
     /// Signs out of the account: forgets the credentials and deletes all
     /// local message history and session state. Used both by the Settings
     /// button and to recover from credentials the server no longer knows.
-    func signOut() {
+    /// Signs out. With `removeFromServer` (a normal sign-out) this device is
+    /// first removed from the account on the relay, so it doesn't linger as a
+    /// ghost that keeps collecting messages; that step is capped at a few
+    /// seconds so being offline never blocks signing out. Pass false when the
+    /// device or account is already gone (remote wipe, account deletion,
+    /// replaced by a sign-in elsewhere).
+    func signOut(removeFromServer: Bool = true) {
+        guard removeFromServer, case .ready(let service) = phase else {
+            finishSignOut()
+            return
+        }
+        Task { @MainActor in
+            let removal = Task { try await service.removeThisDeviceFromServer() }
+            let timeout = Task { try? await Task.sleep(for: .seconds(6)); removal.cancel() }
+            _ = try? await removal.value
+            timeout.cancel()
+            finishSignOut()
+        }
+    }
+
+    private func finishSignOut() {
         if case .ready(let service) = phase {
             service.stop()
         }
