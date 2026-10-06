@@ -32,6 +32,7 @@ struct ChatView: View {
     @Environment(ChatAppearance.self) private var appearance
     @Environment(CallManager.self) private var callManager
     @State private var isOnScreen = false
+    @State private var confirmingBulkDelete = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var draft = ""
@@ -120,6 +121,7 @@ struct ChatView: View {
     }
 
     private var peerName: String {
+        if isNoteToSelf { return "Note to Self" }
         if let account = conversation?.peerAccount { return service.displayName(forAccount: account) }
         return "Chat"
     }
@@ -345,6 +347,7 @@ struct ChatView: View {
                         onClose()
                     } label: {
                         Image(systemName: "chevron.left")
+                            .accessibilityLabel("Back")
                     }
                 }
             }
@@ -406,6 +409,7 @@ struct ChatView: View {
                             }
                         } label: {
                             Image(systemName: "phone.fill")
+                                .accessibilityLabel("Voice call")
                         }
                         .disabled(callControlsDisabled)
 
@@ -415,6 +419,7 @@ struct ChatView: View {
                             }
                         } label: {
                             Image(systemName: "video.fill")
+                                .accessibilityLabel("Video call")
                         }
                         .disabled(callControlsDisabled)
                     }
@@ -432,6 +437,7 @@ struct ChatView: View {
                             }
                         } label: {
                             Image(systemName: "phone.badge.plus")
+                                .accessibilityLabel("Start group call")
                         }
                         .disabled(callManager.isInGroupCall || callControlsDisabled)
                     }
@@ -481,10 +487,12 @@ struct ChatView: View {
                                 .foregroundStyle(.secondary)
                             Button { stepInChatMatch(by: -1) } label: {
                                 Image(systemName: "chevron.up")
+                                    .accessibilityLabel("Previous match")
                             }
                             .buttonStyle(.plain)
                             Button { stepInChatMatch(by: 1) } label: {
                                 Image(systemName: "chevron.down")
+                                    .accessibilityLabel("Next match")
                             }
                             .buttonStyle(.plain)
                         }
@@ -518,6 +526,7 @@ struct ChatView: View {
                         } label: {
                             ZStack(alignment: .topTrailing) {
                                 Image(systemName: "chevron.down")
+                                    .accessibilityLabel("Scroll to latest")
                                     .font(.callout.weight(.bold))
                                     .frame(width: 34, height: 34)
                                     .glassCompat(in: .circle)
@@ -783,6 +792,7 @@ struct ChatView: View {
                     withAnimation { smartReplies = [] }
                 } label: {
                     Image(systemName: "xmark")
+                        .accessibilityLabel("Dismiss suggestions")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(8)
@@ -957,15 +967,24 @@ struct ChatView: View {
                 selectionActionButton("doc.on.doc", label: "Copy") { copySelectedMessages() }
                     .disabled(!selectedMessages.contains { !$0.body.isEmpty })
                 selectionActionButton("arrowshape.turn.up.right", label: "Forward") { forwardSelectedMessages() }
-                    .disabled(!selectedMessages.contains { !$0.body.isEmpty })
+                    .disabled(!selectedMessages.contains {
+                        (!$0.body.isEmpty || !$0.attachments.isEmpty) && !$0.body.hasPrefix(MessagingService.viewOncePrefix)
+                    })
                 selectionActionButton("star", label: "Star") { starSelectedMessages() }
-                selectionActionButton("trash", label: "Delete", role: .destructive) { deleteSelectedMessages() }
+                selectionActionButton("trash", label: "Delete", role: .destructive) { confirmingBulkDelete = true }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .glassCompat(in: .rect(cornerRadius: 24))
             .padding(.horizontal, 10)
             .padding(.bottom, 6)
+        }
+        .confirmationDialog(
+            "Delete \(selectedMessageIds.count) message\(selectedMessageIds.count == 1 ? "" : "s") from this device?",
+            isPresented: $confirmingBulkDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete for Me", role: .destructive) { deleteSelectedMessages() }
         }
     }
 
@@ -1017,7 +1036,9 @@ struct ChatView: View {
     }
 
     private func forwardSelectedMessages() {
-        let messages = selectedMessages.filter { !$0.body.isEmpty }
+        let messages = selectedMessages.filter {
+            (!$0.body.isEmpty || !$0.attachments.isEmpty) && !$0.body.hasPrefix(MessagingService.viewOncePrefix)
+        }
         guard !messages.isEmpty else { return }
         forwardTarget = ForwardPayload(messages: messages)
         clearMessageSelection()
@@ -1167,7 +1188,11 @@ struct ChatView: View {
                             .accessibilityLabel(editingMessage == nil ? "Send message" : "Save edit")
                             .simultaneousGesture(
                                 LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-                                    guard canSend, editingMessage == nil else { return }
+                                    // Scheduling is text-only: attachments aren't stored with
+                                    // a scheduled message, so don't offer it (and lose them).
+                                    guard canSend, editingMessage == nil, pendingAttachments.isEmpty,
+                                          !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    else { return }
                                     scheduledDate = Date().addingTimeInterval(3600)
                                     showingSchedulePicker = true
                                 }
@@ -1222,6 +1247,7 @@ struct ChatView: View {
                 recorder.cancel()
             } label: {
                 Image(systemName: "trash").font(.system(size: 20)).foregroundStyle(.red)
+                    .accessibilityLabel("Delete recording")
             }
             .buttonStyle(.plain)
 
@@ -1233,6 +1259,7 @@ struct ChatView: View {
                 finishRecording()
             } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.system(size: 30))
+                    .accessibilityLabel("Send voice message")
             }
             .buttonStyle(.plain)
         }
@@ -1595,6 +1622,7 @@ private struct PinnedMessageBanner: View {
             Spacer(minLength: 0)
             Button(action: onUnpin) {
                 Image(systemName: "xmark")
+                    .accessibilityLabel("Unpin message")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -1876,8 +1904,11 @@ private struct MessageRow: View {
         if message.isOutgoing && message.attachments.isEmpty {
             items.append(.init(label: "Edit", icon: "pencil") { onEdit() })
         }
-        if !message.body.isEmpty {
+        let isViewOnce = message.body.hasPrefix(MessagingService.viewOncePrefix)
+        if !message.body.isEmpty && !isViewOnce {
             items.append(.init(label: "Copy", icon: "doc.on.doc") { UIPasteboard.general.string = message.body })
+        }
+        if (!message.body.isEmpty || !message.attachments.isEmpty) && !isViewOnce && !message.isDeleted {
             items.append(.init(label: "Forward", icon: "arrowshape.turn.up.right") { onForward() })
         }
         items.append(.init(label: message.isStarred ? "Unstar" : "Star",
@@ -2046,7 +2077,7 @@ private struct MessageBubble: View {
                 message: message, service: service,
                 conversationId: conversationId, isOutgoing: message.isOutgoing
             )
-        } else if isViewOnce && !message.attachments.isEmpty {
+        } else if isViewOnce {
             ViewOnceOverlay(
                 message: message, service: service,
                 conversationId: conversationId, isOutgoing: message.isOutgoing
@@ -2208,7 +2239,8 @@ private struct MessageBubble: View {
                 statusView
             }
         }
-        .font(.system(size: 8.5, weight: .regular))
+        // A text style (not a fixed point size) so it follows Dynamic Type.
+        .font(.caption2)
         .foregroundStyle(message.isOutgoing ? .white.opacity(0.62) : .secondary)
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .fixedSize()
@@ -2588,6 +2620,7 @@ private struct EditPreviewBar: View {
                 onCancel()
             } label: {
                 Image(systemName: "xmark.circle.fill")
+                    .accessibilityLabel("Cancel")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -2646,6 +2679,7 @@ private struct ReplyPreviewBar: View {
                 onCancel()
             } label: {
                 Image(systemName: "xmark.circle.fill")
+                    .accessibilityLabel("Cancel")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -2850,6 +2884,7 @@ private struct PendingAttachmentBar: View {
                 onCancel()
             } label: {
                 Image(systemName: "xmark.circle.fill")
+                    .accessibilityLabel("Cancel")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
@@ -2942,6 +2977,7 @@ private struct PendingAttachmentPreviewSheet: View {
             }
             Button { onRemove(index) } label: {
                 Image(systemName: "xmark.circle.fill")
+                    .accessibilityLabel("Remove attachment")
                     .font(.title3)
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(.white, .black.opacity(0.55))
@@ -3091,8 +3127,8 @@ private struct ForwardMessageSheet: View {
         guard !isSending else { return }
         isSending = true
         Task {
-            for message in payload.messages where !message.body.isEmpty {
-                await service.sendMessage(message.body, in: conversationId)
+            for message in payload.messages {
+                await service.forward(message, to: conversationId)
             }
             dismiss()
         }
@@ -3268,10 +3304,14 @@ private struct SchedulePickerSheet: View {
                 )
                 .datePickerStyle(.graphical)
 
-                Section("Message") {
+                Section {
                     Text(draft)
                         .foregroundStyle(.secondary)
                         .font(.body)
+                } header: {
+                    Text("Message")
+                } footer: {
+                    Text("Relay sends it at this time if your phone is online. If Relay hasn't been able to run, it goes out the next time you open the app.")
                 }
             }
             .navigationTitle("Schedule Message")
@@ -3366,8 +3406,11 @@ private struct ViewOnceOverlay: View {
 
     @State private var viewed = false
     @State private var image: UIImage?
+    @State private var unavailable = false
 
     private var tint: Color { isOutgoing ? .white : .primary }
+    /// The attachment row is removed once the recipient has opened it.
+    private var alreadyOpened: Bool { !isOutgoing && message.attachments.isEmpty }
 
     var body: some View {
         Group {
@@ -3377,23 +3420,36 @@ private struct ViewOnceOverlay: View {
                     .scaledToFit()
                     .frame(maxWidth: 240)
                     .clipShape(.rect(cornerRadius: 12))
+            } else if isOutgoing || alreadyOpened || unavailable {
+                // The sender can't open their own view-once photo (that would
+                // destroy their copy), and a recipient only gets one look.
+                label(
+                    icon: alreadyOpened || unavailable ? "eye.slash" : "eye",
+                    text: isOutgoing ? "View-once photo" : (unavailable ? "Photo unavailable" : "Opened")
+                )
+                .opacity(0.8)
             } else {
                 Button { Task { await reveal() } } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "eye.fill")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("View once")
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .foregroundStyle(tint)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(tint.opacity(0.15), in: .capsule)
+                    label(icon: "eye.fill", text: "View once")
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Shows the photo one time")
             }
         }
         .padding(8)
+    }
+
+    private func label(icon: String, text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+            Text(text)
+                .font(.subheadline.weight(.semibold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(tint.opacity(0.15), in: .capsule)
     }
 
     private func reveal() async {
@@ -3401,14 +3457,17 @@ private struct ViewOnceOverlay: View {
         if !attachment.isDownloaded {
             await service.downloadAttachment(attachment, in: conversationId)
         }
-        if let data = service.attachmentPlaintext(attachment),
-           let ui = UIImage(data: data) {
-            image = ui
-            viewed = true
-            // Evict from cache after display to enforce single-view.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                service.deleteViewOnceAttachment(attachment, in: conversationId)
-            }
+        guard let data = service.attachmentPlaintext(attachment),
+              let ui = UIImage(data: data) else {
+            unavailable = true
+            return
+        }
+        image = ui
+        viewed = true
+        // Remove the ciphertext and the attachment row right after display, so
+        // it can't be shown (or re-downloaded) again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            service.deleteViewOnceAttachment(attachment, in: conversationId)
         }
     }
 }

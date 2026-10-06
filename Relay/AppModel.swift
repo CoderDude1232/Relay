@@ -174,6 +174,7 @@ final class AppModel {
 
         if service.connectionState == .connected {
             _ = await service.processPendingShare()
+            await service.flushDueScheduledMessages()
         }
 
         if wasDisconnected { service.stop() }

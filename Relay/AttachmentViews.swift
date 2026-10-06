@@ -618,7 +618,7 @@ struct ForwardPickerView: View {
     @State private var isSending = false
 
     private var conversations: [Conversation] {
-        service.conversations.filter { !$0.isGroup }
+        service.conversations.filter { !$0.archived && $0.peerAccount != service.relayOfficialAccount }
     }
 
     var body: some View {
@@ -629,16 +629,19 @@ struct ForwardPickerView: View {
                 } else {
                     List(conversations) { conv in
                         Button { forward(to: conv.id) } label: {
+                            let account = conv.groupId ?? conv.peerAccount
                             HStack(spacing: 12) {
                                 AvatarView(
-                                    name: service.displayName(forAccount: conv.peerAccount),
+                                    name: service.displayName(forAccount: account),
                                     size: 44,
-                                    imageData: service.peerAvatarData(forAccount: conv.peerAccount)
+                                    imageData: conv.isGroup
+                                        ? service.group(for: conv.id)?.avatarData
+                                        : service.peerAvatarData(forAccount: account)
                                 )
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(service.displayName(forAccount: conv.peerAccount))
+                                    Text(service.displayName(forAccount: account))
                                         .font(.body.weight(.medium))
-                                    if let username = conv.peerUsername {
+                                    if !conv.isGroup, let username = conv.peerUsername {
                                         Text("@\(username)")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)

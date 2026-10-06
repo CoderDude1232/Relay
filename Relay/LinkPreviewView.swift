@@ -3,8 +3,9 @@
 //  Relay
 //
 //  Detects URLs in message bodies and renders a compact tappable preview card.
-//  LPMetadataProvider fetches only page metadata (no sub-resources), then the
-//  title + domain is shown. The fetch happens once and the result is cached in
+//  For links we sent, LPMetadataProvider fetches only page metadata (no
+//  sub-resources), then the title + domain is shown. Received links are never
+//  fetched (that would leak our IP to a server the sender picked). The fetch happens once and the result is cached in
 //  the view's @State for the lifetime of the bubble.
 //
 
@@ -92,6 +93,10 @@ struct LinkPreviewView: View {
             }
             guard !fetched else { return }
             fetched = true
+            // Only fetch for links we sent. Fetching a received link would
+            // contact a server the sender chose, revealing our IP address and
+            // that we read the message — incoming cards show the domain only.
+            guard isOutgoing else { return }
             let provider = LPMetadataProvider()
             provider.shouldFetchSubresources = false
             provider.timeout = 8

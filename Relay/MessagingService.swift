@@ -1563,7 +1563,7 @@ final class MessagingService {
         try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text("sched:\(id)")])
     }
 
-    private func flushDueScheduledMessages() async {
+    func flushDueScheduledMessages() async {
         let now = Date().timeIntervalSince1970
         let due = scheduledMessages().filter { $0.scheduledAt <= now }
         for msg in due {
@@ -2792,6 +2792,28 @@ final class MessagingService {
 
     /// Decrypts a cached attachment to plaintext in memory (never to disk).
     /// Returns nil if it isn't downloaded yet or fails integrity/decryption.
+    /// Forwards a message — text and attachments — to another conversation as
+    /// a fresh message. View-once media is never forwarded.
+    func forward(_ message: StoredMessage, to conversationId: String) async {
+        guard !message.body.hasPrefix(Self.viewOncePrefix) else { return }
+        var pending: [PendingAttachment] = []
+        for attachment in message.attachments {
+            if !attachmentStore.exists(attachment.id) {
+                await downloadAttachment(attachment, in: message.conversationId)
+            }
+            guard let data = attachmentPlaintext(attachment) else { continue }
+            pending.append(PendingAttachment(
+                data: data, contentType: attachment.contentType, filename: attachment.filename,
+                width: attachment.width, height: attachment.height
+            ))
+        }
+        guard !message.body.isEmpty || !pending.isEmpty else { return }
+        await sendMessage(message.body, in: conversationId, attachments: pending)
+    }
+
+    /// Body prefix marking view-once media.
+    static let viewOncePrefix = "~once~"
+
     func attachmentPlaintext(_ attachment: StoredAttachment) -> Data? {
         guard let ciphertext = try? attachmentStore.read(attachment.id) else { return nil }
         return try? AttachmentCipher.open(ciphertext, key: attachment.key, digest: attachment.digest)
@@ -3538,6 +3560,11 @@ final class MessagingService {
     /// Evicts a view-once attachment from the on-disk cache after it has been viewed.
     func deleteViewOnceAttachment(_ attachment: StoredAttachment, in conversationId: String) {
         attachmentStore.delete(attachment.id)
+        // Drop the row too: without it the pointer (id + key) is gone, so the
+        // blob can't be fetched from the relay again, and the bubble shows
+        // "Opened" from now on.
+        try? storage.database.run("DELETE FROM attachments WHERE id = ?", [.text(attachment.id)])
+        refreshActiveMessages(ifShowing: conversationId)
     }
 
     func setConversationArchived(_ conversationId: String, archived: Bool) {

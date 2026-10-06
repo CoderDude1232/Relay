@@ -283,6 +283,7 @@ struct LinkedDevicesView: View {
     @State private var loading = true
     @State private var showingLinkSheet = false
     @State private var errorMessage: String?
+    @State private var pendingUnlink: RelayKit.LinkedDevice?
     @State private var relinkNudgeDismissed = UserDefaults.standard.bool(forKey: Self.relinkNudgeDismissedKey)
 
     private static let relinkNudgeDismissedKey = "relay.relinkNudgeDismissed"
@@ -347,18 +348,8 @@ struct LinkedDevicesView: View {
                         .padding(.vertical, 2)
                     }
                     .onDelete { indexSet in
-                        for index in indexSet {
-                            let d = devices[index]
-                            guard d.deviceId != 1 else { continue }
-                            Task {
-                                do {
-                                    try await service.removeLinkedDevice(deviceId: d.deviceId)
-                                    await refresh()
-                                } catch {
-                                    errorMessage = error.localizedDescription
-                                }
-                            }
-                        }
+                        // Ask first — unlinking signs that device out for good.
+                        pendingUnlink = indexSet.map { devices[$0] }.first { $0.deviceId != 1 }
                     }
                 } header: {
                     Text("Devices")
@@ -391,6 +382,27 @@ struct LinkedDevicesView: View {
         .task { await refresh() }
         .sheet(isPresented: $showingLinkSheet, onDismiss: { Task { await refresh() } }) {
             LinkDeviceView(service: service)
+        }
+        .confirmationDialog(
+            "Unlink this device?",
+            isPresented: Binding(get: { pendingUnlink != nil }, set: { if !$0 { pendingUnlink = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingUnlink
+        ) { device in
+            Button("Unlink", role: .destructive) { unlink(device) }
+        } message: { _ in
+            Text("It will stop receiving messages and lose access to this account.")
+        }
+    }
+
+    private func unlink(_ device: RelayKit.LinkedDevice) {
+        Task {
+            do {
+                try await service.removeLinkedDevice(deviceId: device.deviceId)
+                await refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

@@ -10,6 +10,7 @@
 
 import CoreImage.CIFilterBuiltins
 import SwiftUI
+import AVFoundation
 import Vision
 import VisionKit
 
@@ -426,21 +427,48 @@ private struct ActivitySheet: UIViewControllerRepresentable {
 struct ContactQRScanner: View {
     let onScan: (String) -> Void
 
+    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var scanned = false
+    @State private var cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    @State private var unrecognized = false
 
     var body: some View {
         NavigationStack {
             Group {
-                if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
-                    DataScannerRepresentable(onScan: handleScan)
-                        .ignoresSafeArea(edges: .bottom)
-                } else {
+                if cameraStatus == .denied || cameraStatus == .restricted {
+                    ContentUnavailableView {
+                        Label("Camera Access Needed", systemImage: "camera.fill")
+                    } description: {
+                        Text("Allow Relay to use the camera in Settings to scan QR codes.")
+                    } actions: {
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                } else if !DataScannerViewController.isSupported {
                     ContentUnavailableView(
                         "Scanner Unavailable",
                         systemImage: "qrcode.viewfinder",
                         description: Text("This device does not support the QR scanner.")
                     )
+                } else if cameraStatus == .notDetermined {
+                    ProgressView()
+                } else {
+                    DataScannerRepresentable(onScan: handleScan)
+                        .ignoresSafeArea(edges: .bottom)
+                        .overlay(alignment: .bottom) {
+                            Text(unrecognized
+                                 ? "That QR code isn't a Relay code."
+                                 : "Point the camera at a Relay QR code.")
+                                .font(.footnote.weight(.medium))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(.ultraThinMaterial, in: .capsule)
+                                .padding(.bottom, 32)
+                        }
                 }
             }
             .navigationTitle("Scan QR Code")
@@ -450,14 +478,75 @@ struct ContactQRScanner: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+            .task {
+                guard cameraStatus == .notDetermined else { return }
+                _ = await AVCaptureDevice.requestAccess(for: .video)
+                cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
+            }
         }
     }
 
-    private func handleScan(_ username: String) {
+    private func handleScan(_ payload: String) {
         guard !scanned else { return }
-        scanned = true
-        dismiss()
-        onScan(username)
+        switch RelayQRPayload(payload) {
+        case .username(let username):
+            scanned = true
+            dismiss()
+            onScan(username)
+        case .contactInvite(let token):
+            scanned = true
+            dismiss()
+            model.pendingContactInviteToken = token
+        case .groupInvite(let token):
+            scanned = true
+            dismiss()
+            model.pendingGroupInviteToken = token
+        case nil:
+            unrecognized = true
+        }
+    }
+}
+
+/// What a scanned Relay QR code points at.
+enum RelayQRPayload: Equatable {
+    case username(String)
+    case contactInvite(String)
+    /// `<token>` or `<token>#<fragment-key>`, as `pendingGroupInviteToken` expects.
+    case groupInvite(String)
+
+    init?(_ payload: String) {
+        if let url = URL(string: payload) {
+            let parts = Array(url.pathComponents.dropFirst())
+            if url.scheme == "relay", let host = url.host, let value = parts.first, !value.isEmpty {
+                // relay://add/<username>, relay://contact/<token>, relay://join/<token>#<key>
+                switch host {
+                case "add": self = .username(value); return
+                case "contact": self = .contactInvite(value); return
+                case "join": self = .groupInvite(Self.withFragment(value, url)); return
+                default: break
+                }
+            }
+            if url.host == "relaymsg.app", parts.count >= 2, !parts[1].isEmpty {
+                // https://relaymsg.app/{add|c|g}/<value>
+                switch parts[0] {
+                case "add": self = .username(parts[1]); return
+                case "c": self = .contactInvite(parts[1]); return
+                case "g": self = .groupInvite(Self.withFragment(parts[1], url)); return
+                default: break
+                }
+            }
+        }
+        // legacy relay:<username>
+        if payload.hasPrefix("relay:"), !payload.hasPrefix("relay://") {
+            let name = String(payload.dropFirst("relay:".count))
+            if !name.isEmpty { self = .username(name); return }
+        }
+        return nil
+    }
+
+    private static func withFragment(_ token: String, _ url: URL) -> String {
+        guard let fragment = url.fragment, !fragment.isEmpty else { return token }
+        return "\(token)#\(fragment)"
     }
 }
 
@@ -484,27 +573,20 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
         let onScan: (String) -> Void
         init(onScan: @escaping (String) -> Void) { self.onScan = onScan }
 
-        func dataScanner(_ dataScanner: DataScannerViewController, didTapOn item: RecognizedItem) {
-            guard case .barcode(let barcode) = item,
-                  let payload = barcode.payloadStringValue
-            else { return }
-            let username = extractUsername(from: payload)
-            guard !username.isEmpty else { return }
-            onScan(username)
+        // Accept a code as soon as it's recognised — nobody knows to tap it.
+        func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+            for item in addedItems { deliver(item) }
         }
 
-        private func extractUsername(from payload: String) -> String {
-            if let url = URL(string: payload) {
-                // relay://add/<username>
-                if url.scheme == "relay", url.host == "add",
-                   let name = url.pathComponents.dropFirst().first { return name }
-                // https://relaymsg.app/add/<username>
-                if url.host == "relaymsg.app", url.pathComponents.count >= 3,
-                   url.pathComponents[1] == "add" { return url.pathComponents[2] }
-            }
-            // legacy relay:<username>
-            if payload.hasPrefix("relay:") { return String(payload.dropFirst("relay:".count)) }
-            return ""
+        func dataScanner(_ dataScanner: DataScannerViewController, didTapOn item: RecognizedItem) {
+            deliver(item)
+        }
+
+        private func deliver(_ item: RecognizedItem) {
+            guard case .barcode(let barcode) = item,
+                  let payload = barcode.payloadStringValue, !payload.isEmpty
+            else { return }
+            onScan(payload)
         }
     }
 }
