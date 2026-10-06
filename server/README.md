@@ -238,6 +238,10 @@ message stays end-to-end encrypted either way.
 Flags:
 - APNs: `-apns-key` (`.p8`), `-apns-key-id`, `-apns-team-id`, `-apns-topic`,
   `-apns-production`. The same key also sends PushKit VoIP on the `.voip` sub-topic.
+  `-apns-production` only picks which environment is tried first: a token
+  Apple rejects with `BadDeviceToken` is retried on the other environment and
+  the working one is remembered per token, so Xcode (sandbox) and
+  TestFlight/App Store (production) builds both receive pushes.
 - FCM: `-fcm-service-account` (path to a Firebase service-account JSON key). The
   sender uses FCM HTTP v1 with a service-account-signed OAuth2 token.
 

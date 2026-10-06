@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,5 +87,59 @@ func TestProductionHost(t *testing.T) {
 	}
 	if p.host != hostProduction {
 		t.Fatalf("expected production host, got %s", p.host)
+	}
+}
+
+func TestPushFallsBackToOtherEnvironment(t *testing.T) {
+	path, _ := writeTestKey(t)
+	var prodHits, sandboxHits int
+	prod := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prodHits++
+		if strings.HasSuffix(r.URL.Path, "/prodtoken") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"reason":"BadDeviceToken"}`))
+	}))
+	defer prod.Close()
+	sandbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sandboxHits++
+		if strings.HasSuffix(r.URL.Path, "/devtoken") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"reason":"BadDeviceToken"}`))
+	}))
+	defer sandbox.Close()
+
+	p, err := New(path, "KEY123ABCD", "TEAM123456", "com.example.app", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.host, p.altHost = prod.URL, sandbox.URL
+
+	// A production token goes straight through.
+	if err := p.Push("prodtoken", nil); err != nil {
+		t.Fatalf("prod push: %v", err)
+	}
+	// A development token is rejected by production, then delivered via sandbox.
+	if err := p.Push("devtoken", nil); err != nil {
+		t.Fatalf("dev push: %v", err)
+	}
+	if prodHits != 2 || sandboxHits != 1 {
+		t.Fatalf("hits prod=%d sandbox=%d, want 2/1", prodHits, sandboxHits)
+	}
+	// The working host is remembered: the next dev push skips production.
+	if err := p.PushVoIP("devtoken", "c1", "acct", "Name", "audio"); err != nil {
+		t.Fatalf("dev voip push: %v", err)
+	}
+	if prodHits != 2 || sandboxHits != 2 {
+		t.Fatalf("after cache hits prod=%d sandbox=%d, want 2/2", prodHits, sandboxHits)
+	}
+	// A token neither environment accepts still fails.
+	if err := p.Push("deadtoken", nil); err == nil {
+		t.Fatal("expected failure for a token neither host accepts")
 	}
 }

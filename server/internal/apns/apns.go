@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,17 +32,32 @@ type Pusher struct {
 	teamID string
 	keyID  string
 	topic  string
-	host   string
-	key    *ecdsa.PrivateKey
-	client *http.Client
+	// host is tried first for a token we haven't seen; altHost is the other
+	// APNs environment. Development builds (run from Xcode) get sandbox
+	// tokens and TestFlight/App Store builds get production tokens, and
+	// Apple rejects a token sent to the wrong environment with
+	// BadDeviceToken — so on that error the push is retried on altHost and
+	// the working host is remembered per token. One relay serves both.
+	host    string
+	altHost string
+	key     *ecdsa.PrivateKey
+	client  *http.Client
 
 	mu       sync.Mutex
 	jwt      string
 	jwtIssAt time.Time
+
+	hostMu      sync.Mutex
+	hostByToken map[string]string
 }
 
+// maxRememberedTokens bounds the per-token host cache; it is cleared when
+// full (a cleared token just costs one extra request next time).
+const maxRememberedTokens = 50_000
+
 // New loads the .p8 signing key and prepares a pusher. `production` selects
-// Apple's production host; development (sandbox) builds must use sandbox.
+// which APNs environment is tried first; tokens from the other environment
+// still work via the BadDeviceToken fallback in send.
 func New(keyPath, keyID, teamID, topic string, production bool) (*Pusher, error) {
 	pemBytes, err := os.ReadFile(keyPath)
 	if err != nil {
@@ -59,13 +75,14 @@ func New(keyPath, keyID, teamID, topic string, production bool) (*Pusher, error)
 	if !ok {
 		return nil, errors.New("apns key is not an ECDSA key")
 	}
-	host := hostSandbox
+	host, altHost := hostSandbox, hostProduction
 	if production {
-		host = hostProduction
+		host, altHost = hostProduction, hostSandbox
 	}
 	return &Pusher{
-		teamID: teamID, keyID: keyID, topic: topic, host: host, key: key,
-		client: &http.Client{Timeout: 15 * time.Second},
+		teamID: teamID, keyID: keyID, topic: topic, host: host, altHost: altHost, key: key,
+		client:      &http.Client{Timeout: 15 * time.Second},
+		hostByToken: map[string]string{},
 	}, nil
 }
 
@@ -96,27 +113,8 @@ func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 		return err
 	}
 
-	jwt, err := p.authToken()
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest(http.MethodPost, p.host+"/3/device/"+deviceToken, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("authorization", "bearer "+jwt)
-	req.Header.Set("apns-topic", p.topic)
-	req.Header.Set("apns-push-type", "alert")
-	req.Header.Set("apns-priority", "10")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("apns status %d: %s", resp.StatusCode, string(body))
+	if err := p.send(deviceToken, payload, p.topic, "alert"); err != nil {
+		return fmt.Errorf("apns %w", err)
 	}
 	return nil
 }
@@ -137,29 +135,81 @@ func (p *Pusher) PushVoIP(deviceToken, callID, callerAccount, callerName, kind s
 	if err != nil {
 		return err
 	}
+	if err := p.send(deviceToken, payload, p.topic+".voip", "voip"); err != nil {
+		return fmt.Errorf("apns voip %w", err)
+	}
+	return nil
+}
+
+// send posts one notification, starting with the host known to work for this
+// token (else the configured one) and falling back to the other environment
+// when Apple says the token doesn't belong to it.
+func (p *Pusher) send(deviceToken string, payload []byte, topic, pushType string) error {
+	first := p.hostFor(deviceToken)
+	second := p.altHost
+	if first == p.altHost {
+		second = p.host
+	}
+	status, reason, err := p.post(first, deviceToken, payload, topic, pushType)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusOK {
+		p.rememberHost(deviceToken, first)
+		return nil
+	}
+	if status == http.StatusBadRequest && strings.Contains(reason, "BadDeviceToken") {
+		status, reason, err = p.post(second, deviceToken, payload, topic, pushType)
+		if err != nil {
+			return err
+		}
+		if status == http.StatusOK {
+			p.rememberHost(deviceToken, second)
+			return nil
+		}
+	}
+	return fmt.Errorf("status %d: %s", status, reason)
+}
+
+func (p *Pusher) post(host, deviceToken string, payload []byte, topic, pushType string) (int, string, error) {
 	jwt, err := p.authToken()
 	if err != nil {
-		return err
+		return 0, "", err
 	}
-	req, err := http.NewRequest(http.MethodPost, p.host+"/3/device/"+deviceToken, bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, host+"/3/device/"+deviceToken, bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	req.Header.Set("authorization", "bearer "+jwt)
-	req.Header.Set("apns-topic", p.topic+".voip")
-	req.Header.Set("apns-push-type", "voip")
+	req.Header.Set("apns-topic", topic)
+	req.Header.Set("apns-push-type", pushType)
 	req.Header.Set("apns-priority", "10")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("apns voip status %d: %s", resp.StatusCode, string(body))
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body), nil
+}
+
+func (p *Pusher) hostFor(deviceToken string) string {
+	p.hostMu.Lock()
+	defer p.hostMu.Unlock()
+	if h, ok := p.hostByToken[deviceToken]; ok {
+		return h
 	}
-	return nil
+	return p.host
+}
+
+func (p *Pusher) rememberHost(deviceToken, host string) {
+	p.hostMu.Lock()
+	defer p.hostMu.Unlock()
+	if len(p.hostByToken) >= maxRememberedTokens {
+		p.hostByToken = map[string]string{}
+	}
+	p.hostByToken[deviceToken] = host
 }
 
 // authToken returns a cached provider token, refreshing it before Apple's
