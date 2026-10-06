@@ -187,3 +187,32 @@ func TestPurgeExpiredAndCoarseTimestamps(t *testing.T) {
 		t.Fatal("expired envelope not purged")
 	}
 }
+
+// A device that never published keys (e.g. an unfinished link) must not make
+// the whole account unreachable: an all-devices fetch skips it. Asking for that
+// device specifically, or an account with no keyed device at all, is still 404.
+func TestBundlesSkipKeylessDevice(t *testing.T) {
+	s := openTestStore(t)
+	acct, _, err := s.CreateAccount(uniqueName("keyless"), nil, "", "device-pw-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TakePreKeyBundles(acct, nil, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no keyed device: err = %v, want ErrNotFound", err)
+	}
+	testKeys(t, s, acct, 1)
+	dev2, _, err := s.AddDevice(acct, "device-pw-2", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundles, err := s.TakePreKeyBundles(acct, nil, nil)
+	if err != nil {
+		t.Fatalf("all devices with a keyless one: %v", err)
+	}
+	if len(bundles) != 1 || bundles[0].DeviceID != 1 {
+		t.Fatalf("bundles = %+v, want only device 1", bundles)
+	}
+	if _, err := s.TakePreKeyBundles(acct, []uint32{dev2}, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("keyless device by id: err = %v, want ErrNotFound", err)
+	}
+}

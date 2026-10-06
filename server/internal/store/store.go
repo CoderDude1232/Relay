@@ -1847,7 +1847,11 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 	}
 	defer tx.Rollback(ctx)
 
-	if deviceIDs == nil {
+	// Fetching every device: skip ones that never published keys (e.g. a link
+	// that didn't finish) instead of failing the whole account — one such
+	// device used to make the account unreachable for everyone.
+	allDevices := deviceIDs == nil
+	if allDevices {
 		rows, err := tx.Query(ctx, `SELECT device_id FROM devices WHERE account_id = $1 ORDER BY device_id`, accountID)
 		if err != nil {
 			return nil, err
@@ -1885,6 +1889,9 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 			&b.SignedPreKey.KeyID, &b.SignedPreKey.PublicKey, &b.SignedPreKey.Signature,
 			&b.KyberPreKey.KeyID, &b.KyberPreKey.PublicKey, &b.KyberPreKey.Signature)
 		if errors.Is(err, pgx.ErrNoRows) {
+			if allDevices {
+				continue
+			}
 			return nil, ErrNotFound
 		}
 		if err != nil {
@@ -1912,6 +1919,9 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 			b.OneTime = &otk
 		}
 		bundles = append(bundles, b)
+	}
+	if len(bundles) == 0 {
+		return nil, ErrNotFound
 	}
 	return bundles, tx.Commit(ctx)
 }
