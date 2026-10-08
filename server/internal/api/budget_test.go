@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,6 +30,12 @@ func TestElementBudget(t *testing.T) {
 	now = now.Add(10 * time.Second) // +10 account tokens, +15 ip tokens
 	if !b.take(15, "acct:c", "ip:1") {
 		t.Fatal("refill not applied")
+	}
+	// Bucket keys are salted hashes, never the raw account id / IP.
+	for k := range b.buckets {
+		if strings.Contains(k, "acct:") || strings.Contains(k, "ip:") || len(k) != 16 {
+			t.Fatalf("budget stored raw key %q", k)
+		}
 	}
 	now = now.Add(time.Hour)
 	b.prune()
