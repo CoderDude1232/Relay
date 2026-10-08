@@ -73,7 +73,24 @@ type Server struct {
 	// directory holds this many bytes, new allocations and uploads get 507
 	// until GC frees space. 0 = unlimited.
 	attachDiskCap int64
+
+	// appleRevoker, when set, revokes the user's Sign in with Apple grant on
+	// account deletion (see handleDeleteAccount). nil = not configured.
+	appleRevoker AppleRevoker
 }
+
+// AppleRevoker exchanges a Sign in with Apple authorization code for the
+// user's tokens and revokes them (implemented by siwa.Revoker).
+type AppleRevoker interface {
+	RevokeAuthorizationCode(ctx context.Context, code string) error
+}
+
+// SetAppleRevoker enables Sign in with Apple token revocation on account
+// deletion.
+func (s *Server) SetAppleRevoker(r AppleRevoker) { s.appleRevoker = r }
+
+// appleRevokeTimeout bounds the whole exchange + revoke on account deletion.
+const appleRevokeTimeout = 10 * time.Second
 
 // DefaultAttachmentDiskCap is the default global attachment disk watermark.
 const DefaultAttachmentDiskCap = 20 << 30 // 20 GiB
@@ -2086,8 +2103,25 @@ func internalError(w http.ResponseWriter, err error) {
 // handleDeleteAccount permanently deletes the authenticated account and all
 // server-side data keyed to it (see store.DeleteAccount), then drops every live
 // WebSocket of the account. After this, the account's credentials no longer
-// authenticate (401) and its username is free for re-registration.
+// authenticate (401) and its username enters the reuse cooldown.
+//
+// The optional body {"appleAuthorizationCode": "..."} carries a fresh Sign in
+// with Apple authorization code; when the relay is configured for it, the
+// user's Apple grant is revoked after the deletion (best-effort: Apple being
+// unreachable never fails the deletion). The code is used once and never
+// stored or logged.
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		AppleAuthorizationCode string `json:"appleAuthorizationCode"`
+	}
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) { // empty body = no code
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.AppleAuthorizationCode) > 4096 {
+		httpError(w, http.StatusBadRequest, "appleAuthorizationCode too long")
+		return
+	}
 	// Read the linked Supabase user before the row (and the link) is gone.
 	supabaseUserID, err := s.store.SupabaseUserID(dev.AccountID)
 	if err != nil {
@@ -2103,6 +2137,13 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 	}
 	s.hub.DisconnectAccount(dev.AccountID, "account deleted")
 	s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID)
+	if req.AppleAuthorizationCode != "" && s.appleRevoker != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), appleRevokeTimeout)
+		if err := s.appleRevoker.RevokeAuthorizationCode(ctx, req.AppleAuthorizationCode); err != nil {
+			slog.Warn("sign in with apple: token revocation failed", "err", privlog.Error(err))
+		}
+		cancel()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

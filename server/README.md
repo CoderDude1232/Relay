@@ -206,7 +206,7 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 | `PUT /v1/accounts/me/username` | sig | `{username}` → `204`. `409` taken (case-insensitive; changing the case of your own name is allowed). Reindexes the blinded directory. At most **5 completed changes per account per rolling day** (`429`; a `409` costs nothing). The old name enters the **username reuse cooldown** (below); `409` also when the requested name is in another account's cooldown. |
 | `PUT /v1/accounts/me/discoverability` | sig | `{email: bool}` (required) → `204`. **Email discovery is opt-in**: an account's verified email gets a blinded-directory entry only while this is `true` (`accounts.email_discoverable`, default `false` — existing accounts included). Reindexes the account immediately. Username entries are unaffected (always discoverable). `400` when `email` is missing / not a bool. |
 | `PUT /v1/accounts/me/access-key` | sig | `{accessKey}` (base64, **exactly 32 bytes**) → `204`. Sealed-sender access key; returned to session-establishing peers in `GET /v1/keys/{account}`, presented on the unauthenticated delivery path. Rotating revokes old senders. |
-| `DELETE /v1/accounts/me` | sig | → `204`. **Permanently deletes the authenticated account** and everything keyed to it, in one DB transaction: devices (mailbox ids, auth keys, APNs/FCM/VoIP tokens), signed/Kyber/one-time prekeys, queued envelopes for its devices, pending device-link tokens, contact invites it minted, blinded-directory rows, stored nuke commands, reports it **filed**, and the account row (username, email token, Supabase user id, access key, recovery hash). Then closes all of the account's live WebSockets (close code 1008, "account deleted"). Afterwards its credentials get `401`; the username enters the 7-day reuse cooldown (claimable by **no one** until it ends) and is then free to register again. **Kept:** reports filed *against* the account (moderation records). **Not reachable:** anonymous `provisioning_sessions` / `encrypted_group_invites` (no account column; TTL-reaped), attachment blobs (ownership isn't tracked; reaped by blob GC), and envelopes it sent that sit in *other* accounts' queues (the recipients' data). No extra confirmation signature — clients must confirm with the user before calling. |
+| `DELETE /v1/accounts/me` | sig | Optional body `{appleAuthorizationCode?}` (empty body allowed; malformed JSON → `400` and nothing is deleted) → `204`. When `appleAuthorizationCode` is present and the relay runs with `-siwa-key` (see *Sign in with Apple* below), the relay, after deleting the account, exchanges the code at Apple's `/auth/token` and revokes the resulting refresh token at `/auth/revoke` (App Store guideline 5.1.1(v)) — **best-effort**: Apple failing or timing out (10 s) never fails the deletion, and the code/tokens are never stored or logged. Unconfigured relays ignore the field. The client must obtain a **fresh** code (re-authenticate with Apple; codes expire after 5 minutes and are single-use) right before calling. **Permanently deletes the authenticated account** and everything keyed to it, in one DB transaction: devices (mailbox ids, auth keys, APNs/FCM/VoIP tokens), signed/Kyber/one-time prekeys, queued envelopes for its devices, pending device-link tokens, contact invites it minted, blinded-directory rows, stored nuke commands, reports it **filed**, and the account row (username, email token, Supabase user id, access key, recovery hash). Then closes all of the account's live WebSockets (close code 1008, "account deleted"). Afterwards its credentials get `401`; the username enters the 7-day reuse cooldown (claimable by **no one** until it ends) and is then free to register again. **Kept:** reports filed *against* the account (moderation records). **Not reachable:** anonymous `provisioning_sessions` / `encrypted_group_invites` (no account column; TTL-reaped), attachment blobs (ownership isn't tracked; reaped by blob GC), and envelopes it sent that sit in *other* accounts' queues (the recipients' data). No extra confirmation signature — clients must confirm with the user before calling. |
 | `POST /v1/accounts/me/nuke` | sig | `{commandId, creationTimeMs, initiatingDeviceId, signature}` → `204`. Signed remote wipe; broadcasts a `Nuke` frame to all live sessions. Signature over `relay-nuke-v1\n…`; rejects >5 min old / >30 s future / duplicate `commandId`. |
 
 **Username reuse cooldown.** Sealed-sender certificates carry the sender's
@@ -402,18 +402,29 @@ Flags:
 - FCM: `-fcm-service-account` (path to a Firebase service-account JSON key). The
   sender uses FCM HTTP v1 with a service-account-signed OAuth2 token.
 
+## Sign in with Apple
+
+Apple requires apps offering Sign in with Apple to revoke the user's tokens when
+the account is deleted. The relay stores **no Apple or OAuth tokens** (social
+login goes through Supabase; the only linkage persisted is
+`accounts.supabase_user_id`, deleted with the account), so the client passes a
+fresh authorization code with `DELETE /v1/accounts/me` and the relay exchanges
+and revokes it (see that row). When relayd also runs with
+`-supabase-service-key-file`, the Supabase auth user (and with it the stored
+email) is deleted via the admin API.
+
+Flags (revocation is disabled unless `-siwa-key` is set; then it is required
+that `-siwa-key-id` and a team id are available, or relayd exits at startup):
+- `-siwa-key` — path to the Sign in with Apple `.p8` key (PKCS#8, P-256).
+- `-siwa-key-id` — that key's id (JWT `kid`).
+- `-siwa-team-id` — Apple team id (JWT `iss`); defaults to `-apns-team-id`.
+- `-siwa-client-id` — the client id the codes were issued to (JWT `sub` and
+  `client_id`); default `app.relaymsg`.
+
+Each call uses a fresh ES256 client-secret JWT (5-minute lifetime).
+
 ## Known gaps
 
-- **TODO: accounts created via Sign in with Apple must have their Apple refresh
-  token revoked on account deletion** (Apple requires calling
-  `https://appleid.apple.com/auth/revoke` with a server-side client secret signed
-  by the team's Sign in with Apple key). Not implemented yet. Note: the relay
-  itself stores **no Apple or OAuth tokens** — social login goes through Supabase
-  (`POST /v1/accounts/oauth`), and the only linkage persisted is
-  `accounts.supabase_user_id` (deleted with the account). Any Apple refresh token
-  lives in Supabase Auth. When relayd runs with `-supabase-service-key-file`,
-  `DELETE /v1/accounts/me` also deletes the Supabase auth user (and with it the
-  stored email) via the admin API; Apple token revocation is still separate.
 - Attachment blobs are not owner-tracked on disk, so account deletion cannot
   remove the account's uploads; they expire via the blob store's TTL GC (14 d).
   (The upload quota remembers the allocating account only in memory, as a

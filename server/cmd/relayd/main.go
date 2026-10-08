@@ -25,6 +25,7 @@ import (
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
+	"github.com/relayapp/relay-server/internal/siwa"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -105,6 +106,10 @@ func main() {
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
 	apnsTopic := flag.String("apns-topic", "app.relaymsg", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
+	siwaKey := flag.String("siwa-key", "", "path to a Sign in with Apple .p8 key (enables revoking the user's Apple grant on DELETE /v1/accounts/me)")
+	siwaKeyID := flag.String("siwa-key-id", "", "Sign in with Apple key id")
+	siwaTeamID := flag.String("siwa-team-id", "", "Apple team id for Sign in with Apple (default: -apns-team-id)")
+	siwaClientID := flag.String("siwa-client-id", "app.relaymsg", "Sign in with Apple client id (the app's bundle id)")
 	fcmServiceAccount := flag.String("fcm-service-account", "", "path to a Firebase service-account JSON key (enables FCM push for Android devices)")
 	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")
 	turnSecret := flag.String("turn-secret", os.Getenv("RELAY_TURN_SECRET"), "shared HMAC-SHA1 secret for coturn REST API credential generation (default $RELAY_TURN_SECRET)")
@@ -182,6 +187,19 @@ func main() {
 			apiServer.SetSupabaseServiceKey(string(key))
 			slog.Info("supabase auth-user deletion enabled")
 		}
+	}
+	if *siwaKey != "" {
+		teamID := *siwaTeamID
+		if teamID == "" {
+			teamID = *apnsTeamID
+		}
+		revoker, err := siwa.New(*siwaKey, *siwaKeyID, teamID, *siwaClientID)
+		if err != nil {
+			slog.Error("failed to load Sign in with Apple key", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		apiServer.SetAppleRevoker(revoker)
+		slog.Info("sign in with apple token revocation enabled", "clientId", *siwaClientID)
 	}
 	if *sealedKey != "" {
 		trustRoot, err := sealedsender.LoadOrCreateTrustRoot(*sealedKey)
