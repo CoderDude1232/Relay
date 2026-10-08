@@ -250,7 +250,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/devices/link", s.auth(s.handleLinkDevice))                     // primary creates the device
 	mux.HandleFunc("GET /v1/devices", s.auth(s.handleListDevices))
 	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.handleRemoveDevice))
-	mux.HandleFunc("PUT /v1/devices/auth-key", s.auth(s.handleSetDeviceAuthKey))
+	mux.HandleFunc("PUT /v1/devices/auth-key", s.bootstrapAuth(s.handleSetDeviceAuthKey)) // the only route accepting HTTP Basic
 	mux.HandleFunc("PUT /v1/devices/apns", s.auth(s.handleSetAPNSToken))
 	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
 	mux.HandleFunc("PUT /v1/devices/voip", s.auth(s.handleSetVoIPToken))
@@ -276,13 +276,30 @@ func (s *Server) Handler() http.Handler {
 }
 
 // ---------------------------------------------------------------------------
-// Auth: Relay-Sig (see sigauth.go), or HTTP Basic "<accountID>.<deviceID>"
-// only for a device that has not registered an auth key yet.
+// Auth: Relay-Sig (see sigauth.go) on every authenticated route. HTTP Basic
+// "<accountID>.<deviceID>" is accepted on exactly one route — the bootstrap
+// PUT /v1/devices/auth-key (wrapped with bootstrapAuth) — and only for a
+// device that has not registered an auth key yet.
 // ---------------------------------------------------------------------------
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Device)
 
-func (s *Server) auth(next authedHandler) http.HandlerFunc {
+// auth requires a Relay-Sig signature.
+func (s *Server) auth(next authedHandler) http.HandlerFunc { return s.authenticate(false, next) }
+
+// bootstrapAuth additionally accepts HTTP Basic, for the one-time upload of a
+// new device's auth key (which it has no other way to prove itself for).
+func (s *Server) bootstrapAuth(next authedHandler) http.HandlerFunc {
+	return s.authenticate(true, next)
+}
+
+// basicAuthSuccessLimiter bounds successful HTTP Basic authentications per
+// target device: 10 per hour. Each one costs a bcrypt, and a device needs
+// exactly one (its first auth-key upload), so this only bites a leaked or
+// misbehaving credential being used to burn CPU.
+var basicAuthSuccessLimiter = newTokenBucketLimiter(10, time.Hour)
+
+func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Failed-auth throttling: a source that keeps failing is cut off before
 		// any bcrypt / signature work is done (see authFailIPLimiter).
@@ -313,6 +330,12 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			httpError(w, http.StatusUnauthorized, "missing credentials")
 			return
 		}
+		if !allowBasic {
+			// Refused before any password work; counted like any other failure.
+			authFailIPLimiter.allow(ip)
+			httpError(w, http.StatusUnauthorized, "this endpoint requires Relay-Sig authentication")
+			return
+		}
 		accountID, devID, err := parseCredential(user)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
@@ -324,6 +347,10 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
 			return
 		}
+		if basicAuthSuccessLimiter.exhausted(deviceKey) {
+			httpError(w, http.StatusTooManyRequests, "too many password authentications for this device; try again later")
+			return
+		}
 		dev, err := s.store.Authenticate(accountID, devID, pass)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
@@ -331,6 +358,7 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			httpError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
+		basicAuthSuccessLimiter.allow(deviceKey)
 		// Basic is a bootstrap credential only: once a device has registered an
 		// auth key it must sign every request, so a leaked device password alone
 		// can no longer act as the device (or swap its auth key — rotating the key

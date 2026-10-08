@@ -36,7 +36,7 @@ const (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	// Auth is HTTP Basic on the upgrade request; browser clients are not a
+	// Auth is a Relay-Sig signature on the upgrade request; browser clients are not a
 	// target, so cross-origin checks are irrelevant here.
 	CheckOrigin: func(*http.Request) bool { return true },
 }

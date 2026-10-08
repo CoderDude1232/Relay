@@ -251,6 +251,7 @@ func (s *Server) pruneTokenBuckets() {
 	for _, l := range []*tokenBucketLimiter{
 		authFailIPLimiter,
 		authFailDeviceLimiter,
+		basicAuthSuccessLimiter,
 		wsSendLimiter,
 		preKeyTargetOTKLimiter,
 		preKeyRequesterOTKLimiter,

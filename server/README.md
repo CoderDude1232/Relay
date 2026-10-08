@@ -47,7 +47,7 @@ An hourly sweeper (also run at startup) deletes:
 
 Pass `-tls-cert` and `-tls-key` to serve HTTPS/WSS. Without them the server
 runs plain HTTP (fine for loopback, but a same-network attacker can read
-metadata and sniff the HTTP Basic device password — message *content* stays
+metadata and sniff the bootstrap HTTP Basic device password — message *content* stays
 end-to-end encrypted regardless).
 
 Generate a self-signed dev cert (EC P-256, 10 years, SAN = this Mac's LAN IP)
@@ -130,11 +130,15 @@ value**: trailing data after it is rejected (`400`), so the body a handler acts
 on is always the whole body the signature covers.
 
 **HTTP Basic** (`<accountId>.<deviceId>` : device password) is a bootstrap
-credential only: it is accepted **only for a device that has not registered an
-auth key**. In practice the single Basic request a client ever makes is its first
-`PUT /v1/devices/auth-key`. After that Basic is refused (`401`), and changing the
-key requires a request signed by the old key. The WebSocket upgrade is signed the
-same way (`GET /v1/ws`, empty body).
+credential only: it is accepted on **exactly one route, `PUT /v1/devices/auth-key`**,
+and only for a device that has **not** registered an auth key. Every other
+authenticated route refuses Basic with `401 "this endpoint requires Relay-Sig
+authentication"` before any password work (counted toward the per-IP failure
+budget). Once a key exists the bootstrap route refuses Basic too (`401`), and
+changing the key requires a request signed by the old key. Successful Basic
+authentications are capped at **10 per device per hour** (`429`), since each
+costs a bcrypt and a device needs only one. The WebSocket upgrade is signed the
+same way as any request (`GET /v1/ws`, empty body).
 
 Unauthenticated endpoints (`auth` = `none` below) must be sent **without**
 credentials, and the iOS client sends them over a separate ephemeral
@@ -178,8 +182,9 @@ plus their free-text details, in the `reports` table.
 
 ## REST API (JSON; binary fields are standard base64)
 
-`auth` column: `sig` = an authenticated endpoint (`Relay-Sig` signature, or HTTP
-Basic during the transition — see Authentication); `none` = unauthenticated.
+`auth` column: `sig` = an authenticated endpoint (`Relay-Sig` signature; HTTP
+Basic only for the first `PUT /v1/devices/auth-key` — see Authentication);
+`none` = unauthenticated.
 Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 
 ### Accounts
@@ -214,7 +219,7 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 | `GET /v1/provisioning-sessions/{id}` | none | → `200 {blob}` once the primary has provisioned, `204` while pending, `404` expired/consumed. New device polls this. Single-use: the session is deleted on the first successful fetch. |
 | `PUT /v1/provisioning-sessions/{id}` | sig | `{blob}` → `204`. Primary deposits the ciphertext (identity key + credentials, AES-GCM under an ECDH-derived key, **signed by the account identity key** so the new device authenticates the primary). **Write-once** — a session can be provisioned only once, so a second writer can't substitute the payload (`404` if expired/unknown/already used). Blob capped at 64 KiB (`413`). Relay stores only the opaque blob. |
 | `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion` or 5-device limit. No verification code — the camera scan is the trust anchor. |
-| `PUT /v1/devices/auth-key` | sig | `{publicKey}` — uncompressed P-256 point `0x04‖X‖Y` (65 bytes), ≤512 B → `204`. Stores the key `Relay-Sig` and nuke/device-list signatures verify against. The **first** upload for a device may use HTTP Basic; once a key exists, the request must be Relay-Sig signed by the **current** key (so a leaked device password can't swap it). |
+| `PUT /v1/devices/auth-key` | sig | `{publicKey}` — uncompressed P-256 point `0x04‖X‖Y` (65 bytes), ≤512 B → `204`. Stores the key `Relay-Sig` and nuke/device-list signatures verify against. The **first** upload for a device may use HTTP Basic (the only route that accepts it); once a key exists, the request must be Relay-Sig signed by the **current** key (so a leaked device password can't swap it). |
 | `GET /v1/devices/{id}/auth-key` | sig | → `{authPublicKey}` (same account only). Lets clients verify a peer device's nuke/device-list signatures. |
 | `PUT /v1/devices/apns` | sig | `{token}` → `204`. Registers an APNs token (iOS); sets push kind `apns`. Token must be 64–200 hex chars (`400` otherwise). |
 | `PUT /v1/devices/fcm` | sig | `{token}` → `204`. Registers a Firebase Cloud Messaging token (Android); sets push kind `fcm`. Requires `-fcm-service-account` for the server to actually send. |
