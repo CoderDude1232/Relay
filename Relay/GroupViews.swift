@@ -206,6 +206,13 @@ struct GroupInfoView: View {
     @State private var addMemberError: String?
     @State private var descriptionExpanded = false
     @State private var confirmLeave = false
+    /// Member being reported (abuse reporting for group content, App Review 1.2).
+    @State private var reportTarget: ReportTarget?
+
+    private struct ReportTarget: Identifiable {
+        let account: String
+        var id: String { account }
+    }
     @State private var memberToRemove: String?
 
     private var group: StoredGroup? { service.group(for: conversationId) }
@@ -419,6 +426,13 @@ struct GroupInfoView: View {
                                         Label("Remove from Group", systemImage: "person.badge.minus")
                                     }
                                 }
+                                if member != ownAccountId {
+                                    Button(role: .destructive) {
+                                        reportTarget = ReportTarget(account: member)
+                                    } label: {
+                                        Label("Report…", systemImage: "exclamationmark.bubble")
+                                    }
+                                }
                             }
                         }
                     }
@@ -450,9 +464,18 @@ struct GroupInfoView: View {
                     } // end admin-only add member
 
                     Section {
+                        // Reports the group's admins (who run it); individual
+                        // members can be reported from their row's menu.
+                        if let admin = group.admins.first(where: { $0 != ownAccountId }) {
+                            Button("Report Group", role: .destructive) {
+                                reportTarget = ReportTarget(account: admin)
+                            }
+                        }
                         Button("Leave Group", role: .destructive) {
                             confirmLeave = true
                         }
+                    } footer: {
+                        Text("Long-press a member to report them. Reports go to the Relay team; messages are included only if you choose.")
                     }
 
                     if let errorMessage {
@@ -495,6 +518,12 @@ struct GroupInfoView: View {
                 Button("Cancel", role: .cancel) {}
             }
             // Avatar picker
+            .sheet(item: $reportTarget) { target in
+                ReportContactSheet(
+                    service: service, account: target.account,
+                    displayName: service.displayName(forAccount: target.account)
+                )
+            }
             .sheet(isPresented: $showingAvatarPicker) {
                 if let group {
                     GroupAvatarPickerSheet(service: service, groupId: group.id)
