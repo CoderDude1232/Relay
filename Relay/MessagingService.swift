@@ -1293,8 +1293,11 @@ final class MessagingService {
     /// Sends my current profile to a peer over the pairwise session if they
     /// haven't already received this revision. Called when opening a chat.
     private func sendMyProfileIfNeeded(toPeer account: String) async {
-        let rev = myProfileRevision
-        guard rev > 0 else { return } // nothing set yet
+        // Sent once per peer even with nothing set (revision 1): every sealed
+        // message carries our relay-attested username in its certificate, so
+        // this is how peers and group members learn it without ever asking the
+        // relay who an account id belongs to.
+        let rev = max(myProfileRevision, 1)
         guard readKVInt("pfsent:\(account)") < rev else { return }
         do {
             var content = Relay_Content_Content()
@@ -1610,28 +1613,6 @@ final class MessagingService {
         }
     }
 
-    /// Resolves any unknown account ids to usernames via the relay, caching
-    /// them (and updating the 1:1 conversation title if one exists). Cheap and
-    /// idempotent — skips accounts already known.
-    func resolveUsernames(_ accounts: [String]) async {
-        var changed = false
-        for account in Set(accounts) where account != credentials.accountId {
-            if cachedUsername(account) != nil { continue }
-            guard let username = try? await api.lookupUsername(account: account) else { continue }
-            cacheUsername(account, username)
-            if existingConversation(withPeer: account) != nil {
-                _ = try? storage.messages.conversation(withPeer: account, username: username)
-            }
-            changed = true
-        }
-        if changed {
-            refreshConversations()
-            if let conversationId = activeConversationId {
-                refreshActiveMessages(ifShowing: conversationId)
-            }
-        }
-    }
-
     /// Inserts a centered "system" line (e.g. "Alice added Bob") into a group.
     private func insertSystemLine(_ text: String, inGroup groupId: String) {
         guard let conversationId = (try? storage.messages.groupConversationId(groupId: groupId)) ?? nil else { return }
@@ -1696,7 +1677,9 @@ final class MessagingService {
             await sendGroupUpdate(.create, group: stored, target: "")
         }
         insertSystemLine("You created \"\(name)\"", inGroup: groupId)
-        await resolveUsernames(members)
+        if let stored = try storage.messages.group(id: groupId) {
+            await distributeProfileToGroupMembersIfNeeded(group: stored)
+        }
         return try storage.messages.groupConversationId(groupId: groupId) ?? ""
     }
 
@@ -2336,7 +2319,9 @@ final class MessagingService {
             await sendGroupUpdateCustom(join, group: stored) // carries the echoed invite key
         }
         insertSystemLine("You joined via invite link", inGroup: payload.groupId)
-        await resolveUsernames(members)
+        if let stored = try storage.messages.group(id: payload.groupId) {
+            await distributeProfileToGroupMembersIfNeeded(group: stored)
+        }
         return try storage.messages.groupConversationId(groupId: payload.groupId) ?? ""
     }
 
@@ -2363,8 +2348,7 @@ final class MessagingService {
 
     /// Sends our profile to any group member who hasn't received the current revision.
     private func distributeProfileToGroupMembersIfNeeded(group: StoredGroup) async {
-        let rev = myProfileRevision
-        guard rev > 0 else { return }
+        let rev = max(myProfileRevision, 1)
         let needsProfile = group.members.filter {
             $0 != credentials.accountId && readKVInt("pfsent:\($0)") < rev
         }
@@ -2699,7 +2683,12 @@ final class MessagingService {
             if let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {
                 refreshActiveMessages(ifShowing: convoId)
             }
-            await resolveUsernames(newMembers)
+            // Introduce ourselves to members who haven't heard from us; they do
+            // the same, so names arrive via certificates, never a relay lookup.
+            if newMembers.contains(credentials.accountId),
+               let stored = try? storage.messages.group(id: info.groupId) {
+                await distributeProfileToGroupMembersIfNeeded(group: stored)
+            }
             if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
             // Non-sealed groups use sender keys: give any newly-added members our
             // key, and mint a fresh one after an epoch rotation (removal).
@@ -3331,9 +3320,8 @@ final class MessagingService {
         }
         Task {
             if let group = group(for: conversationId) {
-                await resolveUsernames(group.members)
+                await distributeProfileToGroupMembersIfNeeded(group: group)
             } else if let peer = resolvedPeerAccount(for: conversationId) {
-                await resolveUsernames([peer])
                 // Pre-warm the sealed-send path while the user reads/types, so the
                 // first message is a single round-trip instead of chaining a cert
                 // fetch + bundle fetch + send (which is what makes the first send

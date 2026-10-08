@@ -258,14 +258,6 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    public func lookupUsername(account: String) async throws -> String {
-        struct Response: Decodable { let username: String }
-        let response: Response = try await request(
-            "GET", "v1/accounts/\(account)", body: nil as [String: String]?
-        )
-        return response.username
-    }
-
     /// Mints a single-use contact invite token for the authenticated account.
     /// Share it as a link; the first person to open it (and only them) resolves
     /// to this account, then the token is spent.

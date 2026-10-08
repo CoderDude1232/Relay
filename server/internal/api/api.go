@@ -266,7 +266,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
 	mux.HandleFunc("GET /v1/devices/{id}/auth-key", s.auth(s.handleGetDeviceAuthKey))
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
-	mux.HandleFunc("GET /v1/accounts/{account}", s.auth(s.handleLookupAccount))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
 	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability
@@ -1538,23 +1537,6 @@ func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]bool{"available": !taken})
 }
 
-func (s *Server) handleLookupAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	if !lookupLimiter.allow(dev.AccountID) {
-		httpError(w, http.StatusTooManyRequests, "lookup rate limit exceeded; try again later")
-		return
-	}
-	username, err := s.store.LookupUsername(r.PathValue("account"))
-	if errors.Is(err, store.ErrNotFound) {
-		httpError(w, http.StatusNotFound, "no such account")
-		return
-	}
-	if err != nil {
-		internalError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"username": username})
-}
-
 // ---------------------------------------------------------------------------
 // Attachments (opaque encrypted blobs)
 // ---------------------------------------------------------------------------
@@ -2212,7 +2194,6 @@ func (s *Server) PruneStaleLimiterKeys() {
 		attachmentIPLimiter,
 		callRingIPLimiter,
 		callRingMailboxLimiter,
-		lookupLimiter,
 		usernameLookupLimiter,
 		keyUploadLimiter,
 		sealedSendIPLimiter,
@@ -2281,8 +2262,6 @@ var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
 var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
 
-// lookupLimiter: general account/profile lookups per account per hour (search, profile fetches).
-var lookupLimiter = newSlidingWindowLimiter(600, time.Hour)
 
 // usernameLookupLimiter: unauthenticated username-availability checks per IP per hour.
 // Debounced in the client; enough for sign-up typing, too few for bulk probing.
