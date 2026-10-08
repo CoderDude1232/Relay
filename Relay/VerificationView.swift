@@ -132,6 +132,8 @@ struct VerificationView: View {
                             .frame(width: 200, height: 200)
                             .padding(12)
                             .background(.white, in: .rect(cornerRadius: 16))
+                            .accessibilityLabel("Safety number QR code")
+                            .accessibilityHint("\(peerName) can scan this code to verify you.")
                         Button {
                             saveQRToPhotos(qr)
                         } label: {
@@ -160,10 +162,13 @@ struct VerificationView: View {
             Image(systemName: state.symbol)
                 .font(.system(size: 44))
                 .foregroundStyle(state.tint)
+                .accessibilityHidden(true)
             Text(state.label)
                 .font(.headline)
                 .foregroundStyle(state.tint)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
@@ -296,12 +301,16 @@ private struct SafetyNumberGrid: View {
             ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
                 Text(group)
                     .font(.system(.title3, design: .monospaced).weight(.medium))
+                    // Read digit by digit, not as "forty-one thousand…".
+                    .accessibilityLabel(group.map(String.init).joined(separator: " "))
             }
         }
         .padding()
         .frame(maxWidth: .infinity)
         .background(.fill.tertiary, in: .rect(cornerRadius: 16))
         .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Safety number")
     }
 }
 

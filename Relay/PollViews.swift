@@ -43,6 +43,7 @@ struct PollComposerSheet: View {
                                     Image(systemName: "minus.circle.fill")
                                         .foregroundStyle(.red)
                                 }
+                                .accessibilityLabel("Remove option")
                                 .buttonStyle(.plain)
                             }
                         }

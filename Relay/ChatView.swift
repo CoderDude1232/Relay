@@ -2692,6 +2692,8 @@ private struct FormatButton: View {
                 .background(Color(.secondarySystemFill), in: .rect(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(tip)
+        .help(tip)
     }
 }
 

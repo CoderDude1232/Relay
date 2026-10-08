@@ -49,6 +49,7 @@ struct VoiceNoteBubble: View {
                         .background(tint.opacity(0.18), in: .circle)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
                 .disabled(data == nil && !failed)
 
                 GeometryReader { geo in

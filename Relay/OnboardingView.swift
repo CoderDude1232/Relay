@@ -495,6 +495,7 @@ private struct AuthView: View {
                             .frame(width: 40, height: 40)
                             .background(.ultraThinMaterial, in: .circle)
                     }
+                    .accessibilityLabel("Back")
                     Spacer()
                 }
                 .padding(.horizontal, 24)
@@ -621,6 +622,7 @@ private struct RecoveryView: View {
                             .frame(width: 40, height: 40)
                             .background(.ultraThinMaterial, in: .circle)
                     }
+                    .accessibilityLabel("Back")
                     Spacer()
                 }
                 .padding(.horizontal, 24)

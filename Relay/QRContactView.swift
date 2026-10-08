@@ -89,6 +89,7 @@ struct MyQRCodeView: View {
                     Button { showingShare = true } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
+                    .accessibilityLabel("Share QR Code")
                     .disabled(shareCard == nil)
                 }
             }
