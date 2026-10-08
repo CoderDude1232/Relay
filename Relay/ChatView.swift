@@ -2905,7 +2905,7 @@ private struct PendingAttachmentBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if isImage, let ui = UIImage(data: attachment.data) {
+            if isImage, let ui = DecodedImageCache.image(for: attachment.data) {
                 Image(uiImage: ui)
                     .resizable()
                     .scaledToFill()
@@ -3014,7 +3014,7 @@ private struct PendingAttachmentPreviewSheet: View {
     @ViewBuilder
     private func previewCard(for attachment: MessagingService.PendingAttachment, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
-            if attachment.contentType.hasPrefix("image/"), let image = UIImage(data: attachment.data) {
+            if attachment.contentType.hasPrefix("image/"), let image = DecodedImageCache.image(for: attachment.data) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()

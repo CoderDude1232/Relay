@@ -896,23 +896,9 @@ private struct NewChatSheet: View {
             return
         }
 
-        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
-                    CNContactEmailAddressesKey, CNContactPhoneNumbersKey,
-                    CNContactThumbnailImageDataKey,
-                    CNContactImageDataAvailableKey] as [CNKeyDescriptor]
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        request.sortOrder = .givenName
-
-        var raw: [(name: String, emails: [String], phones: [String], avatar: Data?)] = []
-        try? store.enumerateContacts(with: request) { contact, _ in
-            let emails = contact.emailAddresses.map { ($0.value as String).lowercased().trimmingCharacters(in: .whitespaces) }
-            let phones = contact.phoneNumbers.map { $0.value.stringValue }
-            guard !emails.isEmpty || !phones.isEmpty else { return }
-            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-            let avatar = contact.imageDataAvailable ? contact.thumbnailImageData : nil
-            raw.append((name: name.isEmpty ? (emails.first ?? phones.first ?? "") : name,
-                        emails: emails, phones: phones, avatar: avatar))
-        }
+        // enumerateContacts is synchronous and slow on large address books —
+        // keep it off the main thread.
+        let raw = await Task.detached(priority: .userInitiated) { Self.readAddressBook() }.value
 
         // Deduplicate: if two contacts share an email, only keep the first.
         var seen = Set<String>()
@@ -927,6 +913,27 @@ private struct NewChatSheet: View {
         contacts = entries
         isLoadingContacts = false
         await checkRelayStatus()
+    }
+
+    private nonisolated static func readAddressBook() -> [(name: String, emails: [String], phones: [String], avatar: Data?)] {
+        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
+                    CNContactEmailAddressesKey, CNContactPhoneNumbersKey,
+                    CNContactThumbnailImageDataKey,
+                    CNContactImageDataAvailableKey] as [CNKeyDescriptor]
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        request.sortOrder = .givenName
+
+        var raw: [(name: String, emails: [String], phones: [String], avatar: Data?)] = []
+        try? CNContactStore().enumerateContacts(with: request) { contact, _ in
+            let emails = contact.emailAddresses.map { ($0.value as String).lowercased().trimmingCharacters(in: .whitespaces) }
+            let phones = contact.phoneNumbers.map { $0.value.stringValue }
+            guard !emails.isEmpty || !phones.isEmpty else { return }
+            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
+            let avatar = contact.imageDataAvailable ? contact.thumbnailImageData : nil
+            raw.append((name: name.isEmpty ? (emails.first ?? phones.first ?? "") : name,
+                        emails: emails, phones: phones, avatar: avatar))
+        }
+        return raw
     }
 
     /// Privately matches every contact email against the directory in one

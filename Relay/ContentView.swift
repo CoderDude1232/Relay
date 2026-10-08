@@ -510,7 +510,7 @@ private struct ProfileTabIcon: View {
     let name: String
 
     var body: some View {
-        if let data, let src = UIImage(data: data) {
+        if let data, let src = DecodedImageCache.image(for: data) {
             Image(uiImage: circularCrop(src))
         } else {
             Image(systemName: "person.crop.circle.fill")
