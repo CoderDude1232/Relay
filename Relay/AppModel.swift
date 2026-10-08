@@ -214,7 +214,7 @@ final class AppModel {
             publishAccessKeyIfReady()
             return nil
         } catch {
-            return "Couldn't switch server: \(error.localizedDescription)"
+            return "Couldn't switch server: \(FriendlyError.message(for: error))"
         }
     }
 

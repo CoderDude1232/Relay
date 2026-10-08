@@ -757,7 +757,7 @@ struct ChatView: View {
             summaryText = try await AIAssistant.shared.summarize(service.activeMessages)
             showingSummary = true
         } catch {
-            summaryText = error.localizedDescription
+            summaryText = FriendlyError.message(for: error)
             showingSummary = true
         }
     }

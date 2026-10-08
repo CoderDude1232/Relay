@@ -1056,21 +1056,43 @@ enum FriendlyError {
                 return offline
             case .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
                 return unreachable
+            case .cancelled:
+                return "The request was cancelled. Please try again."
+            case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+                 .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot,
+                 .clientCertificateRejected, .clientCertificateRequired:
+                return "Couldn't make a secure connection to Relay. If you're on public Wi-Fi, try another network."
             default:
-                break
+                return unreachable
             }
         }
-        if let api = error as? RelayAPIError, case .http(let status, _) = api {
-            switch status {
-            case 409: return "That username was just taken. Please choose another."
-            case 429: return tooMany
-            case 500...599: return "Relay is having trouble right now. Please try again shortly."
-            default: break
+        if error is CancellationError {
+            return "The request was cancelled. Please try again."
+        }
+        if let api = error as? RelayAPIError {
+            switch api {
+            case .http(let status, let serverMessage):
+                switch status {
+                case 409 where serverMessage.isEmpty || serverMessage.localizedCaseInsensitiveContains("username"):
+                    return "That username was just taken. Please choose another."
+                case 429: return tooMany
+                case 500...599: return "Relay is having trouble right now. Please try again shortly."
+                default:
+                    // The relay's error strings are short, lower-case phrases
+                    // ("device list changed; refresh and try again") — present
+                    // them as a sentence instead of "Server error (HTTP n)".
+                    if !serverMessage.isEmpty { return sentence(serverMessage) }
+                    return "Something went wrong talking to Relay. Please try again."
+                }
+            case .rateLimited:
+                return tooMany
+            case .malformedResponse:
+                return "Relay sent an unexpected response. Please try again."
             }
         }
         if let supa = error as? SupabaseError, case .server(let raw) = supa {
             let m = raw.lowercased()
-            if m.contains("no internet") { return offline }
+            if m.contains("no internet") || m.contains("offline") { return offline }
             if m.contains("cannot reach") || m.contains("timed out") { return unreachable }
             if m.contains("already registered") || m.contains("already exists")
                 || m.contains("user_already_exists") || m.contains("email_exists") {
@@ -1093,8 +1115,29 @@ enum FriendlyError {
             }
             return raw
         }
-        return error.localizedDescription
+        if let described = (error as? LocalizedError)?.errorDescription, !described.isEmpty {
+            return described
+        }
+        // Swift errors without a description bridge to Foundation's generic
+        // "The operation couldn't be completed. (Module.Type error 1.)" —
+        // never show type names to people.
+        let text = error.localizedDescription
+        if text.contains("couldn’t be completed") || text.contains("couldn't be completed") {
+            return generic
+        }
+        return text
     }
+
+    /// "device list changed; refresh and try again" → "Device list changed; refresh and try again."
+    private static func sentence(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return generic }
+        var s = first.uppercased() + trimmed.dropFirst()
+        if let last = s.last, !".!?".contains(last) { s += "." }
+        return s
+    }
+
+    private static let generic = "Something went wrong. Please try again."
 
     private static let offline = "You're offline. Check your connection and try again."
     private static let unreachable = "Couldn't reach Relay. Please try again in a moment."

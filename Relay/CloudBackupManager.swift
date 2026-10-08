@@ -301,7 +301,19 @@ final class CloudBackupManager {
     private static func legacyRecordName(_ accountId: String) -> String { "relay-backup-\(accountId)" }
 
     private static func friendly(_ error: Error) -> String {
-        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        if let ck = error as? CKError {
+            switch ck.code {
+            case .notAuthenticated:
+                return "Sign in to iCloud in the Settings app to use iCloud Backup."
+            case .quotaExceeded:
+                return "Your iCloud storage is full."
+            case .networkUnavailable, .networkFailure, .serviceUnavailable, .requestRateLimited, .zoneBusy:
+                return "Couldn't reach iCloud. Please try again later."
+            default:
+                break
+            }
+        }
+        return FriendlyError.message(for: error)
     }
 
     // MARK: - Keychain

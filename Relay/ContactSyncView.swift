@@ -149,7 +149,7 @@ struct ContactSyncView: View {
                 // Same path as a notification tap: switches to Chats and opens it.
                 model.pendingNotificationConversationId = conversationId
             } catch {
-                messageError = error.localizedDescription
+                messageError = FriendlyError.message(for: error)
             }
         }
     }
@@ -219,7 +219,7 @@ struct ContactSyncView: View {
             // A 503 / network failure is not "none of your contacts are on
             // Relay" — say so and offer a retry instead of an empty result.
             matches = []
-            status = .failed(error.localizedDescription)
+            status = .failed(FriendlyError.message(for: error))
             return
         }
         for match in discovered {

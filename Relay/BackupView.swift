@@ -169,7 +169,7 @@ struct BackupView: View {
             exportItem = BackupDocument(data: encrypted)
             showingExporter = true
         } catch {
-            exportError = error.localizedDescription
+            exportError = FriendlyError.message(for: error)
         }
         isExporting = false
     }
@@ -350,7 +350,7 @@ private struct RestoreSheet: View {
             )
             done = true
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            self.error = FriendlyError.message(for: error)
         }
         isRestoring = false
     }

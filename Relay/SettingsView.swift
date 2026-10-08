@@ -728,7 +728,7 @@ private struct StorageSettingsView: View {
             do {
                 try await service.clearCachedMedia()
             } catch {
-                clearError = error.localizedDescription
+                clearError = FriendlyError.message(for: error)
             }
             cacheSize = attachmentCacheSize()
             isClearing = false

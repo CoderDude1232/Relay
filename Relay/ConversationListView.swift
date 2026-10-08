@@ -255,7 +255,7 @@ struct ConversationListView: View {
                         } catch RelayAPIError.http(status: 404, _) {
                             qrStartError = "Couldn't find that user on Relay."
                         } catch {
-                            qrStartError = "Couldn't reach Relay: \(error.localizedDescription)"
+                            qrStartError = FriendlyError.message(for: error)
                         }
                     }
                 }
@@ -624,7 +624,7 @@ struct ConversationListView: View {
                 try await service.leaveGroup(groupId)
                 service.deleteConversation(conversationId)
             } catch {
-                deleteError = error.localizedDescription
+                deleteError = FriendlyError.message(for: error)
             }
         }
     }
@@ -878,7 +878,7 @@ private struct NewChatSheet: View {
                 onConversationStarted(convId)
             } catch {
                 startingContactEmail = nil
-                addError = error.localizedDescription
+                addError = FriendlyError.message(for: error)
             }
         }
     }
@@ -953,7 +953,7 @@ private struct NewChatSheet: View {
             }
         } catch {
             for i in contacts.indices { contacts[i].relayStatus = .unknown }
-            discoveryError = error.localizedDescription
+            discoveryError = FriendlyError.message(for: error)
         }
     }
 }
@@ -1185,7 +1185,7 @@ private struct UsernameSearchSheet: View {
                 lookupState = .notFound
             } catch {
                 guard !Task.isCancelled else { return }
-                lookupState = .error(error.localizedDescription)
+                lookupState = .error(FriendlyError.message(for: error))
             }
         }
     }
@@ -1199,7 +1199,7 @@ private struct UsernameSearchSheet: View {
                 onConversationStarted(convId)
             } catch {
                 isStarting = false
-                lookupState = .error("Couldn't start conversation: \(error.localizedDescription)")
+                lookupState = .error("Couldn't start conversation: \(FriendlyError.message(for: error))")
             }
         }
     }
