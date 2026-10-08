@@ -26,6 +26,10 @@ struct OnboardingView: View {
 
     @State private var step: Step = .welcome
     @State private var supabaseSession: SupabaseSession?
+    // Registration lock: the account password prompt for new-device sign-ins.
+    @State private var showingLockPrompt = false
+    @State private var lockPassword = ""
+    @State private var lockPasswordIncorrect = false
     @State private var supabasePassword = ""  // threaded from AuthView for account recovery setup
     @State private var displayName = ""
     @State private var username = ""
@@ -152,20 +156,39 @@ struct OnboardingView: View {
         } message: {
             Text(registrationError ?? "")
         }
+        .alert("Account Password", isPresented: $showingLockPrompt) {
+            SecureField("Account password", text: $lockPassword)
+            Button("Sign In") {
+                if let session = supabaseSession {
+                    handleOAuth(session: session, accountPassword: lockPassword)
+                }
+            }
+            Button("Cancel", role: .cancel) { lockPassword = "" }
+        } message: {
+            Text(lockPasswordIncorrect
+                 ? "That password is incorrect. Try again."
+                 : "This account is protected by an account password. Signing in here will sign out your other devices.")
+        }
         .sheet(isPresented: $showingLinkScanner) {
             LinkNewDeviceView()
                 .environment(model)
         }
     }
 
-    private func handleOAuth(session: SupabaseSession) {
+    private func handleOAuth(session: SupabaseSession, accountPassword: String = "") {
         supabaseSession = session
         Task {
             do {
                 // Try to sign straight in. Returning users — even on a brand-new
                 // device with no local credentials — are recovered by the relay
                 // via their verified Supabase token, so no username is needed.
-                try await finish(session: session, password: "")
+                try await finish(session: session, password: accountPassword)
+            } catch let lock as AppModel.AccountPasswordRequiredError {
+                // Registration lock: this sign-in would replace the account's
+                // devices, so the account password is required.
+                lockPasswordIncorrect = lock.incorrect
+                lockPassword = ""
+                showingLockPrompt = true
             } catch is AppModel.NeedsUsernameError {
                 // Brand-new user — prefill a display name and prompt for a username.
                 if displayName.isEmpty {
@@ -353,6 +376,7 @@ private struct WelcomeView: View {
             Task {
                 do {
                     let session = try await SupabaseAuth.shared.signInWithApple(identityToken: token)
+                    AppleSignInRecord.used = true
                     onOAuthSession(session)
                 } catch {
                     oauthError = FriendlyError.message(for: error)

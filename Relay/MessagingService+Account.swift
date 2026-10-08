@@ -18,8 +18,25 @@ extension MessagingService {
     /// all devices (including other linked devices), keys, queued messages,
     /// push tokens, directory entries and the username. Callers must then wipe
     /// local state (`AppModel.signOut()`), since the credentials are now dead.
-    func deleteAccount() async throws {
-        try await apiClient.deleteAccount()
+    func deleteAccount(appleAuthorizationCode: String? = nil) async throws {
+        try await apiClient.deleteAccount(appleAuthorizationCode: appleAuthorizationCode)
+    }
+
+    /// Sets or changes the account password (email recovery + the lock that
+    /// guards new-device sign-ins).
+    func setAccountPassword(_ password: String) async throws {
+        try await apiClient.setAccountPassword(password)
+        UserDefaults.standard.set(true, forKey: Self.hasAccountPasswordKey)
+        postRelayNotice("Your account password was changed. Signing in on a new device now requires it.")
+    }
+
+    static let hasAccountPasswordKey = "relay.hasAccountPassword"
+    static let emailDiscoverableKey = "relay.emailDiscoverable"
+
+    /// Opts in or out of being found by email (off by default).
+    func setEmailDiscoverable(_ on: Bool) async throws {
+        try await apiClient.setEmailDiscoverable(on)
+        UserDefaults.standard.set(on, forKey: Self.emailDiscoverableKey)
     }
 
     // MARK: - Report

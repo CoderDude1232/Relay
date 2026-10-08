@@ -60,6 +60,10 @@ public enum OAuthProvisionOutcome: Sendable {
     /// No account exists yet for this user and no username was supplied — the
     /// caller should prompt for one and retry.
     case usernameRequired
+    /// The account has an account password (registration lock): signing in on
+    /// a new device, which replaces the account's devices, needs it. `incorrect`
+    /// is true when one was supplied but didn't match.
+    case accountPasswordRequired(incorrect: Bool)
 }
 
 public struct RelayAPIClient: Sendable {
@@ -175,7 +179,24 @@ public struct RelayAPIClient: Sendable {
             return .signedIn(credentials: creds, username: response.username, created: response.created)
         } catch RelayAPIError.http(let status, _) where status == 404 {
             return .usernameRequired
+        } catch RelayAPIError.http(423, let message) {
+            return .accountPasswordRequired(incorrect: message.contains("incorrect"))
         }
+    }
+
+    /// Sets or changes the account password — used for email recovery and as
+    /// the registration lock on new-device sign-ins (`PUT /v1/accounts/me/account-password`).
+    public func setAccountPassword(_ password: String) async throws {
+        try await requestExpectingNoContent(
+            "PUT", "v1/accounts/me/account-password", body: ["accountPassword": password])
+    }
+
+    /// Opts in or out of being found by email in blinded discovery (off by
+    /// default; `PUT /v1/accounts/me/discoverability`).
+    public func setEmailDiscoverable(_ discoverable: Bool) async throws {
+        struct Body: Encodable { let email: Bool }
+        try await requestExpectingNoContent(
+            "PUT", "v1/accounts/me/discoverability", body: Body(email: discoverable))
     }
 
     /// Whether `name` is free to register (case-insensitive). Unauthenticated and
@@ -572,8 +593,14 @@ public struct RelayAPIClient: Sendable {
     /// (`DELETE /v1/accounts/me`): every device, prekey, queued envelope,
     /// push token, directory entry and username is removed and live sockets
     /// are closed. The credentials are useless afterwards.
-    public func deleteAccount() async throws {
-        let request = makeRequest("DELETE", "v1/accounts/me")
+    /// Deletes the account. `appleAuthorizationCode` (a fresh Sign in with
+    /// Apple code) lets the relay revoke the user's Apple token, as Apple requires.
+    public func deleteAccount(appleAuthorizationCode: String? = nil) async throws {
+        var request = makeRequest("DELETE", "v1/accounts/me")
+        if let appleAuthorizationCode {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(["appleAuthorizationCode": appleAuthorizationCode])
+        }
         _ = try await send(request, authenticated: true)
     }
 

@@ -282,6 +282,15 @@ final class AppModel {
     /// account is registered with a cryptographically-random password.
     /// Thrown when a Supabase user has no relay account yet and hasn't chosen a
     /// username — onboarding catches this to show the username picker.
+    /// The account is protected by its account password (registration lock);
+    /// onboarding prompts for it and retries.
+    struct AccountPasswordRequiredError: LocalizedError {
+        let incorrect: Bool
+        var errorDescription: String? {
+            incorrect ? "That account password is incorrect." : "Enter your account password to sign in on this device."
+        }
+    }
+
     struct NeedsUsernameError: LocalizedError {
         var errorDescription: String? { "Choose a username to finish setting up your account." }
     }
@@ -344,6 +353,8 @@ final class AppModel {
         switch outcome {
         case .usernameRequired:
             throw NeedsUsernameError()
+        case .accountPasswordRequired(let incorrect):
+            throw AccountPasswordRequiredError(incorrect: incorrect)
         case .signedIn(let credentials, let resolvedUsername, let created):
             let service: MessagingService
             do {
@@ -365,6 +376,9 @@ final class AppModel {
             try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
             service.start()
             phase = .ready(service)
+            if let accountPassword, !accountPassword.isEmpty {
+                UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
+            }
             if created {
                 service.noteAccountCreated(username: resolvedUsername)
             } else {
@@ -485,6 +499,9 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountCreated(username: username)
+        if let accountPassword, !accountPassword.isEmpty {
+            UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
+        }
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
@@ -542,6 +559,7 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountRecovered(username: username)
+        UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()

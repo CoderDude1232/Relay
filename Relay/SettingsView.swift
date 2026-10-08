@@ -286,6 +286,9 @@ private struct AccountSettingsView: View {
     let service: MessagingService
     @State private var showingQR = false
     @State private var linkCopied = false
+    @State private var showingPasswordSheet = false
+    @State private var emailDiscoverable = UserDefaults.standard.bool(forKey: MessagingService.emailDiscoverableKey)
+    @State private var discoverabilityError: String?
 
     private var username: String { service.username ?? "" }
     private var addLink: String { "relaymsg.app/add/\(username)" }
@@ -333,9 +336,52 @@ private struct AccountSettingsView: View {
                 }
                 .tint(.primary)
             }
+
+            Section {
+                Button { showingPasswordSheet = true } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "key.fill", color: .orange)
+                        Text("Account Password").foregroundStyle(.primary)
+                        Spacer(minLength: 0)
+                        Text(UserDefaults.standard.bool(forKey: MessagingService.hasAccountPasswordKey) ? "Change" : "Set")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.primary)
+            } footer: {
+                Text("Used to recover your account by email, and required to sign in on a new device — which signs out your other devices. Relay stores only a hash of it.")
+            }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { emailDiscoverable },
+                    set: { on in
+                        let previous = emailDiscoverable
+                        emailDiscoverable = on
+                        Task {
+                            do {
+                                try await service.setEmailDiscoverable(on)
+                            } catch {
+                                emailDiscoverable = previous
+                                discoverabilityError = FriendlyError.message(for: error)
+                            }
+                        }
+                    }
+                )) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "envelope.fill", color: .blue)
+                        Text("Find Me by Email")
+                    }
+                }
+            } footer: {
+                Text(discoverabilityError ?? "Off by default. When on, people who have your email address can find your username. Lookups are blinded, so Relay never sees the addresses searched.")
+            }
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingPasswordSheet) {
+            AccountPasswordSheet(service: service)
+        }
         .sheet(isPresented: $showingQR) {
             MyQRCodeView(username: username, createInviteLink: {
                 try await service.createContactInviteLink()
@@ -1576,7 +1622,10 @@ private struct DeleteAccountSheet: View {
         errorMessage = nil
         Task {
             do {
-                try await service.deleteAccount()
+                // Sign in with Apple accounts: get a fresh code so the relay can
+                // revoke the Apple token (Apple requirement). Cancelling still deletes.
+                let appleCode = AppleSignInRecord.used ? await AppleReauthorization.authorizationCode() : nil
+                try await service.deleteAccount(appleAuthorizationCode: appleCode)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 dismiss()
                 onDeleted()
@@ -1584,6 +1633,63 @@ private struct DeleteAccountSheet: View {
                 errorMessage = "Couldn't delete your account: \(FriendlyError.message(for: error)) Nothing was deleted — please try again."
                 isDeleting = false
             }
+        }
+    }
+}
+
+/// Sets or changes the account password (recovery + new-device sign-in lock).
+private struct AccountPasswordSheet: View {
+    let service: MessagingService
+    @Environment(\.dismiss) private var dismiss
+    @State private var password = ""
+    @State private var confirm = ""
+    @State private var saving = false
+    @State private var errorMessage: String?
+
+    private var valid: Bool { password.count >= 8 && password == confirm }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("New password", text: $password)
+                        .textContentType(.newPassword)
+                    SecureField("Confirm password", text: $confirm)
+                        .textContentType(.newPassword)
+                } footer: {
+                    Text(errorMessage ?? "At least 8 characters. You'll need it to recover your account by email and to sign in on a new device.")
+                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+                }
+            }
+            .navigationTitle("Account Password")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(saving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if saving {
+                        ProgressView()
+                    } else {
+                        Button("Save") { save() }.bold().disabled(!valid)
+                    }
+                }
+            }
+            .interactiveDismissDisabled(saving)
+        }
+    }
+
+    private func save() {
+        saving = true
+        errorMessage = nil
+        Task {
+            do {
+                try await service.setAccountPassword(password)
+                dismiss()
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            saving = false
         }
     }
 }
