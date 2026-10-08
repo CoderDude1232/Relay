@@ -191,7 +191,7 @@ struct LinkDeviceView: View {
                     if syncHistory {
                         Label("Recent message history (up to 50 messages per chat)", systemImage: "clock.arrow.circlepath")
                     }
-                    Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Settings → Linked Devices.")
+                    Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Profile → Linked Devices.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -240,7 +240,7 @@ struct LinkDeviceView: View {
                 )
                 phase = .done
             } catch {
-                phase = .failed(error.localizedDescription)
+                phase = .failed(FriendlyError.message(for: error))
             }
         }
     }
@@ -338,7 +338,7 @@ struct LinkNewDeviceView: View {
                 guard !Task.isCancelled else { return }
                 // Drop the QR so the error state (and Try Again) is visible.
                 qrImage = nil
-                errorMessage = error.localizedDescription
+                errorMessage = FriendlyError.message(for: error)
             }
         }
     }
@@ -503,7 +503,7 @@ struct LinkedDevicesView: View {
                 try await service.removeLinkedDevice(deviceId: device.deviceId)
                 await refresh()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = FriendlyError.message(for: error)
             }
         }
     }
@@ -513,7 +513,7 @@ struct LinkedDevicesView: View {
         do {
             devices = try await service.listLinkedDevices()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = FriendlyError.message(for: error)
         }
         loading = false
     }

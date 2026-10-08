@@ -125,7 +125,7 @@ struct CallView: View {
         // Dark base ensures the screen is never blank while layers load.
         Color.black.ignoresSafeArea()
 
-        if let data = peerAvatar, let uiImage = UIImage(data: data) {
+        if let data = peerAvatar, let uiImage = DecodedImageCache.image(for: data) {
             // Real profile photo — blur heavily and boost saturation to a vivid wash.
             Image(uiImage: uiImage)
                 .resizable()

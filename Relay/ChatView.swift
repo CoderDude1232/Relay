@@ -148,9 +148,6 @@ struct ChatView: View {
         }
     }
 
-    /// Online / last-seen status no longer exists (the relay doesn't track it).
-    private var presenceText: String? { nil }
-
     private var rawScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -388,10 +385,6 @@ struct ChatView: View {
                                 Text(connectionSubtitle)
                                     .font(.caption2)
                                     .foregroundStyle(service.connectionState == .connecting ? .orange : .secondary)
-                            } else if let presenceText {
-                                Text(presenceText)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
                             } else if let secs = conversation?.disappearingSeconds, secs > 0 {
                                 Label(disappearingLabel(secs), systemImage: "timer")
                                     .font(.caption2)
@@ -757,7 +750,7 @@ struct ChatView: View {
             summaryText = try await AIAssistant.shared.summarize(service.activeMessages)
             showingSummary = true
         } catch {
-            summaryText = error.localizedDescription
+            summaryText = FriendlyError.message(for: error)
             showingSummary = true
         }
     }
@@ -1188,6 +1181,8 @@ struct ChatView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(editingMessage == nil ? "Send message" : "Save edit")
+                            // iPad / hardware keyboards: ⌘↩ sends (plain ↩ inserts a newline).
+                            .keyboardShortcut(.return, modifiers: .command)
                             .simultaneousGesture(
                                 LongPressGesture(minimumDuration: 0.5).onEnded { _ in
                                     // Scheduling is text-only: attachments aren't stored with
@@ -1680,8 +1675,8 @@ struct ChatPrivacySettingsView: View {
             }
 
             Section("Privacy") {
-                Toggle("Require Face ID for media", isOn: $mediaRequiresBiometric)
-                Toggle("Require Face ID to open chat", isOn: $requireBiometricChat)
+                Toggle("Require \(BiometricGate.biometryName) for media", isOn: $mediaRequiresBiometric)
+                Toggle("Require \(BiometricGate.biometryName) to open chat", isOn: $requireBiometricChat)
             }
 
             Section {
@@ -1699,10 +1694,10 @@ struct ChatPrivacySettingsView: View {
             } footer: {
                 if isGroup {
                     Text(canEditGroupScreenSecurity
-                         ? "Blanks messages in screenshots and recordings for everyone. Only admins can change this. The other person is always alerted when a screenshot is taken."
-                         : "The group admin controls whether messages are hidden from screenshots. Everyone is always alerted when a screenshot is taken.")
+                         ? "Blanks messages in screenshots and recordings for everyone. Only admins can change this. Relay tries to notify the group when someone takes a screenshot."
+                         : "The group admin controls whether messages are hidden from screenshots. Relay tries to notify the group when someone takes a screenshot.")
                 } else {
-                    Text("Blanks messages in screenshots and recordings. Both people must turn this off to disable it. The other person is always alerted when you take a screenshot.")
+                    Text("Blanks messages in screenshots and recordings. Both people must turn this off to disable it. Relay tries to notify the other person when you take a screenshot.")
                 }
             }
 
@@ -2692,6 +2687,8 @@ private struct FormatButton: View {
                 .background(Color(.secondarySystemFill), in: .rect(cornerRadius: 8))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(tip)
+        .help(tip)
     }
 }
 
@@ -2903,7 +2900,7 @@ private struct PendingAttachmentBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if isImage, let ui = UIImage(data: attachment.data) {
+            if isImage, let ui = DecodedImageCache.image(for: attachment.data) {
                 Image(uiImage: ui)
                     .resizable()
                     .scaledToFill()
@@ -3002,6 +2999,8 @@ private struct PendingAttachmentPreviewSheet: View {
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
                     }
+                    .accessibilityLabel("Send")
+                    .keyboardShortcut(.return, modifiers: .command)
                     .disabled(attachments.isEmpty && caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -3012,7 +3011,7 @@ private struct PendingAttachmentPreviewSheet: View {
     @ViewBuilder
     private func previewCard(for attachment: MessagingService.PendingAttachment, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
-            if attachment.contentType.hasPrefix("image/"), let image = UIImage(data: attachment.data) {
+            if attachment.contentType.hasPrefix("image/"), let image = DecodedImageCache.image(for: attachment.data) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()

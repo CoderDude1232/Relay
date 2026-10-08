@@ -255,7 +255,7 @@ struct ConversationListView: View {
                         } catch RelayAPIError.http(status: 404, _) {
                             qrStartError = "Couldn't find that user on Relay."
                         } catch {
-                            qrStartError = "Couldn't reach Relay: \(error.localizedDescription)"
+                            qrStartError = FriendlyError.message(for: error)
                         }
                     }
                 }
@@ -303,8 +303,9 @@ struct ConversationListView: View {
             if let newId, searchTarget?.conversationId != newId { searchTarget = nil }
             if let newId { service.openConversation(newId) }
 
-            // Re-lock when navigating back to the list.
-            if newId == nil, let oldId { sessionUnlocked.remove(oldId) }
+            // Re-lock when leaving a chat — back to the list (iPhone) or
+            // straight to another chat in the sidebar (iPad).
+            if let oldId, oldId != newId { sessionUnlocked.remove(oldId) }
             guard let newId else { return }
             searchText = ""
             guard let conv = service.conversations.first(where: { $0.id == newId }),
@@ -624,7 +625,7 @@ struct ConversationListView: View {
                 try await service.leaveGroup(groupId)
                 service.deleteConversation(conversationId)
             } catch {
-                deleteError = error.localizedDescription
+                deleteError = FriendlyError.message(for: error)
             }
         }
     }
@@ -878,7 +879,7 @@ private struct NewChatSheet: View {
                 onConversationStarted(convId)
             } catch {
                 startingContactEmail = nil
-                addError = error.localizedDescription
+                addError = FriendlyError.message(for: error)
             }
         }
     }
@@ -896,23 +897,9 @@ private struct NewChatSheet: View {
             return
         }
 
-        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
-                    CNContactEmailAddressesKey, CNContactPhoneNumbersKey,
-                    CNContactThumbnailImageDataKey,
-                    CNContactImageDataAvailableKey] as [CNKeyDescriptor]
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        request.sortOrder = .givenName
-
-        var raw: [(name: String, emails: [String], phones: [String], avatar: Data?)] = []
-        try? store.enumerateContacts(with: request) { contact, _ in
-            let emails = contact.emailAddresses.map { ($0.value as String).lowercased().trimmingCharacters(in: .whitespaces) }
-            let phones = contact.phoneNumbers.map { $0.value.stringValue }
-            guard !emails.isEmpty || !phones.isEmpty else { return }
-            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-            let avatar = contact.imageDataAvailable ? contact.thumbnailImageData : nil
-            raw.append((name: name.isEmpty ? (emails.first ?? phones.first ?? "") : name,
-                        emails: emails, phones: phones, avatar: avatar))
-        }
+        // enumerateContacts is synchronous and slow on large address books —
+        // keep it off the main thread.
+        let raw = await Task.detached(priority: .userInitiated) { Self.readAddressBook() }.value
 
         // Deduplicate: if two contacts share an email, only keep the first.
         var seen = Set<String>()
@@ -927,6 +914,27 @@ private struct NewChatSheet: View {
         contacts = entries
         isLoadingContacts = false
         await checkRelayStatus()
+    }
+
+    private nonisolated static func readAddressBook() -> [(name: String, emails: [String], phones: [String], avatar: Data?)] {
+        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
+                    CNContactEmailAddressesKey, CNContactPhoneNumbersKey,
+                    CNContactThumbnailImageDataKey,
+                    CNContactImageDataAvailableKey] as [CNKeyDescriptor]
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        request.sortOrder = .givenName
+
+        var raw: [(name: String, emails: [String], phones: [String], avatar: Data?)] = []
+        try? CNContactStore().enumerateContacts(with: request) { contact, _ in
+            let emails = contact.emailAddresses.map { ($0.value as String).lowercased().trimmingCharacters(in: .whitespaces) }
+            let phones = contact.phoneNumbers.map { $0.value.stringValue }
+            guard !emails.isEmpty || !phones.isEmpty else { return }
+            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
+            let avatar = contact.imageDataAvailable ? contact.thumbnailImageData : nil
+            raw.append((name: name.isEmpty ? (emails.first ?? phones.first ?? "") : name,
+                        emails: emails, phones: phones, avatar: avatar))
+        }
+        return raw
     }
 
     /// Privately matches every contact email against the directory in one
@@ -953,7 +961,7 @@ private struct NewChatSheet: View {
             }
         } catch {
             for i in contacts.indices { contacts[i].relayStatus = .unknown }
-            discoveryError = error.localizedDescription
+            discoveryError = FriendlyError.message(for: error)
         }
     }
 }
@@ -1185,7 +1193,7 @@ private struct UsernameSearchSheet: View {
                 lookupState = .notFound
             } catch {
                 guard !Task.isCancelled else { return }
-                lookupState = .error(error.localizedDescription)
+                lookupState = .error(FriendlyError.message(for: error))
             }
         }
     }
@@ -1199,7 +1207,7 @@ private struct UsernameSearchSheet: View {
                 onConversationStarted(convId)
             } catch {
                 isStarting = false
-                lookupState = .error("Couldn't start conversation: \(error.localizedDescription)")
+                lookupState = .error("Couldn't start conversation: \(FriendlyError.message(for: error))")
             }
         }
     }

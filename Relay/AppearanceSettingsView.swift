@@ -145,7 +145,7 @@ struct AppearanceSettingsView: View {
         PhotosPicker(selection: $wallpaperPhoto, matching: .images) {
             VStack(spacing: 6) {
                 ZStack {
-                    if appearance.wallpaper == .photo, let data = appearance.photoData, let ui = UIImage(data: data) {
+                    if appearance.wallpaper == .photo, let ui = appearance.photoImage {
                         Image(uiImage: ui).resizable().scaledToFill()
                     } else {
                         Color(.secondarySystemGroupedBackground)

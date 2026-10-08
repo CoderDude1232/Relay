@@ -104,16 +104,16 @@ struct BackupView: View {
                     Task { await export() }
                 } label: {
                     HStack {
-                        Label("Export to Files", systemImage: "arrow.up.doc.fill")
+                        Label("Export Archive (Read-Only)", systemImage: "arrow.up.doc.fill")
                         Spacer()
                         if isExporting { ProgressView() }
                     }
                 }
                 .disabled(!canExport || isExporting)
             } header: {
-                Text("Manual Export")
+                Text("Archive Export")
             } footer: {
-                Text("Creates a one-off encrypted file of your messages. Protected by AES-256-GCM — Relay cannot recover the password if lost.")
+                Text("Saves a password-encrypted archive of your message text to Files, for your own records. It can't be imported back into Relay — to move or restore your chats, use iCloud Backup above or link another device. Relay can't recover the password if you lose it.")
             }
 
             if let error = exportError {
@@ -135,9 +135,11 @@ struct BackupView: View {
             isPresented: $showingExporter,
             document: exportItem,
             contentType: .data,
-            defaultFilename: "relay-backup-\(isoDate()).relaybackup"
+            defaultFilename: "relay-archive-\(isoDate()).relaybackup"
         ) { result in
-            if case .failure(let e) = result { exportError = e.localizedDescription }
+            if case .failure(let e) = result, (e as? CocoaError)?.code != .userCancelled {
+                exportError = FriendlyError.message(for: e)
+            }
         }
     }
 
@@ -167,7 +169,7 @@ struct BackupView: View {
             exportItem = BackupDocument(data: encrypted)
             showingExporter = true
         } catch {
-            exportError = error.localizedDescription
+            exportError = FriendlyError.message(for: error)
         }
         isExporting = false
     }
@@ -348,7 +350,7 @@ private struct RestoreSheet: View {
             )
             done = true
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            self.error = FriendlyError.message(for: error)
         }
         isRestoring = false
     }

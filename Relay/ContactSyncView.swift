@@ -16,6 +16,25 @@ import UIKit
 struct ContactSyncView: View {
     let service: MessagingService
 
+    private struct AddressEntry: Sendable { let name: String; let email: String; let avatar: Data? }
+
+    private nonisolated static func readAddressBook() -> [AddressEntry] {
+        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
+                    CNContactEmailAddressesKey, CNContactThumbnailImageDataKey] as [CNKeyDescriptor]
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        var entries: [AddressEntry] = []
+        try? CNContactStore().enumerateContacts(with: request) { contact, _ in
+            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
+            for address in contact.emailAddresses {
+                let email = (address.value as String).lowercased()
+                entries.append(AddressEntry(name: name.isEmpty ? email : name,
+                                            email: email,
+                                            avatar: contact.thumbnailImageData))
+            }
+        }
+        return entries
+    }
+
     @Environment(AppModel.self) private var model
     @State private var status: SyncStatus = .idle
     @State private var matches: [ContactMatch] = []
@@ -149,7 +168,7 @@ struct ContactSyncView: View {
                 // Same path as a notification tap: switches to Chats and opens it.
                 model.pendingNotificationConversationId = conversationId
             } catch {
-                messageError = error.localizedDescription
+                messageError = FriendlyError.message(for: error)
             }
         }
     }
@@ -184,22 +203,9 @@ struct ContactSyncView: View {
             denied = true; status = .done; return
         }
 
-        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
-                    CNContactEmailAddressesKey, CNContactImageDataKey] as [CNKeyDescriptor]
-        let request = CNContactFetchRequest(keysToFetch: keys)
-
-        // Collect all (name, email, avatar) tuples from address book.
-        struct AddressEntry { let name: String; let email: String; let avatar: Data? }
-        var entries: [AddressEntry] = []
-        try? store.enumerateContacts(with: request) { contact, _ in
-            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-            for address in contact.emailAddresses {
-                let email = (address.value as String).lowercased()
-                entries.append(AddressEntry(name: name.isEmpty ? email : name,
-                                            email: email,
-                                            avatar: contact.imageData))
-            }
-        }
+        // Collect all (name, email, avatar) tuples from the address book —
+        // off the main thread, since enumeration is synchronous and slow.
+        let entries = await Task.detached(priority: .userInitiated) { Self.readAddressBook() }.value
 
         // Deduplicate emails (keep first contact name seen for a given email).
         var seen = Set<String>()
@@ -219,7 +225,7 @@ struct ContactSyncView: View {
             // A 503 / network failure is not "none of your contacts are on
             // Relay" — say so and offer a retry instead of an empty result.
             matches = []
-            status = .failed(error.localizedDescription)
+            status = .failed(FriendlyError.message(for: error))
             return
         }
         for match in discovered {

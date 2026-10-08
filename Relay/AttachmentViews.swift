@@ -49,6 +49,7 @@ struct VoiceNoteBubble: View {
                         .background(tint.opacity(0.18), in: .circle)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
                 .disabled(data == nil && !failed)
 
                 GeometryReader { geo in
@@ -352,10 +353,18 @@ struct VideoPlayerBubble: View {
 private struct VideoPlayerSheet: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
+    /// Created once: building the AVPlayer in `body` would make a new player
+    /// (and restart playback) on every re-render.
+    @State private var player: AVPlayer
+
+    init(url: URL) {
+        self.url = url
+        _player = State(initialValue: AVPlayer(url: url))
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            VideoPlayer(player: AVPlayer(url: url))
+            VideoPlayer(player: player)
                 .ignoresSafeArea()
             Button { dismiss() } label: {
                 Image(systemName: "xmark.circle.fill")
@@ -363,7 +372,9 @@ private struct VideoPlayerSheet: View {
                     .foregroundStyle(.white.opacity(0.85))
                     .padding(20)
             }
+            .accessibilityLabel("Close")
         }
+        .onDisappear { player.pause() }
     }
 }
 
