@@ -31,11 +31,7 @@ struct ContentView: View {
                 MainTabView(service: service)
                     .environment(\.relayAppLocked, isLocked)
             case .failed(let message):
-                ContentUnavailableView(
-                    "Storage Unavailable",
-                    systemImage: "lock.trianglebadge.exclamationmark",
-                    description: Text(message)
-                )
+                StorageUnavailableView(message: message)
             }
 
             // Privacy screen: covers content the instant the app loses focus.
@@ -95,6 +91,53 @@ struct ContentView: View {
 }
 
 // MARK: - Lock screen
+
+/// Shown when the encrypted database can't be opened at launch. Offers a
+/// retry (the usual cause is protected data not yet available) and, as a last
+/// resort, a local reset back to onboarding.
+private struct StorageUnavailableView: View {
+    let message: String
+    @Environment(AppModel.self) private var model
+    @State private var isRetrying = false
+    @State private var confirmingReset = false
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Storage Unavailable", systemImage: "lock.trianglebadge.exclamationmark")
+        } description: {
+            Text(message)
+        } actions: {
+            Button {
+                isRetrying = true
+                Task {
+                    await model.retryBoot()
+                    isRetrying = false
+                }
+            } label: {
+                if isRetrying { ProgressView() } else { Text("Try Again") }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isRetrying)
+
+            Button("Sign Out & Reset", role: .destructive) {
+                confirmingReset = true
+            }
+            .disabled(isRetrying)
+            .confirmationDialog(
+                "Sign out and reset Relay on this device?",
+                isPresented: $confirmingReset,
+                titleVisibility: .visible
+            ) {
+                Button("Sign Out & Reset", role: .destructive) {
+                    // Storage is broken, so there's no session to deregister.
+                    model.signOut(removeFromServer: false)
+                }
+            } message: {
+                Text("Messages on this device will be deleted. You can restore them only from an iCloud backup or another linked device.")
+            }
+        }
+    }
+}
 
 private struct ScreenLockView: View {
     let isAuthenticating: Bool

@@ -98,8 +98,16 @@ final class AppModel {
             publishDeviceAuthorizationKeyIfReady()
             publishAccessKeyIfReady()
         } catch {
-            phase = .failed("Could not unlock local storage: \(error)")
+            Logger(subsystem: "app.relaymsg", category: "account")
+                .error("boot failed: \(PrivacyRedactor.error(error))")
+            phase = .failed("Relay couldn't open the encrypted storage on this device. This can happen right after a restart, before the device has been unlocked — unlock it and try again.")
         }
+    }
+
+    /// Retries `boot()` from the "Storage Unavailable" screen.
+    func retryBoot() async {
+        phase = .loading
+        await boot()
     }
 
     /// Returns true if the keychain already holds relay credentials for this Supabase user ID.
