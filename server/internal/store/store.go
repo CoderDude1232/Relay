@@ -411,6 +411,11 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`UPDATE kyber_prekeys SET created_at = 0 WHERE created_at <> 0`,
 		`UPDATE accounts SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
 		`UPDATE devices SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
+		// Email discovery is opt-in: an account's verified email gets a
+		// blinded-directory entry only once its owner turns this on. Existing
+		// accounts default to FALSE (their email entries disappear at the next
+		// directory rebuild, i.e. startup).
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -2344,13 +2349,15 @@ type AccountDirInfo struct {
 	AccountID  string
 	Username   string
 	EmailToken []byte
+	// EmailDiscoverable is the owner's opt-in for an email directory entry.
+	EmailDiscoverable bool
 }
 
 // AllAccountsForDirectory returns every account's username + email token so the
 // API can (re)build the full directory index at startup.
 func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	rows, err := s.db.Query(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token FROM accounts ORDER BY created_at, id`)
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable FROM accounts ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2358,7 +2365,7 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	var out []AccountDirInfo
 	for rows.Next() {
 		var a AccountDirInfo
-		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken); err != nil {
+		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -2370,13 +2377,27 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 func (s *Store) AccountForDirectory(accountID string) (AccountDirInfo, error) {
 	var a AccountDirInfo
 	err := s.db.QueryRow(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token FROM accounts WHERE id = $1`,
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable FROM accounts WHERE id = $1`,
 		accountID,
-	).Scan(&a.AccountID, &a.Username, &a.EmailToken)
+	).Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrAccountNotFound
 	}
 	return a, err
+}
+
+// SetEmailDiscoverable records whether the account's verified email may be
+// found through blinded discovery. The caller reindexes the account.
+func (s *Store) SetEmailDiscoverable(accountID string, discoverable bool) error {
+	tag, err := s.db.Exec(context.Background(),
+		`UPDATE accounts SET email_discoverable = $1 WHERE id = $2`, discoverable, accountID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAccountNotFound
+	}
+	return nil
 }
 
 // ReplaceDirectory rebuilds the entire directory index from scratch (startup).

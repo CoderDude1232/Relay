@@ -206,7 +206,8 @@ func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry
 	if a.Username != "" {
 		add(s.oprf.Token(a.Username), store.DirectoryKindUsername)
 	}
-	if len(a.EmailToken) > 0 {
+	// Email discovery is opt-in (PUT /v1/accounts/me/discoverability).
+	if len(a.EmailToken) > 0 && a.EmailDiscoverable {
 		add(a.EmailToken, store.DirectoryKindEmail)
 	}
 	return entries
@@ -279,6 +280,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
 	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
+	mux.HandleFunc("PUT /v1/accounts/me/discoverability", s.auth(s.handleSetDiscoverability))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
 	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
 	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
@@ -1116,6 +1118,25 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 	}
 	usernameChangeLimiter.allow(dev.AccountID) // only completed changes spend budget
 	s.reindexAccount(dev.AccountID)            // update the blinded directory for the new username
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSetDiscoverability sets whether the account's verified email gets a
+// blinded-directory entry (opt-in; off by default) and reindexes the account.
+// Username entries are unaffected. Body: {"email": bool} — the field is required.
+func (s *Server) handleSetDiscoverability(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Email *bool `json:"email"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Email == nil {
+		httpError(w, http.StatusBadRequest, "email (bool) required")
+		return
+	}
+	if err := s.store.SetEmailDiscoverable(dev.AccountID, *req.Email); err != nil {
+		internalError(w, err)
+		return
+	}
+	s.reindexAccount(dev.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
