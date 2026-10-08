@@ -7,7 +7,9 @@ package store
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -40,7 +42,16 @@ var (
 	ErrDuplicateNukeCommand      = errors.New("store: nuke command already executed")
 	ErrDeviceLimit               = errors.New("store: linked device limit reached")
 	ErrIdentityInUse             = errors.New("store: email or social-login identity already linked to an account")
+	ErrPreKeyPoolFull            = errors.New("store: one-time prekey pool full")
+	ErrAccountPasswordRequired   = errors.New("store: account password required")
+	ErrAccountPasswordIncorrect  = errors.New("store: account password incorrect")
+	ErrAccountPasswordLocked     = errors.New("store: too many account password attempts")
 )
+
+// MaxOneTimePreKeysPerDevice caps the one-time prekeys stored for one device.
+// Clients replenish below ~20 in batches of 100, so an honest pool never gets
+// near it; an upload that would exceed it is rejected whole (ErrPreKeyPoolFull).
+const MaxOneTimePreKeysPerDevice = 2000
 
 // maxDevicesPerAccount caps how many devices (primary + linked) an account may
 // have at once, bounding the blast radius of a linking compromise.
@@ -78,6 +89,9 @@ func coarseDayMillis() int64 {
 
 type Store struct {
 	db *pgxpool.Pool
+	// releaseKey keys the released-username hashes (see SetUsernameReleaseKey);
+	// nil disables the reuse cooldown. Set once at startup.
+	releaseKey []byte
 }
 
 // Open connects to PostgreSQL at dsn, pings it, and runs schema migrations.
@@ -405,6 +419,21 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`UPDATE kyber_prekeys SET created_at = 0 WHERE created_at <> 0`,
 		`UPDATE accounts SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
 		`UPDATE devices SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
+		// Email discovery is opt-in: an account's verified email gets a
+		// blinded-directory entry only once its owner turns this on. Existing
+		// accounts default to FALSE (their email entries disappear at the next
+		// directory rebuild, i.e. startup).
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Username reuse cooldown: a released name (rename or account deletion)
+		// can't be claimed by another account for UsernameReuseCooldown. Only
+		// keyed hashes are stored — never the name — plus the release time;
+		// rows are purged by the hourly retention sweep once the cooldown ends.
+		`CREATE TABLE IF NOT EXISTS released_usernames (
+    name_hash   BYTEA PRIMARY KEY,
+    owner_hash  BYTEA,
+    released_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_released_usernames_released_at ON released_usernames (released_at)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -542,7 +571,7 @@ func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID
 	}
 	defer tx.Rollback(ctx)
 
-	if taken, err := usernameTakenTx(ctx, tx, username, ""); err != nil {
+	if taken, err := s.usernameUnavailableTx(ctx, tx, username, ""); err != nil {
 		return "", 0, err
 	} else if taken {
 		return "", 0, ErrUsernameTaken
@@ -554,6 +583,9 @@ func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
 		accountID, mailboxID, deviceHash, now); err != nil {
+		return "", 0, err
+	}
+	if err = s.clearReleasedUsernameTx(ctx, tx, username); err != nil {
 		return "", 0, err
 	}
 	return accountID, 1, tx.Commit(ctx)
@@ -595,19 +627,112 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// usernameTakenTx reports whether another account (≠ exceptAccountID) already
-// holds username, compared case-insensitively.
-func usernameTakenTx(ctx context.Context, q rowQuerier, username, exceptAccountID string) (bool, error) {
+// usernameUnavailableTx reports whether username can't be taken by
+// exceptAccountID ("" = a new account): another account holds it (compared
+// case-insensitively), or it was released less than UsernameReuseCooldown ago
+// by an account other than exceptAccountID (see releaseUsernameTx).
+func (s *Store) usernameUnavailableTx(ctx context.Context, q rowQuerier, username, exceptAccountID string) (bool, error) {
 	var taken bool
-	err := q.QueryRow(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM accounts WHERE lower(username) = lower($1) AND id <> $2)`,
-		username, exceptAccountID).Scan(&taken)
-	return taken, err
+		username, exceptAccountID).Scan(&taken); err != nil || taken {
+		return taken, err
+	}
+	nameHash := s.releasedNameHash(username)
+	if nameHash == nil {
+		return false, nil // cooldown disabled (no key configured)
+	}
+	cutoff := time.Now().Add(-UsernameReuseCooldown).UnixMilli()
+	var cooling bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM released_usernames
+		WHERE name_hash = $1 AND released_at > $2 AND (owner_hash IS NULL OR owner_hash <> $3))`,
+		nameHash, cutoff, s.releasedOwnerHash(exceptAccountID)).Scan(&cooling)
+	return cooling, err
 }
 
-// UsernameTaken reports whether any account holds username (case-insensitive).
+// UsernameTaken reports whether username is unavailable to a new account: held
+// by any account (case-insensitive) or still in its reuse cooldown.
 func (s *Store) UsernameTaken(username string) (bool, error) {
-	return usernameTakenTx(context.Background(), s.db, username, "")
+	return s.usernameUnavailableTx(context.Background(), s.db, username, "")
+}
+
+// ---------------------------------------------------------------------------
+// Username reuse cooldown
+// ---------------------------------------------------------------------------
+
+// UsernameReuseCooldown is how long a released username (renamed away from, or
+// freed by account deletion) stays unclaimable by any other account. Sealed-
+// sender certificates carry the sender's username for up to 7 days, so a name
+// re-registered sooner could be shown as the author of messages its previous
+// holder's still-valid certificates vouch for. The releasing account itself
+// may take its old name back during the cooldown (same account, same
+// certificates — no confusion possible); a deleted account's name is blocked
+// for everyone.
+const UsernameReuseCooldown = 7 * 24 * time.Hour
+
+// SetUsernameReleaseKey sets the secret that keys released-username hashes.
+// released_usernames stores only HMAC(key, lower(name)) and HMAC(key, owner
+// account id) plus the release time — never the name itself — so a database
+// dump doesn't list recently abandoned names. Until a key is set the cooldown
+// is disabled (nothing is recorded or checked); relayd derives it from the
+// OPRF key, so it is stable across restarts.
+func (s *Store) SetUsernameReleaseKey(key []byte) {
+	s.releaseKey = append([]byte(nil), key...)
+}
+
+func (s *Store) releaseHMAC(parts ...string) []byte {
+	if len(s.releaseKey) == 0 {
+		return nil
+	}
+	m := hmac.New(sha256.New, s.releaseKey)
+	for _, p := range parts {
+		m.Write([]byte(p))
+		m.Write([]byte{0})
+	}
+	return m.Sum(nil)
+}
+
+// releasedNameHash is the keyed hash of a username, case-folded the way
+// uniqueness is enforced. nil when no key is configured.
+func (s *Store) releasedNameHash(username string) []byte {
+	return s.releaseHMAC("relay-released-username-v1", strings.ToLower(username))
+}
+
+// releasedOwnerHash is the keyed hash of the releasing account id ("" — a new
+// account — hashes to a value no real account id produces).
+func (s *Store) releasedOwnerHash(accountID string) []byte {
+	return s.releaseHMAC("relay-released-username-owner-v1", accountID)
+}
+
+// releaseUsernameTx starts the reuse cooldown for username inside tx.
+// ownerAccountID is the account that may still reclaim it ("" when the account
+// is being deleted, so no one can). A no-op when no key is configured.
+func (s *Store) releaseUsernameTx(ctx context.Context, tx pgx.Tx, username, ownerAccountID string) error {
+	nameHash := s.releasedNameHash(username)
+	if nameHash == nil || username == "" {
+		return nil
+	}
+	var owner []byte
+	if ownerAccountID != "" {
+		owner = s.releasedOwnerHash(ownerAccountID)
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO released_usernames (name_hash, owner_hash, released_at) VALUES ($1, $2, $3)
+		ON CONFLICT (name_hash) DO UPDATE SET owner_hash = EXCLUDED.owner_hash, released_at = EXCLUDED.released_at`,
+		nameHash, owner, time.Now().UnixMilli())
+	return err
+}
+
+// clearReleasedUsernameTx drops the cooldown row for a name that has just been
+// (re)claimed — legitimately, since usernameUnavailableTx passed.
+func (s *Store) clearReleasedUsernameTx(ctx context.Context, tx pgx.Tx, username string) error {
+	nameHash := s.releasedNameHash(username)
+	if nameHash == nil {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM released_usernames WHERE name_hash = $1`, nameHash)
+	return err
 }
 
 // dummyRecoveryHash is compared against when an account (or its recovery
@@ -647,7 +772,9 @@ type AddedDevice struct {
 // Before this, every re-sign-in left the old device behind as a ghost with a
 // different identity key (and could eventually hit the device cap).
 func replaceDevicesTx(ctx context.Context, tx pgx.Tx, accountID string) ([]uint32, error) {
-	rows, err := tx.Query(ctx, `SELECT device_id FROM devices WHERE account_id = $1 ORDER BY device_id`, accountID)
+	// Locking the device rows (see Enqueue) means no envelope can land in a
+	// queue after it is cleared below.
+	rows, err := tx.Query(ctx, `SELECT device_id FROM devices WHERE account_id = $1 ORDER BY device_id FOR UPDATE`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -762,6 +889,24 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 	return dev, devicePassword, nil
 }
 
+// SetAccountPassword sets (or replaces) the account password: the bcrypt hash
+// that both email recovery and the sign-in registration lock check.
+func (s *Store) SetAccountPassword(accountID, accountPassword string) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	tag, err := s.db.Exec(context.Background(),
+		`UPDATE accounts SET account_password_hash = $1 WHERE id = $2`, hash, accountID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAccountNotFound
+	}
+	return nil
+}
+
 // ProvisionOAuthAccount signs a Supabase-authenticated user into their relay
 // account, creating it on first use, and provisions a fresh device. The caller
 // MUST have already verified the Supabase access token, so supabaseUserID is
@@ -774,11 +919,21 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 // emails; an existing link to a different Supabase user is never overwritten.
 // If no account exists yet, one is created — requestedUsername
 // must be non-empty in that case, otherwise ErrUsernameRequired is returned.
-// accountPassword, if non-empty, is stored as a recovery hash on creation only.
+// accountPassword, if non-empty, is stored as a recovery hash on creation.
+//
+// Registration lock: signing in to an EXISTING account replaces all of its
+// devices, so when that account has an account password set, accountPassword
+// must match it. Missing → ErrAccountPasswordRequired, wrong →
+// ErrAccountPasswordIncorrect; nothing is changed either way. lockPermit (may
+// be nil) is consulted with the resolved account id before any comparison;
+// false → ErrAccountPasswordLocked. On these three errors dev.AccountID is set
+// so the caller can key its lockout. A supplied accountPassword always costs
+// one bcrypt comparison (against a dummy hash when the account has no lock),
+// so timing doesn't reveal whether a lock is set.
 //
 // Adding a device to an existing account enforces the device cap and bumps
 // device_list_version. created reports whether a new account was made.
-func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string) (dev AddedDevice, created bool, err error) {
+func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string, lockPermit func(accountID string) bool) (dev AddedDevice, created bool, err error) {
 	ctx := context.Background()
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -791,14 +946,35 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 	defer tx.Rollback(ctx)
 
 	// 1. Find an existing account by Supabase user id, then by verified email.
+	var lockHash []byte
+	adoptedByEmail := false
 	err = tx.QueryRow(ctx,
-		`SELECT id, username FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
-	).Scan(&dev.AccountID, &dev.Username)
+		`SELECT id, username, account_password_hash FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
+	).Scan(&dev.AccountID, &dev.Username, &lockHash)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
 		err = tx.QueryRow(ctx,
-			`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
-		).Scan(&dev.AccountID, &dev.Username)
-		if err == nil {
+			`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
+		).Scan(&dev.AccountID, &dev.Username, &lockHash)
+		adoptedByEmail = err == nil
+	}
+
+	if err == nil {
+		// 2. Registration lock, checked before anything is written.
+		if len(lockHash) > 0 {
+			locked := AddedDevice{AccountID: dev.AccountID}
+			if lockPermit != nil && !lockPermit(dev.AccountID) {
+				return locked, false, ErrAccountPasswordLocked
+			}
+			if accountPassword == "" {
+				return locked, false, ErrAccountPasswordRequired
+			}
+			if bcrypt.CompareHashAndPassword(lockHash, []byte(accountPassword)) != nil {
+				return locked, false, ErrAccountPasswordIncorrect
+			}
+		} else if accountPassword != "" {
+			burnRecoveryBcrypt(accountPassword)
+		}
+		if adoptedByEmail {
 			// Back-fill only an empty link; never overwrite another Supabase
 			// user's link (a second identity with the same confirmed email can
 			// sign in, but the original link is kept).
@@ -826,7 +1002,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		if requestedUsername == "" {
 			return AddedDevice{}, false, ErrUsernameRequired
 		}
-		if taken, e := usernameTakenTx(ctx, tx, requestedUsername, ""); e != nil {
+		if taken, e := s.usernameUnavailableTx(ctx, tx, requestedUsername, ""); e != nil {
 			return AddedDevice{}, false, e
 		} else if taken {
 			return AddedDevice{}, false, ErrUsernameTaken
@@ -853,6 +1029,9 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		if _, err = tx.Exec(ctx,
 			`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
 			dev.AccountID, dev.MailboxID, deviceHash, now); err != nil {
+			return AddedDevice{}, false, err
+		}
+		if err = s.clearReleasedUsernameTx(ctx, tx, dev.Username); err != nil {
 			return AddedDevice{}, false, err
 		}
 		created = true
@@ -1332,6 +1511,9 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 	// prekeys (signed/Kyber/one-time) and its queued envelopes. Its push
 	// tokens, auth key and mailbox id live on the device row itself.
 	for _, stmt := range []string{
+		// Lock the device row first so an in-flight Enqueue (which locks it)
+		// either commits before the queue is cleared or then finds no device.
+		`SELECT device_id FROM devices WHERE account_id = $1 AND device_id = $2 FOR UPDATE`,
 		`DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
@@ -1355,20 +1537,6 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 	return newVersion, tx.Commit(ctx)
 }
 
-// DeleteAccount permanently removes an account and everything keyed to it, in
-// one transaction: prekeys (signed, Kyber, one-time), queued envelopes for its
-// devices, its devices (incl. mailbox ids, auth keys, APNs/FCM/VoIP tokens),
-// pending device-link tokens, contact invites it minted, its blinded-directory
-// rows, stored nuke commands, reports it filed, and finally the account row
-// itself (username, email token, Supabase user id, access key, recovery hash).
-// The username becomes available again on commit. Reports filed AGAINST the
-// account are kept (moderation records). Returns ErrNotFound if the account
-// does not exist.
-//
-// Not cleaned (no account linkage is stored): provisioning_sessions and
-// encrypted_group_invites (anonymous, TTL-reaped), attachment blobs (ownership
-// is not tracked; reaped by blob GC), and envelopes the account sent that sit
-// in other accounts' queues (those belong to the recipients).
 // SupabaseUserID returns the Supabase auth user linked to an account, or ""
 // when none is (or the account doesn't exist).
 func (s *Store) SupabaseUserID(accountID string) (string, error) {
@@ -1381,6 +1549,21 @@ func (s *Store) SupabaseUserID(accountID string) (string, error) {
 	return id, err
 }
 
+// DeleteAccount permanently removes an account and everything keyed to it, in
+// one transaction: prekeys (signed, Kyber, one-time), queued envelopes for its
+// devices, its devices (incl. mailbox ids, auth keys, APNs/FCM/VoIP tokens),
+// pending device-link tokens, contact invites it minted, its blinded-directory
+// rows, stored nuke commands, reports it filed, and finally the account row
+// itself (username, email token, Supabase user id, access key, recovery hash).
+// The username enters the reuse cooldown (claimable by nobody for
+// UsernameReuseCooldown; only its keyed hash is kept). Reports filed AGAINST
+// the account are kept (moderation records). Returns ErrNotFound if the
+// account does not exist.
+//
+// Not cleaned (no account linkage is stored): provisioning_sessions and
+// encrypted_group_invites (anonymous, TTL-reaped), attachment blobs (ownership
+// is not tracked; reaped by blob GC), and envelopes the account sent that sit
+// in other accounts' queues (those belong to the recipients).
 func (s *Store) DeleteAccount(accountID string) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -1391,13 +1574,19 @@ func (s *Store) DeleteAccount(accountID string) error {
 
 	// Lock the account row so concurrent device-list mutations (which also
 	// take FOR UPDATE on it) serialize behind the delete.
-	var id string
-	if err := tx.QueryRow(ctx, `SELECT id FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&id); errors.Is(err, pgx.ErrNoRows) {
+	var username string
+	if err := tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&username); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
 	}
+	if err := s.releaseUsernameTx(ctx, tx, username, ""); err != nil {
+		return err
+	}
 	for _, stmt := range []string{
+		// Lock the device rows (see Enqueue) so no envelope lands after the
+		// queue is cleared.
+		`SELECT device_id FROM devices WHERE account_id = $1 FOR UPDATE`,
 		// FK dependents of devices first.
 		`DELETE FROM one_time_prekeys WHERE account_id = $1`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1`,
@@ -1484,9 +1673,12 @@ func (s *Store) LookupAccountID(username string) (string, error) {
 }
 
 // UpdateUsername changes the username of an account. Returns ErrUsernameTaken
-// if the new username is already in use by a different account.
-// Comparison is case-insensitive: "Bob" can't be taken while "bob" exists
-// (a holder may still change the case of their own name).
+// if the new username is already in use by a different account, or is in
+// another account's reuse cooldown. Comparison is case-insensitive: "Bob"
+// can't be taken while "bob" exists (a holder may still change the case of
+// their own name). The old name, when it actually changes, enters the reuse
+// cooldown (reclaimable by this account only). Returns ErrNotFound for an
+// unknown account.
 func (s *Store) UpdateUsername(accountID, newUsername string) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -1494,7 +1686,13 @@ func (s *Store) UpdateUsername(accountID, newUsername string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if taken, err := usernameTakenTx(ctx, tx, newUsername, accountID); err != nil {
+	var oldUsername string
+	if err := tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&oldUsername); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if taken, err := s.usernameUnavailableTx(ctx, tx, newUsername, accountID); err != nil {
 		return err
 	} else if taken {
 		return ErrUsernameTaken
@@ -1506,6 +1704,14 @@ func (s *Store) UpdateUsername(accountID, newUsername string) error {
 			return ErrUsernameTaken
 		}
 		return err
+	}
+	if !strings.EqualFold(oldUsername, newUsername) {
+		if err := s.releaseUsernameTx(ctx, tx, oldUsername, accountID); err != nil {
+			return err
+		}
+		if err := s.clearReleasedUsernameTx(ctx, tx, newUsername); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -1874,6 +2080,19 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 			return err
 		}
 	}
+	// Cap the stored pool. Counted after the upserts (re-uploaded key ids
+	// don't double count); the UPDATE above holds the device row lock, so
+	// concurrent uploads for one device serialize and can't jointly overshoot.
+	if len(oneTime) > 0 {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
+			accountID, deviceID).Scan(&n); err != nil {
+			return err
+		}
+		if n > MaxOneTimePreKeysPerDevice {
+			return ErrPreKeyPoolFull // rolls back the whole upload
+		}
+	}
 	return tx.Commit(ctx)
 }
 
@@ -1986,14 +2205,33 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 // may hold at most maxQueuedPerDevice envelopes and maxQueuedBytesPerDevice
 // bytes of queued ciphertext; beyond either, ErrQueueFull. Expired rows are
 // reaped by PurgeExpired (hourly), not on this hot path.
+//
+// The cap is enforced atomically: the device row is locked (FOR UPDATE) for
+// the count-then-insert, so concurrent senders to one device serialize and
+// can't each pass the check and overshoot it together. A device that no
+// longer exists (removed or its account deleted, possibly while we waited on
+// the lock) gets ErrNotFound and nothing is queued for it.
 func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope []byte) error {
 	ctx := context.Background()
 	if len(envelope) > maxQueuedEnvelopeBytes {
 		return ErrEnvelopeTooLarge
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var one int
+	if err := tx.QueryRow(ctx,
+		`SELECT 1 FROM devices WHERE account_id = $1 AND device_id = $2 FOR UPDATE`,
+		accountID, deviceID).Scan(&one); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
 	var queued int
 	var queuedBytes int64
-	if err := s.db.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(octet_length(envelope)), 0) FROM message_queue WHERE account_id = $1 AND device_id = $2`,
 		accountID, deviceID).Scan(&queued, &queuedBytes); err != nil {
 		return err
@@ -2001,12 +2239,14 @@ func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope 
 	if queued >= maxQueuedPerDevice || queuedBytes+int64(len(envelope)) > maxQueuedBytesPerDevice {
 		return ErrQueueFull
 	}
-	_, err := s.db.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO message_queue (envelope_id, account_id, device_id, envelope, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (envelope_id, account_id, device_id) DO NOTHING`,
-		envelopeID, accountID, deviceID, envelope, time.Now().UnixMilli())
-	return err
+		envelopeID, accountID, deviceID, envelope, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // QueuedEnvelope is one row of a device's offline queue.
@@ -2079,6 +2319,7 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 //   - contact_invites: expired or already used (single-use)
 //   - reports: older than 180 days
 //   - nuke_commands: older than an hour (delivered or stale; see nukeRetentionMillis)
+//   - released_usernames: once the 7-day reuse cooldown has ended
 func (s *Store) PurgeExpired() error {
 	ctx := context.Background()
 	now := time.Now().UnixMilli()
@@ -2093,6 +2334,7 @@ func (s *Store) PurgeExpired() error {
 		{`DELETE FROM contact_invites WHERE expires_at < $1 OR used_at <> 0`, now},
 		{`DELETE FROM reports WHERE created_at < $1`, now - reportTTLMillis},
 		{`DELETE FROM nuke_commands WHERE created_at < $1`, now - nukeRetentionMillis},
+		{`DELETE FROM released_usernames WHERE released_at < $1`, now - UsernameReuseCooldown.Milliseconds()},
 	} {
 		if _, err := s.db.Exec(ctx, q.sql, q.arg); err != nil {
 			return err
@@ -2296,13 +2538,15 @@ type AccountDirInfo struct {
 	AccountID  string
 	Username   string
 	EmailToken []byte
+	// EmailDiscoverable is the owner's opt-in for an email directory entry.
+	EmailDiscoverable bool
 }
 
 // AllAccountsForDirectory returns every account's username + email token so the
 // API can (re)build the full directory index at startup.
 func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	rows, err := s.db.Query(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token FROM accounts ORDER BY created_at, id`)
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable FROM accounts ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2310,7 +2554,7 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	var out []AccountDirInfo
 	for rows.Next() {
 		var a AccountDirInfo
-		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken); err != nil {
+		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -2322,13 +2566,27 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 func (s *Store) AccountForDirectory(accountID string) (AccountDirInfo, error) {
 	var a AccountDirInfo
 	err := s.db.QueryRow(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token FROM accounts WHERE id = $1`,
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable FROM accounts WHERE id = $1`,
 		accountID,
-	).Scan(&a.AccountID, &a.Username, &a.EmailToken)
+	).Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrAccountNotFound
 	}
 	return a, err
+}
+
+// SetEmailDiscoverable records whether the account's verified email may be
+// found through blinded discovery. The caller reindexes the account.
+func (s *Store) SetEmailDiscoverable(accountID string, discoverable bool) error {
+	tag, err := s.db.Exec(context.Background(),
+		`UPDATE accounts SET email_discoverable = $1 WHERE id = $2`, discoverable, accountID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAccountNotFound
+	}
+	return nil
 }
 
 // ReplaceDirectory rebuilds the entire directory index from scratch (startup).

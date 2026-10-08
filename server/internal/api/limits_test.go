@@ -62,11 +62,11 @@ func TestLimiterMapsHoldNoRawKeys(t *testing.T) {
 // budget is spent, the same /64 gets 429 while another source is unaffected.
 func TestAuthFailureThrottle(t *testing.T) {
 	s := New(nil, nil, nil, "", "")
-	h := s.auth(func(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+	h := s.bootstrapAuth(func(w http.ResponseWriter, r *http.Request, _ *store.Device) {
 		t.Fatal("handler reached without valid credentials")
 	})
 	do := func(remote string) int {
-		req := httptest.NewRequest("GET", "/v1/devices", nil)
+		req := httptest.NewRequest("PUT", "/v1/devices/auth-key", nil)
 		req.RemoteAddr = remote
 		req.SetBasicAuth("acct.notanumber", "pw")
 		rec := httptest.NewRecorder()
@@ -84,5 +84,26 @@ func TestAuthFailureThrottle(t *testing.T) {
 	}
 	if code := do("198.51.100.20:1"); code != http.StatusUnauthorized {
 		t.Fatalf("unrelated source: got %d, want 401", code)
+	}
+}
+
+// TestBasicRefusedOutsideBootstrap: every route but the auth-key bootstrap
+// refuses HTTP Basic outright — before any store access (the server here has
+// no store, so reaching one would panic).
+func TestBasicRefusedOutsideBootstrap(t *testing.T) {
+	for _, l := range allLimiters {
+		l.reset()
+	}
+	s := New(nil, nil, nil, "", "")
+	h := s.auth(func(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+		t.Fatal("handler reached with HTTP Basic")
+	})
+	req := httptest.NewRequest("GET", "/v1/keys/count", nil)
+	req.RemoteAddr = "198.51.100.30:1"
+	req.SetBasicAuth("acct.1", "some-device-password")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "Relay-Sig") {
+		t.Fatalf("Basic on a non-bootstrap route: got %d %s", rec.Code, rec.Body.String())
 	}
 }

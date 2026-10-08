@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	defaultMaxRequestBodySize = 1 << 20
+	defaultMaxRequestBodySize    = 1 << 20
 	attachmentMaxRequestBodySize = 26 << 20
 )
 

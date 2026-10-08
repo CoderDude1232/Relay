@@ -149,8 +149,10 @@ func TestRequestBodyDigestDeclared(t *testing.T) {
 		t.Fatal("mismatched declared digest accepted")
 	}
 
-	// Streamed (unknown length) body: declared digest is used, mismatch fails at EOF.
-	r = httptest.NewRequest("PUT", "/x", io.NopCloser(bytes.NewReader(body)))
+	// Streamed (unknown length) body on the attachment-upload route: the
+	// declared digest is used, and a mismatch fails at EOF.
+	const uploadPath = "/v1/attachments/0123456789abcdef0123456789abcdef"
+	r = httptest.NewRequest("PUT", uploadPath, io.NopCloser(bytes.NewReader(body)))
 	r.ContentLength = -1
 	r.Header.Set(bodyHashHeader, strings.Repeat("0", 64))
 	d, err := requestBodyDigest(r)
@@ -161,7 +163,7 @@ func TestRequestBodyDigestDeclared(t *testing.T) {
 		t.Fatalf("streamed mismatch not detected: %v", err)
 	}
 
-	r = httptest.NewRequest("PUT", "/x", io.NopCloser(bytes.NewReader(body)))
+	r = httptest.NewRequest("PUT", uploadPath, io.NopCloser(bytes.NewReader(body)))
 	r.ContentLength = -1
 	r.Header.Set(bodyHashHeader, good)
 	if _, err := requestBodyDigest(r); err != nil {
@@ -169,6 +171,58 @@ func TestRequestBodyDigestDeclared(t *testing.T) {
 	}
 	if got, err := io.ReadAll(r.Body); err != nil || !bytes.Equal(got, body) {
 		t.Fatalf("streamed matching body: %q %v", got, err)
+	}
+}
+
+// TestChunkedBodyWithDeclaredDigestBufferedOnJSONRoutes is the regression test
+// for the streaming bypass: on a JSON route a chunked body is never trusted on
+// its declared digest. The server buffers and hashes it, so a body that
+// differs from what was signed is rejected before the handler runs — even
+// when its first JSON value matches and only trailing bytes differ (which a
+// JSON decoder would never have read).
+func TestChunkedBodyWithDeclaredDigestBufferedOnJSONRoutes(t *testing.T) {
+	signed := []byte(`{"envelopeId":"abc"}`)
+	sum := sha256.Sum256(signed)
+	declared := hex.EncodeToString(sum[:])
+	for _, sent := range [][]byte{
+		[]byte(`{"envelopeId":"evil"}`),
+		append(append([]byte{}, signed...), []byte(` {"smuggled":true}`)...),
+	} {
+		r := httptest.NewRequest("POST", "/v1/messages/ack", io.NopCloser(bytes.NewReader(sent)))
+		r.ContentLength = -1 // chunked
+		r.Header.Set(bodyHashHeader, declared)
+		if d, err := requestBodyDigest(r); err != errBodyHashMismatch {
+			t.Fatalf("substituted chunked body accepted on a JSON route: digest %q, err %v", d, err)
+		}
+	}
+	// The honest chunked body still verifies (by the server's own hash).
+	r := httptest.NewRequest("POST", "/v1/messages/ack", io.NopCloser(bytes.NewReader(signed)))
+	r.ContentLength = -1
+	r.Header.Set(bodyHashHeader, declared)
+	if d, err := requestBodyDigest(r); err != nil || d != declared {
+		t.Fatalf("honest chunked body: %q %v", d, err)
+	}
+	if got, _ := io.ReadAll(r.Body); !bytes.Equal(got, signed) {
+		t.Fatalf("body not rewound: %q", got)
+	}
+}
+
+func TestDecodeJSONRejectsTrailingData(t *testing.T) {
+	var v struct {
+		A int `json:"a"`
+	}
+	for body, ok := range map[string]bool{
+		`{"a":1}`:        true,
+		"{\"a\":1}\n \t": true,
+		`{"a":1}{"a":2}`: false,
+		`{"a":1} x`:      false,
+		`{"a":1}]`:       false,
+		``:               false,
+	} {
+		r := httptest.NewRequest("POST", "/x", strings.NewReader(body))
+		if err := decodeJSON(r, &v); (err == nil) != ok {
+			t.Errorf("decodeJSON(%q) err = %v, want ok=%v", body, err, ok)
+		}
 	}
 }
 
@@ -211,6 +265,19 @@ func TestSignatureAuth(t *testing.T) {
 	// A stale timestamp (outside the skew window) is rejected.
 	if got := do(c.signedRequest("GET", path, randomNonce(t), now-int64((sigAuthSkew+time.Minute)/time.Millisecond))); got != http.StatusUnauthorized {
 		t.Fatalf("stale timestamp: got %d, want 401", got)
+	}
+
+	// A chunked body with a declared digest of a different body is rejected
+	// on a JSON route (the server hashes the body itself).
+	signedBody := []byte(`{"envelopeId":"abc"}`)
+	sum := sha256.Sum256(signedBody)
+	sent := []byte(`{"envelopeId":"abc"} {"x":1}`)
+	chunked, _ := http.NewRequest("POST", env.srv.URL+"/v1/messages/ack", io.NopCloser(bytes.NewReader(sent)))
+	chunked.ContentLength = -1
+	signHeaders(t, chunked, c.authKey, c.authUser(), c.accountID, c.deviceID, signedBody, randomNonce(t), time.Now().UnixMilli())
+	chunked.Header.Set(bodyHashHeader, hex.EncodeToString(sum[:]))
+	if got := do(chunked); got != http.StatusUnauthorized {
+		t.Fatalf("mismatched chunked body: got %d, want 401", got)
 	}
 
 	// Once the device has an auth key, HTTP Basic is refused.

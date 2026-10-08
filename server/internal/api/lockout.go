@@ -3,6 +3,8 @@ package api
 import (
 	"sync"
 	"time"
+
+	"github.com/relayapp/relay-server/internal/limitkey"
 )
 
 // failureLockout is a per-key exponential backoff for password guessing (used
@@ -93,5 +95,15 @@ func (l *failureLockout) prune() {
 	}
 }
 
-// recoveryLockout backs off account-recovery guessing per email token.
+// recoveryLockout backs off account-password guessing: account recovery per
+// email token, and the sign-in registration lock per account
+// (registrationLockKey).
 var recoveryLockout = newFailureLockout()
+
+// registrationLockKey is the recoveryLockout key for an account's sign-in
+// registration lock: a salted hash (limitkey), never the raw account id. The
+// salt rotates daily, which also forgets the backoff — bounded anyway by
+// lockoutMax (24 h).
+func registrationLockKey(accountID string) string {
+	return "reglock:" + limitkey.Hash("reglock", accountID)
+}

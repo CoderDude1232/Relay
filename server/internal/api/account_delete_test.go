@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/relayapp/relay-server/internal/oprf"
 )
 
 func uniqueUsername(prefix string) string {
@@ -38,7 +40,8 @@ func TestDeleteAccount(t *testing.T) {
 	env.doJSON("GET", "/v1/keys/count", alice.authUser(), alice.password, nil, http.StatusUnauthorized, nil)
 	env.doJSON("DELETE", "/v1/accounts/me", alice.authUser(), alice.password, nil, http.StatusUnauthorized, nil)
 
-	// Username is released and can be registered again.
+	// Without a release key (no OPRF) there is no reuse cooldown: the
+	// username is released and can be registered again right away.
 	var avail struct {
 		Available bool `json:"available"`
 	}
@@ -50,6 +53,52 @@ func TestDeleteAccount(t *testing.T) {
 	if again.accountID == alice.accountID {
 		t.Fatal("re-registration reused the deleted account id")
 	}
+}
+
+// TestUsernameReuseCooldown: with the cooldown enabled (OPRF configured), a
+// released username can't be taken by another account — neither after a
+// rename nor after account deletion — while the renaming account may take its
+// own old name back. (Expiry is covered by the store test.)
+func TestUsernameReuseCooldown(t *testing.T) {
+	env := newTestEnv(t)
+	key, err := oprf.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.api.SetOPRF(key); err != nil {
+		t.Fatal(err)
+	}
+	available := func(name string) bool {
+		var avail struct {
+			Available bool `json:"available"`
+		}
+		env.doJSON("GET", "/v1/usernames/"+name+"/available", "", "", nil, http.StatusOK, &avail)
+		return avail.Available
+	}
+
+	old := uniqueUsername("cool")
+	alice := env.registerAs(old, "password-alice")
+	bob := env.register("cool-bob", "password-bob")
+	env.doJSON("PUT", "/v1/accounts/me/username", alice.authUser(), alice.password,
+		map[string]string{"username": uniqueUsername("cool-new")}, http.StatusNoContent, nil)
+	if available(old) || available(strings.ToUpper(old)) {
+		t.Fatal("renamed-away username reported available during the cooldown")
+	}
+	env.doJSON("PUT", "/v1/accounts/me/username", bob.authUser(), bob.password,
+		map[string]string{"username": old}, http.StatusConflict, nil)
+	env.doJSON("POST", "/v1/accounts", "", "",
+		map[string]string{"username": strings.ToUpper(old), "password": "password-carol"}, http.StatusConflict, nil)
+	// The original owner may reclaim it.
+	env.doJSON("PUT", "/v1/accounts/me/username", alice.authUser(), alice.password,
+		map[string]string{"username": old}, http.StatusNoContent, nil)
+
+	// Deleting the account blocks the name for everyone.
+	env.doJSON("DELETE", "/v1/accounts/me", alice.authUser(), alice.password, nil, http.StatusNoContent, nil)
+	if available(old) {
+		t.Fatal("deleted account's username reported available during the cooldown")
+	}
+	env.doJSON("POST", "/v1/accounts", "", "",
+		map[string]string{"username": old, "password": "password-dave"}, http.StatusConflict, nil)
 }
 
 // TestReports covers validation, success, and the deletion semantics: reports

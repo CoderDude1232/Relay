@@ -26,11 +26,13 @@ const RotationInterval = 24 * time.Hour
 var (
 	mu        sync.Mutex
 	salt      []byte
+	prevSalt  []byte // the salt before the last rotation (nil until one happens)
 	rotatedAt time.Time
 	now       = time.Now // test hook
 )
 
-func currentSalt() []byte {
+// salts returns the current salt (rotating it when due) and the previous one.
+func salts() (cur, prev []byte) {
 	mu.Lock()
 	defer mu.Unlock()
 	t := now()
@@ -39,22 +41,42 @@ func currentSalt() []byte {
 		if _, err := rand.Read(s); err != nil {
 			panic("limitkey: crypto/rand failed: " + err.Error())
 		}
+		prevSalt = salt
 		salt, rotatedAt = s, t
 	}
-	return salt
+	return salt, prevSalt
 }
 
-// Hash returns an opaque 16-byte digest (as a string, usable as a map key) of
-// the given parts under the current in-memory salt. Parts are length-delimited
-// so ("ab","c") and ("a","bc") never collide.
-func Hash(parts ...string) string {
-	m := hmac.New(sha256.New, currentSalt())
+func hashWith(key []byte, parts []string) string {
+	m := hmac.New(sha256.New, key)
 	for _, p := range parts {
 		l := len(p)
 		m.Write([]byte{byte(l >> 24), byte(l >> 16), byte(l >> 8), byte(l)})
 		m.Write([]byte(p))
 	}
 	return string(m.Sum(nil)[:16])
+}
+
+// Hash returns an opaque 16-byte digest (as a string, usable as a map key) of
+// the given parts under the current in-memory salt. Parts are length-delimited
+// so ("ab","c") and ("a","bc") never collide.
+func Hash(parts ...string) string {
+	cur, _ := salts()
+	return hashWith(cur, parts)
+}
+
+// HashCurrentAndPrevious returns Hash(parts...) under the current salt and
+// under the salt it replaced ("" before the first rotation). A short-lived
+// cache whose correctness depends on recognising an entry — the Relay-Sig
+// replay cache — checks both, so a rotation can't make a just-stored entry
+// unrecognisable.
+func HashCurrentAndPrevious(parts ...string) (cur, prev string) {
+	c, p := salts()
+	cur = hashWith(c, parts)
+	if p != nil {
+		prev = hashWith(p, parts)
+	}
+	return cur, prev
 }
 
 // IPBucket maps a request's RemoteAddr ("host:port", or a bare host) to the

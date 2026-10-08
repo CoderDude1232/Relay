@@ -12,6 +12,7 @@
 package oprf
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -99,6 +100,16 @@ func (k *Key) Evaluate(blinded []byte) ([]byte, error) {
 		return nil, fmt.Errorf("oprf: bad blinded element: %w", err)
 	}
 	return ristretto255.NewElement().ScalarMult(k.scalar, b).Encode(nil), nil
+}
+
+// DeriveKey returns a 32-byte secret for another server-side purpose,
+// HMAC-SHA256(scalar, "Relay-OPRF-v1-derive:" ‖ label). It is independent of
+// the OPRF output for any identifier and stable for the life of the key, so it
+// suits keyed hashes that must survive restarts (e.g. released usernames).
+func (k *Key) DeriveKey(label string) []byte {
+	m := hmac.New(sha256.New, k.scalar.Encode(nil))
+	m.Write([]byte("Relay-OPRF-v1-derive:" + label))
+	return m.Sum(nil)
 }
 
 // Token computes the directory token for a plaintext identifier: the same value

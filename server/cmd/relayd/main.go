@@ -25,6 +25,7 @@ import (
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
+	"github.com/relayapp/relay-server/internal/siwa"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -88,7 +89,9 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	// Secrets can come from the environment (e.g. a root-only systemd
 	// EnvironmentFile) so they never appear in the unit file or in `ps`.
-	dsn := flag.String("dsn", envOr("RELAY_DSN", "postgres://relay:relay@localhost/relay?sslmode=disable"), "PostgreSQL DSN (default $RELAY_DSN)")
+	// No built-in default: a guessable relay:relay DSN must never be what a
+	// misconfigured deployment silently falls back to.
+	dsn := flag.String("dsn", envOr("RELAY_DSN", ""), "PostgreSQL DSN (required; default $RELAY_DSN)")
 	tlsCert := flag.String("tls-cert", "", "path to TLS certificate (enables HTTPS/WSS)")
 	tlsKey := flag.String("tls-key", "", "path to TLS private key")
 	blobDir := flag.String("blobs", "attachments", "directory for encrypted attachment blobs")
@@ -96,12 +99,17 @@ func main() {
 	blobTTL := flag.Duration("attachment-ttl", 14*24*time.Hour, "how long to keep attachment blobs")
 	attachDailyBytes := flag.Int64("attachment-daily-bytes", 2<<30, "per-account attachment upload budget in bytes per rolling day")
 	attachDailyCount := flag.Int("attachment-daily-count", 1000, "per-account attachment allocations per rolling day")
+	attachDiskCap := flag.Int64("attachment-disk-cap", api.DefaultAttachmentDiskCap, "global attachment disk watermark in bytes: new allocations/uploads get 507 once the blob directory holds this much (0 = unlimited)")
 	logLevel := flag.String("log-level", "warn", "minimum log level: debug, info, warn or error (per-connection/per-message events are debug)")
 	apnsKey := flag.String("apns-key", "", "path to APNs .p8 auth key (enables push)")
 	apnsKeyID := flag.String("apns-key-id", "", "APNs key id")
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
 	apnsTopic := flag.String("apns-topic", "app.relaymsg", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
+	siwaKey := flag.String("siwa-key", "", "path to a Sign in with Apple .p8 key (enables revoking the user's Apple grant on DELETE /v1/accounts/me)")
+	siwaKeyID := flag.String("siwa-key-id", "", "Sign in with Apple key id")
+	siwaTeamID := flag.String("siwa-team-id", "", "Apple team id for Sign in with Apple (default: -apns-team-id)")
+	siwaClientID := flag.String("siwa-client-id", "app.relaymsg", "Sign in with Apple client id (the app's bundle id)")
 	fcmServiceAccount := flag.String("fcm-service-account", "", "path to a Firebase service-account JSON key (enables FCM push for Android devices)")
 	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")
 	turnSecret := flag.String("turn-secret", os.Getenv("RELAY_TURN_SECRET"), "shared HMAC-SHA1 secret for coturn REST API credential generation (default $RELAY_TURN_SECRET)")
@@ -119,6 +127,10 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
+	if *dsn == "" {
+		slog.Error("no database configured: pass -dsn or set RELAY_DSN (e.g. postgres:///relay?host=/var/run/postgresql)")
+		os.Exit(1)
+	}
 	if (*tlsCert == "") != (*tlsKey == "") {
 		slog.Error("-tls-cert and -tls-key must be provided together")
 		os.Exit(1)
@@ -162,6 +174,7 @@ func main() {
 
 	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)
 	apiServer.SetAttachmentQuota(*attachDailyBytes, *attachDailyCount)
+	apiServer.SetAttachmentDiskCap(*attachDiskCap)
 	if *supabaseURL != "" {
 		apiServer.SetSupabaseAuth(*supabaseURL, *supabaseAnonKey)
 		slog.Info("supabase social login enabled", "url", *supabaseURL)
@@ -174,6 +187,19 @@ func main() {
 			apiServer.SetSupabaseServiceKey(string(key))
 			slog.Info("supabase auth-user deletion enabled")
 		}
+	}
+	if *siwaKey != "" {
+		teamID := *siwaTeamID
+		if teamID == "" {
+			teamID = *apnsTeamID
+		}
+		revoker, err := siwa.New(*siwaKey, *siwaKeyID, teamID, *siwaClientID)
+		if err != nil {
+			slog.Error("failed to load Sign in with Apple key", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		apiServer.SetAppleRevoker(revoker)
+		slog.Info("sign in with apple token revocation enabled", "clientId", *siwaClientID)
 	}
 	if *sealedKey != "" {
 		trustRoot, err := sealedsender.LoadOrCreateTrustRoot(*sealedKey)
@@ -200,6 +226,8 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("blinded discovery enabled")
+	} else {
+		slog.Warn("no -oprf-key: blinded discovery, email features and the 7-day username reuse cooldown are disabled")
 	}
 	apiHandler := apiServer.Handler()
 	go runRateLimiterGC(apiServer)

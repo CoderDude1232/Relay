@@ -68,6 +68,40 @@ type Server struct {
 	// Per-account attachment upload budgets (count/day at allocation,
 	// bytes/day at upload).
 	attachQuota *attachmentQuota
+
+	// attachDiskCap is the global attachment disk watermark: once the blob
+	// directory holds this many bytes, new allocations and uploads get 507
+	// until GC frees space. 0 = unlimited.
+	attachDiskCap int64
+
+	// appleRevoker, when set, revokes the user's Sign in with Apple grant on
+	// account deletion (see handleDeleteAccount). nil = not configured.
+	appleRevoker AppleRevoker
+}
+
+// AppleRevoker exchanges a Sign in with Apple authorization code for the
+// user's tokens and revokes them (implemented by siwa.Revoker).
+type AppleRevoker interface {
+	RevokeAuthorizationCode(ctx context.Context, code string) error
+}
+
+// SetAppleRevoker enables Sign in with Apple token revocation on account
+// deletion.
+func (s *Server) SetAppleRevoker(r AppleRevoker) { s.appleRevoker = r }
+
+// appleRevokeTimeout bounds the whole exchange + revoke on account deletion.
+const appleRevokeTimeout = 10 * time.Second
+
+// DefaultAttachmentDiskCap is the default global attachment disk watermark.
+const DefaultAttachmentDiskCap = 20 << 30 // 20 GiB
+
+// SetAttachmentDiskCap sets the global attachment disk watermark in bytes
+// (0 disables it).
+func (s *Server) SetAttachmentDiskCap(bytes int64) { s.attachDiskCap = bytes }
+
+// attachmentDiskFull reports whether the blob directory is at its watermark.
+func (s *Server) attachmentDiskFull() bool {
+	return s.attachDiskCap > 0 && s.blobs.Usage() >= s.attachDiskCap
 }
 
 // sealedIssuer holds the server certificate (signed by the trust root) and its
@@ -85,7 +119,8 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 		}
 	}
 	s := &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret,
-		attachQuota: newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount)}
+		attachQuota:   newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount),
+		attachDiskCap: DefaultAttachmentDiskCap}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
 	return s
 }
@@ -154,9 +189,13 @@ func (s *Server) SetSealedSender(trustRoot sealedsender.KeyPair) error {
 
 // SetOPRF enables blinded discovery under the given OPRF key and rebuilds the
 // directory index from the current accounts (so existing users are discoverable
-// and any drift is corrected on restart).
+// and any drift is corrected on restart). It also enables the username reuse
+// cooldown (see store.UsernameReuseCooldown).
 func (s *Server) SetOPRF(key *oprf.Key) error {
 	s.oprf = key
+	// The username reuse cooldown keys its hashes from the OPRF key, so they
+	// stay matchable across restarts without another secret to manage.
+	s.store.SetUsernameReleaseKey(key.DeriveKey("released-username"))
 	accounts, err := s.store.AllAccountsForDirectory()
 	if err != nil {
 		return err
@@ -188,7 +227,8 @@ func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry
 	if a.Username != "" {
 		add(s.oprf.Token(a.Username), store.DirectoryKindUsername)
 	}
-	if len(a.EmailToken) > 0 {
+	// Email discovery is opt-in (PUT /v1/accounts/me/discoverability).
+	if len(a.EmailToken) > 0 && a.EmailDiscoverable {
 		add(a.EmailToken, store.DirectoryKindEmail)
 	}
 	return entries
@@ -250,7 +290,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/devices/link", s.auth(s.handleLinkDevice))                     // primary creates the device
 	mux.HandleFunc("GET /v1/devices", s.auth(s.handleListDevices))
 	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.handleRemoveDevice))
-	mux.HandleFunc("PUT /v1/devices/auth-key", s.auth(s.handleSetDeviceAuthKey))
+	mux.HandleFunc("PUT /v1/devices/auth-key", s.bootstrapAuth(s.handleSetDeviceAuthKey)) // the only route accepting HTTP Basic
 	mux.HandleFunc("PUT /v1/devices/apns", s.auth(s.handleSetAPNSToken))
 	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
 	mux.HandleFunc("PUT /v1/devices/voip", s.auth(s.handleSetVoIPToken))
@@ -261,6 +301,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
 	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
+	mux.HandleFunc("PUT /v1/accounts/me/discoverability", s.auth(s.handleSetDiscoverability))
+	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.handleSetAccountPassword))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
 	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
 	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
@@ -276,13 +318,30 @@ func (s *Server) Handler() http.Handler {
 }
 
 // ---------------------------------------------------------------------------
-// Auth: Relay-Sig (see sigauth.go), or HTTP Basic "<accountID>.<deviceID>"
-// only for a device that has not registered an auth key yet.
+// Auth: Relay-Sig (see sigauth.go) on every authenticated route. HTTP Basic
+// "<accountID>.<deviceID>" is accepted on exactly one route — the bootstrap
+// PUT /v1/devices/auth-key (wrapped with bootstrapAuth) — and only for a
+// device that has not registered an auth key yet.
 // ---------------------------------------------------------------------------
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Device)
 
-func (s *Server) auth(next authedHandler) http.HandlerFunc {
+// auth requires a Relay-Sig signature.
+func (s *Server) auth(next authedHandler) http.HandlerFunc { return s.authenticate(false, next) }
+
+// bootstrapAuth additionally accepts HTTP Basic, for the one-time upload of a
+// new device's auth key (which it has no other way to prove itself for).
+func (s *Server) bootstrapAuth(next authedHandler) http.HandlerFunc {
+	return s.authenticate(true, next)
+}
+
+// basicAuthSuccessLimiter bounds successful HTTP Basic authentications per
+// target device: 10 per hour. Each one costs a bcrypt, and a device needs
+// exactly one (its first auth-key upload), so this only bites a leaked or
+// misbehaving credential being used to burn CPU.
+var basicAuthSuccessLimiter = newTokenBucketLimiter(10, time.Hour)
+
+func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Failed-auth throttling: a source that keeps failing is cut off before
 		// any bcrypt / signature work is done (see authFailIPLimiter).
@@ -295,6 +354,11 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 		// key without sending a reusable secret).
 		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
 			dev, err := s.authenticateSignature(r)
+			if errors.Is(err, errNonceBudget) {
+				// A valid signature from a device over its replay-cache budget.
+				httpError(w, http.StatusTooManyRequests, errNonceBudget.Error())
+				return
+			}
 			if err != nil {
 				authFailIPLimiter.allow(ip)
 				httpError(w, http.StatusUnauthorized, "signature authentication failed")
@@ -308,6 +372,12 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			httpError(w, http.StatusUnauthorized, "missing credentials")
 			return
 		}
+		if !allowBasic {
+			// Refused before any password work; counted like any other failure.
+			authFailIPLimiter.allow(ip)
+			httpError(w, http.StatusUnauthorized, "this endpoint requires Relay-Sig authentication")
+			return
+		}
 		accountID, devID, err := parseCredential(user)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
@@ -319,6 +389,10 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
 			return
 		}
+		if basicAuthSuccessLimiter.exhausted(deviceKey) {
+			httpError(w, http.StatusTooManyRequests, "too many password authentications for this device; try again later")
+			return
+		}
 		dev, err := s.store.Authenticate(accountID, devID, pass)
 		if err != nil {
 			authFailIPLimiter.allow(ip)
@@ -326,6 +400,7 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 			httpError(w, http.StatusUnauthorized, "authentication failed")
 			return
 		}
+		basicAuthSuccessLimiter.allow(deviceKey)
 		// Basic is a bootstrap credential only: once a device has registered an
 		// auth key it must sign every request, so a leaked device password alone
 		// can no longer act as the device (or swap its auth key — rotating the key
@@ -361,7 +436,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		AccountPassword     string `json:"accountPassword"`
 		Email               string `json:"email"` // rejected; see above
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+	if err := decodeJSON(r, &req); err != nil ||
 		!validUsername.MatchString(req.Username) ||
 		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "username (1–64 alphanumeric/._- chars) and password (8–1024 chars) required")
@@ -446,7 +521,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		Password        string `json:"password"`
 		AccountPassword string `json:"accountPassword"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AccessToken == "" ||
+	if err := decodeJSON(r, &req); err != nil || req.AccessToken == "" ||
 		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "accessToken and password (8–1024 chars) required")
 		return
@@ -470,9 +545,23 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		emailToken = s.emailToken(user.Email)
 	}
 
+	// Registration lock: a sign-in that resolves to an existing account with
+	// an account password must present it (it replaces every device). Wrong
+	// guesses back off exponentially per account (recoveryLockout).
 	dev, created, err := s.store.ProvisionOAuthAccount(
-		user.ID, emailToken, req.Username, req.Password, req.AccountPassword)
+		user.ID, emailToken, req.Username, req.Password, req.AccountPassword,
+		func(accountID string) bool { return recoveryLockout.permit(registrationLockKey(accountID)) })
 	switch {
+	case errors.Is(err, store.ErrAccountPasswordLocked):
+		httpError(w, http.StatusTooManyRequests, "too many account password attempts; try again later")
+		return
+	case errors.Is(err, store.ErrAccountPasswordRequired):
+		httpError(w, http.StatusLocked, "account password required")
+		return
+	case errors.Is(err, store.ErrAccountPasswordIncorrect):
+		recoveryLockout.fail(registrationLockKey(dev.AccountID))
+		httpError(w, http.StatusLocked, "account password incorrect")
+		return
 	case errors.Is(err, store.ErrUsernameRequired):
 		// No account exists yet for this user and no username was supplied.
 		// Signal the client to prompt for one and retry.
@@ -492,6 +581,9 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !created && req.AccountPassword != "" {
+		recoveryLockout.succeed(registrationLockKey(dev.AccountID))
+	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
@@ -602,7 +694,7 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		AccessKey string `json:"accessKey"` // base64, recipient's access key
 		Ephemeral bool   `json:"ephemeral"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MailboxID == "" {
+	if err := decodeJSON(r, &req); err != nil || req.MailboxID == "" {
 		httpError(w, http.StatusBadRequest, "mailboxId and content required")
 		return
 	}
@@ -642,6 +734,12 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 	if err := s.hub.DeliverFrom("ip:"+ip, dest.AccountID, dest.DeviceID, env); err != nil {
 		if errors.Is(err, hub.ErrSenderQuota) || errors.Is(err, store.ErrQueueFull) {
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			// The device vanished after the access check: same answer as an
+			// unknown mailbox.
+			httpError(w, http.StatusForbidden, "delivery rejected")
 			return
 		}
 		slog.Error("sealed send: deliver failed", "err", privlog.Error(err))
@@ -738,7 +836,7 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request, dev *s
 	var req struct {
 		EnvelopeID string `json:"envelopeId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EnvelopeID == "" {
+	if err := decodeJSON(r, &req); err != nil || req.EnvelopeID == "" {
 		httpError(w, http.StatusBadRequest, "envelopeId required")
 		return
 	}
@@ -756,7 +854,7 @@ func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		AccessKey string `json:"accessKey"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -803,7 +901,7 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 	var req struct {
 		Blinded []string `json:"blinded"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -855,7 +953,7 @@ func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, 
 	var req struct {
 		Buckets []int `json:"buckets"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -941,6 +1039,10 @@ func (s *Server) handleDeliveryCertificate(w http.ResponseWriter, r *http.Reques
 // handleCreateContactInvite mints a single-use contact invite token for the
 // authenticated account.
 func (s *Server) handleCreateContactInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if !contactInviteLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many invites today; try again later")
+		return
+	}
 	token, expiresAt, err := s.store.CreateContactInvite(dev.AccountID)
 	if err != nil {
 		internalError(w, err)
@@ -962,7 +1064,7 @@ func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
 		httpError(w, http.StatusBadRequest, "token required")
 		return
 	}
@@ -994,7 +1096,7 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		Email           string `json:"email"`
 		AccountPassword string `json:"accountPassword"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.AccountPassword == "" ||
+	if err := decodeJSON(r, &req); err != nil || req.Email == "" || req.AccountPassword == "" ||
 		len(req.AccountPassword) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "email and accountPassword required")
 		return
@@ -1038,8 +1140,12 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 	var req struct {
 		Username string `json:"username"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validUsername.MatchString(req.Username) {
+	if err := decodeJSON(r, &req); err != nil || !validUsername.MatchString(req.Username) {
 		httpError(w, http.StatusBadRequest, "username must be 1–64 alphanumeric/._- characters")
+		return
+	}
+	if usernameChangeLimiter.exhausted(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many username changes today; try again later")
 		return
 	}
 	if err := s.store.UpdateUsername(dev.AccountID, req.Username); errors.Is(err, store.ErrUsernameTaken) {
@@ -1049,7 +1155,54 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 		internalError(w, err)
 		return
 	}
-	s.reindexAccount(dev.AccountID) // update the blinded directory for the new username
+	usernameChangeLimiter.allow(dev.AccountID) // only completed changes spend budget
+	s.reindexAccount(dev.AccountID)            // update the blinded directory for the new username
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSetDiscoverability sets whether the account's verified email gets a
+// blinded-directory entry (opt-in; off by default) and reindexes the account.
+// Username entries are unaffected. Body: {"email": bool} — the field is required.
+func (s *Server) handleSetDiscoverability(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		Email *bool `json:"email"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Email == nil {
+		httpError(w, http.StatusBadRequest, "email (bool) required")
+		return
+	}
+	if err := s.store.SetEmailDiscoverable(dev.AccountID, *req.Email); err != nil {
+		internalError(w, err)
+		return
+	}
+	s.reindexAccount(dev.AccountID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// accountPasswordLimiter bounds account-password changes per account: 10 per
+// hour (each is a bcrypt).
+var accountPasswordLimiter = newTokenBucketLimiter(10, time.Hour)
+
+// handleSetAccountPassword sets or changes the account password, which guards
+// email recovery and the sign-in registration lock. Any signed device of the
+// account may set it (such a device already controls the account).
+func (s *Server) handleSetAccountPassword(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		AccountPassword string `json:"accountPassword"`
+	}
+	if err := decodeJSON(r, &req); err != nil ||
+		len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes {
+		httpError(w, http.StatusBadRequest, "accountPassword (8–1024 chars) required")
+		return
+	}
+	if !accountPasswordLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many account password changes; try again later")
+		return
+	}
+	if err := s.store.SetAccountPassword(dev.AccountID, req.AccountPassword); err != nil {
+		internalError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1058,7 +1211,7 @@ func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request, dev *st
 		Password string             `json:"password"`
 		Auth     deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
+	if err := decodeJSON(r, &req); err != nil || len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "password (8–1024 chars) required")
 		return
 	}
@@ -1099,7 +1252,7 @@ func (s *Server) handleCreateDeviceLinkInvitation(w http.ResponseWriter, r *http
 	var req struct {
 		Auth deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "device mutation signature required")
 		return
 	}
@@ -1124,11 +1277,15 @@ func (s *Server) handleCreateDeviceLinkInvitation(w http.ResponseWriter, r *http
 }
 
 func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
+	if !linkClaimIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "too many link attempts; try again later")
+		return
+	}
 	var req struct {
 		LinkToken        string `json:"linkToken"`
 		VerificationCode string `json:"verificationCode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.LinkToken == "" || req.VerificationCode == "" {
+	if err := decodeJSON(r, &req); err != nil || req.LinkToken == "" || req.VerificationCode == "" {
 		httpError(w, http.StatusBadRequest, "linkToken and verificationCode required")
 		return
 	}
@@ -1179,6 +1336,10 @@ func (s *Server) handleCreateProvisioningSession(w http.ResponseWriter, r *http.
 // handleFetchProvisioning lets the new device poll for the primary's encrypted
 // payload. 204 while it's not there yet, 404 once expired/consumed.
 func (s *Server) handleFetchProvisioning(w http.ResponseWriter, r *http.Request) {
+	if !provisioningPollIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "polling too fast; try again later")
+		return
+	}
 	blob, err := s.store.FetchProvisioningBlob(r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "provisioning session expired or unknown")
@@ -1203,7 +1364,7 @@ func (s *Server) handleStoreProvisioning(w http.ResponseWriter, r *http.Request,
 	var req struct {
 		Blob b64 `json:"blob"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Blob) == 0 {
+	if err := decodeJSON(r, &req); err != nil || len(req.Blob) == 0 {
 		httpError(w, http.StatusBadRequest, "blob required")
 		return
 	}
@@ -1233,7 +1394,7 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		DeviceName string             `json:"deviceName"`
 		Auth       deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Password == "" {
 		httpError(w, http.StatusBadRequest, "password and device mutation signature required")
 		return
 	}
@@ -1257,6 +1418,8 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"deviceId": deviceID})
+	// Like every other add path, tell the account's live devices.
+	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, deviceID)
 }
 
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request, dev *store.Device) {
@@ -1292,7 +1455,7 @@ func (s *Server) handleRemoveDevice(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		Auth deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "device mutation signature required")
 		return
 	}
@@ -1359,7 +1522,7 @@ func (s *Server) handleSetDeviceAuthKey(w http.ResponseWriter, r *http.Request, 
 	var req struct {
 		PublicKey b64 `json:"publicKey"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.PublicKey) == 0 {
+	if err := decodeJSON(r, &req); err != nil || len(req.PublicKey) == 0 {
 		httpError(w, http.StatusBadRequest, "publicKey required")
 		return
 	}
@@ -1410,7 +1573,7 @@ func (s *Server) handleSetAPNSToken(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validAPNsToken.MatchString(req.Token) {
+	if err := decodeJSON(r, &req); err != nil || !validAPNsToken.MatchString(req.Token) {
 		httpError(w, http.StatusBadRequest, "token must be 64–200 hex characters")
 		return
 	}
@@ -1425,7 +1588,7 @@ func (s *Server) handleSetFCMToken(w http.ResponseWriter, r *http.Request, dev *
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
 		httpError(w, http.StatusBadRequest, "token required")
 		return
 	}
@@ -1440,7 +1603,7 @@ func (s *Server) handleSetVoIPToken(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validAPNsToken.MatchString(req.Token) {
+	if err := decodeJSON(r, &req); err != nil || !validAPNsToken.MatchString(req.Token) {
 		httpError(w, http.StatusBadRequest, "token must be 64–200 hex characters")
 		return
 	}
@@ -1458,7 +1621,7 @@ func (s *Server) handleSetPushContent(w http.ResponseWriter, r *http.Request, de
 	var req struct {
 		IncludeContent bool `json:"includeContent"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -1490,7 +1653,7 @@ func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
 		AccessKey          string `json:"accessKey"`
 		CallID             string `json:"callId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DestinationMailbox == "" ||
+	if err := decodeJSON(r, &req); err != nil || req.DestinationMailbox == "" ||
 		!validCallID.MatchString(req.CallID) {
 		httpError(w, http.StatusBadRequest, "destinationMailbox, accessKey and callId required")
 		return
@@ -1545,6 +1708,10 @@ func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request)
 // device (charged to its daily attachment quota) and records it as reserved,
 // so the (unauthenticated) PUT can only write ids the relay handed out, once.
 func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.attachmentDiskFull() {
+		httpError(w, http.StatusInsufficientStorage, "attachment storage is full; try again later")
+		return
+	}
 	id, err := s.blobs.NewID()
 	if err != nil {
 		internalError(w, err)
@@ -1581,6 +1748,12 @@ func (c *countingReader) Read(p []byte) (int, error) {
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !attachmentIPLimiter.allow(clientIP(r)) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
+	// Checked before the reservation is claimed, so the client can retry the
+	// same id once GC has freed space.
+	if s.attachmentDiskFull() {
+		httpError(w, http.StatusInsufficientStorage, "attachment storage is full; try again later")
 		return
 	}
 	id := r.PathValue("id")
@@ -1653,7 +1826,7 @@ func (s *Server) handleCreateEncryptedGroupInvite(w http.ResponseWriter, r *http
 	var req struct {
 		Blob string `json:"blob"` // base64 ciphertext
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -1683,7 +1856,7 @@ func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
 		httpError(w, http.StatusBadRequest, "token required")
 		return
 	}
@@ -1730,7 +1903,7 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		// so ordinary top-ups keep appending.
 		ReplaceOneTimePreKeys bool `json:"replaceOneTimePreKeys"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "malformed body: "+err.Error())
 		return
 	}
@@ -1757,7 +1930,10 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 	for _, k := range req.OneTimePreKeys {
 		otks = append(otks, store.OneTimePreKey{KeyID: k.KeyID, PublicKey: k.PublicKey})
 	}
-	if err := s.store.SetKeys(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks, req.ReplaceOneTimePreKeys); err != nil {
+	if err := s.store.SetKeys(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks, req.ReplaceOneTimePreKeys); errors.Is(err, store.ErrPreKeyPoolFull) {
+		httpError(w, http.StatusConflict, fmt.Sprintf("one-time prekey pool full (max %d per device); upload fewer or set replaceOneTimePreKeys", store.MaxOneTimePreKeysPerDevice))
+		return
+	} else if err != nil {
 		internalError(w, err)
 		return
 	}
@@ -1886,6 +2062,25 @@ func (b *b64) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// errTrailingJSON rejects a request body that carries anything after its
+// single JSON value.
+var errTrailingJSON = errors.New("unexpected data after the JSON body")
+
+// decodeJSON decodes exactly one JSON value from the request body into v and
+// rejects any trailing data (whitespace aside). Every JSON handler uses it, so
+// the body a handler acts on is the whole body the request signature covered —
+// never a prefix followed by bytes nothing looked at.
+func decodeJSON(r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errTrailingJSON
+	}
+	return nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1908,8 +2103,25 @@ func internalError(w http.ResponseWriter, err error) {
 // handleDeleteAccount permanently deletes the authenticated account and all
 // server-side data keyed to it (see store.DeleteAccount), then drops every live
 // WebSocket of the account. After this, the account's credentials no longer
-// authenticate (401) and its username is free for re-registration.
+// authenticate (401) and its username enters the reuse cooldown.
+//
+// The optional body {"appleAuthorizationCode": "..."} carries a fresh Sign in
+// with Apple authorization code; when the relay is configured for it, the
+// user's Apple grant is revoked after the deletion (best-effort: Apple being
+// unreachable never fails the deletion). The code is used once and never
+// stored or logged.
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		AppleAuthorizationCode string `json:"appleAuthorizationCode"`
+	}
+	if err := decodeJSON(r, &req); err != nil && !errors.Is(err, io.EOF) { // empty body = no code
+		httpError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if len(req.AppleAuthorizationCode) > 4096 {
+		httpError(w, http.StatusBadRequest, "appleAuthorizationCode too long")
+		return
+	}
 	// Read the linked Supabase user before the row (and the link) is gone.
 	supabaseUserID, err := s.store.SupabaseUserID(dev.AccountID)
 	if err != nil {
@@ -1925,6 +2137,13 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 	}
 	s.hub.DisconnectAccount(dev.AccountID, "account deleted")
 	s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID)
+	if req.AppleAuthorizationCode != "" && s.appleRevoker != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), appleRevokeTimeout)
+		if err := s.appleRevoker.RevokeAuthorizationCode(ctx, req.AppleAuthorizationCode); err != nil {
+			slog.Warn("sign in with apple: token revocation failed", "err", privlog.Error(err))
+		}
+		cancel()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1953,7 +2172,7 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request, dev 
 		Details         string   `json:"details"`
 		Messages        []string `json:"messages"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ReportedAccount == "" {
+	if err := decodeJSON(r, &req); err != nil || req.ReportedAccount == "" {
 		httpError(w, http.StatusBadRequest, "reportedAccount and reason required")
 		return
 	}
@@ -2022,7 +2241,7 @@ func (s *Server) handleNuke(w http.ResponseWriter, r *http.Request, dev *store.D
 		InitiatingDeviceID uint32 `json:"initiatingDeviceId"`
 		Signature          b64    `json:"signature"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "malformed nuke request")
 		return
 	}
@@ -2261,7 +2480,6 @@ var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 // bound them per source IP and per destination mailbox.
 var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
 var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
-
 
 // usernameLookupLimiter: unauthenticated username-availability checks per IP per hour.
 // Debounced in the client; enough for sign-up typing, too few for bulk probing.

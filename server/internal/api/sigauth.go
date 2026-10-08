@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"hash"
+	"hash/maphash"
 	"io"
 	"net/http"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/relayapp/relay-server/internal/limitkey"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -45,11 +47,12 @@ import (
 //	NONCE         (exactly as sent in X-Relay-Nonce)
 //	BODY-SHA256   (lowercase hex SHA-256 of the request body; of "" when empty)
 //
-// The server computes the body hash itself for ordinary (≤1 MiB) bodies. A
-// client streaming a large body may instead declare the hash in
-// X-Relay-Content-SHA256; the server then signs-checks against the declared
-// value and verifies the actual body against it as it is read (the read fails
-// at EOF on mismatch).
+// The server always buffers the body (bounded by the 1 MiB request cap) and
+// hashes it itself; a declared X-Relay-Content-SHA256, if sent, must match.
+// Only a streamable route (the attachment upload, see streamableBodyRoute) may
+// instead be checked against the declared digest as it is read: everywhere
+// else a JSON handler may stop reading before EOF, so a streamed body whose
+// tail differs from what was signed would never be detected.
 //
 // A request is accepted iff the signature validates, the timestamp is within
 // ±sigAuthSkew, and the (account, device, nonce) triple hasn't been seen in
@@ -72,32 +75,87 @@ const (
 // emptyBodySHA256 is hex(SHA-256("")).
 var emptyBodySHA256 = hex.EncodeToString(sha256.New().Sum(nil))
 
-// nonceCache blocks replay of a captured signed request inside the skew window.
-type nonceCache struct {
-	mu   sync.Mutex
-	seen map[string]int64 // nonce key -> expiry (unix ms)
+// Replay cache. Seen nonces are kept in maps bucketed by expiry time: an entry
+// expires at its signed timestamp + sigAuthSkew, and lands in the slot
+// expiry/nonceSlotWidth. Expired slots are dropped whole (no per-entry scan),
+// and at most ~3 slots are ever live (expiries span now … now+2·skew). The
+// cache is sharded by device so unrelated devices don't contend on one lock,
+// and each device may hold at most maxNoncesPerSlot entries per slot, so one
+// (validly signing) device can't grow the cache without bound.
+//
+// Entries are keyed with limitkey.Hash (salted, rotated daily) rather than raw
+// account/device ids. A replay is checked under both the current and the
+// previous salt, so a salt rotation can't make a just-stored nonce
+// unrecognisable.
+const (
+	nonceSlotWidth   = sigAuthSkew
+	maxNoncesPerSlot = 20000 // per device per 5-min slot (~66 signed requests/s)
+	nonceShards      = 16
+)
+
+var (
+	errReplayedNonce = errors.New("replayed nonce")
+	errNonceBudget   = errors.New("too many signed requests from this device; slow down")
+)
+
+type nonceSlot struct {
+	nonces    map[string]struct{} // hashed (account, device, nonce)
+	perDevice map[string]int      // hashed (account, device) -> entries in this slot
 }
 
-func newNonceCache() *nonceCache { return &nonceCache{seen: make(map[string]int64)} }
+type nonceShard struct {
+	mu    sync.Mutex
+	slots map[int64]*nonceSlot // by expiry slot index
+}
 
-// checkAndStore returns false if the key was already seen (replay); otherwise it
-// records the key until expiry and returns true.
-func (c *nonceCache) checkAndStore(key string, nowMs, expiryMs int64) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if exp, ok := c.seen[key]; ok && exp > nowMs {
-		return false
+type nonceCache struct {
+	seed   maphash.Seed // picks a shard; never stored
+	shards [nonceShards]nonceShard
+}
+
+func newNonceCache() *nonceCache {
+	c := &nonceCache{seed: maphash.MakeSeed()}
+	for i := range c.shards {
+		c.shards[i].slots = make(map[int64]*nonceSlot)
 	}
-	// Opportunistic prune so the map can't grow unbounded.
-	if len(c.seen) > 4096 {
-		for k, exp := range c.seen {
-			if exp <= nowMs {
-				delete(c.seen, k)
-			}
+	return c
+}
+
+// checkAndStore records (accountID, deviceID, nonce) until expiryMs. It
+// returns errReplayedNonce if the triple is already recorded and unexpired, or
+// errNonceBudget if the device has exhausted its per-slot entry budget.
+func (c *nonceCache) checkAndStore(accountID string, deviceID uint32, nonce []byte, nowMs, expiryMs int64) error {
+	dev := strconv.FormatUint(uint64(deviceID), 10)
+	devKey, _ := limitkey.HashCurrentAndPrevious("sig-nonce-device", accountID, dev)
+	cur, prev := limitkey.HashCurrentAndPrevious("sig-nonce", accountID, dev, string(nonce))
+
+	sh := &c.shards[maphash.String(c.seed, accountID+"."+dev)%nonceShards]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	for idx, slot := range sh.slots {
+		if (idx+1)*nonceSlotWidth.Milliseconds() <= nowMs {
+			delete(sh.slots, idx) // every entry in it has expired
+			continue
+		}
+		if _, ok := slot.nonces[cur]; ok {
+			return errReplayedNonce
+		}
+		if _, ok := slot.nonces[prev]; ok && prev != "" {
+			return errReplayedNonce
 		}
 	}
-	c.seen[key] = expiryMs
-	return true
+	idx := expiryMs / nonceSlotWidth.Milliseconds()
+	slot := sh.slots[idx]
+	if slot == nil {
+		slot = &nonceSlot{nonces: make(map[string]struct{}), perDevice: make(map[string]int)}
+		sh.slots[idx] = slot
+	}
+	if slot.perDevice[devKey] >= maxNoncesPerSlot {
+		return errNonceBudget
+	}
+	slot.nonces[cur] = struct{}{}
+	slot.perDevice[devKey]++
+	return nil
 }
 
 var requestNonces = newNonceCache()
@@ -166,11 +224,21 @@ func parseSigAuthHeaders(r *http.Request, now time.Time) (*sigAuthHeaders, error
 
 var errBodyHashMismatch = errors.New("request body does not match the signed digest")
 
-// requestBodyDigest returns the hex SHA-256 the signature must cover. For a
-// body small enough to buffer (the default request cap) the server hashes it
-// itself and rewinds r.Body; a declared digest, if any, must then match. For a
-// larger/unknown-length body with a declared digest, the declared value is
-// used and r.Body is wrapped so the read fails at EOF on mismatch.
+// streamableBodyRoute reports whether r may have its body verified while it
+// streams instead of being buffered first: only the attachment upload
+// (PUT /v1/attachments/{id}), whose handler copies the body to EOF and
+// discards the blob when the read fails. (That route is unauthenticated today,
+// so in practice every signed request is buffered.)
+func streamableBodyRoute(r *http.Request) bool {
+	return r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/attachments/")
+}
+
+// requestBodyDigest returns the hex SHA-256 the signature must cover. The body
+// is buffered (limitRequestBody caps it at 1 MiB, so an oversized body fails
+// here), hashed by the server and rewound for the handler; a declared digest,
+// if any, must then match. Only on a streamable route, for a large or
+// unknown-length body with a declared digest, is the declared value used and
+// r.Body wrapped so the read fails at EOF on mismatch.
 func requestBodyDigest(r *http.Request) (string, error) {
 	declared := strings.ToLower(r.Header.Get(bodyHashHeader))
 	if declared != "" {
@@ -184,7 +252,7 @@ func requestBodyDigest(r *http.Request) (string, error) {
 		}
 		return emptyBodySHA256, nil
 	}
-	if declared != "" && (r.ContentLength < 0 || r.ContentLength > defaultMaxRequestBodySize) {
+	if declared != "" && streamableBodyRoute(r) && (r.ContentLength < 0 || r.ContentLength > defaultMaxRequestBodySize) {
 		r.Body = &digestVerifyingBody{rc: r.Body, h: sha256.New(), want: declared}
 		return declared, nil
 	}
@@ -265,9 +333,8 @@ func (s *Server) authenticateSignature(r *http.Request) (*store.Device, error) {
 	}
 	// Key replay protection on the parsed identity + decoded nonce so encoding
 	// variants of the same values can't slip past the cache.
-	replayKey := h.accountID + "." + strconv.FormatUint(uint64(h.deviceID), 10) + ":" + hex.EncodeToString(h.nonceRaw)
-	if !requestNonces.checkAndStore(replayKey, now.UnixMilli(), h.tsMs+sigAuthSkew.Milliseconds()) {
-		return nil, errors.New("replayed nonce")
+	if err := requestNonces.checkAndStore(h.accountID, h.deviceID, h.nonceRaw, now.UnixMilli(), h.tsMs+sigAuthSkew.Milliseconds()); err != nil {
+		return nil, err
 	}
 	return dev, nil
 }

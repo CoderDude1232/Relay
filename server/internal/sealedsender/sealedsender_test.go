@@ -12,7 +12,8 @@ import (
 // TestPrintInteropVector mints a certificate chain and prints it as base64 for
 // embedding into the libsignal (Swift) interop test, which is the authoritative
 // proof that Go-minted certs validate natively. Run with:
-//   PRINT_INTEROP_VECTOR=1 go test ./internal/sealedsender/ -run TestPrintInteropVector -v
+//
+//	PRINT_INTEROP_VECTOR=1 go test ./internal/sealedsender/ -run TestPrintInteropVector -v
 func TestPrintInteropVector(t *testing.T) {
 	if os.Getenv("PRINT_INTEROP_VECTOR") == "" {
 		t.Skip("set PRINT_INTEROP_VECTOR=1 to emit an interop vector")

@@ -27,7 +27,7 @@ func TestHashIsSaltedAndRotates(t *testing.T) {
 	now = func() time.Time { return base }
 	defer func() { now = time.Now }()
 	mu.Lock()
-	salt = nil
+	salt, prevSalt = nil, nil
 	mu.Unlock()
 
 	a := Hash("acct-1", "acct-2")
@@ -40,8 +40,15 @@ func TestHashIsSaltedAndRotates(t *testing.T) {
 	if Hash("acct-1a", "cct-2") == a {
 		t.Fatal("parts are not length-delimited")
 	}
+	if _, prev := HashCurrentAndPrevious("acct-1", "acct-2"); prev != "" {
+		t.Fatal("previous-salt hash before any rotation")
+	}
 	now = func() time.Time { return base.Add(RotationInterval) }
 	if Hash("acct-1", "acct-2") == a {
 		t.Fatal("salt did not rotate")
+	}
+	// The pre-rotation digest stays recognisable through the previous salt.
+	if cur, prev := HashCurrentAndPrevious("acct-1", "acct-2"); prev != a || cur == a {
+		t.Fatalf("after rotation: cur=%x prev=%x, want prev=%x", cur, prev, a)
 	}
 }

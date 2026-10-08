@@ -29,11 +29,11 @@ func TestDisconnectAccount(t *testing.T) {
 	if other.closed != "" {
 		t.Fatal("unrelated account's session was closed")
 	}
-	if h.IsOnline("acct") {
-		t.Fatal("account still online after disconnect")
+	if h.sessions[key("acct", 1)] != nil || h.sessions[key("acct", 2)] != nil {
+		t.Fatal("account still has sessions after disconnect")
 	}
-	if !h.IsOnline("acct-other") {
-		t.Fatal("unrelated account went offline")
+	if h.sessions[key("acct-other", 1)] != other {
+		t.Fatal("unrelated account's session was detached")
 	}
 	// The sessions' own deferred Unregister must now be a harmless no-op.
 	h.Unregister("acct", 1, a1)
