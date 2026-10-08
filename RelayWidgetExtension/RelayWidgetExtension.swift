@@ -58,12 +58,16 @@ private struct ContactCell: View {
     var body: some View {
         Link(destination: URL(string: "relay://conversation/\(item.id)")!) {
             VStack(spacing: 5) {
+                // Who you talk to is private: redacted when the widget shows
+                // on a locked device (Lock Screen, StandBy).
                 avatarView
+                    .privacySensitive()
                 Text(item.displayName)
                     .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                     .frame(maxWidth: 64)
+                    .privacySensitive()
             }
         }
         .buttonStyle(.plain)

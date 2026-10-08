@@ -82,7 +82,12 @@ final class ChatAppearance {
     var bubbleTintHex: String? {
         didSet { defaults.set(bubbleTintHex, forKey: Keys.bubbleTint) }
     }
-    private(set) var photoData: Data?
+    private(set) var photoData: Data? {
+        didSet { photoImage = Self.decode(photoData) }
+    }
+    /// `photoData` decoded once, so chat backgrounds don't re-decode the
+    /// full-size photo on every render.
+    private(set) var photoImage: UIImage?
 
     private let defaults = UserDefaults.standard
     private enum Keys { static let wallpaper = "chat.wallpaper", bubbleTint = "chat.bubbleTint" }
@@ -91,6 +96,26 @@ final class ChatAppearance {
         wallpaper = WallpaperStyle(rawValue: defaults.string(forKey: Keys.wallpaper) ?? "") ?? .none
         bubbleTintHex = defaults.string(forKey: Keys.bubbleTint)
         photoData = try? Data(contentsOf: Self.photoURL)
+        photoImage = Self.decode(photoData)
+        if photoData != nil { Self.protectPhotoFile() } // files saved by older builds
+    }
+
+    /// Keeps the wallpaper photo out of iCloud/computer backups and sets its
+    /// protection class (also upgrades files written by older builds).
+    private static func protectPhotoFile() {
+        var url = photoURL
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private static func decode(_ data: Data?) -> UIImage? {
+        guard let data, let image = UIImage(data: data) else { return nil }
+        return image.preparingForDisplay() ?? image
     }
 
     func applyTheme(_ theme: AppearanceTheme) {
@@ -121,7 +146,12 @@ final class ChatAppearance {
     func setPhoto(_ data: Data?) {
         photoData = data
         if let data {
-            try? data.write(to: Self.photoURL, options: .atomic)
+            // Until-first-unlock (not complete) protection: the app can be
+            // launched in the background while locked (VoIP push) and must
+            // still be able to read it. Device-only: never in iCloud/iTunes
+            // backups.
+            try? data.write(to: Self.photoURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            Self.protectPhotoFile()
             wallpaper = .photo
         } else {
             try? FileManager.default.removeItem(at: Self.photoURL)
@@ -136,7 +166,7 @@ final class ChatAppearance {
         case .none:
             EmptyView()
         case .photo:
-            if let photoData, let ui = UIImage(data: photoData) {
+            if let ui = photoImage {
                 Image(uiImage: ui).resizable().scaledToFill().opacity(0.08)
             }
         default:
@@ -150,7 +180,7 @@ final class ChatAppearance {
     var background: some View {
         switch wallpaper {
         case .photo:
-            if let photoData, let ui = UIImage(data: photoData) {
+            if let ui = photoImage {
                 Image(uiImage: ui).resizable().scaledToFill()
             } else {
                 Color(.systemBackground)
