@@ -45,11 +45,12 @@ import (
 //	NONCE         (exactly as sent in X-Relay-Nonce)
 //	BODY-SHA256   (lowercase hex SHA-256 of the request body; of "" when empty)
 //
-// The server computes the body hash itself for ordinary (≤1 MiB) bodies. A
-// client streaming a large body may instead declare the hash in
-// X-Relay-Content-SHA256; the server then signs-checks against the declared
-// value and verifies the actual body against it as it is read (the read fails
-// at EOF on mismatch).
+// The server always buffers the body (bounded by the 1 MiB request cap) and
+// hashes it itself; a declared X-Relay-Content-SHA256, if sent, must match.
+// Only a streamable route (the attachment upload, see streamableBodyRoute) may
+// instead be checked against the declared digest as it is read: everywhere
+// else a JSON handler may stop reading before EOF, so a streamed body whose
+// tail differs from what was signed would never be detected.
 //
 // A request is accepted iff the signature validates, the timestamp is within
 // ±sigAuthSkew, and the (account, device, nonce) triple hasn't been seen in
@@ -166,11 +167,21 @@ func parseSigAuthHeaders(r *http.Request, now time.Time) (*sigAuthHeaders, error
 
 var errBodyHashMismatch = errors.New("request body does not match the signed digest")
 
-// requestBodyDigest returns the hex SHA-256 the signature must cover. For a
-// body small enough to buffer (the default request cap) the server hashes it
-// itself and rewinds r.Body; a declared digest, if any, must then match. For a
-// larger/unknown-length body with a declared digest, the declared value is
-// used and r.Body is wrapped so the read fails at EOF on mismatch.
+// streamableBodyRoute reports whether r may have its body verified while it
+// streams instead of being buffered first: only the attachment upload
+// (PUT /v1/attachments/{id}), whose handler copies the body to EOF and
+// discards the blob when the read fails. (That route is unauthenticated today,
+// so in practice every signed request is buffered.)
+func streamableBodyRoute(r *http.Request) bool {
+	return r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/attachments/")
+}
+
+// requestBodyDigest returns the hex SHA-256 the signature must cover. The body
+// is buffered (limitRequestBody caps it at 1 MiB, so an oversized body fails
+// here), hashed by the server and rewound for the handler; a declared digest,
+// if any, must then match. Only on a streamable route, for a large or
+// unknown-length body with a declared digest, is the declared value used and
+// r.Body wrapped so the read fails at EOF on mismatch.
 func requestBodyDigest(r *http.Request) (string, error) {
 	declared := strings.ToLower(r.Header.Get(bodyHashHeader))
 	if declared != "" {
@@ -184,7 +195,7 @@ func requestBodyDigest(r *http.Request) (string, error) {
 		}
 		return emptyBodySHA256, nil
 	}
-	if declared != "" && (r.ContentLength < 0 || r.ContentLength > defaultMaxRequestBodySize) {
+	if declared != "" && streamableBodyRoute(r) && (r.ContentLength < 0 || r.ContentLength > defaultMaxRequestBodySize) {
 		r.Body = &digestVerifyingBody{rc: r.Body, h: sha256.New(), want: declared}
 		return declared, nil
 	}

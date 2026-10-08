@@ -117,9 +117,13 @@ signed with the device's auth key (the same keypair as nuke/device-list
 signatures; the private half never leaves the device). Accepted iff the
 signature validates against the stored `auth_public_key`, the timestamp is within
 ±5 min, and the (account, device, decoded nonce) triple is unseen in that window.
-The server hashes ordinary (≤1 MiB) bodies itself; a client streaming a larger
-body may declare `X-Relay-Content-SHA256`, which is signed and then checked
-against the body as it is read (the read fails at EOF on mismatch).
+The server **always buffers and hashes the body itself** (bodies are capped at
+1 MiB); an `X-Relay-Content-SHA256` header, if sent, must equal that hash. The
+only route on which a declared digest may instead be checked while the body
+streams (the read fails at EOF on mismatch) is `PUT /v1/attachments/{id}` — and
+that route is unauthenticated today. JSON bodies must hold **exactly one JSON
+value**: trailing data after it is rejected (`400`), so the body a handler acts
+on is always the whole body the signature covers.
 
 **HTTP Basic** (`<accountId>.<deviceId>` : device password) is a bootstrap
 credential only: it is accepted **only for a device that has not registered an

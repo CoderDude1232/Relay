@@ -361,7 +361,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		AccountPassword     string `json:"accountPassword"`
 		Email               string `json:"email"` // rejected; see above
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+	if err := decodeJSON(r, &req); err != nil ||
 		!validUsername.MatchString(req.Username) ||
 		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "username (1–64 alphanumeric/._- chars) and password (8–1024 chars) required")
@@ -446,7 +446,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		Password        string `json:"password"`
 		AccountPassword string `json:"accountPassword"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AccessToken == "" ||
+	if err := decodeJSON(r, &req); err != nil || req.AccessToken == "" ||
 		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "accessToken and password (8–1024 chars) required")
 		return
@@ -602,7 +602,7 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		AccessKey string `json:"accessKey"` // base64, recipient's access key
 		Ephemeral bool   `json:"ephemeral"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MailboxID == "" {
+	if err := decodeJSON(r, &req); err != nil || req.MailboxID == "" {
 		httpError(w, http.StatusBadRequest, "mailboxId and content required")
 		return
 	}
@@ -738,7 +738,7 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request, dev *s
 	var req struct {
 		EnvelopeID string `json:"envelopeId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.EnvelopeID == "" {
+	if err := decodeJSON(r, &req); err != nil || req.EnvelopeID == "" {
 		httpError(w, http.StatusBadRequest, "envelopeId required")
 		return
 	}
@@ -756,7 +756,7 @@ func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		AccessKey string `json:"accessKey"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -803,7 +803,7 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 	var req struct {
 		Blinded []string `json:"blinded"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -855,7 +855,7 @@ func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, 
 	var req struct {
 		Buckets []int `json:"buckets"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -962,7 +962,7 @@ func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
 		httpError(w, http.StatusBadRequest, "token required")
 		return
 	}
@@ -994,7 +994,7 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		Email           string `json:"email"`
 		AccountPassword string `json:"accountPassword"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.AccountPassword == "" ||
+	if err := decodeJSON(r, &req); err != nil || req.Email == "" || req.AccountPassword == "" ||
 		len(req.AccountPassword) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "email and accountPassword required")
 		return
@@ -1038,7 +1038,7 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 	var req struct {
 		Username string `json:"username"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validUsername.MatchString(req.Username) {
+	if err := decodeJSON(r, &req); err != nil || !validUsername.MatchString(req.Username) {
 		httpError(w, http.StatusBadRequest, "username must be 1–64 alphanumeric/._- characters")
 		return
 	}
@@ -1058,7 +1058,7 @@ func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request, dev *st
 		Password string             `json:"password"`
 		Auth     deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
+	if err := decodeJSON(r, &req); err != nil || len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "password (8–1024 chars) required")
 		return
 	}
@@ -1099,7 +1099,7 @@ func (s *Server) handleCreateDeviceLinkInvitation(w http.ResponseWriter, r *http
 	var req struct {
 		Auth deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "device mutation signature required")
 		return
 	}
@@ -1128,7 +1128,7 @@ func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
 		LinkToken        string `json:"linkToken"`
 		VerificationCode string `json:"verificationCode"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.LinkToken == "" || req.VerificationCode == "" {
+	if err := decodeJSON(r, &req); err != nil || req.LinkToken == "" || req.VerificationCode == "" {
 		httpError(w, http.StatusBadRequest, "linkToken and verificationCode required")
 		return
 	}
@@ -1203,7 +1203,7 @@ func (s *Server) handleStoreProvisioning(w http.ResponseWriter, r *http.Request,
 	var req struct {
 		Blob b64 `json:"blob"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Blob) == 0 {
+	if err := decodeJSON(r, &req); err != nil || len(req.Blob) == 0 {
 		httpError(w, http.StatusBadRequest, "blob required")
 		return
 	}
@@ -1233,7 +1233,7 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		DeviceName string             `json:"deviceName"`
 		Auth       deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Password == "" {
 		httpError(w, http.StatusBadRequest, "password and device mutation signature required")
 		return
 	}
@@ -1292,7 +1292,7 @@ func (s *Server) handleRemoveDevice(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		Auth deviceMutationAuth `json:"auth"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "device mutation signature required")
 		return
 	}
@@ -1359,7 +1359,7 @@ func (s *Server) handleSetDeviceAuthKey(w http.ResponseWriter, r *http.Request, 
 	var req struct {
 		PublicKey b64 `json:"publicKey"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.PublicKey) == 0 {
+	if err := decodeJSON(r, &req); err != nil || len(req.PublicKey) == 0 {
 		httpError(w, http.StatusBadRequest, "publicKey required")
 		return
 	}
@@ -1410,7 +1410,7 @@ func (s *Server) handleSetAPNSToken(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validAPNsToken.MatchString(req.Token) {
+	if err := decodeJSON(r, &req); err != nil || !validAPNsToken.MatchString(req.Token) {
 		httpError(w, http.StatusBadRequest, "token must be 64–200 hex characters")
 		return
 	}
@@ -1425,7 +1425,7 @@ func (s *Server) handleSetFCMToken(w http.ResponseWriter, r *http.Request, dev *
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
 		httpError(w, http.StatusBadRequest, "token required")
 		return
 	}
@@ -1440,7 +1440,7 @@ func (s *Server) handleSetVoIPToken(w http.ResponseWriter, r *http.Request, dev 
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !validAPNsToken.MatchString(req.Token) {
+	if err := decodeJSON(r, &req); err != nil || !validAPNsToken.MatchString(req.Token) {
 		httpError(w, http.StatusBadRequest, "token must be 64–200 hex characters")
 		return
 	}
@@ -1458,7 +1458,7 @@ func (s *Server) handleSetPushContent(w http.ResponseWriter, r *http.Request, de
 	var req struct {
 		IncludeContent bool `json:"includeContent"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -1490,7 +1490,7 @@ func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
 		AccessKey          string `json:"accessKey"`
 		CallID             string `json:"callId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DestinationMailbox == "" ||
+	if err := decodeJSON(r, &req); err != nil || req.DestinationMailbox == "" ||
 		!validCallID.MatchString(req.CallID) {
 		httpError(w, http.StatusBadRequest, "destinationMailbox, accessKey and callId required")
 		return
@@ -1653,7 +1653,7 @@ func (s *Server) handleCreateEncryptedGroupInvite(w http.ResponseWriter, r *http
 	var req struct {
 		Blob string `json:"blob"` // base64 ciphertext
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
@@ -1683,7 +1683,7 @@ func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
 		httpError(w, http.StatusBadRequest, "token required")
 		return
 	}
@@ -1730,7 +1730,7 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		// so ordinary top-ups keep appending.
 		ReplaceOneTimePreKeys bool `json:"replaceOneTimePreKeys"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "malformed body: "+err.Error())
 		return
 	}
@@ -1886,6 +1886,25 @@ func (b *b64) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// errTrailingJSON rejects a request body that carries anything after its
+// single JSON value.
+var errTrailingJSON = errors.New("unexpected data after the JSON body")
+
+// decodeJSON decodes exactly one JSON value from the request body into v and
+// rejects any trailing data (whitespace aside). Every JSON handler uses it, so
+// the body a handler acts on is the whole body the request signature covered —
+// never a prefix followed by bytes nothing looked at.
+func decodeJSON(r *http.Request, v any) error {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errTrailingJSON
+	}
+	return nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -1953,7 +1972,7 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request, dev 
 		Details         string   `json:"details"`
 		Messages        []string `json:"messages"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ReportedAccount == "" {
+	if err := decodeJSON(r, &req); err != nil || req.ReportedAccount == "" {
 		httpError(w, http.StatusBadRequest, "reportedAccount and reason required")
 		return
 	}
@@ -2022,7 +2041,7 @@ func (s *Server) handleNuke(w http.ResponseWriter, r *http.Request, dev *store.D
 		InitiatingDeviceID uint32 `json:"initiatingDeviceId"`
 		Signature          b64    `json:"signature"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, "malformed nuke request")
 		return
 	}
@@ -2261,7 +2280,6 @@ var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 // bound them per source IP and per destination mailbox.
 var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
 var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
-
 
 // usernameLookupLimiter: unauthenticated username-availability checks per IP per hour.
 // Debounced in the client; enough for sign-up typing, too few for bulk probing.
