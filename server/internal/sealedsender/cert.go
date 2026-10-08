@@ -45,8 +45,14 @@ func GenerateKeyPair() (KeyPair, error) {
 // key from path, generating and persisting one (0600) if the file is absent. The
 // trust root signs the server certificate; clients embed its 33-byte Public to
 // validate the sealed-sender certificate chain, so it must stay stable.
+//
+// A new key is generated ONLY when the file does not exist. Any other read
+// error (permissions, an I/O fault, a path that is a directory) fails startup:
+// silently minting a fresh root would invalidate every client's embedded trust
+// root and break sealed sending for everyone.
 func LoadOrCreateTrustRoot(path string) (KeyPair, error) {
-	if data, err := os.ReadFile(path); err == nil {
+	data, err := os.ReadFile(path)
+	if err == nil {
 		raw, err := hex.DecodeString(strings.TrimSpace(string(data)))
 		if err != nil || len(raw) != 32 {
 			return KeyPair{}, fmt.Errorf("sealedsender: trust-root key file must be 32-byte hex")
@@ -56,6 +62,9 @@ func LoadOrCreateTrustRoot(path string) (KeyPair, error) {
 			return KeyPair{}, err
 		}
 		return KeyPair{Private: raw, Public: append([]byte{djbType}, pub...)}, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return KeyPair{}, fmt.Errorf("sealedsender: read trust-root key file: %w", err)
 	}
 	kp, err := GenerateKeyPair()
 	if err != nil {
