@@ -1773,6 +1773,8 @@ private extension VerificationState {
 
 /// Wraps a bubble with swipe-to-reply plus custom quick reactions and actions.
 private struct MessageRow: View {
+    /// Bubbles never grow past this, so lines stay readable on iPad.
+    static let maxBubbleWidth: CGFloat = 560
     let message: StoredMessage
     let position: BubblePosition
     let peerName: String
@@ -1875,6 +1877,8 @@ private struct MessageRow: View {
                     },
                     onReply: onReply
                 )
+                // Readable line length on iPad / wide windows (no effect on iPhone).
+                .frame(maxWidth: Self.maxBubbleWidth, alignment: message.isOutgoing ? .trailing : .leading)
 
                 if !message.isOutgoing { Spacer(minLength: 56) }
             }
@@ -1999,6 +2003,8 @@ private struct MessageBubble: View {
                     }
 
                     coreColumn
+                        .frame(maxWidth: MessageRow.maxBubbleWidth,
+                               alignment: message.isOutgoing ? .trailing : .leading)
 
                     if !message.isOutgoing { Spacer(minLength: 56) }
                 }
