@@ -76,3 +76,26 @@ Simulators can't do push, CallKit/VoIP or CloudKit:
 - Calls (audio + video) with dynamic TURN credentials only (no static creds).
 - iCloud backup + restore.
 - Linking a second phone that had Relay installed before.
+
+## Release audit — 2026-10-08 status
+
+Three audits (server security, iOS security, UI/App Review) ran on 2026-10-08.
+Fixed and deployed: group/1:1 hijack and group takeover, account takeover via
+sign-in (account-password lock), Relay-Sig body bypass, Basic auth scope,
+replay cache, DoS limits, email discovery opt-in, username cooldown, Apple
+token revocation (server + client), plaintext id→username lookups removed,
+key-change message loss, app/NSE decrypt race, Siri vs panic mode, privacy
+copy, friendly errors, accessibility, iPad fixes.
+
+Still open:
+- [ ] Xcode (owner): one deployment target for all targets; extension display
+      names = "Relay"; project-level team HK396F3767; remove UIStatusBarHidden;
+      remove the RelayBroadcastUploadSetupUI leftovers; fix Camera / Microphone /
+      Contacts usage strings; delete the Local Network and NFC usage strings.
+- [ ] Export compliance: decide ITSAppUsesNonExemptEncryption (E2EE → likely
+      YES + mass-market exemption / BIS self-classification).
+- [ ] Sign in with Apple revocation: create a SIWA key in the Apple developer
+      portal, copy it to the VPS, add `-siwa-key/-siwa-key-id` to relayd.
+- [ ] Device-test calls (voice/video over TURN) and iCloud backup/restore.
+- [ ] Later: fetch prekey bundles anonymously (access-key gated) and exchange
+      access keys end-to-end, so the relay can't see who fetches whose keys.
