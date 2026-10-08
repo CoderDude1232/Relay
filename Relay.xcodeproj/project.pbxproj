@@ -856,9 +856,11 @@
 				INFOPLIST_KEY_NSContactsUsageDescription = "Relay matches your contacts emails against your existing conversations so you can see which contacts are on Relay. No contact data leaves your device.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Relay uses Face ID to unlock chats and attachment previews.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your local relay server over your Wi-Fi network to send and receive messages.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with the person you are chatting with. Location is only shared while you are actively in a conversation and have chosen to share it.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with people you choose, and, if you turn it on, to show an approximate region on your own devices' names. Your location is end-to-end encrypted.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Relay saves images you choose to save, such as your safety-number QR code, to your photo library. Relay can only add photos; it cannot see your library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Relay uses Siri to suggest your recent contacts when you share content from other apps.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Relay transcribes voice messages into text when you ask it to. Recognition runs entirely on your device, and audio never leaves it.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -905,9 +907,11 @@
 				INFOPLIST_KEY_NSContactsUsageDescription = "Relay matches your contacts emails against your existing conversations so you can see which contacts are on Relay. No contact data leaves your device.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Relay uses Face ID to unlock chats and attachment previews.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your local relay server over your Wi-Fi network to send and receive messages.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with the person you are chatting with. Location is only shared while you are actively in a conversation and have chosen to share it.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with people you choose, and, if you turn it on, to show an approximate region on your own devices' names. Your location is end-to-end encrypted.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Relay saves images you choose to save, such as your safety-number QR code, to your photo library. Relay can only add photos; it cannot see your library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Relay uses Siri to suggest your recent contacts when you share content from other apps.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Relay transcribes voice messages into text when you ask it to. Recognition runs entirely on your device, and audio never leaves it.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
