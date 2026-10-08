@@ -208,6 +208,8 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("blinded discovery enabled")
+	} else {
+		slog.Warn("no -oprf-key: blinded discovery, email features and the 7-day username reuse cooldown are disabled")
 	}
 	apiHandler := apiServer.Handler()
 	go runRateLimiterGC(apiServer)

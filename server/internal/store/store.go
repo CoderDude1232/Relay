@@ -7,7 +7,9 @@ package store
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -84,6 +86,9 @@ func coarseDayMillis() int64 {
 
 type Store struct {
 	db *pgxpool.Pool
+	// releaseKey keys the released-username hashes (see SetUsernameReleaseKey);
+	// nil disables the reuse cooldown. Set once at startup.
+	releaseKey []byte
 }
 
 // Open connects to PostgreSQL at dsn, pings it, and runs schema migrations.
@@ -416,6 +421,16 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// accounts default to FALSE (their email entries disappear at the next
 		// directory rebuild, i.e. startup).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Username reuse cooldown: a released name (rename or account deletion)
+		// can't be claimed by another account for UsernameReuseCooldown. Only
+		// keyed hashes are stored — never the name — plus the release time;
+		// rows are purged by the hourly retention sweep once the cooldown ends.
+		`CREATE TABLE IF NOT EXISTS released_usernames (
+    name_hash   BYTEA PRIMARY KEY,
+    owner_hash  BYTEA,
+    released_at BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_released_usernames_released_at ON released_usernames (released_at)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -553,7 +568,7 @@ func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID
 	}
 	defer tx.Rollback(ctx)
 
-	if taken, err := usernameTakenTx(ctx, tx, username, ""); err != nil {
+	if taken, err := s.usernameUnavailableTx(ctx, tx, username, ""); err != nil {
 		return "", 0, err
 	} else if taken {
 		return "", 0, ErrUsernameTaken
@@ -565,6 +580,9 @@ func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
 		accountID, mailboxID, deviceHash, now); err != nil {
+		return "", 0, err
+	}
+	if err = s.clearReleasedUsernameTx(ctx, tx, username); err != nil {
 		return "", 0, err
 	}
 	return accountID, 1, tx.Commit(ctx)
@@ -606,19 +624,112 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// usernameTakenTx reports whether another account (≠ exceptAccountID) already
-// holds username, compared case-insensitively.
-func usernameTakenTx(ctx context.Context, q rowQuerier, username, exceptAccountID string) (bool, error) {
+// usernameUnavailableTx reports whether username can't be taken by
+// exceptAccountID ("" = a new account): another account holds it (compared
+// case-insensitively), or it was released less than UsernameReuseCooldown ago
+// by an account other than exceptAccountID (see releaseUsernameTx).
+func (s *Store) usernameUnavailableTx(ctx context.Context, q rowQuerier, username, exceptAccountID string) (bool, error) {
 	var taken bool
-	err := q.QueryRow(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM accounts WHERE lower(username) = lower($1) AND id <> $2)`,
-		username, exceptAccountID).Scan(&taken)
-	return taken, err
+		username, exceptAccountID).Scan(&taken); err != nil || taken {
+		return taken, err
+	}
+	nameHash := s.releasedNameHash(username)
+	if nameHash == nil {
+		return false, nil // cooldown disabled (no key configured)
+	}
+	cutoff := time.Now().Add(-UsernameReuseCooldown).UnixMilli()
+	var cooling bool
+	err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM released_usernames
+		WHERE name_hash = $1 AND released_at > $2 AND (owner_hash IS NULL OR owner_hash <> $3))`,
+		nameHash, cutoff, s.releasedOwnerHash(exceptAccountID)).Scan(&cooling)
+	return cooling, err
 }
 
-// UsernameTaken reports whether any account holds username (case-insensitive).
+// UsernameTaken reports whether username is unavailable to a new account: held
+// by any account (case-insensitive) or still in its reuse cooldown.
 func (s *Store) UsernameTaken(username string) (bool, error) {
-	return usernameTakenTx(context.Background(), s.db, username, "")
+	return s.usernameUnavailableTx(context.Background(), s.db, username, "")
+}
+
+// ---------------------------------------------------------------------------
+// Username reuse cooldown
+// ---------------------------------------------------------------------------
+
+// UsernameReuseCooldown is how long a released username (renamed away from, or
+// freed by account deletion) stays unclaimable by any other account. Sealed-
+// sender certificates carry the sender's username for up to 7 days, so a name
+// re-registered sooner could be shown as the author of messages its previous
+// holder's still-valid certificates vouch for. The releasing account itself
+// may take its old name back during the cooldown (same account, same
+// certificates — no confusion possible); a deleted account's name is blocked
+// for everyone.
+const UsernameReuseCooldown = 7 * 24 * time.Hour
+
+// SetUsernameReleaseKey sets the secret that keys released-username hashes.
+// released_usernames stores only HMAC(key, lower(name)) and HMAC(key, owner
+// account id) plus the release time — never the name itself — so a database
+// dump doesn't list recently abandoned names. Until a key is set the cooldown
+// is disabled (nothing is recorded or checked); relayd derives it from the
+// OPRF key, so it is stable across restarts.
+func (s *Store) SetUsernameReleaseKey(key []byte) {
+	s.releaseKey = append([]byte(nil), key...)
+}
+
+func (s *Store) releaseHMAC(parts ...string) []byte {
+	if len(s.releaseKey) == 0 {
+		return nil
+	}
+	m := hmac.New(sha256.New, s.releaseKey)
+	for _, p := range parts {
+		m.Write([]byte(p))
+		m.Write([]byte{0})
+	}
+	return m.Sum(nil)
+}
+
+// releasedNameHash is the keyed hash of a username, case-folded the way
+// uniqueness is enforced. nil when no key is configured.
+func (s *Store) releasedNameHash(username string) []byte {
+	return s.releaseHMAC("relay-released-username-v1", strings.ToLower(username))
+}
+
+// releasedOwnerHash is the keyed hash of the releasing account id ("" — a new
+// account — hashes to a value no real account id produces).
+func (s *Store) releasedOwnerHash(accountID string) []byte {
+	return s.releaseHMAC("relay-released-username-owner-v1", accountID)
+}
+
+// releaseUsernameTx starts the reuse cooldown for username inside tx.
+// ownerAccountID is the account that may still reclaim it ("" when the account
+// is being deleted, so no one can). A no-op when no key is configured.
+func (s *Store) releaseUsernameTx(ctx context.Context, tx pgx.Tx, username, ownerAccountID string) error {
+	nameHash := s.releasedNameHash(username)
+	if nameHash == nil || username == "" {
+		return nil
+	}
+	var owner []byte
+	if ownerAccountID != "" {
+		owner = s.releasedOwnerHash(ownerAccountID)
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO released_usernames (name_hash, owner_hash, released_at) VALUES ($1, $2, $3)
+		ON CONFLICT (name_hash) DO UPDATE SET owner_hash = EXCLUDED.owner_hash, released_at = EXCLUDED.released_at`,
+		nameHash, owner, time.Now().UnixMilli())
+	return err
+}
+
+// clearReleasedUsernameTx drops the cooldown row for a name that has just been
+// (re)claimed — legitimately, since usernameUnavailableTx passed.
+func (s *Store) clearReleasedUsernameTx(ctx context.Context, tx pgx.Tx, username string) error {
+	nameHash := s.releasedNameHash(username)
+	if nameHash == nil {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM released_usernames WHERE name_hash = $1`, nameHash)
+	return err
 }
 
 // dummyRecoveryHash is compared against when an account (or its recovery
@@ -839,7 +950,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		if requestedUsername == "" {
 			return AddedDevice{}, false, ErrUsernameRequired
 		}
-		if taken, e := usernameTakenTx(ctx, tx, requestedUsername, ""); e != nil {
+		if taken, e := s.usernameUnavailableTx(ctx, tx, requestedUsername, ""); e != nil {
 			return AddedDevice{}, false, e
 		} else if taken {
 			return AddedDevice{}, false, ErrUsernameTaken
@@ -866,6 +977,9 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		if _, err = tx.Exec(ctx,
 			`INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
 			dev.AccountID, dev.MailboxID, deviceHash, now); err != nil {
+			return AddedDevice{}, false, err
+		}
+		if err = s.clearReleasedUsernameTx(ctx, tx, dev.Username); err != nil {
 			return AddedDevice{}, false, err
 		}
 		created = true
@@ -1371,20 +1485,6 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 	return newVersion, tx.Commit(ctx)
 }
 
-// DeleteAccount permanently removes an account and everything keyed to it, in
-// one transaction: prekeys (signed, Kyber, one-time), queued envelopes for its
-// devices, its devices (incl. mailbox ids, auth keys, APNs/FCM/VoIP tokens),
-// pending device-link tokens, contact invites it minted, its blinded-directory
-// rows, stored nuke commands, reports it filed, and finally the account row
-// itself (username, email token, Supabase user id, access key, recovery hash).
-// The username becomes available again on commit. Reports filed AGAINST the
-// account are kept (moderation records). Returns ErrNotFound if the account
-// does not exist.
-//
-// Not cleaned (no account linkage is stored): provisioning_sessions and
-// encrypted_group_invites (anonymous, TTL-reaped), attachment blobs (ownership
-// is not tracked; reaped by blob GC), and envelopes the account sent that sit
-// in other accounts' queues (those belong to the recipients).
 // SupabaseUserID returns the Supabase auth user linked to an account, or ""
 // when none is (or the account doesn't exist).
 func (s *Store) SupabaseUserID(accountID string) (string, error) {
@@ -1397,6 +1497,21 @@ func (s *Store) SupabaseUserID(accountID string) (string, error) {
 	return id, err
 }
 
+// DeleteAccount permanently removes an account and everything keyed to it, in
+// one transaction: prekeys (signed, Kyber, one-time), queued envelopes for its
+// devices, its devices (incl. mailbox ids, auth keys, APNs/FCM/VoIP tokens),
+// pending device-link tokens, contact invites it minted, its blinded-directory
+// rows, stored nuke commands, reports it filed, and finally the account row
+// itself (username, email token, Supabase user id, access key, recovery hash).
+// The username enters the reuse cooldown (claimable by nobody for
+// UsernameReuseCooldown; only its keyed hash is kept). Reports filed AGAINST
+// the account are kept (moderation records). Returns ErrNotFound if the
+// account does not exist.
+//
+// Not cleaned (no account linkage is stored): provisioning_sessions and
+// encrypted_group_invites (anonymous, TTL-reaped), attachment blobs (ownership
+// is not tracked; reaped by blob GC), and envelopes the account sent that sit
+// in other accounts' queues (those belong to the recipients).
 func (s *Store) DeleteAccount(accountID string) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -1407,10 +1522,13 @@ func (s *Store) DeleteAccount(accountID string) error {
 
 	// Lock the account row so concurrent device-list mutations (which also
 	// take FOR UPDATE on it) serialize behind the delete.
-	var id string
-	if err := tx.QueryRow(ctx, `SELECT id FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&id); errors.Is(err, pgx.ErrNoRows) {
+	var username string
+	if err := tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&username); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
+		return err
+	}
+	if err := s.releaseUsernameTx(ctx, tx, username, ""); err != nil {
 		return err
 	}
 	for _, stmt := range []string{
@@ -1503,9 +1621,12 @@ func (s *Store) LookupAccountID(username string) (string, error) {
 }
 
 // UpdateUsername changes the username of an account. Returns ErrUsernameTaken
-// if the new username is already in use by a different account.
-// Comparison is case-insensitive: "Bob" can't be taken while "bob" exists
-// (a holder may still change the case of their own name).
+// if the new username is already in use by a different account, or is in
+// another account's reuse cooldown. Comparison is case-insensitive: "Bob"
+// can't be taken while "bob" exists (a holder may still change the case of
+// their own name). The old name, when it actually changes, enters the reuse
+// cooldown (reclaimable by this account only). Returns ErrNotFound for an
+// unknown account.
 func (s *Store) UpdateUsername(accountID, newUsername string) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -1513,7 +1634,13 @@ func (s *Store) UpdateUsername(accountID, newUsername string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if taken, err := usernameTakenTx(ctx, tx, newUsername, accountID); err != nil {
+	var oldUsername string
+	if err := tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&oldUsername); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if taken, err := s.usernameUnavailableTx(ctx, tx, newUsername, accountID); err != nil {
 		return err
 	} else if taken {
 		return ErrUsernameTaken
@@ -1525,6 +1652,14 @@ func (s *Store) UpdateUsername(accountID, newUsername string) error {
 			return ErrUsernameTaken
 		}
 		return err
+	}
+	if !strings.EqualFold(oldUsername, newUsername) {
+		if err := s.releaseUsernameTx(ctx, tx, oldUsername, accountID); err != nil {
+			return err
+		}
+		if err := s.clearReleasedUsernameTx(ctx, tx, newUsername); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
@@ -2132,6 +2267,7 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 //   - contact_invites: expired or already used (single-use)
 //   - reports: older than 180 days
 //   - nuke_commands: older than an hour (delivered or stale; see nukeRetentionMillis)
+//   - released_usernames: once the 7-day reuse cooldown has ended
 func (s *Store) PurgeExpired() error {
 	ctx := context.Background()
 	now := time.Now().UnixMilli()
@@ -2146,6 +2282,7 @@ func (s *Store) PurgeExpired() error {
 		{`DELETE FROM contact_invites WHERE expires_at < $1 OR used_at <> 0`, now},
 		{`DELETE FROM reports WHERE created_at < $1`, now - reportTTLMillis},
 		{`DELETE FROM nuke_commands WHERE created_at < $1`, now - nukeRetentionMillis},
+		{`DELETE FROM released_usernames WHERE released_at < $1`, now - UsernameReuseCooldown.Milliseconds()},
 	} {
 		if _, err := s.db.Exec(ctx, q.sql, q.arg); err != nil {
 			return err

@@ -172,9 +172,13 @@ func (s *Server) SetSealedSender(trustRoot sealedsender.KeyPair) error {
 
 // SetOPRF enables blinded discovery under the given OPRF key and rebuilds the
 // directory index from the current accounts (so existing users are discoverable
-// and any drift is corrected on restart).
+// and any drift is corrected on restart). It also enables the username reuse
+// cooldown (see store.UsernameReuseCooldown).
 func (s *Server) SetOPRF(key *oprf.Key) error {
 	s.oprf = key
+	// The username reuse cooldown keys its hashes from the OPRF key, so they
+	// stay matchable across restarts without another secret to manage.
+	s.store.SetUsernameReleaseKey(key.DeriveKey("released-username"))
 	accounts, err := s.store.AllAccountsForDirectory()
 	if err != nil {
 		return err

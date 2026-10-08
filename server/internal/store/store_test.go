@@ -124,7 +124,8 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 	if n := s.countRows(t, `SELECT COUNT(*) FROM accounts WHERE id = $1`, other); n != 1 {
 		t.Fatal("unrelated account was deleted")
 	}
-	// Username is free again.
+	// Username is free again (this store has no release key, so no reuse
+	// cooldown — see TestUsernameReuseCooldown).
 	if _, err := s.LookupAccountID(victimName); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("username still resolves after delete: %v", err)
 	}
