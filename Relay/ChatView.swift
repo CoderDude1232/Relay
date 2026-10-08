@@ -148,9 +148,6 @@ struct ChatView: View {
         }
     }
 
-    /// Online / last-seen status no longer exists (the relay doesn't track it).
-    private var presenceText: String? { nil }
-
     private var rawScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -388,10 +385,6 @@ struct ChatView: View {
                                 Text(connectionSubtitle)
                                     .font(.caption2)
                                     .foregroundStyle(service.connectionState == .connecting ? .orange : .secondary)
-                            } else if let presenceText {
-                                Text(presenceText)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
                             } else if let secs = conversation?.disappearingSeconds, secs > 0 {
                                 Label(disappearingLabel(secs), systemImage: "timer")
                                     .font(.caption2)
