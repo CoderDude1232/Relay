@@ -303,8 +303,9 @@ struct ConversationListView: View {
             if let newId, searchTarget?.conversationId != newId { searchTarget = nil }
             if let newId { service.openConversation(newId) }
 
-            // Re-lock when navigating back to the list.
-            if newId == nil, let oldId { sessionUnlocked.remove(oldId) }
+            // Re-lock when leaving a chat — back to the list (iPhone) or
+            // straight to another chat in the sidebar (iPad).
+            if let oldId, oldId != newId { sessionUnlocked.remove(oldId) }
             guard let newId else { return }
             searchText = ""
             guard let conv = service.conversations.first(where: { $0.id == newId }),

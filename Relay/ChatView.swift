@@ -1181,6 +1181,8 @@ struct ChatView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(editingMessage == nil ? "Send message" : "Save edit")
+                            // iPad / hardware keyboards: ⌘↩ sends (plain ↩ inserts a newline).
+                            .keyboardShortcut(.return, modifiers: .command)
                             .simultaneousGesture(
                                 LongPressGesture(minimumDuration: 0.5).onEnded { _ in
                                     // Scheduling is text-only: attachments aren't stored with
@@ -2997,6 +2999,8 @@ private struct PendingAttachmentPreviewSheet: View {
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
                     }
+                    .accessibilityLabel("Send")
+                    .keyboardShortcut(.return, modifiers: .command)
                     .disabled(attachments.isEmpty && caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }

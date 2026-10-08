@@ -151,6 +151,40 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(nukeInProgress)
+                    .confirmationDialog(
+                        "Wipe ALL devices?",
+                        isPresented: $confirmingNuke,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Wipe All Devices", role: .destructive) {
+                            // Wiping every device must prove the owner is present:
+                            // refuse (with an explanation) when no passcode is set.
+                            guard BiometricGate.isPasscodeSet else {
+                                nukeError = BiometricGate.passcodeRequiredMessage
+                                return
+                            }
+                            nukeInProgress = true
+                            Task {
+                                let ok = await BiometricGate.authenticate(
+                                    reason: "Confirm emergency wipe of all devices",
+                                    requirePasscode: true
+                                )
+                                guard ok else {
+                                    nukeInProgress = false
+                                    return
+                                }
+                                do {
+                                    try await service.sendNukeCommand()
+                                    nukeSucceeded = true
+                                } catch {
+                                    nukeError = FriendlyError.message(for: error)
+                                }
+                                nukeInProgress = false
+                            }
+                        }
+                    } message: {
+                        Text("This will cryptographically wipe messages and keys on every device signed in to your account. This cannot be undone.")
+                    }
                 } header: {
                     Text("Danger Zone")
                 } footer: {
@@ -167,6 +201,17 @@ struct SettingsView: View {
                             SettingsIcon(systemName: "rectangle.portrait.and.arrow.right", color: .red, useColor: true)
                             Text("Sign Out").foregroundStyle(.red)
                         }
+                    }
+                    .confirmationDialog(
+                        "Sign out and delete all local messages?",
+                        isPresented: $confirmingSignOut,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Sign Out & Delete", role: .destructive) {
+                            model.signOut()
+                        }
+                    } message: {
+                        Text("Messages on this device will be deleted. You can restore them only from an iCloud backup or another linked device.")
                     }
                     Button(role: .destructive) {
                         UINotificationFeedbackGenerator().notificationOccurred(.warning)
@@ -200,51 +245,6 @@ struct SettingsView: View {
                 }
             }
             .onAppear { avatarData = service.myAvatarData }
-            .confirmationDialog(
-                "Sign out and delete all local messages?",
-                isPresented: $confirmingSignOut,
-                titleVisibility: .visible
-            ) {
-                Button("Sign Out & Delete", role: .destructive) {
-                    model.signOut()
-                }
-            } message: {
-                Text("Message history only exists on this device — it cannot be recovered.")
-            }
-            .confirmationDialog(
-                "Wipe ALL devices?",
-                isPresented: $confirmingNuke,
-                titleVisibility: .visible
-            ) {
-                Button("Wipe All Devices", role: .destructive) {
-                    // Wiping every device must prove the owner is present:
-                    // refuse (with an explanation) when no passcode is set.
-                    guard BiometricGate.isPasscodeSet else {
-                        nukeError = BiometricGate.passcodeRequiredMessage
-                        return
-                    }
-                    nukeInProgress = true
-                    Task {
-                        let ok = await BiometricGate.authenticate(
-                            reason: "Confirm emergency wipe of all devices",
-                            requirePasscode: true
-                        )
-                        guard ok else {
-                            nukeInProgress = false
-                            return
-                        }
-                        do {
-                            try await service.sendNukeCommand()
-                            nukeSucceeded = true
-                        } catch {
-                            nukeError = error.localizedDescription
-                        }
-                        nukeInProgress = false
-                    }
-                }
-            } message: {
-                Text("This will cryptographically wipe messages and keys on every device signed in to your account. This cannot be undone.")
-            }
             .alert("Emergency Wipe Sent", isPresented: $nukeSucceeded) {
                 Button("OK", role: .cancel) {}
             } message: {
