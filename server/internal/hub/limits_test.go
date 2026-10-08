@@ -20,7 +20,7 @@ func TestRegisterReplacesPreviousSession(t *testing.T) {
 		t.Fatal("new session was closed")
 	}
 	h.Unregister("acct", 1, old)
-	if !h.IsOnline("acct") {
+	if h.sessions[key("acct", 1)] != cur {
 		t.Fatal("stale Unregister evicted the new session")
 	}
 }

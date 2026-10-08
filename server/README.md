@@ -10,6 +10,9 @@ message plaintext or private keys.
 go run ./cmd/relayd -addr :8080 -dsn 'postgres://relay:relay@localhost/relay?sslmode=disable'
 ```
 
+`-dsn` (or `$RELAY_DSN`) is **required**: there is no built-in default DSN, and
+relayd exits with an error when neither is set.
+
 **Run PostgreSQL on the relay host** (loopback or a unix socket, e.g.
 `-dsn 'postgres:///relay?host=/var/run/postgresql'`). The DB connection carries
 every routing row and queued envelope; if the DSN names a non-local host and
@@ -218,7 +221,7 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 | `POST /v1/provisioning-sessions` | none | → `201 {sessionId, expiresAt}`. New device mints a blind mailbox for reversed linking; shows `{sessionId, ephemeralPublicKey}` in a QR (ephemeral key never touches the server). 10-min expiry. Rate-limited to 10 sessions / source IP / 10 min (`429`). (Top-level path, not under `/v1/devices/`, to avoid a `{id}` route collision with `/v1/devices/{id}/auth-key`.) |
 | `GET /v1/provisioning-sessions/{id}` | none | → `200 {blob}` once the primary has provisioned, `204` while pending, `404` expired/consumed. New device polls this. Single-use: the session is deleted on the first successful fetch. |
 | `PUT /v1/provisioning-sessions/{id}` | sig | `{blob}` → `204`. Primary deposits the ciphertext (identity key + credentials, AES-GCM under an ECDH-derived key, **signed by the account identity key** so the new device authenticates the primary). **Write-once** — a session can be provisioned only once, so a second writer can't substitute the payload (`404` if expired/unknown/already used). Blob capped at 64 KiB (`413`). Relay stores only the opaque blob. |
-| `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion` or 5-device limit. No verification code — the camera scan is the trust anchor. |
+| `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion` or 5-device limit. Broadcasts `DeviceListChanged(DEVICE_ADDED)`. No verification code — the camera scan is the trust anchor. |
 | `PUT /v1/devices/auth-key` | sig | `{publicKey}` — uncompressed P-256 point `0x04‖X‖Y` (65 bytes), ≤512 B → `204`. Stores the key `Relay-Sig` and nuke/device-list signatures verify against. The **first** upload for a device may use HTTP Basic (the only route that accepts it); once a key exists, the request must be Relay-Sig signed by the **current** key (so a leaked device password can't swap it). |
 | `GET /v1/devices/{id}/auth-key` | sig | → `{authPublicKey}` (same account only). Lets clients verify a peer device's nuke/device-list signatures. |
 | `PUT /v1/devices/apns` | sig | `{token}` → `204`. Registers an APNs token (iOS); sets push kind `apns`. Token must be 64–200 hex chars (`400` otherwise). |

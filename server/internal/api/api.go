@@ -1290,6 +1290,8 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"deviceId": deviceID})
+	// Like every other add path, tell the account's live devices.
+	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, deviceID)
 }
 
 func (s *Server) handleListDevices(w http.ResponseWriter, r *http.Request, dev *store.Device) {

@@ -180,7 +180,7 @@ func (h *Hub) Register(accountID string, deviceID uint32, s Session) {
 	h.mu.Lock()
 	prev := h.sessions[k]
 	h.sessions[k] = s
-		h.mu.Unlock()
+	h.mu.Unlock()
 	if prev != nil && prev != s {
 		// Outside the lock: closing runs the old session's Unregister, which
 		// is a no-op now that the map points at the new session.
@@ -189,19 +189,6 @@ func (h *Hub) Register(accountID string, deviceID uint32, s Session) {
 		}
 	}
 	slog.Debug("ws: session registered")
-}
-
-// IsOnline reports whether any device of the account has a live session.
-func (h *Hub) IsOnline(accountID string) bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	prefix := accountID + "/"
-	for k := range h.sessions {
-		if strings.HasPrefix(k, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // Unregister detaches a session if it is still the current one for the
@@ -213,7 +200,7 @@ func (h *Hub) Unregister(accountID string, deviceID uint32, s Session) {
 	if h.sessions[k] == s {
 		delete(h.sessions, k)
 		slog.Debug("ws: session unregistered")
-			}
+	}
 }
 
 // Closer is optionally implemented by a Session that can be forcibly torn down

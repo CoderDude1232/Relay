@@ -88,7 +88,9 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	// Secrets can come from the environment (e.g. a root-only systemd
 	// EnvironmentFile) so they never appear in the unit file or in `ps`.
-	dsn := flag.String("dsn", envOr("RELAY_DSN", "postgres://relay:relay@localhost/relay?sslmode=disable"), "PostgreSQL DSN (default $RELAY_DSN)")
+	// No built-in default: a guessable relay:relay DSN must never be what a
+	// misconfigured deployment silently falls back to.
+	dsn := flag.String("dsn", envOr("RELAY_DSN", ""), "PostgreSQL DSN (required; default $RELAY_DSN)")
 	tlsCert := flag.String("tls-cert", "", "path to TLS certificate (enables HTTPS/WSS)")
 	tlsKey := flag.String("tls-key", "", "path to TLS private key")
 	blobDir := flag.String("blobs", "attachments", "directory for encrypted attachment blobs")
@@ -119,6 +121,10 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
+	if *dsn == "" {
+		slog.Error("no database configured: pass -dsn or set RELAY_DSN (e.g. postgres:///relay?host=/var/run/postgresql)")
+		os.Exit(1)
+	}
 	if (*tlsCert == "") != (*tlsKey == "") {
 		slog.Error("-tls-cert and -tls-key must be provided together")
 		os.Exit(1)
