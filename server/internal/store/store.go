@@ -647,7 +647,9 @@ type AddedDevice struct {
 // Before this, every re-sign-in left the old device behind as a ghost with a
 // different identity key (and could eventually hit the device cap).
 func replaceDevicesTx(ctx context.Context, tx pgx.Tx, accountID string) ([]uint32, error) {
-	rows, err := tx.Query(ctx, `SELECT device_id FROM devices WHERE account_id = $1 ORDER BY device_id`, accountID)
+	// Locking the device rows (see Enqueue) means no envelope can land in a
+	// queue after it is cleared below.
+	rows, err := tx.Query(ctx, `SELECT device_id FROM devices WHERE account_id = $1 ORDER BY device_id FOR UPDATE`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1332,6 +1334,9 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 	// prekeys (signed/Kyber/one-time) and its queued envelopes. Its push
 	// tokens, auth key and mailbox id live on the device row itself.
 	for _, stmt := range []string{
+		// Lock the device row first so an in-flight Enqueue (which locks it)
+		// either commits before the queue is cleared or then finds no device.
+		`SELECT device_id FROM devices WHERE account_id = $1 AND device_id = $2 FOR UPDATE`,
 		`DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
@@ -1398,6 +1403,9 @@ func (s *Store) DeleteAccount(accountID string) error {
 		return err
 	}
 	for _, stmt := range []string{
+		// Lock the device rows (see Enqueue) so no envelope lands after the
+		// queue is cleared.
+		`SELECT device_id FROM devices WHERE account_id = $1 FOR UPDATE`,
 		// FK dependents of devices first.
 		`DELETE FROM one_time_prekeys WHERE account_id = $1`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1`,
@@ -1986,14 +1994,33 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 // may hold at most maxQueuedPerDevice envelopes and maxQueuedBytesPerDevice
 // bytes of queued ciphertext; beyond either, ErrQueueFull. Expired rows are
 // reaped by PurgeExpired (hourly), not on this hot path.
+//
+// The cap is enforced atomically: the device row is locked (FOR UPDATE) for
+// the count-then-insert, so concurrent senders to one device serialize and
+// can't each pass the check and overshoot it together. A device that no
+// longer exists (removed or its account deleted, possibly while we waited on
+// the lock) gets ErrNotFound and nothing is queued for it.
 func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope []byte) error {
 	ctx := context.Background()
 	if len(envelope) > maxQueuedEnvelopeBytes {
 		return ErrEnvelopeTooLarge
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var one int
+	if err := tx.QueryRow(ctx,
+		`SELECT 1 FROM devices WHERE account_id = $1 AND device_id = $2 FOR UPDATE`,
+		accountID, deviceID).Scan(&one); errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
 	var queued int
 	var queuedBytes int64
-	if err := s.db.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(octet_length(envelope)), 0) FROM message_queue WHERE account_id = $1 AND device_id = $2`,
 		accountID, deviceID).Scan(&queued, &queuedBytes); err != nil {
 		return err
@@ -2001,12 +2028,14 @@ func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope 
 	if queued >= maxQueuedPerDevice || queuedBytes+int64(len(envelope)) > maxQueuedBytesPerDevice {
 		return ErrQueueFull
 	}
-	_, err := s.db.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO message_queue (envelope_id, account_id, device_id, envelope, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (envelope_id, account_id, device_id) DO NOTHING`,
-		envelopeID, accountID, deviceID, envelope, time.Now().UnixMilli())
-	return err
+		envelopeID, accountID, deviceID, envelope, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // QueuedEnvelope is one row of a device's offline queue.

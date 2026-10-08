@@ -677,6 +677,12 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 			return
 		}
+		if errors.Is(err, store.ErrNotFound) {
+			// The device vanished after the access check: same answer as an
+			// unknown mailbox.
+			httpError(w, http.StatusForbidden, "delivery rejected")
+			return
+		}
 		slog.Error("sealed send: deliver failed", "err", privlog.Error(err))
 		internalError(w, err)
 		return

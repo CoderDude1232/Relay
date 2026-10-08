@@ -310,6 +310,11 @@ func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *rel
 			resp.Status = relaypb.SendStatus_SEND_STATUS_RATE_LIMITED
 			return resp
 		}
+		if errors.Is(err, store.ErrNotFound) {
+			// The device was removed between the mailbox lookup and enqueue.
+			resp.Status = relaypb.SendStatus_SEND_STATUS_UNKNOWN_ACCOUNT
+			return resp
+		}
 		slog.Error("send: deliver failed", "err", privlog.Error(err))
 		resp.Status = relaypb.SendStatus_SEND_STATUS_UNSPECIFIED
 		return resp
