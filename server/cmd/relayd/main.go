@@ -98,6 +98,7 @@ func main() {
 	blobTTL := flag.Duration("attachment-ttl", 14*24*time.Hour, "how long to keep attachment blobs")
 	attachDailyBytes := flag.Int64("attachment-daily-bytes", 2<<30, "per-account attachment upload budget in bytes per rolling day")
 	attachDailyCount := flag.Int("attachment-daily-count", 1000, "per-account attachment allocations per rolling day")
+	attachDiskCap := flag.Int64("attachment-disk-cap", api.DefaultAttachmentDiskCap, "global attachment disk watermark in bytes: new allocations/uploads get 507 once the blob directory holds this much (0 = unlimited)")
 	logLevel := flag.String("log-level", "warn", "minimum log level: debug, info, warn or error (per-connection/per-message events are debug)")
 	apnsKey := flag.String("apns-key", "", "path to APNs .p8 auth key (enables push)")
 	apnsKeyID := flag.String("apns-key-id", "", "APNs key id")
@@ -168,6 +169,7 @@ func main() {
 
 	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)
 	apiServer.SetAttachmentQuota(*attachDailyBytes, *attachDailyCount)
+	apiServer.SetAttachmentDiskCap(*attachDiskCap)
 	if *supabaseURL != "" {
 		apiServer.SetSupabaseAuth(*supabaseURL, *supabaseAnonKey)
 		slog.Info("supabase social login enabled", "url", *supabaseURL)

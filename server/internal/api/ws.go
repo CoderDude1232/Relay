@@ -22,6 +22,9 @@ const (
 	pingPeriod     = 45 * time.Second
 	maxFrameSize   = 512 * 1024 // generous for text; media moves over HTTP later
 	sendBufferSize = 256
+	// maxMalformedFrames is how many non-binary or unparseable frames one
+	// connection may send before the server closes it (1008).
+	maxMalformedFrames = 5
 )
 
 // Offline-queue paging, shared by the WebSocket drain and GET /v1/queue: a
@@ -163,17 +166,23 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
+	malformed := 0
 	for {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {
 			return
 		}
-		if msgType != websocket.BinaryMessage {
-			continue
-		}
 		frame := &relaypb.ClientFrame{}
-		if err := proto.Unmarshal(data, frame); err != nil {
-			slog.Warn("ws: unparseable client frame")
+		if msgType != websocket.BinaryMessage || proto.Unmarshal(data, frame) != nil {
+			// Debug, not Warn: a client can produce these at will, and the log
+			// must not be a lever for flooding the journal. A connection that
+			// keeps sending garbage is closed.
+			malformed++
+			slog.Debug("ws: malformed client frame")
+			if malformed >= maxMalformedFrames {
+				sess.Close("too many malformed frames")
+				return
+			}
 			continue
 		}
 		switch p := frame.Payload.(type) {

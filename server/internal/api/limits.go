@@ -154,6 +154,25 @@ var preKeyTargetOTKLimiter = newTokenBucketLimiter(60, time.Hour)
 // Per requesting account (across all targets): 300 OTKs per hour.
 var preKeyRequesterOTKLimiter = newTokenBucketLimiter(300, time.Hour)
 
+// Unauthenticated provisioning-session polls (GET /v1/provisioning-sessions/{id})
+// per source IP bucket: bursts of 120, refilled at 1/s — comfortably above a
+// new device polling once a second for the session's 10-minute life, far
+// below what enumerating session ids would need.
+var provisioningPollIPLimiter = newTokenBucketLimiter(120, 2*time.Minute)
+
+// Unauthenticated legacy link claims (POST /v1/devices/link-claims) per source
+// IP bucket: 20 per hour, bounding guesses at (token, verification code).
+var linkClaimIPLimiter = newTokenBucketLimiter(20, time.Hour)
+
+// Contact invites minted per account: 50 per rolling day (each is a DB row).
+var contactInviteLimiter = newTokenBucketLimiter(50, 24*time.Hour)
+
+// Successful username changes per account: 5 per rolling day. Only completed
+// changes spend budget (a "taken" answer is free), and every change releases
+// the old name into the reuse cooldown, so unbounded renames would let one
+// account churn through names.
+var usernameChangeLimiter = newTokenBucketLimiter(5, 24*time.Hour)
+
 // Default per-account attachment upload quotas (overridable with
 // SetAttachmentQuota / the -attachment-daily-* flags).
 const (
@@ -255,6 +274,10 @@ func (s *Server) pruneTokenBuckets() {
 		wsSendLimiter,
 		preKeyTargetOTKLimiter,
 		preKeyRequesterOTKLimiter,
+		provisioningPollIPLimiter,
+		linkClaimIPLimiter,
+		contactInviteLimiter,
+		usernameChangeLimiter,
 	} {
 		l.prune()
 	}

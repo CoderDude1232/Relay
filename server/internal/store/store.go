@@ -40,7 +40,13 @@ var (
 	ErrDuplicateNukeCommand      = errors.New("store: nuke command already executed")
 	ErrDeviceLimit               = errors.New("store: linked device limit reached")
 	ErrIdentityInUse             = errors.New("store: email or social-login identity already linked to an account")
+	ErrPreKeyPoolFull            = errors.New("store: one-time prekey pool full")
 )
+
+// MaxOneTimePreKeysPerDevice caps the one-time prekeys stored for one device.
+// Clients replenish below ~20 in batches of 100, so an honest pool never gets
+// near it; an upload that would exceed it is rejected whole (ErrPreKeyPoolFull).
+const MaxOneTimePreKeysPerDevice = 2000
 
 // maxDevicesPerAccount caps how many devices (primary + linked) an account may
 // have at once, bounding the blast radius of a linking compromise.
@@ -1880,6 +1886,19 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 			ON CONFLICT (account_id, device_id, key_id) DO UPDATE SET public_key = EXCLUDED.public_key`,
 			accountID, deviceID, k.KeyID, k.PublicKey); err != nil {
 			return err
+		}
+	}
+	// Cap the stored pool. Counted after the upserts (re-uploaded key ids
+	// don't double count); the UPDATE above holds the device row lock, so
+	// concurrent uploads for one device serialize and can't jointly overshoot.
+	if len(oneTime) > 0 {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
+			accountID, deviceID).Scan(&n); err != nil {
+			return err
+		}
+		if n > MaxOneTimePreKeysPerDevice {
+			return ErrPreKeyPoolFull // rolls back the whole upload
 		}
 	}
 	return tx.Commit(ctx)

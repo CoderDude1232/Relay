@@ -68,6 +68,23 @@ type Server struct {
 	// Per-account attachment upload budgets (count/day at allocation,
 	// bytes/day at upload).
 	attachQuota *attachmentQuota
+
+	// attachDiskCap is the global attachment disk watermark: once the blob
+	// directory holds this many bytes, new allocations and uploads get 507
+	// until GC frees space. 0 = unlimited.
+	attachDiskCap int64
+}
+
+// DefaultAttachmentDiskCap is the default global attachment disk watermark.
+const DefaultAttachmentDiskCap = 20 << 30 // 20 GiB
+
+// SetAttachmentDiskCap sets the global attachment disk watermark in bytes
+// (0 disables it).
+func (s *Server) SetAttachmentDiskCap(bytes int64) { s.attachDiskCap = bytes }
+
+// attachmentDiskFull reports whether the blob directory is at its watermark.
+func (s *Server) attachmentDiskFull() bool {
+	return s.attachDiskCap > 0 && s.blobs.Usage() >= s.attachDiskCap
 }
 
 // sealedIssuer holds the server certificate (signed by the trust root) and its
@@ -85,7 +102,8 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 		}
 	}
 	s := &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret,
-		attachQuota: newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount)}
+		attachQuota:   newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount),
+		attachDiskCap: DefaultAttachmentDiskCap}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
 	return s
 }
@@ -980,6 +998,10 @@ func (s *Server) handleDeliveryCertificate(w http.ResponseWriter, r *http.Reques
 // handleCreateContactInvite mints a single-use contact invite token for the
 // authenticated account.
 func (s *Server) handleCreateContactInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if !contactInviteLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many invites today; try again later")
+		return
+	}
 	token, expiresAt, err := s.store.CreateContactInvite(dev.AccountID)
 	if err != nil {
 		internalError(w, err)
@@ -1081,6 +1103,10 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 		httpError(w, http.StatusBadRequest, "username must be 1–64 alphanumeric/._- characters")
 		return
 	}
+	if usernameChangeLimiter.exhausted(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many username changes today; try again later")
+		return
+	}
 	if err := s.store.UpdateUsername(dev.AccountID, req.Username); errors.Is(err, store.ErrUsernameTaken) {
 		httpError(w, http.StatusConflict, "username already taken")
 		return
@@ -1088,7 +1114,8 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 		internalError(w, err)
 		return
 	}
-	s.reindexAccount(dev.AccountID) // update the blinded directory for the new username
+	usernameChangeLimiter.allow(dev.AccountID) // only completed changes spend budget
+	s.reindexAccount(dev.AccountID)            // update the blinded directory for the new username
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1163,6 +1190,10 @@ func (s *Server) handleCreateDeviceLinkInvitation(w http.ResponseWriter, r *http
 }
 
 func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
+	if !linkClaimIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "too many link attempts; try again later")
+		return
+	}
 	var req struct {
 		LinkToken        string `json:"linkToken"`
 		VerificationCode string `json:"verificationCode"`
@@ -1218,6 +1249,10 @@ func (s *Server) handleCreateProvisioningSession(w http.ResponseWriter, r *http.
 // handleFetchProvisioning lets the new device poll for the primary's encrypted
 // payload. 204 while it's not there yet, 404 once expired/consumed.
 func (s *Server) handleFetchProvisioning(w http.ResponseWriter, r *http.Request) {
+	if !provisioningPollIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "polling too fast; try again later")
+		return
+	}
 	blob, err := s.store.FetchProvisioningBlob(r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "provisioning session expired or unknown")
@@ -1586,6 +1621,10 @@ func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request)
 // device (charged to its daily attachment quota) and records it as reserved,
 // so the (unauthenticated) PUT can only write ids the relay handed out, once.
 func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.attachmentDiskFull() {
+		httpError(w, http.StatusInsufficientStorage, "attachment storage is full; try again later")
+		return
+	}
 	id, err := s.blobs.NewID()
 	if err != nil {
 		internalError(w, err)
@@ -1622,6 +1661,12 @@ func (c *countingReader) Read(p []byte) (int, error) {
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !attachmentIPLimiter.allow(clientIP(r)) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
+	// Checked before the reservation is claimed, so the client can retry the
+	// same id once GC has freed space.
+	if s.attachmentDiskFull() {
+		httpError(w, http.StatusInsufficientStorage, "attachment storage is full; try again later")
 		return
 	}
 	id := r.PathValue("id")
@@ -1798,7 +1843,10 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 	for _, k := range req.OneTimePreKeys {
 		otks = append(otks, store.OneTimePreKey{KeyID: k.KeyID, PublicKey: k.PublicKey})
 	}
-	if err := s.store.SetKeys(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks, req.ReplaceOneTimePreKeys); err != nil {
+	if err := s.store.SetKeys(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks, req.ReplaceOneTimePreKeys); errors.Is(err, store.ErrPreKeyPoolFull) {
+		httpError(w, http.StatusConflict, fmt.Sprintf("one-time prekey pool full (max %d per device); upload fewer or set replaceOneTimePreKeys", store.MaxOneTimePreKeysPerDevice))
+		return
+	} else if err != nil {
 		internalError(w, err)
 		return
 	}
