@@ -191,7 +191,7 @@ struct LinkDeviceView: View {
                     if syncHistory {
                         Label("Recent message history (up to 50 messages per chat)", systemImage: "clock.arrow.circlepath")
                     }
-                    Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Settings → Linked Devices.")
+                    Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Profile → Linked Devices.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

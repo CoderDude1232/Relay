@@ -249,15 +249,21 @@ struct ContactCardView: View {
                     }
                 }
 
+                // MARK: Advanced (troubleshooting)
                 if !isNoteToSelf {
                     Section {
-                        Button(role: .destructive) {
-                            confirmResetSession = true
-                        } label: {
-                            Label("Reset Session", systemImage: "arrow.triangle.2.circlepath")
+                        DisclosureGroup("Troubleshooting") {
+                            Button {
+                                confirmResetSession = true
+                            } label: {
+                                Label("Fix Delivery Problems", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            Text("Starts a fresh encrypted connection with this person. Use it only if your messages keep showing \"Not Delivered\" while you're online.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
-                    } footer: {
-                        Text("Forces a new Signal session on the next message. Use if messages show \"Not Delivered\" despite a working connection.")
+                    } header: {
+                        Text("Advanced")
                     }
                 }
             }
@@ -269,17 +275,17 @@ struct ContactCardView: View {
                 }
             }
             .onAppear { nickname = service.nickname(forAccount: account) ?? "" }
-            .confirmationDialog("Reset session with \(displayName)?", isPresented: $confirmResetSession, titleVisibility: .visible) {
-                Button("Reset Session", role: .destructive) { service.resetSession(withPeer: account) }
+            .confirmationDialog("Fix delivery problems with \(displayName)?", isPresented: $confirmResetSession, titleVisibility: .visible) {
+                Button("Start Fresh Connection", role: .destructive) { service.resetSession(withPeer: account) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This forces a new encrypted session on the next message. Only use this if messages are stuck.")
+                Text("Your next message will start a fresh encrypted connection with this person. Your chat history stays as it is.")
             }
             .confirmationDialog("Block \(displayName)?", isPresented: $confirmBlock, titleVisibility: .visible) {
                 Button("Block", role: .destructive) { service.blockAccount(account) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Blocked contacts can't message or call you. You can unblock them later in Settings.")
+                Text("Blocked contacts can't message or call you. You can unblock them later in Profile → Chats → Blocked Contacts.")
             }
             .sheet(isPresented: $showingReport) {
                 ReportContactSheet(service: service, account: account, displayName: displayName)

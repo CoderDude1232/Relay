@@ -38,7 +38,7 @@ struct MediaGalleryView: View {
                 ContentUnavailableView {
                     Label("Media Locked", systemImage: "lock.fill")
                 } description: {
-                    Text("This chat requires Face ID to view media.")
+                    Text("Unlock with \(BiometricGate.biometryName) to view this chat's media.")
                 } actions: {
                     Button("Unlock") { Task { await unlock() } }
                         .buttonStyle(.borderedProminent)

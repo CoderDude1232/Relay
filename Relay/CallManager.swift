@@ -142,7 +142,7 @@ final class CallManager: NSObject {
     }
 
     private static let noRelayServerMessage =
-        "Private calling needs Relay’s relay server, which isn’t reachable right now. Try again shortly. (You can allow direct calls in Settings → Privacy, but that reveals your IP address to the other person.)"
+        "Private calling needs Relay’s relay server, which isn’t reachable right now. Try again shortly. (You can allow direct calls in Profile → Privacy, but that reveals your IP address to the other person.)"
 
     private static func hasTurnServer(_ servers: [RTCIceServer]) -> Bool {
         servers.contains { $0.urlStrings.contains { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") } }

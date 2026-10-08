@@ -362,7 +362,8 @@ private struct WelcomeView: View {
         case .failure(let error):
             let asErr = error as? ASAuthorizationError
             if asErr?.code != .canceled {
-                oauthError = error.localizedDescription
+                // ASAuthorizationError descriptions are raw framework codes.
+                oauthError = "Sign in with Apple didn't finish. Please try again."
             }
         }
     }
@@ -391,7 +392,7 @@ private struct WelcomeView: View {
                 oauthLoading = false
                 let asErr = error as? ASWebAuthenticationSessionError
                 if asErr?.code != .canceledLogin {
-                    oauthError = error.localizedDescription
+                    oauthError = "Google sign-in didn't finish. Please try again."
                 }
                 return
             }
@@ -415,7 +416,7 @@ private struct WelcomeView: View {
               let verifier = pendingCodeVerifier
         else {
             oauthLoading = false
-            oauthError = "Invalid OAuth callback — missing authorization code."
+            oauthError = "Google sign-in didn't finish. Please try again."
             return
         }
         pendingCodeVerifier = nil

@@ -546,42 +546,54 @@ private struct DataRetentionView: View {
                     detail: "Messages are end-to-end encrypted with the Signal Protocol. The server sees only opaque ciphertext and never decrypts content."
                 )
                 RetentionRow(
+                    icon: "person.2.slash", color: .orange,
+                    title: "Who You Talk To",
+                    detail: "Sealed sender hides who sent each message from the server. Group names, members and messages are end-to-end encrypted — the server keeps no group records. Your address book is never uploaded."
+                )
+                RetentionRow(
                     icon: "key.slash", color: .orange,
                     title: "Private Keys",
-                    detail: "Your identity key lives in the Keychain, protected by a key held in the Secure Enclave. Session (ratchet) keys live in the app's AES-256 encrypted database. None of them ever leave your device."
+                    detail: "Your identity key lives in the Keychain, protected by a key held in the Secure Enclave. Session (ratchet) keys live in the app's AES-256 encrypted database. Keys leave this device only end-to-end encrypted, and only to your own devices when you link a new one."
                 )
                 RetentionRow(
                     icon: "eye.slash.fill", color: .gray,
                     title: "Server Logs",
-                    detail: "The relay server redacts bearer tokens, account IDs, and message metadata before writing any log line. No request bodies are logged."
+                    detail: "Relay's server logs redact credentials, tokens and account IDs, and never include request bodies or message content."
                 )
             } header: {
-                Text("What the Server Never Stores")
+                Text("What the Server Can't See")
             }
 
             Section {
                 RetentionRow(
-                    icon: "envelope.fill", color: .blue,
-                    title: "Offline Message Queue",
-                    detail: "Encrypted envelopes queued for offline delivery are kept for up to 30 days, up to 500 envelopes per device, and up to 512 KiB each. Delivered and acknowledged envelopes are deleted immediately."
+                    icon: "person.fill", color: .teal,
+                    title: "Account",
+                    detail: "Your username; your device list with a hashed password for each device; a hashed account password, if you set one; and push notification tokens so your devices can be woken. Kept for the lifetime of the account."
+                )
+                RetentionRow(
+                    icon: "at", color: .blue,
+                    title: "Email",
+                    detail: "If you verified an email, the server keeps a keyed token derived from it (used for account recovery) — never the address itself. Letting people find you by email is off by default; only if you turn it on is a blinded lookup entry stored."
                 )
                 RetentionRow(
                     icon: "key.horizontal.fill", color: .yellow,
-                    title: "Prekeys",
-                    detail: "One-time prekeys are consumed on session establishment and deleted from the server. Signed prekeys and Kyber prekeys are replaced when you rotate them."
+                    title: "Public Keys",
+                    detail: "Your public identity key and prekeys, so people can start encrypted chats with you, plus your sealed-sender access key. One-time prekeys are deleted once used; signed and Kyber prekeys are replaced when they rotate."
                 )
                 RetentionRow(
-                    icon: "person.fill", color: .teal,
-                    title: "Account Registration",
-                    detail: "Your username, a bcrypt hash of your password, and your device list are stored for the lifetime of the account. Signing out and Emergency Wipe erase your messages and keys from your devices and clear any queued envelopes on the server."
+                    icon: "envelope.fill", color: .blue,
+                    title: "Offline Message Queue",
+                    detail: "Encrypted envelopes waiting for an offline device are kept for up to 14 days, up to 500 envelopes per device, and up to 512 KiB each. Delivered envelopes are deleted as soon as your device acknowledges them."
                 )
                 RetentionRow(
                     icon: "paperclip", color: .purple,
                     title: "Attachments",
-                    detail: "Encrypted attachment blobs are stored for 30 days. After that they are automatically deleted. The server cannot decrypt attachment content."
+                    detail: "Encrypted attachment blobs are stored for 14 days, then deleted automatically. The server cannot decrypt attachment content."
                 )
             } header: {
                 Text("What the Server Stores")
+            } footer: {
+                Text("Signing out removes this device from your account. Emergency Wipe erases messages and keys on all your devices.")
             }
 
             Section {
@@ -603,7 +615,7 @@ private struct DataRetentionView: View {
                 RetentionRow(
                     icon: "network", color: .secondary,
                     title: "Network Metadata",
-                    detail: "IP addresses, connection timing, and envelope sizes are visible to the relay server and any network between you and it. TLS encrypts data in transit; Private Call Mode hides your IP from call peers."
+                    detail: "IP addresses, connection timing, and envelope sizes are visible to the relay server and any network between you and it. TLS encrypts data in transit; Relay-Only Calls hides your IP from the people you call."
                 )
             } header: {
                 Text("Metadata Limits")
@@ -799,14 +811,7 @@ private struct SecuritySettingsView: View {
         }
     }
 
-    private var biometricTypeName: String {
-        let context = LAContext()
-        var error: NSError?
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            return "passcode"
-        }
-        return context.biometryType == .faceID ? "Face ID" : "Touch ID"
-    }
+    private var biometricTypeName: String { BiometricGate.biometryName }
 }
 
 // MARK: - Edit Profile Sheet
@@ -1392,7 +1397,7 @@ private struct InviteShareSheet: UIViewControllerRepresentable {
     let username: String?
 
     private var items: [Any] {
-        var message = "Hey! I'm using Relay, an end-to-end encrypted messenger with no metadata collection. No ads, no tracking, no logs."
+        var message = "Hey! I'm using Relay, an end-to-end encrypted messenger. Relay can't read our messages or see who we talk to, and there are no ads or tracking."
         if let name = username, !name.isEmpty {
             message += " Add me at https://relaymsg.app/add/\(name)"
         } else {

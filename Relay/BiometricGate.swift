@@ -8,8 +8,26 @@ import LocalAuthentication
 
 enum BiometricGate {
     /// Shown when a sensitive action needs a device passcode that isn't set.
-    static let passcodeRequiredMessage =
-        "This needs a device passcode, so that only you can approve it. Set a passcode in Settings → Face ID & Passcode, then try again."
+    static var passcodeRequiredMessage: String {
+        let pane = biometryName == "passcode" ? "Passcode" : "\(biometryName) & Passcode"
+        return "This needs a device passcode, so that only you can approve it. Set a passcode in Settings → \(pane), then try again."
+    }
+
+    /// The name of this device's biometric unlock ("Face ID", "Touch ID",
+    /// "Optic ID"), or "passcode" when no biometry is available.
+    static var biometryName: String {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+            return "passcode"
+        }
+        switch context.biometryType {
+        case .faceID: return "Face ID"
+        case .touchID: return "Touch ID"
+        case .opticID: return "Optic ID"
+        default: return "passcode"
+        }
+    }
 
     /// True when the device has a passcode (and so can authenticate the owner).
     static var isPasscodeSet: Bool {

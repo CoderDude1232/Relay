@@ -1680,8 +1680,8 @@ struct ChatPrivacySettingsView: View {
             }
 
             Section("Privacy") {
-                Toggle("Require Face ID for media", isOn: $mediaRequiresBiometric)
-                Toggle("Require Face ID to open chat", isOn: $requireBiometricChat)
+                Toggle("Require \(BiometricGate.biometryName) for media", isOn: $mediaRequiresBiometric)
+                Toggle("Require \(BiometricGate.biometryName) to open chat", isOn: $requireBiometricChat)
             }
 
             Section {
@@ -1699,10 +1699,10 @@ struct ChatPrivacySettingsView: View {
             } footer: {
                 if isGroup {
                     Text(canEditGroupScreenSecurity
-                         ? "Blanks messages in screenshots and recordings for everyone. Only admins can change this. The other person is always alerted when a screenshot is taken."
-                         : "The group admin controls whether messages are hidden from screenshots. Everyone is always alerted when a screenshot is taken.")
+                         ? "Blanks messages in screenshots and recordings for everyone. Only admins can change this. Relay tries to notify the group when someone takes a screenshot."
+                         : "The group admin controls whether messages are hidden from screenshots. Relay tries to notify the group when someone takes a screenshot.")
                 } else {
-                    Text("Blanks messages in screenshots and recordings. Both people must turn this off to disable it. The other person is always alerted when you take a screenshot.")
+                    Text("Blanks messages in screenshots and recordings. Both people must turn this off to disable it. Relay tries to notify the other person when you take a screenshot.")
                 }
             }
 
