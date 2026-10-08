@@ -315,6 +315,18 @@ public final class MessageStore: @unchecked Sendable {
     /// Returns the conversation with this peer, creating it if needed.
     @discardableResult
     public func conversation(withPeer account: String, username: String? = nil) throws -> String {
+        // 1:1 only. Groups and 1:1 chats share the peer_account key, so a group
+        // whose id equals this account id was forged (real group ids are random
+        // UUIDs): someone sent a group-create using a contact's account id to
+        // capture that contact's 1:1 messages and our replies. The account
+        // always wins — evict the forged group before using the key.
+        if let forged = try db.query(
+            "SELECT id FROM conversations WHERE peer_account = ? AND group_id IS NOT NULL", [.text(account)]
+        ).first?.first?.string {
+            try deleteConversation(id: forged)
+            try db.run("DELETE FROM group_members WHERE group_id = ?", [.text(account)])
+            try db.run("DELETE FROM group_state WHERE id = ?", [.text(account)])
+        }
         if let id = try db.query(
             "SELECT id FROM conversations WHERE peer_account = ?", [.text(account)]
         ).first?.first?.string {

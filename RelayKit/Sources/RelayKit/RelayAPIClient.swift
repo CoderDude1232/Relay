@@ -736,10 +736,25 @@ public struct RelayAPIClient: Sendable {
 
     /// Downloads an encrypted blob by id (raw ciphertext). Anonymous: no
     /// credentials, separate session — the download can't be tied to the account.
+    /// Largest attachment ciphertext we'll accept: the relay's 25 MiB upload
+    /// cap plus encryption overhead. A misbehaving relay can't make us buffer
+    /// an arbitrarily large download.
+    public static let maxAttachmentDownloadBytes = 26 << 20
+
     public func downloadAttachment(id: String) async throws -> Data {
-        let request = makeRequest("GET", "v1/attachments/\(id)")
-        let (data, _) = try await send(request, authenticated: false)
-        return data
+        var request = makeRequest("GET", "v1/attachments/\(id)")
+        request.setValue(nil, forHTTPHeaderField: "Authorization")
+        // Stream to a temp file (ciphertext) rather than memory, and check the
+        // size before loading it.
+        let (file, response) = try await anonymousSession.download(for: request)
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard let http = response as? HTTPURLResponse else { throw RelayAPIError.malformedResponse }
+        guard (200..<300).contains(http.statusCode) else {
+            throw RelayAPIError.http(status: http.statusCode, message: "")
+        }
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+        guard size <= Self.maxAttachmentDownloadBytes else { throw RelayAPIError.malformedResponse }
+        return try Data(contentsOf: file)
     }
 
     // MARK: - Request plumbing

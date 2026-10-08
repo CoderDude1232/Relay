@@ -366,7 +366,7 @@ struct LinkedDevicesView: View {
     @State private var showingLinkSheet = false
     @State private var errorMessage: String?
     @State private var pendingUnlink: RelayKit.LinkedDevice?
-    @State private var canAskForRegion = DeviceRegion.shared.canAsk
+    @State private var regionEnabled = DeviceRegion.shared.isEnabled
     @State private var relinkNudgeDismissed = UserDefaults.standard.bool(forKey: Self.relinkNudgeDismissedKey)
 
     private static let relinkNudgeDismissedKey = "relay.relinkNudgeDismissed"
@@ -438,16 +438,18 @@ struct LinkedDevicesView: View {
                     Text("Swipe left to unlink a device. Device names and regions are shared only between your own devices, end-to-end encrypted — Relay's servers never see them.")
                 }
 
-                if canAskForRegion {
-                    Section {
-                        Button {
-                            DeviceRegion.shared.requestAccess()
-                        } label: {
-                            Label("Show This Device's Region", systemImage: "location")
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { regionEnabled },
+                        set: { on in
+                            regionEnabled = on
+                            on ? DeviceRegion.shared.enable() : DeviceRegion.shared.disable()
                         }
-                    } footer: {
-                        Text("Adds an approximate region like \"Queensland, Australia\" to this device's name on your other devices. Uses approximate location only, and never leaves your devices unencrypted.")
+                    )) {
+                        Label("Show This Device's Region", systemImage: "location")
                     }
+                } footer: {
+                    Text("Adds an approximate region like \"Queensland, Australia\" to this device's name on your other devices. Uses approximate location only, turned into a region name by Apple; it never reaches Relay's servers.")
                 }
 
                 Section {
@@ -474,7 +476,7 @@ struct LinkedDevicesView: View {
         }
         .task { await refresh() }
         .onReceive(NotificationCenter.default.publisher(for: .deviceRegionAuthorizationChanged)) { _ in
-            canAskForRegion = DeviceRegion.shared.canAsk
+            regionEnabled = DeviceRegion.shared.isEnabled
             Task {
                 await service.publishDeviceLabel(force: true)
                 await refresh()

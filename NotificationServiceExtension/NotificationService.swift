@@ -193,7 +193,8 @@ class NotificationService: UNNotificationServiceExtension {
             storage: storage,
             engine: engine,
             ownAccountId: account.accountId,
-            sealedSenderTrustRoot: RelaySealedSender.trustRoot
+            sealedSenderTrustRoot: RelaySealedSender.trustRoot,
+            processLock: .envelopeProcessing(appGroupId: appGroupId)
         )
         // Blocked senders are still decrypted (keeps the ratchet in sync) but
         // the processor drops them before storing — matching the app.
@@ -240,7 +241,8 @@ class NotificationService: UNNotificationServiceExtension {
             storage: storage,
             engine: engine,
             ownAccountId: account.accountId,
-            sealedSenderTrustRoot: RelaySealedSender.trustRoot
+            sealedSenderTrustRoot: RelaySealedSender.trustRoot,
+            processLock: .envelopeProcessing(appGroupId: appGroupId)
         )
 
         // Blocked senders are still decrypted (keeps the ratchet in sync) but
@@ -317,8 +319,8 @@ class NotificationService: UNNotificationServiceExtension {
             ? "📝 Updated the shared notepad"
             : notification.body
 
-        let title = displayName(for: notification.conversationId, in: storage)
-            ?? String(notification.senderAccount.prefix(8))
+        // Never fall back to (part of) the sender's account id in a banner.
+        let title = displayName(for: notification.conversationId, in: storage) ?? "Relay"
 
         // Notification privacy: app-level setting takes precedence over per-conversation.
         // "nameOnly": show sender name but redact message content.

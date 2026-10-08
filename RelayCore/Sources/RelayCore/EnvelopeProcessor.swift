@@ -314,6 +314,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     private let storage: SecureStore
     private let engine: CryptoEngine
     private let ownAccountId: String
+    private let processLock: CrossProcessLock?
     /// 33-byte serialized public key of the sealed-sender trust root. Required
     /// to decrypt sealed messages (empty envelope sender); nil disables them.
     private let sealedSenderTrustRoot: Data?
@@ -344,12 +345,14 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         storage: SecureStore,
         engine: CryptoEngine,
         ownAccountId: String = "",
-        sealedSenderTrustRoot: Data? = nil
+        sealedSenderTrustRoot: Data? = nil,
+        processLock: CrossProcessLock? = nil
     ) {
         self.storage = storage
         self.engine = engine
         self.ownAccountId = ownAccountId
         self.sealedSenderTrustRoot = sealedSenderTrustRoot
+        self.processLock = processLock
     }
 
     /// - Parameter blockedAccounts: accounts whose messages should be dropped.
@@ -358,6 +361,15 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     public func process(
         _ envelope: IncomingEnvelope,
         blockedAccounts: Set<String> = []
+    ) throws -> ProcessedEnvelope {
+        // Serialize with the other process (app ⇄ NSE) sharing this database.
+        guard let processLock else { return try processLocked(envelope, blockedAccounts: blockedAccounts) }
+        return try processLock.withLock { try processLocked(envelope, blockedAccounts: blockedAccounts) }
+    }
+
+    private func processLocked(
+        _ envelope: IncomingEnvelope,
+        blockedAccounts: Set<String>
     ) throws -> ProcessedEnvelope {
         guard try storage.messages.claimEnvelope(id: envelope.id) else {
             return ProcessedEnvelope(outcome: .duplicate, peerAccount: envelope.senderAccount)
@@ -429,7 +441,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         // know. Group updates (handled, with their own authorization, by the
         // app) and sender-key distributions (harmless to store) are exempt.
         if let groupId, !isGroupControl(content) {
+            // We must still be in it too: after leaving (or being removed) we
+            // drop the group's traffic instead of quietly storing it.
             guard let group = try? storage.messages.group(id: groupId),
+                  ownAccountId.isEmpty || group.members.contains(ownAccountId),
                   attestedAccount == ownAccountId || group.members.contains(attestedAccount)
             else {
                 log.warning("dropping group content from a non-member or for an unknown group")
@@ -444,10 +459,17 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         // A chat message lands in the group conversation (keyed by group id)
         // or the 1:1 conversation with the sender (or sync recipient on sync).
         func chatConversation() throws -> String {
-            if isSyncMessage {
+            if isSyncMessage, groupId == nil {
                 return try storage.messages.conversation(withPeer: content.syncRecipient)
             }
-            return try storage.messages.conversation(withPeer: groupId ?? attestedAccount)
+            if let groupId {
+                // Never through conversation(withPeer:), which is 1:1-only.
+                guard let id = try storage.messages.groupConversationId(groupId: groupId) else {
+                    throw EnvelopeProcessorError.senderSpoofed
+                }
+                return id
+            }
+            return try storage.messages.conversation(withPeer: attestedAccount)
         }
 
         // Edits and unsends name their target by timestamp only. Apply them only

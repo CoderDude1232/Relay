@@ -18,6 +18,7 @@
 import Clibsodium
 import CryptoKit
 import Foundation
+import Intents
 import Observation
 import Security
 
@@ -201,6 +202,11 @@ final class PanicModeManager {
     func hide(_ conversationId: String) {
         hiddenIds.insert(conversationId)
         Self.saveHiddenIds(hiddenIds)
+        // Siri / share-sheet suggestions live outside the encrypted store; drop
+        // Relay's donations so the hidden chat stops being suggested (older
+        // donations carry no per-chat group id, so clear them all — they refill
+        // as the user sends).
+        INInteraction.deleteAll { _ in }
     }
 
     func unhide(_ conversationId: String) {

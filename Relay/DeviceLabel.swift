@@ -104,13 +104,34 @@ final class DeviceRegion: NSObject, CLLocationManagerDelegate {
 
     var canAsk: Bool { manager.authorizationStatus == .notDetermined }
 
-    func requestAccess() {
-        if canAsk { manager.requestWhenInUseAuthorization() }
+    private static let enabledKey = "relay.deviceRegion.enabled"
+
+    /// The user's explicit opt-in (from Linked Devices). Location permission
+    /// granted for live-location sharing alone never enables this.
+    var isEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.enabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.enabledKey) }
     }
 
-    /// "Queensland, Australia", or "" without permission or on failure.
+    /// Opts in, asking for location permission if it hasn't been decided.
+    func enable() {
+        isEnabled = true
+        if canAsk {
+            manager.requestWhenInUseAuthorization()
+        } else {
+            NotificationCenter.default.post(name: .deviceRegionAuthorizationChanged, object: nil)
+        }
+    }
+
+    func disable() {
+        isEnabled = false
+        NotificationCenter.default.post(name: .deviceRegionAuthorizationChanged, object: nil)
+    }
+
+    /// "Queensland, Australia", or "" when not opted in, without permission,
+    /// or on failure.
     func currentRegion() async -> String {
-        guard isAuthorized else { return "" }
+        guard isEnabled, isAuthorized else { return "" }
         guard let location = await oneLocation(),
               let placemark = try? await CLGeocoder().reverseGeocodeLocation(location).first
         else { return "" }

@@ -111,7 +111,11 @@ struct DatabaseTests {
 
         // A different key is untrusted until re-saved, and saving it both
         // reports the replacement and resets verification.
-        #expect(try !store.isTrustedIdentity(secondIdentity, for: peer, direction: .receiving, context: context))
+        // A changed contact key is untrusted for SENDING (the user must
+        // acknowledge it) but accepted when receiving, so messages sent after
+        // a reinstall aren't dropped.
+        #expect(try !store.isTrustedIdentity(secondIdentity, for: peer, direction: .sending, context: context))
+        #expect(try store.isTrustedIdentity(secondIdentity, for: peer, direction: .receiving, context: context))
         #expect(try store.saveIdentity(secondIdentity, for: peer, context: context) == .replacedExisting)
         #expect(try !store.isVerified(address: "peer"))
     }

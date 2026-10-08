@@ -140,7 +140,7 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         )
     }
 
-    /// Trust policy (both directions):
+    /// Trust policy (sending; receiving from contacts always trusts, see below):
     /// - a device of our own account is trusted iff it presents our own
     ///   identity key;
     /// - a device we already have a key for is trusted iff the key is unchanged;
@@ -157,6 +157,13 @@ extension SQLCipherSignalStore: IdentityKeyStore {
     ) throws -> Bool {
         if let localAccountName, address.name == localAccountName {
             return identity == (try credentials.identityKeyPair().identityKey)
+        }
+        // Receiving from a contact: accept a changed key (as Signal does) so
+        // their messages after a reinstall aren't silently dropped. libsignal
+        // then saves it — which resets `verified` — and sending stays blocked
+        // until the user acknowledges the new safety number.
+        if direction == .receiving {
+            return true
         }
         if let known = try self.identity(for: address, context: context) {
             return known == identity

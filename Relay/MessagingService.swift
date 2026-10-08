@@ -195,7 +195,8 @@ final class MessagingService {
             storage: storage,
             engine: engine,
             ownAccountId: credentials.accountId,
-            sealedSenderTrustRoot: RelayConfig.sealedSenderTrustRoot
+            sealedSenderTrustRoot: RelayConfig.sealedSenderTrustRoot,
+            processLock: .envelopeProcessing(appGroupId: AppModel.appGroupId)
         )
         self.api = RelayAPIClient(baseURL: serverURL, credentials: credentials, session: session,
                                   signer: DeviceAuthSigner(keychain: keychain))
@@ -2063,8 +2064,9 @@ final class MessagingService {
         for c in snapshot.conversations {
             let convId: String
             if let gid = c.groupId {
-                convId = (try? storage.messages.groupConversationId(groupId: gid))
-                    ?? (try? storage.messages.conversation(withPeer: gid, username: c.username)) ?? ""
+                // The group was upserted above; never create it via the
+                // 1:1-only conversation(withPeer:).
+                convId = ((try? storage.messages.groupConversationId(groupId: gid)) ?? nil) ?? ""
             } else {
                 convId = (try? storage.messages.conversation(withPeer: c.peerAccount, username: c.username)) ?? ""
             }
@@ -2209,12 +2211,20 @@ final class MessagingService {
     /// with our other devices over the sealed self-sync path. Without `force`,
     /// only when it changed or is over a day old.
     func publishDeviceLabel(force: Bool) async {
-        let region = await DeviceRegion.shared.currentRegion()
         let previous = deviceLabel(forDevice: credentials.deviceId)
         let now = Int64(Date().timeIntervalSince1970 * 1000)
+        // Check freshness BEFORE taking a location fix: the geocoder is
+        // Apple's, so don't send it coordinates on every launch.
+        if !force, let previous, now - previous.updatedAt < 86_400_000,
+           previous.model == DeviceModel.current {
+            return
+        }
+        let regionEnabled = DeviceRegion.shared.isEnabled
+        let region = await DeviceRegion.shared.currentRegion()
         var label = DeviceLabel(model: DeviceModel.current, region: region, updatedAt: now)
-        // Keep the last known region if we can't get one right now.
-        if label.region.isEmpty, let previous { label.region = previous.region }
+        // Keep the last known region if we can't get one right now — unless the
+        // user turned the region off, which clears it.
+        if label.region.isEmpty, regionEnabled, let previous { label.region = previous.region }
         let unchanged = previous.map { $0.model == label.model && $0.region == label.region } ?? false
         let fresh = previous.map { now - $0.updatedAt < 86_400_000 } ?? false
         if unchanged && fresh && !force { return }
@@ -2332,8 +2342,9 @@ final class MessagingService {
         let remaining = existing.members.filter { $0 != credentials.accountId }
         let announce = StoredGroup(
             id: existing.id, name: existing.name, distributionId: existing.distributionId,
-            revision: existing.revision + 1, members: existing.members,
-            admins: existing.admins, isAnnounceOnly: existing.isAnnounceOnly
+            revision: existing.revision + 1, members: remaining,
+            admins: existing.admins.filter { $0 != credentials.accountId },
+            isAnnounceOnly: existing.isAnnounceOnly
         )
         await sendGroupUpdate(.leave, group: announce, target: credentials.accountId)
         try storage.messages.upsertGroup(
@@ -2642,7 +2653,17 @@ final class MessagingService {
         let newAdmins: [String]
         let newName: String
         let distributionId: String
-        if isValidSelfJoin && !isBootstrap && !actorIsAdmin, let existing {
+        if isSelfDeparture, let existing {
+            // Someone leaving (or removing themselves) changes exactly one thing:
+            // they're gone. Never adopt the sender's lists here — the self-
+            // departure branch bypasses the admin check, so trusting them would
+            // let any member install themselves as sole admin and re-route who
+            // receives the group's messages.
+            newMembers = existing.members.filter { $0 != actor }
+            newAdmins = existing.admins.filter { $0 != actor }
+            newName = existing.name
+            distributionId = existing.distributionId
+        } else if isValidSelfJoin && !isBootstrap && !actorIsAdmin, let existing {
             // A link-joiner: only ever ADD themselves. Never let a non-admin's
             // message overwrite the roster, admins, name, or epoch.
             newMembers = existing.members.contains(actor) ? existing.members : existing.members + [actor]
@@ -4390,6 +4411,9 @@ final class MessagingService {
     // Donate an INSendMessageIntent interaction so iOS learns which contacts the
     // user messages via Relay and can show them as suggestions in the share sheet.
     private func donateInteraction(peerAccount account: String, conversationId: String) {
+        // Chats hidden by panic mode must not surface in Siri / share-sheet
+        // suggestions, which live outside the encrypted store.
+        guard !PanicModeManager.hiddenConversationIdsSnapshot().contains(conversationId) else { return }
         let name = displayName(forAccount: account)
         // Identify the person by conversation id, not account id: these
         // donations live in Siri's store, outside the app.
@@ -4415,6 +4439,7 @@ final class MessagingService {
         )
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .outgoing
+        interaction.groupIdentifier = conversationId
         interaction.donate { _ in }
     }
 

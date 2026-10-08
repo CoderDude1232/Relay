@@ -216,7 +216,10 @@ struct IdentityTrustTests {
         // New device presenting a different key: untrusted (both directions),
         // exactly like a changed key.
         #expect(try !store.isTrustedIdentity(rogueKey, for: device3, direction: .sending, context: context))
-        #expect(try !store.isTrustedIdentity(rogueKey, for: device3, direction: .receiving, context: context))
+        #expect(try !store.isTrustedIdentity(rogueKey, for: device3, direction: .sending, context: context))
+        // Receiving from a contact's unfamiliar key is accepted (and surfaced as
+        // a safety-number change); sending to it stays blocked.
+        #expect(try store.isTrustedIdentity(rogueKey, for: device3, direction: .receiving, context: context))
         // Saving it (the app's explicit acceptance path) reports a replacement…
         #expect(try store.saveIdentity(rogueKey, for: device3, context: context) == .replacedExisting)
         // …after which that device is trusted with that key, and the account
