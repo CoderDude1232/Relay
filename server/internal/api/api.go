@@ -285,6 +285,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("PUT /v1/accounts/me/discoverability", s.auth(s.handleSetDiscoverability))
+	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.handleSetAccountPassword))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
 	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
 	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
@@ -527,9 +528,23 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		emailToken = s.emailToken(user.Email)
 	}
 
+	// Registration lock: a sign-in that resolves to an existing account with
+	// an account password must present it (it replaces every device). Wrong
+	// guesses back off exponentially per account (recoveryLockout).
 	dev, created, err := s.store.ProvisionOAuthAccount(
-		user.ID, emailToken, req.Username, req.Password, req.AccountPassword)
+		user.ID, emailToken, req.Username, req.Password, req.AccountPassword,
+		func(accountID string) bool { return recoveryLockout.permit(registrationLockKey(accountID)) })
 	switch {
+	case errors.Is(err, store.ErrAccountPasswordLocked):
+		httpError(w, http.StatusTooManyRequests, "too many account password attempts; try again later")
+		return
+	case errors.Is(err, store.ErrAccountPasswordRequired):
+		httpError(w, http.StatusLocked, "account password required")
+		return
+	case errors.Is(err, store.ErrAccountPasswordIncorrect):
+		recoveryLockout.fail(registrationLockKey(dev.AccountID))
+		httpError(w, http.StatusLocked, "account password incorrect")
+		return
 	case errors.Is(err, store.ErrUsernameRequired):
 		// No account exists yet for this user and no username was supplied.
 		// Signal the client to prompt for one and retry.
@@ -549,6 +564,9 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !created && req.AccountPassword != "" {
+		recoveryLockout.succeed(registrationLockKey(dev.AccountID))
+	}
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
@@ -1141,6 +1159,33 @@ func (s *Server) handleSetDiscoverability(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.reindexAccount(dev.AccountID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// accountPasswordLimiter bounds account-password changes per account: 10 per
+// hour (each is a bcrypt).
+var accountPasswordLimiter = newTokenBucketLimiter(10, time.Hour)
+
+// handleSetAccountPassword sets or changes the account password, which guards
+// email recovery and the sign-in registration lock. Any signed device of the
+// account may set it (such a device already controls the account).
+func (s *Server) handleSetAccountPassword(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		AccountPassword string `json:"accountPassword"`
+	}
+	if err := decodeJSON(r, &req); err != nil ||
+		len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes {
+		httpError(w, http.StatusBadRequest, "accountPassword (8–1024 chars) required")
+		return
+	}
+	if !accountPasswordLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many account password changes; try again later")
+		return
+	}
+	if err := s.store.SetAccountPassword(dev.AccountID, req.AccountPassword); err != nil {
+		internalError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

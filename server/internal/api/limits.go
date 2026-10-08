@@ -278,6 +278,7 @@ func (s *Server) pruneTokenBuckets() {
 		linkClaimIPLimiter,
 		contactInviteLimiter,
 		usernameChangeLimiter,
+		accountPasswordLimiter,
 	} {
 		l.prune()
 	}

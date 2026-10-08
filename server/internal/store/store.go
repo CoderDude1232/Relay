@@ -43,6 +43,9 @@ var (
 	ErrDeviceLimit               = errors.New("store: linked device limit reached")
 	ErrIdentityInUse             = errors.New("store: email or social-login identity already linked to an account")
 	ErrPreKeyPoolFull            = errors.New("store: one-time prekey pool full")
+	ErrAccountPasswordRequired   = errors.New("store: account password required")
+	ErrAccountPasswordIncorrect  = errors.New("store: account password incorrect")
+	ErrAccountPasswordLocked     = errors.New("store: too many account password attempts")
 )
 
 // MaxOneTimePreKeysPerDevice caps the one-time prekeys stored for one device.
@@ -886,6 +889,24 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 	return dev, devicePassword, nil
 }
 
+// SetAccountPassword sets (or replaces) the account password: the bcrypt hash
+// that both email recovery and the sign-in registration lock check.
+func (s *Store) SetAccountPassword(accountID, accountPassword string) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	tag, err := s.db.Exec(context.Background(),
+		`UPDATE accounts SET account_password_hash = $1 WHERE id = $2`, hash, accountID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAccountNotFound
+	}
+	return nil
+}
+
 // ProvisionOAuthAccount signs a Supabase-authenticated user into their relay
 // account, creating it on first use, and provisions a fresh device. The caller
 // MUST have already verified the Supabase access token, so supabaseUserID is
@@ -898,11 +919,21 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 // emails; an existing link to a different Supabase user is never overwritten.
 // If no account exists yet, one is created — requestedUsername
 // must be non-empty in that case, otherwise ErrUsernameRequired is returned.
-// accountPassword, if non-empty, is stored as a recovery hash on creation only.
+// accountPassword, if non-empty, is stored as a recovery hash on creation.
+//
+// Registration lock: signing in to an EXISTING account replaces all of its
+// devices, so when that account has an account password set, accountPassword
+// must match it. Missing → ErrAccountPasswordRequired, wrong →
+// ErrAccountPasswordIncorrect; nothing is changed either way. lockPermit (may
+// be nil) is consulted with the resolved account id before any comparison;
+// false → ErrAccountPasswordLocked. On these three errors dev.AccountID is set
+// so the caller can key its lockout. A supplied accountPassword always costs
+// one bcrypt comparison (against a dummy hash when the account has no lock),
+// so timing doesn't reveal whether a lock is set.
 //
 // Adding a device to an existing account enforces the device cap and bumps
 // device_list_version. created reports whether a new account was made.
-func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string) (dev AddedDevice, created bool, err error) {
+func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string, lockPermit func(accountID string) bool) (dev AddedDevice, created bool, err error) {
 	ctx := context.Background()
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -915,14 +946,35 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 	defer tx.Rollback(ctx)
 
 	// 1. Find an existing account by Supabase user id, then by verified email.
+	var lockHash []byte
+	adoptedByEmail := false
 	err = tx.QueryRow(ctx,
-		`SELECT id, username FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
-	).Scan(&dev.AccountID, &dev.Username)
+		`SELECT id, username, account_password_hash FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
+	).Scan(&dev.AccountID, &dev.Username, &lockHash)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
 		err = tx.QueryRow(ctx,
-			`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
-		).Scan(&dev.AccountID, &dev.Username)
-		if err == nil {
+			`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
+		).Scan(&dev.AccountID, &dev.Username, &lockHash)
+		adoptedByEmail = err == nil
+	}
+
+	if err == nil {
+		// 2. Registration lock, checked before anything is written.
+		if len(lockHash) > 0 {
+			locked := AddedDevice{AccountID: dev.AccountID}
+			if lockPermit != nil && !lockPermit(dev.AccountID) {
+				return locked, false, ErrAccountPasswordLocked
+			}
+			if accountPassword == "" {
+				return locked, false, ErrAccountPasswordRequired
+			}
+			if bcrypt.CompareHashAndPassword(lockHash, []byte(accountPassword)) != nil {
+				return locked, false, ErrAccountPasswordIncorrect
+			}
+		} else if accountPassword != "" {
+			burnRecoveryBcrypt(accountPassword)
+		}
+		if adoptedByEmail {
 			// Back-fill only an empty link; never overwrite another Supabase
 			// user's link (a second identity with the same confirmed email can
 			// sign in, but the original link is kept).

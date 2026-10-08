@@ -47,7 +47,7 @@ func TestUsernameReuseCooldown(t *testing.T) {
 	if _, _, err := s.CreateAccount(strings.ToUpper(old), nil, "", "device-pw-3", ""); !errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("registering a cooling name: %v", err)
 	}
-	if _, _, err := s.ProvisionOAuthAccount(uniqueName("sb"), nil, old, "device-pw-4", ""); !errors.Is(err, ErrUsernameTaken) {
+	if _, _, err := s.ProvisionOAuthAccount(uniqueName("sb"), nil, old, "device-pw-4", "", nil); !errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("oauth sign-up with a cooling name: %v", err)
 	}
 
