@@ -117,6 +117,10 @@ signed with the device's auth key (the same keypair as nuke/device-list
 signatures; the private half never leaves the device). Accepted iff the
 signature validates against the stored `auth_public_key`, the timestamp is within
 ±5 min, and the (account, device, decoded nonce) triple is unseen in that window.
+The replay cache keys entries by salted hash (never raw ids), buckets them by
+expiry into 5-minute slots that are dropped whole, and lets one device hold at
+most 20 000 nonces per slot (~66 signed requests/s sustained); past that the
+device gets `429` until the slot expires.
 The server **always buffers and hashes the body itself** (bodies are capped at
 1 MiB); an `X-Relay-Content-SHA256` header, if sent, must equal that hash. The
 only route on which a declared digest may instead be checked while the body

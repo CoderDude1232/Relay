@@ -295,6 +295,11 @@ func (s *Server) auth(next authedHandler) http.HandlerFunc {
 		// key without sending a reusable secret).
 		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
 			dev, err := s.authenticateSignature(r)
+			if errors.Is(err, errNonceBudget) {
+				// A valid signature from a device over its replay-cache budget.
+				httpError(w, http.StatusTooManyRequests, errNonceBudget.Error())
+				return
+			}
 			if err != nil {
 				authFailIPLimiter.allow(ip)
 				httpError(w, http.StatusUnauthorized, "signature authentication failed")
