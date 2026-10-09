@@ -10,6 +10,20 @@ before building on top. Full checklist in [`TESTING.md`](TESTING.md).
       backup/restore, groups, sealed sender. (Simulators can't do APNs/CloudKit.)
 - [ ] Deploy the CloudKit **production** schema (dev schema won't work for release).
 
+## Siri / CarPlay sending (found 2026-10-09)
+
+- [ ] Messages sent with Siri ("Send a Relay message to …", including in CarPlay)
+      are queued by the Intents extension (`RelayIntents/IntentHandler.swift`) and
+      only go out the next time the app runs, though Siri says "Sent". Fix options:
+      handle `INSendMessageIntent` in the app (`application(_:handlerFor:)`, app is
+      launched in the background) and remove it from the extension, or send from
+      the extension directly. Needs device testing (Apple's docs are ambiguous on
+      which handler wins when both claim the intent). Notification Reply
+      (Watch/CarPlay) already sends immediately.
+- [ ] Mac ("Designed for iPad"): register the Mac in the developer account and
+      test. 1:1 calls are disabled there (no CallKit); group calls and call links
+      should work.
+
 ## RESOLVED: production relay was running without `-oprf-key`
 
 (Fixed 2026-09-18; verified 2026-10-06 — `-oprf-key /opt/relay/oprf.key` is in
