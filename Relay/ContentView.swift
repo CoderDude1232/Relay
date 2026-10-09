@@ -407,7 +407,7 @@ struct MainTabView: View {
             }
 
             if callManager.isInGroupCall {
-                GroupCallView()
+                GroupCallView(service: service)
                     .transition(.opacity)
                     .zIndex(3)
             }

@@ -1176,6 +1176,26 @@ final class CallManager: NSObject {
         stopScreenShare(restartCamera: true)
     }
 
+    /// The call id when the group call in progress is a call-link call.
+    var currentLinkCallId: String? {
+        guard let group = groupCallGroupId, group.hasPrefix("link:") else { return nil }
+        return groupCallId
+    }
+
+    /// We host the call-link call in progress (so we can invite more people).
+    var isLinkHost: Bool { currentLinkCallId != nil && linkHostAccount == ownAccountId }
+
+    func flipGroupCamera() {
+        guard let capturer = groupCallLocalVideoCapturer,
+              let currentInput = capturer.captureSession.inputs.compactMap({ $0 as? AVCaptureDeviceInput }).first
+        else { return }
+        let nextPosition: AVCaptureDevice.Position = currentInput.device.position == .front ? .back : .front
+        guard let device = RTCCameraVideoCapturer.captureDevices().first(where: { $0.position == nextPosition }),
+              let format = Self.preferredVideoFormat(for: device)
+        else { return }
+        capturer.startCapture(with: device, format: format, fps: Self.preferredFPS(for: format))
+    }
+
     func flipCamera() {
         guard !isScreenSharing,
               let capturer = localVideoCapturer,
