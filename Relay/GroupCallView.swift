@@ -30,9 +30,9 @@ struct GroupCallView: View {
         ZStack {
             // One other person: same backdrop as a 1:1 call — their photo as a
             // vivid blur, or their avatar colour.
-            CallBackdrop(name: peers.count == 1 ? peers[0].peerName : callManager.groupCallDisplayName,
-                         photo: peers.count == 1 ? avatar(peers[0]) : nil,
-                         matchAvatar: peers.count == 1)
+            // While waiting alone it matches your own photo/avatar colour.
+            CallBackdrop(name: backdropName, photo: backdropPhoto,
+                         matchAvatar: peers.count <= 1 && callManager.groupRingInfo == nil)
 
             if callManager.groupRingInfo != nil {
                 incomingLayout
@@ -52,6 +52,26 @@ struct GroupCallView: View {
                 connectedAt = Date()
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
+        }
+    }
+
+    private var myName: String { service.myDisplayName ?? service.username ?? "You" }
+
+    private var backdropName: String {
+        guard callManager.groupRingInfo == nil else { return callManager.groupCallDisplayName }
+        switch peers.count {
+        case 0: return myName
+        case 1: return peers[0].peerName
+        default: return callManager.groupCallDisplayName
+        }
+    }
+
+    private var backdropPhoto: Data? {
+        guard callManager.groupRingInfo == nil else { return nil }
+        switch peers.count {
+        case 0: return service.myAvatarData
+        case 1: return avatar(peers[0])
+        default: return nil
         }
     }
 
@@ -210,7 +230,7 @@ struct GroupCallView: View {
         VStack(spacing: 18) {
             ZStack {
                 PulseRing()
-                AvatarView(name: service.myDisplayName ?? service.username ?? "You", size: 120,
+                AvatarView(name: myName, size: 120,
                            imageData: service.myAvatarData)
             }
             Text(callManager.currentLinkCallId != nil ? "You're the first one here" : "Calling…")
