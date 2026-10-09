@@ -1,0 +1,93 @@
+<!--
+  Supabase → Authentication → Emails → Templates → "Confirm signup"
+  Subject: Your Relay code: {{ .Token }}
+  The app asks for the 6-digit {{ .Token }}; there is deliberately no link.
+  No images or remote content: nothing to block, nothing that tracks opens.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="supported-color-schemes" content="dark light">
+  <title>Your Relay verification code</title>
+</head>
+<body style="margin:0; padding:0; background-color:#0b0418; -webkit-text-size-adjust:100%;">
+  <!-- Inbox preview line (hidden in the body) -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:transparent;">
+    Your Relay verification code is {{ .Token }} — enter it in the app to finish signing up.
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#0b0418;">
+    <tr>
+      <td align="center" style="padding:40px 16px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;">
+
+          <!-- Wordmark -->
+          <tr>
+            <td align="center" style="padding:0 0 28px 0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:30px; font-weight:800; letter-spacing:-1px; color:#ffffff;">
+              re<span style="color:#e044ff;">&#9889;</span>ay
+            </td>
+          </tr>
+
+          <!-- Card -->
+          <tr>
+            <td style="background-color:#1a0b33; border:1px solid #2e1a52; border-radius:20px; padding:36px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:22px; font-weight:700; color:#ffffff; padding:0 0 10px 0;">
+                    Confirm your email
+                  </td>
+                </tr>
+                <tr>
+                  <td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:15px; line-height:22px; color:#c9bfe0; padding:0 0 26px 0;">
+                    Enter this code in Relay to finish creating your account.
+                  </td>
+                </tr>
+
+                <!-- Code -->
+                <tr>
+                  <td align="center" style="padding:0 0 26px 0;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td align="center" style="background-color:#0f0524; border:1px solid #4b2a85; border-radius:14px; padding:18px 28px; font-family:'SF Mono',ui-monospace,Menlo,Consolas,'Courier New',monospace; font-size:34px; font-weight:700; letter-spacing:10px; color:#ffffff;">
+                          {{ .Token }}
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:13px; line-height:20px; color:#9a8fb5; padding:0 0 6px 0;">
+                    The code expires soon and works once. Relay will never ask you for it by message or phone.
+                  </td>
+                </tr>
+                <tr>
+                  <td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:13px; line-height:20px; color:#9a8fb5;">
+                    Didn&#8217;t try to sign up? You can safely ignore this email &#8212; no account is created without the code.
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td align="center" style="padding:26px 12px 0 12px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:12px; line-height:18px; color:#6f6489;">
+              Relay &#183; Private messaging, end-to-end encrypted<br>
+              <a href="https://relaymsg.app" style="color:#b38cff; text-decoration:none;">relaymsg.app</a>
+              &nbsp;&#183;&nbsp;
+              <a href="https://relaymsg.app/privacy" style="color:#b38cff; text-decoration:none;">Privacy</a>
+              &nbsp;&#183;&nbsp;
+              <a href="https://relaymsg.app/support" style="color:#b38cff; text-decoration:none;">Support</a>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
