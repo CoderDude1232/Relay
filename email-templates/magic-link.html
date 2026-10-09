@@ -1,0 +1,50 @@
+<!--
+  Supabase → Authentication → Emails → Templates → "Magic Link"
+  Subject: Your Relay sign-in code: {{ .Token }}
+  Sent to existing accounts by "Email me a code". The app asks for {{ .Token }}; no link.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Your Relay code</title>
+</head>
+<body style="margin:0; padding:0; background:#ffffff;">
+  <div style="display:none; max-height:0; overflow:hidden;">Your Relay sign-in code is {{ .Token }}</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+    <tr>
+      <td align="center" style="padding:40px 24px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:440px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; color:#111111;">
+          <tr>
+            <td style="padding:0 0 32px 0;">
+              <img src="https://relaymsg.app/images/relay-logo-dark-ink.png" width="120" alt="Relay" style="display:block; width:120px; height:auto; border:0;">
+            </td>
+          </tr>
+          <tr>
+            <td style="font-size:16px; line-height:24px; padding:0 0 20px 0;">
+              Here's your code to sign in to Relay:
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 0 24px 0;">
+              <span style="display:inline-block; background:#f3f3f5; border-radius:8px; padding:12px 18px; font-family:ui-monospace,Menlo,Consolas,'Courier New',monospace; font-size:28px; font-weight:600; letter-spacing:6px; color:#111111;">{{ .Token }}</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="font-size:14px; line-height:21px; color:#666666; padding:0 0 32px 0;">
+              If you didn't try to sign in, you can ignore this email. No one can sign in without this code.
+            </td>
+          </tr>
+          <tr>
+            <td style="font-size:12px; line-height:18px; color:#999999; border-top:1px solid #eeeeee; padding:16px 0 0 0;">
+              <a href="https://relaymsg.app" style="color:#999999;">relaymsg.app</a>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

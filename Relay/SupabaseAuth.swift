@@ -81,6 +81,20 @@ actor SupabaseAuth {
         _ = try await send(path: "/auth/v1/resend", body: ["type": "signup", "email": email])
     }
 
+    // MARK: One-time code sign-in (passwordless)
+
+    /// Emails a one-time sign-in code. New addresses get an account created
+    /// (Supabase sends its "Confirm signup" email); existing ones get the
+    /// "Magic Link" email. Both carry the same kind of code.
+    func requestSignInCode(email: String) async throws {
+        _ = try await send(path: "/auth/v1/otp", body: ["email": email])
+    }
+
+    /// Exchanges a one-time sign-in code for a session.
+    func verifySignInCode(email: String, code: String) async throws -> SupabaseSession {
+        try await post(path: "/auth/v1/verify", body: ["type": "email", "email": email, "token": code])
+    }
+
     // MARK: Password reset ("forgot password")
 
     /// Emails a password-recovery code to `email`. Supabase answers the same

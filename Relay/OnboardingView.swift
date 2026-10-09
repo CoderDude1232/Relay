@@ -22,7 +22,7 @@ struct OnboardingView: View {
 
     @Environment(AppModel.self) private var model
 
-    enum Step { case welcome, auth, setup, recovery }
+    enum Step { case welcome, auth, setup, recovery, emailCode }
 
     @State private var step: Step = .welcome
     @State private var supabaseSession: SupabaseSession?
@@ -72,6 +72,18 @@ struct OnboardingView: View {
                     withAnimation(.spring(duration: 0.5)) { step = .setup }
                 }, onBack: {
                     withAnimation(.spring(duration: 0.5)) { step = .welcome }
+                }, onUseCode: {
+                    withAnimation(.spring(duration: 0.5)) { step = .emailCode }
+                })
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
+            case .emailCode:
+                EmailCodeView(onSession: { session in
+                    handleOAuth(session: session)
+                }, onBack: {
+                    withAnimation(.spring(duration: 0.5)) { step = .welcome }
                 })
                 .transition(.asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
@@ -103,6 +115,8 @@ struct OnboardingView: View {
                     // recoverAccount sets phase = .ready; onboarding auto-dismisses.
                 }, onBack: {
                     withAnimation(.spring(duration: 0.5)) { step = .welcome }
+                }, onUseCode: {
+                    withAnimation(.spring(duration: 0.5)) { step = .emailCode }
                 })
                 .transition(.asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
@@ -497,6 +511,7 @@ private final class OAuthWindowContext: NSObject, ASWebAuthenticationPresentatio
 private struct AuthView: View {
     let onComplete: (SupabaseSession, String) async throws -> Void
     let onBack: () -> Void
+    let onUseCode: () -> Void
 
     @State private var email = ""
     @State private var password = ""
@@ -687,6 +702,11 @@ private struct AuthView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
 
+                Button("Skip the password — email me a code", action: onUseCode)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.top, 16)
+
                 LegalFooter()
                     .padding(.horizontal, 40)
                     .padding(.top, 16)
@@ -745,11 +765,165 @@ private struct AuthView: View {
     }
 }
 
+// MARK: - One-time code sign-in (passwordless)
+
+/// Email → emailed one-time code → Supabase session, which then takes the same
+/// path as Apple/Google: new emails pick a username; existing accounts sign in
+/// (asking for the account password if the account has one).
+private struct EmailCodeView: View {
+    let onSession: (SupabaseSession) -> Void
+    let onBack: () -> Void
+
+    @State private var email = ""
+    @State private var code = ""
+    @State private var codeSent = false
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var resendNote: String?
+    @FocusState private var focused: AuthView.Field?
+
+    private var normalizedEmail: String { email.lowercased().trimmingCharacters(in: .whitespaces) }
+    private var canContinue: Bool {
+        guard !isLoading else { return false }
+        return codeSent ? AuthView.validCodeLength.contains(code.count) : normalizedEmail.contains("@")
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                HStack {
+                    Button {
+                        if codeSent {
+                            codeSent = false
+                            code = ""
+                            errorMessage = nil
+                        } else {
+                            onBack()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: .circle)
+                    }
+                    .accessibilityLabel("Back")
+                    Spacer()
+                }
+                .padding(.top, 16)
+
+                VStack(spacing: 6) {
+                    Text(codeSent ? "Check your email" : "Sign in with a code")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text(codeSent
+                         ? "Enter the code we sent to \(normalizedEmail)."
+                         : "We'll email you a one-time code. New here? This creates your account.")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 24)
+                .padding(.bottom, 12)
+
+                Group {
+                    if codeSent {
+                        AuthField(icon: "number", placeholder: "Code",
+                                  text: $code, focused: $focused, field: .code,
+                                  contentType: .oneTimeCode, keyboard: .numberPad)
+                    } else {
+                        AuthField(icon: "envelope", placeholder: "Email address",
+                                  text: $email, focused: $focused, field: .email,
+                                  contentType: .emailAddress, keyboard: .emailAddress)
+                    }
+                }
+                .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+
+                if let errorMessage {
+                    InlineErrorBanner(errorMessage)
+                }
+
+                Button(action: codeSent ? verify : sendCode) {
+                    ZStack {
+                        if isLoading {
+                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        } else {
+                            Text(codeSent ? "Continue" : "Send code")
+                                .font(.headline)
+                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(canContinue ? Color.white : Color.white.opacity(0.3),
+                                in: .rect(cornerRadius: 16, style: .continuous))
+                }
+                .disabled(!canContinue)
+
+                if codeSent {
+                    Button("Resend code", action: sendCode)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .disabled(isLoading)
+                    if let resendNote {
+                        Text(resendNote)
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                } else {
+                    LegalFooter().padding(.horizontal, 16)
+                }
+            }
+            .padding(.horizontal, 24)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .onAppear { focused = .email }
+        .onChange(of: code) { _, new in
+            let digits = String(new.filter(\.isNumber).prefix(AuthView.validCodeLength.upperBound))
+            if digits != new { code = digits }
+        }
+    }
+
+    private func sendCode() {
+        errorMessage = nil
+        isLoading = true
+        focused = nil
+        let resending = codeSent
+        Task {
+            do {
+                try await SupabaseAuth.shared.requestSignInCode(email: normalizedEmail)
+                code = ""
+                codeSent = true
+                focused = .code
+                resendNote = resending ? "Sent. It can take a minute to arrive — check your spam folder too." : nil
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            isLoading = false
+        }
+    }
+
+    private func verify() {
+        errorMessage = nil
+        isLoading = true
+        Task {
+            do {
+                let session = try await SupabaseAuth.shared.verifySignInCode(email: normalizedEmail, code: code)
+                onSession(session)
+            } catch {
+                errorMessage = "That code didn't work. Check it, or tap Resend code."
+            }
+            isLoading = false
+        }
+    }
+}
+
 // MARK: - Recovery screen (sign in by email + account password)
 
 private struct RecoveryView: View {
     let onComplete: () -> Void
     let onBack: () -> Void
+    let onUseCode: () -> Void
 
     @Environment(AppModel.self) private var model
 
@@ -861,10 +1035,13 @@ private struct RecoveryView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
 
-                Button("Forgot password?") { showingForgotPassword = true }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .padding(.top, 16)
+                HStack(spacing: 20) {
+                    Button("Forgot password?") { showingForgotPassword = true }
+                    Button("Email me a code", action: onUseCode)
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.white.opacity(0.8))
+                .padding(.top, 16)
 
                 Text("Only works if you created your account with email sign-up.")
                     .font(.caption)
