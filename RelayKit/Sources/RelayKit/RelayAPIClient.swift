@@ -146,6 +146,29 @@ public struct RelayAPIClient: Sendable {
         return (creds, response.username)
     }
 
+    /// "Forgot password": with a Supabase session from a password-recovery code,
+    /// sets a new account password and provisions this device (the account's
+    /// other devices are replaced, like any fresh sign-in).
+    public func resetPassword(supabaseAccessToken: String, newAccountPassword: String,
+                              devicePassword: String) async throws -> (credentials: RelayCredentials, username: String) {
+        struct Response: Decodable { let accountId: String; let username: String; let deviceId: UInt32 }
+        let response: Response = try await request(
+            "POST", "v1/accounts/password-reset",
+            body: ["accessToken": supabaseAccessToken, "accountPassword": newAccountPassword,
+                   "password": devicePassword],
+            authenticated: false
+        )
+        return (RelayCredentials(accountId: response.accountId, deviceId: response.deviceId,
+                                 password: devicePassword), response.username)
+    }
+
+    /// After a confirmed Supabase email change, re-keys the account's email
+    /// token (`PUT /v1/accounts/me/email`).
+    public func updateEmail(supabaseAccessToken: String) async throws {
+        try await requestExpectingNoContent("PUT", "v1/accounts/me/email",
+                                            body: ["accessToken": supabaseAccessToken])
+    }
+
     /// Signs a Supabase-authenticated user into their relay account (creating it
     /// on first use) and provisions a fresh device. The relay verifies the
     /// Supabase access token directly with Supabase, so this works on any device

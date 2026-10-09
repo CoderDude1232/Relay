@@ -81,6 +81,52 @@ actor SupabaseAuth {
         _ = try await send(path: "/auth/v1/resend", body: ["type": "signup", "email": email])
     }
 
+    // MARK: Password reset ("forgot password")
+
+    /// Emails a password-recovery code to `email`. Supabase answers the same
+    /// whether or not the address is registered.
+    func requestPasswordReset(email: String) async throws {
+        _ = try await send(path: "/auth/v1/recover", body: ["email": email])
+    }
+
+    /// Exchanges the recovery code for a session. The relay accepts only a
+    /// session created this way (and recently) for a password reset.
+    func verifyRecoveryCode(email: String, code: String) async throws -> SupabaseSession {
+        try await post(path: "/auth/v1/verify", body: ["type": "recovery", "email": email, "token": code])
+    }
+
+    /// Sets the Supabase password for the signed-in user (kept in step with
+    /// the Relay account password after a reset).
+    func updatePassword(_ password: String) async throws {
+        let token = try await validAccessToken()
+        _ = try await send(path: "/auth/v1/user", body: ["password": password], method: "PUT", bearer: token)
+    }
+
+    // MARK: Email change
+
+    /// Asks Supabase to change the signed-in user's email; it emails a code to
+    /// the new address.
+    func requestEmailChange(to newEmail: String) async throws {
+        let token = try await validAccessToken()
+        _ = try await send(path: "/auth/v1/user", body: ["email": newEmail], method: "PUT", bearer: token)
+    }
+
+    /// Confirms the change with the code from the new address, then refreshes
+    /// the session so it carries the new email.
+    func verifyEmailChange(newEmail: String, code: String) async throws -> SupabaseSession {
+        let token = try await validAccessToken()
+        _ = try await send(path: "/auth/v1/verify",
+                           body: ["type": "email_change", "email": newEmail, "token": code],
+                           bearer: token)
+        return try await refresh()
+    }
+
+    /// The current access token, refreshed first so it's never stale.
+    private func validAccessToken() async throws -> String {
+        guard session != nil else { throw SupabaseError.noSession }
+        return try await refresh().accessToken
+    }
+
     func signIn(email: String, password: String) async throws -> SupabaseSession {
         try await post(path: "/auth/v1/token?grant_type=password",
                        body: ["email": email, "password": password])
@@ -137,15 +183,18 @@ actor SupabaseAuth {
         return s
     }
 
-    private func send(path: String, body: [String: String]) async throws -> Data {
+    /// `bearer` is the user's access token for calls made as the signed-in user;
+    /// otherwise the request is made with the project's public anon key.
+    private func send(path: String, body: [String: String], method: String = "POST",
+                      bearer: String? = nil) async throws -> Data {
         guard let url = URL(string: SupabaseConfig.projectURL + path) else {
             throw SupabaseError.badConfig
         }
         var req = URLRequest(url: url)
-        req.httpMethod = "POST"
+        req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(SupabaseConfig.anonKey, forHTTPHeaderField: "apikey")
-        req.setValue("Bearer \(SupabaseConfig.anonKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("Bearer \(bearer ?? SupabaseConfig.anonKey)", forHTTPHeaderField: "Authorization")
         req.httpBody = try JSONEncoder().encode(body)
 
         let (data, resp): (Data, URLResponse)
@@ -246,10 +295,17 @@ enum SupabaseError: LocalizedError {
     case badConfig
     case server(String)
     case emailAlreadyRegistered
+    case noSession
+
+    var isNoSession: Bool {
+        if case .noSession = self { true } else { false }
+    }
 
     var errorDescription: String? {
         switch self {
         case .badConfig: "Supabase is not configured. Update SupabaseConfig in SupabaseAuth.swift."
+        case .noSession:
+            "This device isn't signed in with your email account. Make this change from the device you signed up on."
         case .emailAlreadyRegistered:
             "This email already has a Relay account. Go back and tap Sign in to use it on this device."
         case .server(let m): m

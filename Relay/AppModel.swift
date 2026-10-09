@@ -574,6 +574,124 @@ final class AppModel {
         Task { try? await service.publishInitialKeys() }
     }
 
+    /// "Forgot password": verifies the emailed recovery code with Supabase, sets
+    /// the new account password on the relay and signs this device in. Like any
+    /// fresh sign-in, the account's other devices are signed out.
+    func resetPassword(serverURL: URL, email: String, code: String, newPassword: String) async throws {
+        struct ResetError: LocalizedError {
+            let message: String
+            var errorDescription: String? { message }
+        }
+        let supabase: SupabaseSession
+        do {
+            supabase = try await SupabaseAuth.shared.verifyRecoveryCode(email: email, code: code)
+        } catch {
+            throw ResetError(message: "That code is wrong or has expired. Check the latest email, or request a new code.")
+        }
+
+        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
+        let (credentials, username): (RelayCredentials, String)
+        do {
+            (credentials, username) = try await api.resetPassword(
+                supabaseAccessToken: supabase.accessToken,
+                newAccountPassword: newPassword,
+                devicePassword: Self.generateRandomPassword()
+            )
+        } catch RelayAPIError.http(status: 404, _) {
+            throw ResetError(message: "No Relay account uses that email address.")
+        } catch RelayAPIError.http(status: 403, _) {
+            throw ResetError(message: "That code has expired. Request a new one and try again.")
+        } catch RelayAPIError.http(status: 401, _) {
+            throw ResetError(message: "Couldn't verify your email. Request a new code and try again.")
+        } catch RelayAPIError.http(status: 429, _) {
+            throw ResetError(message: "Too many attempts. Wait a while and try again.")
+        } catch {
+            throw SetupError(step: "Password reset", underlying: error)
+        }
+        // Keep the email sign-in password in step (best effort — the relay's
+        // account password is what actually gates sign-in).
+        try? await SupabaseAuth.shared.updatePassword(newPassword)
+
+        let service: MessagingService
+        do {
+            service = try await makeService(credentials: credentials, serverURL: serverURL, username: username)
+        } catch {
+            throw SetupError(step: "Open local storage", underlying: error)
+        }
+
+        let saved = SavedAccount(
+            accountId: credentials.accountId,
+            deviceId: credentials.deviceId,
+            password: credentials.password,
+            serverURL: serverURL,
+            username: username,
+            email: email,
+            supabaseUserId: supabase.userId
+        )
+        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        service.start()
+        phase = .ready(service)
+        service.noteAccountRecovered(username: username)
+        UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
+        uploadPushTokenIfReady()
+        publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
+        Task { try? await service.publishInitialKeys() }
+    }
+
+    /// The email address this account signed up or recovered with, if known.
+    var accountEmail: String? {
+        guard let data = try? keychain.loadSecret(for: Self.accountSecretName),
+              let saved = try? JSONDecoder().decode(SavedAccount.self, from: data)
+        else { return nil }
+        return saved.email
+    }
+
+    /// Step 1 of an email change: Supabase emails a code to the new address.
+    func requestEmailChange(to newEmail: String) async throws {
+        try await SupabaseAuth.shared.requestEmailChange(to: newEmail)
+    }
+
+    /// Step 2: confirms the code, then re-keys the relay's email lookup (used
+    /// for recovery and, if enabled, being found by email).
+    func confirmEmailChange(newEmail: String, code: String) async throws {
+        guard case .ready(let service) = phase else { return }
+        let supabase: SupabaseSession
+        do {
+            supabase = try await SupabaseAuth.shared.verifyEmailChange(newEmail: newEmail, code: code)
+        } catch let error as SupabaseError where error.isNoSession {
+            throw error
+        } catch {
+            struct CodeError: LocalizedError {
+                var errorDescription: String? { "That code is wrong or has expired. Check the latest email, or request a new code." }
+            }
+            throw CodeError()
+        }
+        do {
+            try await service.apiClient.updateEmail(supabaseAccessToken: supabase.accessToken)
+        } catch RelayAPIError.http(status: 409, _) {
+            struct InUseError: LocalizedError {
+                var errorDescription: String? { "That email address belongs to another Relay account." }
+            }
+            throw InUseError()
+        } catch RelayAPIError.http(status: 403, _) {
+            struct OwnerError: LocalizedError {
+                var errorDescription: String? { "This device's email sign-in doesn't match this Relay account. Make this change from the device you signed up on." }
+            }
+            throw OwnerError()
+        }
+        if let data = try? keychain.loadSecret(for: Self.accountSecretName),
+           let saved = try? JSONDecoder().decode(SavedAccount.self, from: data) {
+            let updated = SavedAccount(
+                accountId: saved.accountId, deviceId: saved.deviceId,
+                password: saved.password, serverURL: saved.serverURL,
+                username: saved.username, email: supabase.email.isEmpty ? newEmail : supabase.email,
+                supabaseUserId: saved.supabaseUserId ?? supabase.userId
+            )
+            try? keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
+        }
+    }
+
     enum LinkingError: LocalizedError {
         case timedOut
         case unauthenticated

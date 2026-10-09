@@ -284,6 +284,9 @@ struct SettingsView: View {
 
 private struct AccountSettingsView: View {
     let service: MessagingService
+    @Environment(AppModel.self) private var model
+    @State private var accountEmail: String?
+    @State private var showingEmailSheet = false
     @State private var showingQR = false
     @State private var linkCopied = false
     @State private var showingPasswordSheet = false
@@ -338,6 +341,18 @@ private struct AccountSettingsView: View {
             }
 
             Section {
+                Button { showingEmailSheet = true } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "envelope.fill", color: .accentColor)
+                        Text("Email").foregroundStyle(.primary)
+                        Spacer(minLength: 0)
+                        Text(accountEmail ?? "Change")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .tint(.primary)
                 Button { showingPasswordSheet = true } label: {
                     HStack(spacing: 14) {
                         SettingsIcon(systemName: "key.fill", color: .orange)
@@ -382,6 +397,10 @@ private struct AccountSettingsView: View {
         .sheet(isPresented: $showingPasswordSheet) {
             AccountPasswordSheet(service: service)
         }
+        .sheet(isPresented: $showingEmailSheet, onDismiss: { accountEmail = model.accountEmail }) {
+            ChangeEmailSheet()
+        }
+        .onAppear { accountEmail = model.accountEmail }
         .sheet(isPresented: $showingQR) {
             MyQRCodeView(username: username, createInviteLink: {
                 try await service.createContactInviteLink()
@@ -1643,6 +1662,105 @@ private struct DeleteAccountSheet: View {
 }
 
 /// Sets or changes the account password (recovery + new-device sign-in lock).
+/// Changes the account's email: Supabase emails a code to the new address,
+/// then the relay re-keys its email lookup (recovery + find-by-email).
+private struct ChangeEmailSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var newEmail = ""
+    @State private var codeSent = false
+    @State private var code = ""
+    @State private var working = false
+    @State private var errorMessage: String?
+
+    private var normalizedEmail: String { newEmail.lowercased().trimmingCharacters(in: .whitespaces) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if !codeSent {
+                    Section {
+                        TextField("New email address", text: $newEmail)
+                            .textContentType(.emailAddress)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } footer: {
+                        footer("We'll send a code to the new address. Your email is used to recover your account and, if you turn it on, to let people find you.")
+                    }
+                } else {
+                    Section {
+                        TextField("Code", text: $code)
+                            .textContentType(.oneTimeCode)
+                            .keyboardType(.numberPad)
+                            .onChange(of: code) { _, new in
+                                let digits = String(new.filter(\.isNumber).prefix(10))
+                                if digits != new { code = digits }
+                            }
+                    } header: {
+                        Text("Code sent to \(normalizedEmail)")
+                    } footer: {
+                        footer("Enter the code from the email.")
+                    }
+                    Section {
+                        Button("Send a new code") { sendCode() }.disabled(working)
+                    }
+                }
+            }
+            .navigationTitle("Change Email")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(working)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if working {
+                        ProgressView()
+                    } else if codeSent {
+                        Button("Confirm") { confirm() }.bold().disabled((6...10).contains(code.count) == false)
+                    } else {
+                        Button("Send Code") { sendCode() }.bold().disabled(!normalizedEmail.contains("@"))
+                    }
+                }
+            }
+            .interactiveDismissDisabled(working)
+        }
+    }
+
+    private func footer(_ text: String) -> some View {
+        Text(errorMessage ?? text)
+            .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+    }
+
+    private func sendCode() {
+        working = true
+        errorMessage = nil
+        Task {
+            do {
+                try await model.requestEmailChange(to: normalizedEmail)
+                codeSent = true
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            working = false
+        }
+    }
+
+    private func confirm() {
+        working = true
+        errorMessage = nil
+        Task {
+            do {
+                try await model.confirmEmailChange(newEmail: normalizedEmail, code: code)
+                dismiss()
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            working = false
+        }
+    }
+}
+
 private struct AccountPasswordSheet: View {
     let service: MessagingService
     @Environment(\.dismiss) private var dismiss

@@ -753,6 +753,7 @@ private struct RecoveryView: View {
     @State private var password = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var showingForgotPassword = false
     @FocusState private var focused: RecoveryField?
 
     enum RecoveryField: Hashable { case email, password }
@@ -856,17 +857,25 @@ private struct RecoveryView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
 
+                Button("Forgot password?") { showingForgotPassword = true }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.top, 16)
+
                 Text("Only works if you created your account with email sign-up.")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.35))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
-                    .padding(.top, 16)
+                    .padding(.top, 12)
 
                 Spacer().frame(height: 40)
             }
         }
         .scrollDismissesKeyboard(.interactively)
+        .sheet(isPresented: $showingForgotPassword) {
+            ForgotPasswordSheet(initialEmail: email, onComplete: onComplete)
+        }
     }
 
     private func submit() {
@@ -885,6 +894,124 @@ private struct RecoveryView: View {
                 errorMessage = FriendlyError.message(for: error)
             }
             isLoading = false
+        }
+    }
+}
+
+/// "Forgot password": email → emailed code + new password. Resetting signs this
+/// device in and signs out the account's other devices.
+private struct ForgotPasswordSheet: View {
+    let initialEmail: String
+    let onComplete: () -> Void
+
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var email = ""
+    @State private var codeSent = false
+    @State private var code = ""
+    @State private var password = ""
+    @State private var confirm = ""
+    @State private var working = false
+    @State private var errorMessage: String?
+
+    private var normalizedEmail: String { email.lowercased().trimmingCharacters(in: .whitespaces) }
+    private var canSend: Bool { !working && normalizedEmail.contains("@") }
+    private var canReset: Bool {
+        !working && AuthView.validCodeLength.contains(code.count)
+            && password.count >= 8 && password == confirm
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if !codeSent {
+                    Section {
+                        TextField("Email address", text: $email)
+                            .textContentType(.emailAddress)
+                            .keyboardType(.emailAddress)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } footer: {
+                        footer("We'll email you a code to reset your account password.")
+                    }
+                } else {
+                    Section {
+                        TextField("Code", text: $code)
+                            .textContentType(.oneTimeCode)
+                            .keyboardType(.numberPad)
+                            .onChange(of: code) { _, new in
+                                let digits = String(new.filter(\.isNumber).prefix(AuthView.validCodeLength.upperBound))
+                                if digits != new { code = digits }
+                            }
+                    } header: {
+                        Text("Code sent to \(normalizedEmail)")
+                    }
+                    Section {
+                        SecureField("New password", text: $password)
+                            .textContentType(.newPassword)
+                        SecureField("Confirm password", text: $confirm)
+                            .textContentType(.newPassword)
+                    } footer: {
+                        footer("At least 8 characters. Resetting signs you in here and signs out your other devices. Your message history on those devices stays there.")
+                    }
+                    Section {
+                        Button("Send a new code") { sendCode() }.disabled(working)
+                    }
+                }
+            }
+            .navigationTitle("Reset Password")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(working)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if working {
+                        ProgressView()
+                    } else if codeSent {
+                        Button("Reset") { reset() }.bold().disabled(!canReset)
+                    } else {
+                        Button("Send Code") { sendCode() }.bold().disabled(!canSend)
+                    }
+                }
+            }
+            .interactiveDismissDisabled(working)
+            .onAppear { if email.isEmpty { email = initialEmail } }
+        }
+    }
+
+    private func footer(_ text: String) -> some View {
+        Text(errorMessage ?? text)
+            .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+    }
+
+    private func sendCode() {
+        working = true
+        errorMessage = nil
+        Task {
+            do {
+                try await SupabaseAuth.shared.requestPasswordReset(email: normalizedEmail)
+                codeSent = true
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            working = false
+        }
+    }
+
+    private func reset() {
+        working = true
+        errorMessage = nil
+        Task {
+            do {
+                try await model.resetPassword(serverURL: RelayConfig.serverURL, email: normalizedEmail,
+                                              code: code, newPassword: password)
+                dismiss()
+                onComplete()
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            working = false
         }
     }
 }
