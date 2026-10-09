@@ -283,7 +283,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             identifier: "RELAY_MESSAGE",
             actions: [replyAction, markReadAction],
             intentIdentifiers: [NSStringFromClass(INSendMessageIntent.self)],
-            options: []
+            // CarPlay shows (and Siri can read out) message notifications, and
+            // Reply works there and on Apple Watch.
+            options: [.allowInCarPlay]
         )
         UNUserNotificationCenter.current().setNotificationCategories([msgCategory])
         return true
@@ -297,16 +299,28 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let conversationId = response.notification.request.content.userInfo["conversationId"] as? String ?? ""
         switch response.actionIdentifier {
         case "RELAY_QUICK_REPLY":
+            // Also how Apple Watch and CarPlay replies arrive. If the app was
+            // closed, iOS has just launched it in the background for this:
+            // wait briefly for it to finish starting and send now, rather than
+            // leaving the reply queued until the user next opens Relay.
             let text = (response as? UNTextInputNotificationResponse)?.userText ?? ""
             guard !text.isEmpty, !conversationId.isEmpty else { break }
-            if let model, case .ready(let service) = model.phase {
-                Task { await service.sendMessage(text, in: conversationId) }
-            } else {
-                // App was terminated; queue via ShareBridge for pick-up on next launch.
-                ShareBridge.writePendingShare(PendingShare(
-                    conversationId: conversationId, text: text,
-                    imageData: nil, imageUTI: nil, fileData: nil, filename: nil
-                ))
+            let task = UIApplication.shared.beginBackgroundTask(withName: "relay.quickReply")
+            Task { @MainActor in
+                defer { UIApplication.shared.endBackgroundTask(task) }
+                for _ in 0..<40 {
+                    if let model = self.model, case .ready = model.phase { break }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                if let model = self.model, case .ready(let service) = model.phase {
+                    await service.sendMessage(text, in: conversationId)
+                } else {
+                    // Still not up (e.g. storage locked): send on next launch.
+                    ShareBridge.writePendingShare(PendingShare(
+                        conversationId: conversationId, text: text,
+                        imageData: nil, imageUTI: nil, fileData: nil, filename: nil
+                    ))
+                }
             }
         case "RELAY_MARK_READ":
             guard !conversationId.isEmpty, let model, case .ready(let service) = model.phase else { break }
