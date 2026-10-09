@@ -54,8 +54,8 @@ struct OnboardingView: View {
                     onSignIn: {
                         withAnimation(.spring(duration: 0.5)) { step = .recovery }
                     },
-                    onOAuthSession: { session in
-                        handleOAuth(session: session)
+                    onOAuthSession: { session, name in
+                        handleOAuth(session: session, suggestedName: name)
                     },
                     onLinkDevice: {
                         showingLinkScanner = true
@@ -189,7 +189,7 @@ struct OnboardingView: View {
         }
     }
 
-    private func handleOAuth(session: SupabaseSession, accountPassword: String = "") {
+    private func handleOAuth(session: SupabaseSession, accountPassword: String = "", suggestedName: String? = nil) {
         supabaseSession = session
         Task {
             do {
@@ -206,16 +206,29 @@ struct OnboardingView: View {
             } catch is AppModel.NeedsUsernameError {
                 // Brand-new user — prefill a display name and prompt for a username.
                 if displayName.isEmpty {
-                    let prefix = session.email.components(separatedBy: "@").first ?? ""
-                    if !prefix.isEmpty {
-                        displayName = prefix.split(separator: ".").map { $0.capitalized }.joined(separator: " ")
-                    }
+                    displayName = Self.suggestedDisplayName(provided: suggestedName, email: session.email)
                 }
                 withAnimation(.spring(duration: 0.5)) { step = .setup }
             } catch {
                 registrationError = FriendlyError.message(for: error)
             }
         }
+    }
+
+    /// A starting display name: the provider's name if it gave one, else the
+    /// email's local part — except for Apple's hidden relay addresses, whose
+    /// local part is random characters (then the field starts empty).
+    static func suggestedDisplayName(provided: String?, email: String) -> String {
+        if let provided = provided?.trimmingCharacters(in: .whitespaces), !provided.isEmpty {
+            return provided
+        }
+        let parts = email.lowercased().split(separator: "@")
+        guard parts.count == 2, !parts[1].hasSuffix("privaterelay.appleid.com") else { return "" }
+        return parts[0]
+            .split(whereSeparator: { ".-_+".contains($0) })
+            .filter { $0.contains(where: \.isLetter) }
+            .map { $0.capitalized }
+            .joined(separator: " ")
     }
 
     private func finish(session: SupabaseSession, password: String = "") async throws {
@@ -300,7 +313,9 @@ private struct SignInButtonLabel<Icon: View>: View {
 private struct WelcomeView: View {
     let onSignUp: () -> Void
     let onSignIn: () -> Void
-    let onOAuthSession: (SupabaseSession) -> Void
+    /// The session, plus the person's name when the provider gave one (Apple
+    /// shares it only on the first sign-in).
+    let onOAuthSession: (SupabaseSession, String?) -> Void
     let onLinkDevice: () -> Void
 
     @State private var oauthLoading = false
@@ -407,13 +422,16 @@ private struct WelcomeView: View {
                 oauthError = "Apple Sign In returned an unexpected credential."
                 return
             }
+            let appleName = cred.fullName.map {
+                PersonNameComponentsFormatter.localizedString(from: $0, style: .default)
+            }
             oauthLoading = true
             oauthError = nil
             Task {
                 do {
                     let session = try await SupabaseAuth.shared.signInWithApple(identityToken: token)
                     AppleSignInRecord.used = true
-                    onOAuthSession(session)
+                    onOAuthSession(session, appleName)
                 } catch {
                     oauthError = FriendlyError.message(for: error)
                 }
@@ -482,7 +500,7 @@ private struct WelcomeView: View {
         pendingCodeVerifier = nil
         do {
             let session = try await SupabaseAuth.shared.exchangeOAuthCode(code, verifier: verifier)
-            onOAuthSession(session)
+            onOAuthSession(session, nil)
         } catch {
             oauthError = FriendlyError.message(for: error)
         }

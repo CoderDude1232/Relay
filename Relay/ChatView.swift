@@ -2108,9 +2108,12 @@ private struct MessageBubble: View {
                     .strokeBorder(.secondary.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [4]))
             }
         } else if isJumbo {
-            Text(message.body)
-                .font(.system(size: 52))
-                .padding(.vertical, 2)
+            VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 2) {
+                Text(message.body)
+                    .font(.system(size: 52))
+                    .padding(.vertical, 2)
+                metadataRow(onBubble: false)
+            }
         } else if let locPayload = LocationPayload.decode(message.body) {
             LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing)
         } else if message.body.hasPrefix(notepadPrefix) {
@@ -2127,8 +2130,13 @@ private struct MessageBubble: View {
             )
         } else if !message.attachments.isEmpty && message.body.isEmpty && message.replyTo == nil
                     && message.attachments.allSatisfy(\.isImage) {
-            // Image-only message: show the image(s) with no bubble fill.
-            attachmentStack
+            // Image-only message: show the image(s) with no bubble fill, and the
+            // time + delivery status underneath.
+            VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 4) {
+                attachmentStack
+                metadataRow(onBubble: false)
+                    .padding(.horizontal, 4)
+            }
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 if let quote = message.replyTo {
@@ -2277,7 +2285,11 @@ private struct MessageBubble: View {
             .formatted(date: .omitted, time: .shortened)
     }
 
-    private var metadataRow: some View {
+    private var metadataRow: some View { metadataRow(onBubble: true) }
+
+    /// `onBubble` is false when drawn on the chat background (image-only and
+    /// emoji-only messages), where the outgoing bubble's white text would vanish.
+    private func metadataRow(onBubble: Bool) -> some View {
         HStack(spacing: 3) {
             if message.isStarred {
                 Image(systemName: "star.fill")
@@ -2285,12 +2297,12 @@ private struct MessageBubble: View {
             }
             Text(timeLabel)
             if message.isOutgoing {
-                statusView
+                statusView(onBubble: onBubble)
             }
         }
         // A text style (not a fixed point size) so it follows Dynamic Type.
         .font(.caption2)
-        .foregroundStyle(message.isOutgoing ? .white.opacity(0.62) : .secondary)
+        .foregroundStyle(message.isOutgoing && onBubble ? .white.opacity(0.62) : .secondary)
         .dynamicTypeSize(...DynamicTypeSize.accessibility1)
         .fixedSize()
         .contentShape(.rect)
@@ -2302,7 +2314,7 @@ private struct MessageBubble: View {
     }
 
     @ViewBuilder
-    private var statusView: some View {
+    private func statusView(onBubble: Bool) -> some View {
         switch effectiveStatus {
         case .sending:
             Image(systemName: "clock")
@@ -2312,7 +2324,7 @@ private struct MessageBubble: View {
             Image(systemName: "checkmark.circle")
         case .read:
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(message.isOutgoing ? Color.white.opacity(0.72) : Color.accentColor)
+                .foregroundStyle(message.isOutgoing && onBubble ? Color.white.opacity(0.72) : Color.accentColor)
         case .failed:
             HStack(spacing: 3) {
                 Image(systemName: "exclamationmark.circle.fill")
