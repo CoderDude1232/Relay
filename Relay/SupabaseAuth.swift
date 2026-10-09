@@ -57,6 +57,15 @@ actor SupabaseAuth {
         let data = try await send(path: "/auth/v1/signup", body: ["email": email, "password": password])
         // With "Confirm email" on, Supabase returns the user without a session.
         guard let raw = try? JSONDecoder().decode(SupabaseRawSession.self, from: data) else {
+            // For an address that's already registered Supabase sends no email
+            // (so sign-up can't be used to probe who has an account) and
+            // returns a user with an empty identities list. Say so instead of
+            // waiting for a code that will never arrive.
+            if let pending = try? JSONDecoder().decode(SupabasePendingUser.self, from: data),
+               let identities = pending.identities ?? pending.user?.identities,
+               identities.isEmpty {
+                throw SupabaseError.emailAlreadyRegistered
+            }
             return .confirmationRequired
         }
         return .signedIn(store(raw))
@@ -218,6 +227,14 @@ private struct SupabaseRawSession: Decodable, Sendable {
     let user: SupabaseUser
 }
 private struct SupabaseUser: Decodable, Sendable { let id: String; let email: String? }
+/// Sign-up response when confirmation is required: the user object, either at
+/// the top level or under `user` depending on the Supabase version.
+private struct SupabasePendingUser: Decodable, Sendable {
+    struct Inner: Decodable, Sendable { let identities: [Identity]? }
+    struct Identity: Decodable, Sendable {}
+    let identities: [Identity]?
+    let user: Inner?
+}
 private struct SupabaseErrorBody: Decodable, Sendable {
     let message: String?
     let msg: String?
@@ -228,10 +245,13 @@ private struct SupabaseErrorBody: Decodable, Sendable {
 enum SupabaseError: LocalizedError {
     case badConfig
     case server(String)
+    case emailAlreadyRegistered
 
     var errorDescription: String? {
         switch self {
         case .badConfig: "Supabase is not configured. Update SupabaseConfig in SupabaseAuth.swift."
+        case .emailAlreadyRegistered:
+            "This email already has a Relay account. Go back and tap Sign in to use it on this device."
         case .server(let m): m
         }
     }
