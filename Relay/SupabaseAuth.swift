@@ -49,7 +49,7 @@ actor SupabaseAuth {
     enum SignUpResult {
         /// Email confirmation is off: signed in straight away.
         case signedIn(SupabaseSession)
-        /// Supabase emailed a 6-digit code; verify it with `verifySignUpCode`.
+        /// Supabase emailed a code (6–10 digits); verify it with `verifySignUpCode`.
         case confirmationRequired
     }
 
@@ -62,7 +62,7 @@ actor SupabaseAuth {
         return .signedIn(store(raw))
     }
 
-    /// Exchanges the 6-digit code from the confirmation email for a session.
+    /// Exchanges the code from the confirmation email for a session.
     func verifySignUpCode(email: String, code: String) async throws -> SupabaseSession {
         try await post(path: "/auth/v1/verify", body: ["type": "signup", "email": email, "token": code])
     }

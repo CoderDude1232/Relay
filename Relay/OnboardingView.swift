@@ -499,13 +499,17 @@ private struct AuthView: View {
     @State private var confirmPassword = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
-    // Email confirmation: Supabase sent a 6-digit code to `email`.
+    // Email confirmation: Supabase sent a code (6–10 digits) to `email`.
     @State private var awaitingCode = false
     @State private var code = ""
     @State private var resendNote: String?
     @FocusState private var focused: Field?
 
     enum Field: Hashable { case email, password, confirm, code }
+
+    /// Supabase's email code length is a project setting (6–10 digits); accept
+    /// any of them rather than assuming the default.
+    static let validCodeLength = 6...10
 
     private var canSubmit: Bool {
         guard !isLoading, !email.isEmpty, password.count >= 8 else { return false }
@@ -543,7 +547,7 @@ private struct AuthView: View {
                     Text("Check your email")
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                    Text("Enter the 6-digit code we sent to \(email).")
+                    Text("Enter the code we sent to \(email).")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.6))
                         .multilineTextAlignment(.center)
@@ -551,7 +555,7 @@ private struct AuthView: View {
                 .padding(.top, 24)
                 .padding(.bottom, 12)
 
-                AuthField(icon: "number", placeholder: "6-digit code",
+                AuthField(icon: "number", placeholder: "Verification code",
                           text: $code, focused: $focused, field: .code,
                           contentType: .oneTimeCode, keyboard: .numberPad)
                     .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
@@ -573,11 +577,11 @@ private struct AuthView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
                     .background(
-                        code.count == 6 && !isLoading ? Color.white : Color.white.opacity(0.3),
+                        Self.validCodeLength.contains(code.count) && !isLoading ? Color.white : Color.white.opacity(0.3),
                         in: .rect(cornerRadius: 16, style: .continuous)
                     )
                 }
-                .disabled(code.count != 6 || isLoading)
+                .disabled(!Self.validCodeLength.contains(code.count) || isLoading)
 
                 Button("Resend code", action: resendCode)
                     .font(.subheadline.weight(.semibold))
@@ -594,7 +598,7 @@ private struct AuthView: View {
         .scrollDismissesKeyboard(.interactively)
         .onAppear { focused = .code }
         .onChange(of: code) { _, new in
-            let digits = String(new.filter(\.isNumber).prefix(6))
+            let digits = String(new.filter(\.isNumber).prefix(Self.validCodeLength.upperBound))
             if digits != new { code = digits }
         }
     }
