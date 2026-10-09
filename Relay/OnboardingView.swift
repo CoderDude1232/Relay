@@ -268,6 +268,35 @@ private struct BackgroundGradient: View {
 
 // MARK: - Welcome
 
+/// One look for every sign-in button: same height, font, icon box and spacing,
+/// with the icon + title centred as a unit.
+private struct SignInButtonLabel<Icon: View>: View {
+    enum Style { case light, outlined }
+    let title: String
+    let style: Style
+    @ViewBuilder let icon: () -> Icon
+
+    private static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 14, style: .continuous) }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            icon().frame(width: 19, height: 19)
+            Text(title)
+        }
+        .font(.system(size: 17, weight: .semibold))
+        .foregroundStyle(style == .light ? Color.black : Color.white)
+        .frame(maxWidth: .infinity)
+        .frame(height: 52)
+        .background(style == .light ? Color.white : Color.white.opacity(0.08), in: Self.shape)
+        .overlay {
+            if style == .outlined {
+                Self.shape.strokeBorder(.white.opacity(0.22), lineWidth: 1)
+            }
+        }
+        .contentShape(Self.shape)
+    }
+}
+
 private struct WelcomeView: View {
     let onSignUp: () -> Void
     let onSignIn: () -> Void
@@ -280,7 +309,6 @@ private struct WelcomeView: View {
     @State private var googleWebSession: ASWebAuthenticationSession?
 
     private static let buttonHeight: CGFloat = 52
-    private static let buttonShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -310,40 +338,30 @@ private struct WelcomeView: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: Self.buttonHeight * 3 + 24)
                 } else {
-                    SignInWithAppleButton(.continue) { request in
-                        request.requestedScopes = [.email, .fullName]
-                    } onCompletion: { result in
-                        handleAppleResult(result)
+                    Button {
+                        Task { handleAppleResult(await AppleSignInFlow.run(scopes: [.email, .fullName])) }
+                    } label: {
+                        SignInButtonLabel(title: "Continue with Apple", style: .light) {
+                            Image(systemName: "apple.logo")
+                                .resizable()
+                                .scaledToFit()
+                                .padding(.bottom, 2)  // the glyph sits low; centre it optically
+                        }
                     }
-                    .signInWithAppleButtonStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: Self.buttonHeight)
-                    .clipShape(Self.buttonShape)
+                    .accessibilityLabel("Continue with Apple")
 
                     Button(action: startGoogleSignIn) {
-                        HStack(spacing: 8) {
-                            GoogleGLogo().frame(width: 18, height: 18)
-                            Text("Continue with Google")
+                        SignInButtonLabel(title: "Continue with Google", style: .light) {
+                            GoogleGLogo()
                         }
-                        .font(.system(size: 19, weight: .medium))
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: Self.buttonHeight)
-                        .background(Color.white, in: Self.buttonShape)
                     }
 
                     Button(action: onSignUp) {
-                        HStack(spacing: 8) {
+                        SignInButtonLabel(title: "Continue with Email", style: .outlined) {
                             Image(systemName: "envelope.fill")
-                                .font(.system(size: 16, weight: .medium))
-                            Text("Continue with Email")
+                                .resizable()
+                                .scaledToFit()
                         }
-                        .font(.system(size: 19, weight: .medium))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: Self.buttonHeight)
-                        .background(Color.white.opacity(0.08), in: Self.buttonShape)
-                        .overlay(Self.buttonShape.strokeBorder(.white.opacity(0.22), lineWidth: 1))
                     }
                 }
 

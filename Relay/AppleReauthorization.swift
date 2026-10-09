@@ -76,3 +76,53 @@ final class AppleReauthorization: NSObject, ASAuthorizationControllerDelegate,
         continuation = nil
     }
 }
+
+/// Runs Sign in with Apple from our own button (so it can match the other
+/// sign-in buttons) and returns the same result `SignInWithAppleButton` gives.
+@MainActor
+final class AppleSignInFlow: NSObject, ASAuthorizationControllerDelegate,
+    ASAuthorizationControllerPresentationContextProviding {
+
+    private var continuation: CheckedContinuation<Result<ASAuthorization, Error>, Never>?
+
+    static func run(scopes: [ASAuthorization.Scope]) async -> Result<ASAuthorization, Error> {
+        let flow = AppleSignInFlow()
+        return await withCheckedContinuation { continuation in
+            flow.continuation = continuation
+            let request = ASAuthorizationAppleIDProvider().createRequest()
+            request.requestedScopes = scopes
+            let controller = ASAuthorizationController(authorizationRequests: [request])
+            controller.delegate = flow
+            controller.presentationContextProvider = flow
+            controller.performRequests()
+        }
+    }
+
+    nonisolated func authorizationController(
+        controller: ASAuthorizationController,
+        didCompleteWithAuthorization authorization: ASAuthorization
+    ) {
+        nonisolated(unsafe) let authorization = authorization
+        Task { @MainActor in self.finish(.success(authorization)) }
+    }
+
+    nonisolated func authorizationController(
+        controller: ASAuthorizationController, didCompleteWithError error: Error
+    ) {
+        Task { @MainActor in self.finish(.failure(error)) }
+    }
+
+    nonisolated func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        MainActor.assumeIsolated {
+            UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap(\.windows)
+                .first { $0.isKeyWindow } ?? ASPresentationAnchor()
+        }
+    }
+
+    private func finish(_ result: Result<ASAuthorization, Error>) {
+        continuation?.resume(returning: result)
+        continuation = nil
+    }
+}
