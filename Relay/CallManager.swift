@@ -307,8 +307,18 @@ final class CallManager: NSObject {
 
     // MARK: - Outgoing call
 
+    /// The iPhone/iPad app running on a Mac. 1:1 calls go through CallKit,
+    /// which isn't available there; group calls and call links don't use it.
+    nonisolated static var isOnMac: Bool { ProcessInfo.processInfo.isiOSAppOnMac }
+    nonisolated static let macOneToOneCallMessage =
+        "Calls with one person aren't available in the Mac version yet. Start the call from your iPhone or iPad. Group calls and call links work here."
+
     func startCall(peerAccount: String, peerName: String, kind: CallKind = .audio) async {
         guard case .idle = state else { return }
+        if Self.isOnMac {
+            groupCallFailureMessage = Self.macOneToOneCallMessage
+            return
+        }
         let callId = UUID().uuidString
         let uuid = UUID()
         activeCallUUID = uuid
@@ -720,6 +730,8 @@ final class CallManager: NSObject {
         guard !account.isEmpty else { return }
         switch msg.type {
         case .offer:
+            // On a Mac there is no CallKit; leave the ringing to the iPhone/iPad.
+            if Self.isOnMac { return }
             let kind = Self.callKind(fromMetadata: msg.ice) ?? (Self.sdpContainsVideo(msg.sdp) ? .video : .audio)
             let inCall: Bool
             switch state {
