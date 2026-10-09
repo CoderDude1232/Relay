@@ -22,9 +22,9 @@
 	<false/>
 	<key>RelayICEServerURLs</key>
 	<array>
-		<string>turn:api.relaymsg.app:3478?transport=udp</string>
-		<string>turn:api.relaymsg.app:3478?transport=tcp</string>
-		<string>stun:api.relaymsg.app:3478</string>
+		<string>turn:turn.relaymsg.app:3478?transport=udp</string>
+		<string>turn:turn.relaymsg.app:3478?transport=tcp</string>
+		<string>stun:turn.relaymsg.app:3478</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
