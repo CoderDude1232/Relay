@@ -30,3 +30,4 @@ android/app/google-services.json
 *.p8
 # Local API tokens — never commit
 .cloudflare-token
+.cloudflare-turn
