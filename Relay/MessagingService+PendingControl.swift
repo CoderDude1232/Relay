@@ -61,6 +61,13 @@ extension MessagingService {
                 insertSystemLine("\(name) took a screenshot", conversationId: shot.conversationId)
             case .screenSecurity(let upd):
                 try? storage.messages.setConversationPeerScreenSecurity(upd.conversationId, enabled: upd.enabled)
+            case .callLinkRequest(let callId, let account, let secret, let receivedAt):
+                // Stale requests: the person has long stopped waiting.
+                guard Date().timeIntervalSince(receivedAt) < 10 * 60 else { break }
+                await onCallMessage?(CallInfo(
+                    callId: callId, type: .linkJoinRequest, sdp: secret, ice: "",
+                    callerAccount: account, groupId: "link:" + callId
+                ))
             }
         }
 

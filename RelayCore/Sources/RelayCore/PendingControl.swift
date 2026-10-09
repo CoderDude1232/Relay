@@ -30,6 +30,9 @@ public enum PendingControl: Codable, Sendable {
     case screenSecurity(ScreenSecurityInfo)
     /// A shared-notepad update (message body minus `notepadPrefix`).
     case notepad(conversationId: String, content: String)
+    /// Someone opened one of our call links while the app wasn't running; the
+    /// app re-checks it and shows the admit prompt if it's still recent.
+    case callLinkRequest(callId: String, account: String, secret: String, receivedAt: Date)
 }
 
 public enum PendingControlStore {
@@ -59,6 +62,10 @@ public enum PendingControlStore {
         }
         if let upd = result.screenSecurityUpdate {
             items.append(.screenSecurity(upd))
+        }
+        if let call = result.callInfo, call.type == .linkJoinRequest {
+            items.append(.callLinkRequest(callId: call.callId, account: call.callerAccount,
+                                          secret: call.sdp, receivedAt: Date()))
         }
         return items
     }

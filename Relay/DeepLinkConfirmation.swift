@@ -28,12 +28,14 @@ enum PendingLinkAction: Identifiable {
     case username(String)
     case contactInvite(token: String)
     case groupInvite(GroupInvitePreview)
+    case callLink(callId: String, host: String, secret: String)
 
     var id: String {
         switch self {
         case .username(let name): return "u:\(name)"
         case .contactInvite(let token): return "c:\(token)"
         case .groupInvite(let preview): return "g:\(preview.id.uuidString)"
+        case .callLink(let callId, _, _): return "call:\(callId)"
         }
     }
 }
@@ -92,6 +94,7 @@ struct LinkConfirmationSheet: View {
         switch action {
         case .username, .contactInvite: return "person.crop.circle.badge.plus"
         case .groupInvite: return "person.3.fill"
+        case .callLink: return "phone.badge.waveform.fill"
         }
     }
 
@@ -100,6 +103,7 @@ struct LinkConfirmationSheet: View {
         case .username(let name): return "Message @\(name)?"
         case .contactInvite: return "Add contact?"
         case .groupInvite(let preview): return "Join “\(preview.groupName)”?"
+        case .callLink: return "Join this call?"
         }
     }
 
@@ -112,6 +116,8 @@ struct LinkConfirmationSheet: View {
         case .groupInvite(let preview):
             let count = preview.memberCount == 1 ? "1 member" : "\(preview.memberCount) members"
             return "This group has \(count). Everyone in it will be able to see your name, profile, and the messages you send to the group."
+        case .callLink:
+            return "You'll ask the person who shared this link to let you in. Everyone in the call will see your name."
         }
     }
 
@@ -120,6 +126,7 @@ struct LinkConfirmationSheet: View {
         case .username: return "Start Conversation"
         case .contactInvite: return "Add Contact"
         case .groupInvite: return "Join Group"
+        case .callLink: return "Ask to Join"
         }
     }
 }

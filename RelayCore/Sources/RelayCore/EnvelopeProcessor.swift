@@ -183,6 +183,7 @@ public struct CallInfo: Sendable {
     public enum CallType: Sendable, Codable {
         case offer, answer, ice, hangup, busy, ringing
         case groupRing, groupJoin, groupLeave
+        case linkJoinRequest, linkAdmit, linkRoster, linkDeny
     }
     public let callId: String
     public let type: CallType
@@ -719,7 +720,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         case .call(let call):
             // Release the dedup slot for ephemeral call messages.
-            let isNonEphemeral = call.type == .offer || call.type == .hangup || call.type == .groupRing
+            let isNonEphemeral: Bool = switch call.type {
+                case .offer, .hangup, .groupRing, .linkJoinRequest, .linkAdmit, .linkDeny: true
+                default: false
+            }
             if !isNonEphemeral {
                 try? storage.messages.releaseEnvelope(id: envelope.id)
             }
@@ -733,6 +737,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 case .groupRing:  .groupRing
                 case .groupJoin:  .groupJoin
                 case .groupLeave: .groupLeave
+                case .linkJoinRequest: .linkJoinRequest
+                case .linkAdmit:  .linkAdmit
+                case .linkRoster: .linkRoster
+                case .linkDeny:   .linkDeny
                 case .UNRECOGNIZED: .hangup
             }
             let info = CallInfo(

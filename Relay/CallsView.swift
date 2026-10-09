@@ -17,6 +17,7 @@ struct CallsView: View {
     @Environment(AppModel.self) private var model
     @Environment(CallManager.self) private var callManager
     @State private var showingClearConfirm = false
+    @State private var showingCallLinks = false
     @AppStorage(CallsView.missedCallsSeenAtKey) private var missedCallsSeenAt: Double = 0
 
     /// Call history grouped into day sections (most recent first), so the log
@@ -128,11 +129,17 @@ struct CallsView: View {
                 }
             }
             .navigationTitle("Calls")
+            .sheet(isPresented: $showingCallLinks) { CallLinksView(service: service) }
             .onAppear {
                 service.refreshCallHistory()
                 markMissedCallsSeen()
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showingCallLinks = true } label: {
+                        Label("Call Links", systemImage: "link")
+                    }
+                }
                 if !service.callHistory.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Clear") { showingClearConfirm = true }

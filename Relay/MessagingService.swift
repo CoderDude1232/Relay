@@ -92,9 +92,11 @@ final class MessagingService {
 
     private static func isEphemeralCallSignal(_ type: Relay_Content_CallMessage.TypeEnum) -> Bool {
         switch type {
-        case .answer, .ice, .busy, .ringing, .groupJoin, .groupLeave:
+        case .answer, .ice, .busy, .ringing, .groupJoin, .groupLeave, .linkRoster:
             return true
-        case .offer, .hangup, .groupRing, .UNRECOGNIZED:
+        // A join request must wake the host; admit/deny must reach a joiner
+        // whose app was briefly backgrounded.
+        case .offer, .hangup, .groupRing, .linkJoinRequest, .linkAdmit, .linkDeny, .UNRECOGNIZED:
             return false
         }
     }

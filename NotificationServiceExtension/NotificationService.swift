@@ -285,6 +285,19 @@ class NotificationService: UNNotificationServiceExtension {
             if callInfo.type == .offer {
                 savePendingCallOffer(callInfo, in: storage)
             }
+            if callInfo.type == .linkJoinRequest {
+                // Only for a link we really created, with the right secret, so
+                // nobody can spam this banner. The app gets the request via
+                // PendingControlStore and shows Admit / Deny.
+                let defaults = UserDefaults(suiteName: appGroupId)
+                guard let secret = CallLinkRecords.secret(forCallId: callInfo.callId, defaults: defaults),
+                      secret == callInfo.sdp
+                else { return .suppress }
+                let showName = Self.previewLevel(defaults: defaults) != "none"
+                let name = showName ? (callerDisplayName(for: callInfo.callerAccount, in: storage) ?? "Someone") : "Someone"
+                return .show(title: "Call link", body: "\(name) wants to join your call",
+                             conversationId: "", senderAccount: "")
+            }
             if callInfo.type == .hangup {
                 // Missed-call banner, honoring the preview level. No account
                 // prefix fallback: an unknown caller is just "Missed call".

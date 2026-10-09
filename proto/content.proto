@@ -227,6 +227,12 @@ message CallMessage {
     GROUP_RING  = 6;  // initiator → all members: "join this group call"
     GROUP_JOIN  = 7;  // member → all: "I joined; initiate mesh SDP with me"
     GROUP_LEAVE = 8;  // member → all: "I left the call"
+    // Call links (group_id = "link:<call_id>"). The link's creator is the host;
+    // no server state is involved.
+    LINK_JOIN_REQUEST = 9;   // joiner → host: sdp = the link's secret
+    LINK_ADMIT        = 10;  // host → admitted joiner: participants = others in the call
+    LINK_ROSTER       = 11;  // host → members: participants = everyone now in the call
+    LINK_DENY         = 12;  // host → joiner: not admitted (or the link was revoked)
   }
   Type   type    = 1;
   string call_id = 2;  // stable UUID for the entire call session

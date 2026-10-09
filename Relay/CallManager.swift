@@ -36,6 +36,24 @@ struct GroupCallPeer: Identifiable {
     var hasRemoteDescription: Bool = false
 }
 
+/// Host side: someone who opened one of our call links and is waiting to be let in.
+struct LinkJoinRequest: Identifiable, Equatable {
+    let account: String
+    let name: String
+    let callId: String
+    var id: String { callId + "|" + account }
+}
+
+/// Joiner side: our request to join someone else's call link.
+struct OutgoingLinkJoin: Equatable {
+    enum Status: Equatable { case waiting, denied, noAnswer }
+    let callId: String
+    let hostAccount: String
+    let secret: String
+    let hostName: String
+    var status: Status
+}
+
 struct GroupRingInfo {
     let callId: String
     let groupId: String
@@ -112,6 +130,18 @@ final class CallManager: NSObject {
     private var groupCallLocalVideoCapturer: RTCCameraVideoCapturer?
     private(set) var groupCallLocalVideoTrack: RTCVideoTrack?
     private var groupPeerDelegates: [String: GroupPCDelegate] = [:]
+
+    // MARK: Call link state
+    /// Host side: people waiting to be admitted to one of our call links.
+    private(set) var linkJoinRequests: [LinkJoinRequest] = []
+    /// Joiner side: our pending request to join a call link.
+    private(set) var outgoingLinkJoin: OutgoingLinkJoin?
+    /// Who hosts the call-link call we're in (our own id when we host it).
+    private var linkHostAccount: String?
+    /// Returns the secret of a call link we created, by call id.
+    var callLinkSecretResolver: ((String) -> String?)?
+    /// Returns the name of a call link we created, by call id.
+    var callLinkNameResolver: ((String) -> String?)?
     /// Resolves an account UUID to a human display name for CallKit / CallView labels.
     var nameResolver: ((String) -> String)?
     /// Persists call records after the call reaches a terminal state.
@@ -662,6 +692,10 @@ final class CallManager: NSObject {
         case .groupRing:  msg.type = .groupRing
         case .groupJoin:  msg.type = .groupJoin
         case .groupLeave: msg.type = .groupLeave
+        case .linkJoinRequest: msg.type = .linkJoinRequest
+        case .linkAdmit:  msg.type = .linkAdmit
+        case .linkRoster: msg.type = .linkRoster
+        case .linkDeny:   msg.type = .linkDeny
         }
         await handleCallMessage(msg, from: info.callerAccount)
     }
@@ -784,7 +818,8 @@ final class CallManager: NSObject {
             }
             terminate(fromRemote: true, outcomeOverride: .declined)
 
-        case .ringing, .groupRing, .groupJoin, .groupLeave, .UNRECOGNIZED:
+        case .ringing, .groupRing, .groupJoin, .groupLeave,
+             .linkJoinRequest, .linkAdmit, .linkRoster, .linkDeny, .UNRECOGNIZED:
             break
         }
     }
@@ -1728,9 +1763,197 @@ final class CallManager: NSObject {
             groupPeerDelegates.removeValue(forKey: account)
             if groupPeers.isEmpty { endGroupCallCleanup() }
 
+        case .linkJoinRequest:
+            await handleLinkJoinRequest(msg, from: account)
+        case .linkAdmit:
+            await handleLinkAdmit(msg, from: account)
+        case .linkRoster:
+            guard isInGroupCall, groupCallId == msg.callID, groupCallGroupId == Self.linkGroupId(msg.callID),
+                  account == linkHostAccount, account != ownAccountId
+            else { return }
+            groupCallMembers = Set((msg.participants + [account]).filter { $0 != ownAccountId && !$0.isEmpty })
+        case .linkDeny:
+            guard var out = outgoingLinkJoin, out.callId == msg.callID, out.hostAccount == account,
+                  out.status == .waiting
+            else { return }
+            out.status = .denied
+            outgoingLinkJoin = out
+
         default:
             break
         }
+    }
+
+    // MARK: - Call links
+    //
+    // A call link is https://relaymsg.app/call/<callId>#<hostAccount>.<secret>.
+    // Everything after "#" stays on the phone (browsers and the app never send
+    // it to a server). Opening the link sends LINK_JOIN_REQUEST with the secret
+    // to the host, end-to-end encrypted. The host admits or denies; an admitted
+    // joiner is told who else is in the call (LINK_ADMIT), the others are told
+    // about the joiner (LINK_ROSTER), and the normal group-call mesh takes over.
+    // The relay keeps no call state; the link only works while the host can
+    // answer.
+
+    nonisolated static func linkGroupId(_ callId: String) -> String { "link:" + callId }
+
+    /// Parses a call link URL (https://relaymsg.app/call/… or relay://call/…).
+    nonisolated static func parseCallLink(_ url: URL) -> (callId: String, host: String, secret: String)? {
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let callId: String?
+        if url.scheme == "relay", url.host == "call" {
+            callId = parts.first
+        } else if url.host == "relaymsg.app", parts.count >= 2, parts[0] == "call" {
+            callId = parts[1]
+        } else {
+            callId = nil
+        }
+        guard let callId, UUID(uuidString: callId) != nil,
+              let fragment = url.fragment, let dot = fragment.firstIndex(of: ".")
+        else { return nil }
+        let host = String(fragment[..<dot])
+        let secret = String(fragment[fragment.index(after: dot)...])
+        guard UUID(uuidString: host) != nil || !host.isEmpty, secret.count >= 16 else { return nil }
+        return (callId, host, secret)
+    }
+
+    private func sendLinkSignal(_ type: Relay_Content_CallMessage.TypeEnum, callId: String,
+                                to accounts: [String], participants: [String] = [], sdp: String = "") async {
+        guard !accounts.isEmpty else { return }
+        var msg = Relay_Content_CallMessage()
+        msg.type = type
+        msg.callID = callId
+        msg.groupID = Self.linkGroupId(callId)
+        msg.participants = participants
+        msg.sdp = sdp
+        msg.ice = Self.metadataJSON(kind: groupCallKind)
+        await onSendGroupCallMessage?(msg, accounts)
+    }
+
+    /// Activates audio (group calls bypass CallKit) and local media.
+    private func beginGroupMedia(kind: CallKind) async {
+        if kind == .video { await requestCameraAccessIfNeeded() }
+        configureAudioSessionForCall()
+        let avSession = AVAudioSession.sharedInstance()
+        try? avSession.setActive(true)
+        RTCAudioSession.sharedInstance().audioSessionDidActivate(avSession)
+        RTCAudioSession.sharedInstance().isAudioEnabled = true
+        setupGroupLocalMedia(kind: kind)
+    }
+
+    /// Host: starts the call behind one of our links. Nobody is rung; people
+    /// join by opening the link.
+    @discardableResult
+    func startLinkCall(callId: String, name: String, kind: CallKind = .audio) async -> Bool {
+        guard case .idle = state, !isInGroupCall else { return false }
+        guard await makeRTCConfiguration() != nil else {
+            groupCallFailureMessage = peerConnectionFailureReason ?? Self.noRelayServerMessage
+            peerConnectionFailureReason = nil
+            return false
+        }
+        groupCallId = callId
+        groupCallGroupId = Self.linkGroupId(callId)
+        groupCallMembers = []
+        groupCallKind = kind
+        groupCallDisplayName = name
+        linkHostAccount = ownAccountId
+        isInGroupCall = true
+        await beginGroupMedia(kind: kind)
+        return true
+    }
+
+    private func handleLinkJoinRequest(_ msg: Relay_Content_CallMessage, from account: String) async {
+        guard !account.isEmpty, account != ownAccountId,
+              msg.groupID == Self.linkGroupId(msg.callID),
+              let secret = callLinkSecretResolver?(msg.callID),
+              Self.constantTimeEquals(secret, msg.sdp),
+              isBlockedAccount?(account) != true
+        else { return }
+        // Busy in a different call: say no rather than leave them waiting.
+        let inThisCall = isInGroupCall && groupCallId == msg.callID
+        let idle: Bool = { if case .idle = state { return !isInGroupCall } else { return false } }()
+        guard inThisCall || idle else {
+            await sendLinkSignal(.linkDeny, callId: msg.callID, to: [account])
+            return
+        }
+        guard !groupCallMembers.contains(account),
+              !linkJoinRequests.contains(where: { $0.account == account && $0.callId == msg.callID })
+        else { return }
+        linkJoinRequests.append(LinkJoinRequest(
+            account: account, name: nameResolver?(account) ?? "Someone with your link", callId: msg.callID
+        ))
+    }
+
+    /// Host: lets someone in, starting the call first if we aren't in it yet.
+    func admitLinkJoin(_ request: LinkJoinRequest) async {
+        linkJoinRequests.removeAll { $0 == request }
+        if !(isInGroupCall && groupCallId == request.callId) {
+            let name = callLinkNameResolver?(request.callId) ?? "Call link"
+            guard await startLinkCall(callId: request.callId, name: name) else { return }
+        }
+        guard groupCallId == request.callId, let me = ownAccountId else { return }
+        let others = Array(groupCallMembers)
+        groupCallMembers.insert(request.account)
+        // Existing members first, so they accept the newcomer's GROUP_JOIN.
+        await sendLinkSignal(.linkRoster, callId: request.callId, to: others,
+                             participants: Array(groupCallMembers) + [me])
+        await sendLinkSignal(.linkAdmit, callId: request.callId, to: [request.account], participants: others)
+    }
+
+    func denyLinkJoin(_ request: LinkJoinRequest) {
+        linkJoinRequests.removeAll { $0 == request }
+        Task { await sendLinkSignal(.linkDeny, callId: request.callId, to: [request.account]) }
+    }
+
+    /// Joiner: asks the link's host to let us in.
+    func requestToJoinLink(callId: String, hostAccount: String, secret: String) async {
+        guard case .idle = state, !isInGroupCall, hostAccount != ownAccountId else { return }
+        let request = OutgoingLinkJoin(callId: callId, hostAccount: hostAccount, secret: secret,
+                                       hostName: nameResolver?(hostAccount) ?? "the host", status: .waiting)
+        outgoingLinkJoin = request
+        await sendLinkSignal(.linkJoinRequest, callId: callId, to: [hostAccount], sdp: secret)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(90))
+            guard let self, var out = self.outgoingLinkJoin, out.callId == callId, out.status == .waiting else { return }
+            out.status = .noAnswer
+            self.outgoingLinkJoin = out
+        }
+    }
+
+    func cancelLinkJoin() { outgoingLinkJoin = nil }
+
+    private func handleLinkAdmit(_ msg: Relay_Content_CallMessage, from account: String) async {
+        guard let out = outgoingLinkJoin, out.callId == msg.callID, out.hostAccount == account,
+              out.status == .waiting, case .idle = state, !isInGroupCall
+        else { return }
+        outgoingLinkJoin = nil
+        guard await makeRTCConfiguration() != nil else {
+            groupCallFailureMessage = peerConnectionFailureReason ?? Self.noRelayServerMessage
+            peerConnectionFailureReason = nil
+            return
+        }
+        groupCallId = msg.callID
+        groupCallGroupId = Self.linkGroupId(msg.callID)
+        linkHostAccount = account
+        groupCallMembers = Set((msg.participants + [account]).filter { $0 != ownAccountId && !$0.isEmpty })
+        groupCallKind = Self.callKind(fromMetadata: msg.ice) ?? .audio
+        groupCallDisplayName = "\(out.hostName)'s call"
+        isInGroupCall = true
+        await beginGroupMedia(kind: groupCallKind)
+
+        var join = Relay_Content_CallMessage()
+        join.type = .groupJoin
+        join.callID = msg.callID
+        join.groupID = Self.linkGroupId(msg.callID)
+        await onSendGroupCallMessage?(join, Array(groupCallMembers))
+    }
+
+    private nonisolated static func constantTimeEquals(_ a: String, _ b: String) -> Bool {
+        let x = Array(a.utf8), y = Array(b.utf8)
+        guard x.count == y.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<x.count { diff |= x[i] ^ y[i] }
+        return diff == 0
     }
 
     private func initiateGroupPeerOffer(toPeer account: String, callId: String) async {
@@ -1891,6 +2114,7 @@ final class CallManager: NSObject {
         groupCallKind = .audio
         groupCallDisplayName = "Group Call"
         groupRingInfo = nil
+        linkHostAccount = nil
         isVideoEnabled = true
         // Return the audio session to idle so other apps can use the mic/speaker.
         RTCAudioSession.sharedInstance().isAudioEnabled = false

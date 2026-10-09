@@ -9,6 +9,7 @@ import BackgroundTasks
 import CoreSpotlight
 import Intents
 import OSLog
+import RelayCore
 import RelayKit
 import SecureStorage
 import SwiftUI
@@ -81,6 +82,9 @@ struct RelayApp: App {
                         let token = url.pathComponents.dropFirst().first ?? ""
                         guard !token.isEmpty else { return }
                         model.pendingContactInviteToken = token
+                    } else if url.host == "call" {
+                        // relay://call/<callId>#<hostAccount>.<secret>
+                        if let link = CallManager.parseCallLink(url) { model.pendingCallLink = link }
                     } else if url.host == "conversation" {
                         // relay://conversation/<conversationId> — widget tap deeplink
                         let convId = url.pathComponents.dropFirst().first ?? ""
@@ -127,6 +131,9 @@ struct RelayApp: App {
                         model.pendingDeepLinkUsername = value
                     } else if kind == "c" {
                         model.pendingContactInviteToken = value
+                    } else if kind == "call" {
+                        // https://relaymsg.app/call/<callId>#<hostAccount>.<secret>
+                        if let link = CallManager.parseCallLink(url) { model.pendingCallLink = link }
                     } else if kind == "g" {
                         // https://relaymsg.app/g/<token>#<fragment-key> — encrypted group invite
                         let frag = url.fragment ?? ""
@@ -174,6 +181,8 @@ struct RelayApp: App {
         callManager.isBlockedAccount = { account in
             service.isBlocked(account)
         }
+        callManager.callLinkSecretResolver = { callId in CallLinkStore.shared.link(callId)?.secret }
+        callManager.callLinkNameResolver = { callId in CallLinkStore.shared.link(callId)?.name }
         callManager.groupMembersResolver = { groupId in
             guard let conv = service.conversations.first(where: { $0.groupId == groupId }) else { return nil }
             return service.group(for: conv.id)?.members

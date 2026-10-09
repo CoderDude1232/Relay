@@ -4,6 +4,7 @@
 //
 
 import LocalAuthentication
+import RelayCore
 import RelayKit
 import SecureStorage
 import SwiftUI
@@ -282,6 +283,18 @@ struct MainTabView: View {
             pendingLinkAction = .contactInvite(token: token)
             return
         }
+        if let link = model.pendingCallLink {
+            model.pendingCallLink = nil
+            if link.host == service.credentials.accountId {
+                // Our own link: start it instead of asking ourselves.
+                if let record = CallLinkStore.shared.link(link.callId) {
+                    Task { await callManager.startLinkCall(callId: record.id, name: record.name) }
+                }
+            } else {
+                pendingLinkAction = .callLink(callId: link.callId, host: link.host, secret: link.secret)
+            }
+            return
+        }
         if let raw = model.pendingGroupInviteToken {
             model.pendingGroupInviteToken = nil
             let parts = raw.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
@@ -326,6 +339,8 @@ struct MainTabView: View {
                 } catch {
                     inviteError = "This invite link is invalid or has already been used."
                 }
+            case .callLink(let callId, let host, let secret):
+                await callManager.requestToJoinLink(callId: callId, hostAccount: host, secret: secret)
             case .groupInvite(let preview):
                 do {
                     let conversationId = try await service.acceptGroupInvite(preview)
@@ -397,6 +412,25 @@ struct MainTabView: View {
                     .zIndex(3)
             }
 
+            // Call links: host admit prompts, and the joiner's waiting card.
+            if let request = callManager.linkJoinRequests.first {
+                VStack {
+                    LinkJoinRequestBanner(request: request)
+                        .padding(.top, 8)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(4)
+            }
+            if let join = callManager.outgoingLinkJoin {
+                ZStack {
+                    Color.black.opacity(0.25).ignoresSafeArea()
+                    OutgoingLinkJoinCard(join: join)
+                }
+                .transition(.opacity)
+                .zIndex(4)
+            }
+
             if service.authenticationExpired {
                 // Relay credentials were rejected (401). Clear only the relay
                 // account so the user can re-register; keep the Supabase session
@@ -431,6 +465,9 @@ struct MainTabView: View {
         .onChange(of: model.pendingDeepLinkUsername) { _, _ in handlePendingLinks() }
         .onChange(of: model.pendingContactInviteToken) { _, _ in handlePendingLinks() }
         .onChange(of: model.pendingGroupInviteToken) { _, _ in handlePendingLinks() }
+        .onChange(of: model.pendingCallLink?.callId) { _, _ in handlePendingLinks() }
+        .animation(.spring(duration: 0.3), value: callManager.linkJoinRequests)
+        .animation(.spring(duration: 0.3), value: callManager.outgoingLinkJoin)
         // Links that arrived while the app lock was up run once it's unlocked.
         .onChange(of: appLocked) { _, locked in if !locked { handlePendingLinks() } }
         // Links opened on a cold start (or during onboarding) are set before this

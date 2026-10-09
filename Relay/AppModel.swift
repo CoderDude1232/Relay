@@ -48,6 +48,8 @@ final class AppModel {
     var pendingDeepLinkUsername: String?
     /// Set by onOpenURL when the user opens a relay://join/<token> invite link.
     var pendingGroupInviteToken: String?
+    /// A call link opened from outside (universal link or relay://call/…).
+    var pendingCallLink: (callId: String, host: String, secret: String)?
     /// Set by onOpenURL when the user opens a one-time relay://contact/<token> link.
     var pendingContactInviteToken: String?
     /// Set by AppDelegate's UNUserNotificationCenterDelegate when the user taps a message banner.
@@ -897,6 +899,7 @@ final class AppModel {
             UserDefaults.standard.removePersistentDomain(forName: bundleId)
         }
         ChatFolderStore.shared.reload()
+        CallLinkStore.shared.clearAll()
         // Traces the OS keeps for us outside the app's files: Siri/share-sheet
         // interaction donations, Spotlight entries, and delivered notifications.
         INInteraction.deleteAll(completion: nil)

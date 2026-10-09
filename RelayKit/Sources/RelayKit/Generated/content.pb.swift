@@ -745,6 +745,19 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
 
     /// member → all: "I left the call"
     case groupLeave // = 8
+
+    /// Call links (group_id = "link:<call_id>"). The link's creator is the host;
+    /// no server state is involved.
+    case linkJoinRequest // = 9
+
+    /// host → admitted joiner: participants = others in the call
+    case linkAdmit // = 10
+
+    /// host → members: participants = everyone now in the call
+    case linkRoster // = 11
+
+    /// host → joiner: not admitted (or the link was revoked)
+    case linkDeny // = 12
     case UNRECOGNIZED(Int)
 
     public init() {
@@ -762,6 +775,10 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
       case 6: self = .groupRing
       case 7: self = .groupJoin
       case 8: self = .groupLeave
+      case 9: self = .linkJoinRequest
+      case 10: self = .linkAdmit
+      case 11: self = .linkRoster
+      case 12: self = .linkDeny
       default: self = .UNRECOGNIZED(rawValue)
       }
     }
@@ -777,6 +794,10 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
       case .groupRing: return 6
       case .groupJoin: return 7
       case .groupLeave: return 8
+      case .linkJoinRequest: return 9
+      case .linkAdmit: return 10
+      case .linkRoster: return 11
+      case .linkDeny: return 12
       case .UNRECOGNIZED(let i): return i
       }
     }
@@ -792,6 +813,10 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
       .groupRing,
       .groupJoin,
       .groupLeave,
+      .linkJoinRequest,
+      .linkAdmit,
+      .linkRoster,
+      .linkDeny,
     ]
 
   }
@@ -1977,7 +2002,7 @@ nonisolated extension Relay_Content_CallMessage: SwiftProtobuf.Message, SwiftPro
 }
 
 nonisolated extension Relay_Content_CallMessage.TypeEnum: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0OFFER\0\u{1}ANSWER\0\u{1}ICE\0\u{1}HANGUP\0\u{1}BUSY\0\u{1}RINGING\0\u{1}GROUP_RING\0\u{1}GROUP_JOIN\0\u{1}GROUP_LEAVE\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0OFFER\0\u{1}ANSWER\0\u{1}ICE\0\u{1}HANGUP\0\u{1}BUSY\0\u{1}RINGING\0\u{1}GROUP_RING\0\u{1}GROUP_JOIN\0\u{1}GROUP_LEAVE\0\u{1}LINK_JOIN_REQUEST\0\u{1}LINK_ADMIT\0\u{1}LINK_ROSTER\0\u{1}LINK_DENY\0")
 }
 
 nonisolated extension Relay_Content_EditMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
