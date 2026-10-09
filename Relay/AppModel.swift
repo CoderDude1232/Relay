@@ -896,6 +896,7 @@ final class AppModel {
         if let bundleId = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: bundleId)
         }
+        ChatFolderStore.shared.reload()
         // Traces the OS keeps for us outside the app's files: Siri/share-sheet
         // interaction donations, Spotlight entries, and delivered notifications.
         INInteraction.deleteAll(completion: nil)

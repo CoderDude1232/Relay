@@ -116,22 +116,12 @@ struct SettingsView: View {
                     }
                 }
 
-                // MARK: Support & legal
+                // MARK: Support
+                // (Privacy Policy, Terms and Acknowledgements live under Privacy.)
                 Section {
                     Link(destination: LegalLinks.feedbackMail) {
                         SettingsExternalRow(systemName: "envelope.fill", title: "Send Feedback")
                     }
-                    Link(destination: LegalLinks.privacy) {
-                        SettingsExternalRow(systemName: "hand.raised.fill", title: "Privacy Policy")
-                    }
-                    Link(destination: LegalLinks.terms) {
-                        SettingsExternalRow(systemName: "doc.text.fill", title: "Terms of Service")
-                    }
-                    NavigationLink(destination: AcknowledgementsView()) {
-                        SettingsNavRow(systemName: "heart.text.square.fill", color: .accentColor, title: "Acknowledgements")
-                    }
-                } header: {
-                    Text("About")
                 }
 
                 // MARK: Emergency Wipe
@@ -419,6 +409,14 @@ private struct ChatsSettingsView: View {
     var body: some View {
         List {
             Section {
+                NavigationLink(destination: ChatFoldersView(service: service)) {
+                    SettingsNavRow(systemName: "folder.fill", color: .accentColor, title: "Chat Folders")
+                }
+            } footer: {
+                Text("Group chats into folders like Work or Family. Folders stay on this device.")
+            }
+
+            Section {
                 NavigationLink(destination: ScheduledMessagesView(service: service)) {
                     SettingsNavRow(systemName: "clock.badge.checkmark", color: .accentColor, title: "Scheduled Messages")
                 }
@@ -594,6 +592,17 @@ struct PrivacySettingsView: View {
                         Text("Data & Retention Policy")
                     }
                 }
+                Link(destination: LegalLinks.privacy) {
+                    SettingsExternalRow(systemName: "hand.raised.fill", title: "Privacy Policy")
+                }
+                Link(destination: LegalLinks.terms) {
+                    SettingsExternalRow(systemName: "doc.text.fill", title: "Terms of Service")
+                }
+                NavigationLink(destination: AcknowledgementsView()) {
+                    SettingsNavRow(systemName: "heart.text.square.fill", color: .accentColor, title: "Acknowledgements")
+                }
+            } header: {
+                Text("Policies & Legal")
             }
         }
         .navigationTitle("Privacy")

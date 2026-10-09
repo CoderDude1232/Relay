@@ -29,6 +29,11 @@ struct ConversationListView: View {
     @State private var isEditing = false
     @State private var selectedIds: Set<String> = []
     @State private var activeLabel: String? = nil  // nil = All
+    @State private var folderStore = ChatFolderStore.shared
+    @State private var showingFolderManager = false
+    /// Chat waiting to go into a folder created from its context menu.
+    @State private var newFolderForConversation: String?
+    @State private var newFolderName = ""
     // Kept as @State so the DB query only runs when searchText changes, not on every render.
     @State private var searchResults: [MessageStore.SearchResult] = []
     // Conversations successfully unlocked via Face ID this session.
@@ -44,8 +49,6 @@ struct ConversationListView: View {
     /// Hook for ChatView — see the detail column below. Survives the Face ID
     /// re-selection dance; cleared when a different chat is opened.
     @State private var searchTarget: (conversationId: String, messageId: String)?
-
-    private static let availableLabels = ["Personal", "Work", "Family", "Unread", "Groups"]
 
     private var isSearching: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -67,19 +70,15 @@ struct ConversationListView: View {
         service.conversations.filter { $0.archived && !panicMode.isHidden($0.id) }
     }
 
+    /// Filter chips: the user's folders that hold chats (in their order), then
+    /// the built-in Unread and Groups filters when they'd match anything.
     private var usedLabels: [String] {
-        let all = service.conversations.filter { !$0.archived }
-        var result = [String]()
-        for label in Self.availableLabels {
-            switch label {
-            case "Unread":
-                if all.contains(where: { $0.unreadCount > 0 }) { result.append(label) }
-            case "Groups":
-                if all.contains(where: { $0.isGroup }) { result.append(label) }
-            default:
-                if all.contains(where: { $0.label == label }) { result.append(label) }
-            }
+        let all = service.conversations.filter { !$0.archived && !panicMode.isHidden($0.id) }
+        var result = folderStore.folders.filter { folder in
+            folder == activeLabel || all.contains { $0.label == folder }
         }
+        if all.contains(where: { $0.unreadCount > 0 }) || activeLabel == "Unread" { result.append("Unread") }
+        if all.contains(where: { $0.isGroup }) { result.append("Groups") }
         return result
     }
 
@@ -332,6 +331,14 @@ struct ConversationListView: View {
                         activeLabel = (activeLabel == label) ? nil : label
                     }
                 }
+                Button { showingFolderManager = true } label: {
+                    Image(systemName: "folder.badge.gearshape")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: 32)
+                }
+                .accessibilityLabel("Edit chat folders")
             }
             .padding(.horizontal, DS.Spacing.lg)
             .padding(.vertical, DS.Spacing.sm)
@@ -531,11 +538,30 @@ struct ConversationListView: View {
                             Label("Hide in Panic Mode", systemImage: "eye.slash")
                         }
                     }
-                    Menu("Label") {
-                        Button("None") { service.setConversationLabel(conversation.id, label: nil) }
-                        ForEach(["Personal", "Work", "Family"], id: \.self) { label in
-                            Button(label) { service.setConversationLabel(conversation.id, label: label) }
+                    Menu {
+                        ForEach(folderStore.folders, id: \.self) { folder in
+                            Button {
+                                service.setConversationLabel(conversation.id, label: folder)
+                            } label: {
+                                if conversation.label == folder {
+                                    Label(folder, systemImage: "checkmark")
+                                } else {
+                                    Text(folder)
+                                }
+                            }
                         }
+                        if conversation.label != nil {
+                            Button("Remove from Folder") { service.setConversationLabel(conversation.id, label: nil) }
+                        }
+                        Divider()
+                        Button {
+                            newFolderName = ""
+                            newFolderForConversation = conversation.id
+                        } label: {
+                            Label("New Folder…", systemImage: "folder.badge.plus")
+                        }
+                    } label: {
+                        Label("Move to Folder", systemImage: "folder")
                     }
                 }
                 } // end else (not editing)
@@ -554,6 +580,29 @@ struct ConversationListView: View {
             }
         } // end List
         .listStyle(.plain)
+        .sheet(isPresented: $showingFolderManager) {
+            NavigationStack {
+                ChatFoldersView(service: service)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingFolderManager = false }
+                        }
+                    }
+            }
+        }
+        .alert("New Folder", isPresented: Binding(
+            get: { newFolderForConversation != nil },
+            set: { if !$0 { newFolderForConversation = nil } }
+        )) {
+            TextField("Name", text: $newFolderName)
+            Button("Create") {
+                if let id = newFolderForConversation, let name = folderStore.add(newFolderName) {
+                    service.setConversationLabel(id, label: name)
+                }
+            }
+            .disabled(folderStore.validName(newFolderName) == nil)
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private var searchList: some View {
