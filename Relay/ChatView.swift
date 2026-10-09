@@ -2115,13 +2115,12 @@ private struct MessageBubble: View {
                 metadataRow(onBubble: false)
             }
         } else if let locPayload = LocationPayload.decode(message.body) {
-            bubbleChrome(
-                VStack(alignment: .trailing, spacing: 6) {
-                    LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing)
-                    metadataRow
-                }
-                .padding(10)
-            )
+            VStack(alignment: .trailing, spacing: 6) {
+                LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing)
+                metadataRow(onBubble: false)
+            }
+            .padding(10)
+            .modifier(NeutralCard())
         } else if message.body.hasPrefix(notepadPrefix) {
             bubbleChrome(
                 HStack(alignment: .lastTextBaseline, spacing: 7) {
@@ -2132,16 +2131,16 @@ private struct MessageBubble: View {
                 .padding(.vertical, 6)
             )
         } else if message.body.hasPrefix("__poll__:") {
-            bubbleChrome(
-                VStack(alignment: .trailing, spacing: -4) {
-                    PollBubble(
-                        message: message, service: service,
-                        conversationId: conversationId, isOutgoing: message.isOutgoing
-                    )
-                    metadataRow
-                        .padding([.trailing, .bottom], 12)
-                }
-            )
+            VStack(alignment: .trailing, spacing: -4) {
+                PollBubble(
+                    message: message, service: service,
+                    conversationId: conversationId, isOutgoing: message.isOutgoing
+                )
+                metadataRow(onBubble: false)
+                    .padding([.trailing, .bottom], 12)
+            }
+            .frame(minWidth: 240)
+            .modifier(NeutralCard())
         } else if isViewOnce {
             ViewOnceOverlay(
                 message: message, service: service,
@@ -3292,6 +3291,21 @@ private struct BubbleChrome: ViewModifier {
     }
 }
 
+/// A plain card (white in light mode, black in dark) for content like maps
+/// and polls that reads better without the tinted bubble colour.
+private struct NeutralCard: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(Color(.systemBackground), in: .rect(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(.primary.opacity(0.1), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.06), radius: 5, x: 0, y: 2)
+            .foregroundStyle(.primary)
+    }
+}
+
 // MARK: - LocationBubble
 
 private struct LocationBubble: View {
@@ -3382,7 +3396,7 @@ private struct LocationBubble: View {
                      : "Live location")
                     .font(.caption)
             }
-            .foregroundStyle(isOutgoing ? .white.opacity(0.8) : .secondary)
+            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: 240)
         .fullScreenCover(isPresented: $showingFullMap) {

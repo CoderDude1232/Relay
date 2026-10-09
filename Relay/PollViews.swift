@@ -126,15 +126,15 @@ struct PollBubble: View {
             HStack(spacing: 6) {
                 Image(systemName: "chart.bar.xaxis")
                     .font(.caption)
-                    .foregroundStyle(isOutgoing ? .white.opacity(0.8) : .secondary)
+                    .foregroundStyle(.secondary)
                 Text("Poll")
                     .font(.caption)
-                    .foregroundStyle(isOutgoing ? .white.opacity(0.8) : .secondary)
+                    .foregroundStyle(.secondary)
             }
             .accessibilityLabel("Poll")
             Text(question)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(isOutgoing ? .white : .primary)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !options.isEmpty {
@@ -145,7 +145,7 @@ struct PollBubble: View {
                             voteCount: votes.filter { $0.selectedOptions.contains(idx) }.count,
                             totalVotes: votes.isEmpty ? 0 : uniqueVoters,
                             isSelected: mySelections.contains(idx),
-                            isOutgoing: isOutgoing
+                            isOutgoing: false  // drawn on a neutral card, not the tinted bubble
                         ) {
                             castVote(for: idx)
                         }
@@ -156,7 +156,7 @@ struct PollBubble: View {
             let voterCount = uniqueVoters
             Text(voterCount == 0 ? "No votes yet" : "\(voterCount) vote\(voterCount == 1 ? "" : "s")")
                 .font(.caption2)
-                .foregroundStyle(isOutgoing ? .white.opacity(0.6) : .secondary)
+                .foregroundStyle(.secondary)
         }
         .padding(12)
         .onAppear { refresh() }
