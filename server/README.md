@@ -306,7 +306,18 @@ tokens, or whether anything matched. Interop vectors: `internal/oprf/directory_t
 | `POST /v1/attachments` | sig | → `201 {id}`. Reserves the id for a single anonymous `PUT`. `429` past the account's daily quota (1000 allocations or 2 GiB uploaded per rolling day by default). `507` when the relay's attachment storage is at its watermark (`-attachment-disk-cap`). |
 | `PUT /v1/attachments/{id}` | **none** | raw `application/octet-stream` body → `204`; `413` over the cap; `429` when the allocating account's daily byte budget is spent; `507` at the storage watermark (the reservation is kept — retry later with the same id). Opaque ciphertext only. The 128-bit id is the capability: only an id **allocated** by `POST /v1/attachments` and **not yet written** is accepted (write-once; `404` otherwise). 600/IP/min. |
 | `GET /v1/attachments/{id}` | **none** | → raw bytes, streamed from disk; supports `Range` (`206`); no `Last-Modified`. `404` after TTL reaping (14 days). No credentials — knowing the id (shared only inside E2E content) is the capability, so downloads can't be tied to an account. 600/IP/min. |
-| `GET /v1/turn-credentials` | sig | → `{urls[], username, credential, ttl}` (coturn REST HMAC-SHA1, 1 h). `username` is `<expiry>:<16 random hex>` — it carries no account identifier. `404` when TURN isn't configured — treat as "no TURN", not an error. |
+| `GET /v1/turn-credentials` | sig | → `{urls[], username, credential, ttl, iceServers[]}`. `iceServers` is the ordered list to use (`{urls[], username, credential}` each, preferred first); the top-level fields duplicate its first entry for older clients. Normally that's our coturn (REST HMAC-SHA1, 1 h; `username` is `<expiry>:<16 random hex>` — no account identifier). With TURN failover configured, when our coturn is down or overloaded the response carries **only** Cloudflare Realtime TURN credentials instead (see "TURN failover"). Clients should fetch per call, not cache. `404` when TURN isn't configured — treat as "no TURN", not an error. |
+
+#### TURN failover
+
+Flags: `-cloudflare-turn-key-id`, `-cloudflare-turn-token-file`, `-turn-status-url`.
+relayd probes the first `turn:` URL in `-turn-urls` every 5 s with a STUN Binding
+Request, and reads the TURN box's load agent (`cmd/turnload`, `GET /status` →
+`{overloaded, reason, rxMbps, rxPps, cpu}`). Two failed probes in a row (no STUN
+answer, or the agent reporting overload) switch new calls to Cloudflare; two good
+ones switch back. The agent itself only clears overload after 60 s comfortably
+below every threshold. Cloudflare is not contacted while coturn is healthy, and
+the credential request to Cloudflare carries nothing about the user.
 
 ### Real-time
 

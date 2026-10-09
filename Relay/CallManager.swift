@@ -1200,10 +1200,10 @@ final class CallManager: NSObject {
     /// ever used — if none of Relay's own servers are available, calls rely on host/relay
     /// candidates only, so a caller's IP is never disclosed to an outside provider.
     private func freshIceServers() async -> [RTCIceServer] {
-        // Return cached credentials if still valid (with a 60s safety margin).
-        if let cached = cachedTurnCredentials, cached.expiresAt > Date().addingTimeInterval(60) {
-            return iceServers(from: cached.creds)
-        }
+        // Always ask first: the relay switches to a backup TURN provider when
+        // its own server is down or overloaded, and a cached answer would keep
+        // sending calls to the struggling server. The cache is only a fallback
+        // for when the relay can't be reached.
         if let fetch = onFetchTurnCredentials {
             do {
                 if let creds = try await fetch() {
@@ -1215,10 +1215,23 @@ final class CallManager: NSObject {
                 log.warning("TURN credential fetch failed: \(PrivacyRedactor.error(error))")
             }
         }
+        if let cached = cachedTurnCredentials, cached.expiresAt > Date().addingTimeInterval(60) {
+            return iceServers(from: cached.creds)
+        }
         return Self.staticIceServers()
     }
 
     private func iceServers(from creds: TurnCredentials) -> [RTCIceServer] {
+        // Newer relays send an ordered list (preferred first); WebRTC prefers
+        // relay candidates from earlier servers.
+        if let list = creds.iceServers, !list.isEmpty {
+            let servers = list.compactMap { server -> RTCIceServer? in
+                let turnURLs = server.urls.filter { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") }
+                guard !turnURLs.isEmpty else { return nil }
+                return RTCIceServer(urlStrings: turnURLs, username: server.username, credential: server.credential)
+            }
+            if !servers.isEmpty { return servers }
+        }
         let turnURLs = creds.urls.filter { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") }
         let stunURLs = creds.urls.filter { $0.hasPrefix("stun:") }
         var servers: [RTCIceServer] = []

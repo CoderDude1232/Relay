@@ -44,6 +44,8 @@ type Server struct {
 	blobs      *blob.Store
 	turnURLs   []string // empty = TURN not configured
 	turnSecret string
+	turnHealth *TURNHealth     // nil = no failover
+	cfTURN     *CloudflareTURN // nil = no failover
 
 	// Supabase social-login verification. When supabaseURL is set, the OAuth
 	// account endpoint verifies a user's Supabase access token by asking
@@ -2473,7 +2475,7 @@ const turnTTL = 3600 // seconds
 // handleTurnCredentials issues time-limited TURN credentials using coturn's
 // REST API HMAC format: username="{expiry}:{random}", password=HMAC-SHA1.
 // Returns 404 if TURN is not configured on this server.
-func (s *Server) handleTurnCredentials(w http.ResponseWriter, _ *http.Request, _ *store.Device) {
+func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request, _ *store.Device) {
 	if len(s.turnURLs) == 0 || s.turnSecret == "" {
 		httpError(w, http.StatusNotFound, "TURN not configured on this server")
 		return
@@ -2491,11 +2493,25 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, _ *http.Request, _
 	mac := hmac.New(sha1.New, []byte(s.turnSecret))
 	mac.Write([]byte(username))
 	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	own := iceServer{URLs: s.turnURLs, Username: username, Credential: credential}
+	// While our coturn is healthy it's the only server handed out. When it's
+	// down or overloaded only Cloudflare's TURN is (listing ours too would keep
+	// adding allocations to a box that needs the load taken off it), in both
+	// the list and the legacy top-level fields older clients read.
+	servers, legacy := []iceServer{own}, own
+	if s.cfTURN != nil && s.turnHealth != nil && !s.turnHealth.Healthy() {
+		if cf, err := s.cfTURN.generate(r.Context(), turnTTL); err == nil {
+			servers, legacy = []iceServer{cf}, cf
+		} else {
+			slog.Error("turn: cloudflare failover unavailable", "err", privlog.Error(err))
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"urls":       s.turnURLs,
-		"username":   username,
-		"credential": credential,
+		"urls":       legacy.URLs,
+		"username":   legacy.Username,
+		"credential": legacy.Credential,
 		"ttl":        turnTTL,
+		"iceServers": servers,
 	})
 }
 

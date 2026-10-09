@@ -949,6 +949,16 @@ public struct TurnCredentials: Decodable, Sendable {
     public let credential: String
     /// Lifetime in seconds from issue time.
     public let ttl: Int
+    /// Ordered TURN servers, preferred first. Present on newer relays: when
+    /// Relay's own TURN server is down or overloaded this lists a backup
+    /// provider first. Older relays send only the top-level fields.
+    public let iceServers: [IceServer]?
+
+    public struct IceServer: Decodable, Sendable {
+        public let urls: [String]
+        public let username: String?
+        public let credential: String?
+    }
 }
 
 public struct LinkedDevice: Decodable, Sendable, Identifiable {

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -114,6 +115,9 @@ func main() {
 	fcmServiceAccount := flag.String("fcm-service-account", "", "path to a Firebase service-account JSON key (enables FCM push for Android devices)")
 	turnURLs := flag.String("turn-urls", "", "comma-separated TURN server URLs (enables dynamic TURN credentials)")
 	turnSecret := flag.String("turn-secret", os.Getenv("RELAY_TURN_SECRET"), "shared HMAC-SHA1 secret for coturn REST API credential generation (default $RELAY_TURN_SECRET)")
+	turnStatusURL := flag.String("turn-status-url", "", "turnload agent URL on the TURN box (e.g. http://turn.example:9478/status); with -cloudflare-turn-key-id, calls fail over to Cloudflare before coturn is overloaded")
+	cfTURNKeyID := flag.String("cloudflare-turn-key-id", "", "Cloudflare Realtime TURN key id (enables failover to Cloudflare TURN when our coturn is down or overloaded)")
+	cfTURNTokenFile := flag.String("cloudflare-turn-token-file", "", "path to a file holding the Cloudflare TURN key's API token")
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
 	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
 	supabaseServiceKeyFile := flag.String("supabase-service-key-file", "", "path to a file holding the Supabase service-role key (enables deleting the Supabase auth user on account deletion)")
@@ -174,6 +178,24 @@ func main() {
 	}
 
 	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)
+	if *cfTURNKeyID != "" {
+		token, err := os.ReadFile(*cfTURNTokenFile)
+		if err != nil {
+			slog.Error("read cloudflare turn token", "err", err)
+			os.Exit(1)
+		}
+		probeAddr := turnProbeAddr(*turnURLs)
+		if probeAddr == "" {
+			slog.Error("-cloudflare-turn-key-id needs a turn: URL in -turn-urls to health-check")
+			os.Exit(1)
+		}
+		health := api.NewTURNHealth(probeAddr, *turnStatusURL)
+		go health.Run(context.Background())
+		apiServer.SetTURNFailover(health, &api.CloudflareTURN{
+			KeyID: *cfTURNKeyID, APIToken: strings.TrimSpace(string(token)),
+		})
+		slog.Info("turn failover to cloudflare enabled", "probe", probeAddr, "status", *turnStatusURL)
+	}
 	apiServer.SetAttachmentQuota(*attachDailyBytes, *attachDailyCount)
 	apiServer.SetAttachmentDiskCap(*attachDiskCap)
 	if *supabaseURL != "" {
@@ -305,4 +327,24 @@ func main() {
 	}
 	srv.Shutdown(ctx)
 	slog.Info("relayd stopped")
+}
+
+// turnProbeAddr returns host:port of the first plain turn: URL (UDP), for the
+// health prober.
+func turnProbeAddr(urls string) string {
+	for _, u := range strings.Split(urls, ",") {
+		u = strings.TrimSpace(u)
+		if !strings.HasPrefix(u, "turn:") {
+			continue
+		}
+		hostport := strings.TrimPrefix(u, "turn:")
+		if i := strings.IndexByte(hostport, '?'); i >= 0 {
+			hostport = hostport[:i]
+		}
+		if !strings.Contains(hostport, ":") {
+			hostport += ":3478"
+		}
+		return hostport
+	}
+	return ""
 }
