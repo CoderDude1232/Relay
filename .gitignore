@@ -25,3 +25,6 @@ android/*.keystore
 android/app/google-services.json
 *.apk
 *.aab
+
+# Private signing keys (Sign in with Apple, APNs, App Store Connect API) — never commit
+*.p8
