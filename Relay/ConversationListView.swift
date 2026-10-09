@@ -5,6 +5,7 @@
 
 import Contacts
 import MessageUI
+import RelayCore
 import RelayKit
 import SecureStorage
 import SwiftUI
@@ -1249,6 +1250,10 @@ private struct ConversationRow: View {
         case "~photo~": return ("photo.fill", "\(prefix)Photo")
         case "~audio~": return ("waveform", "\(prefix)Voice note")
         case "~file~":  return ("paperclip", "\(prefix)Attachment")
+        case let body where body?.hasPrefix("__poll__:") == true:
+            let json = String((body ?? "").dropFirst("__poll__:".count))
+            let question = PollPayload.decode(json)?.question ?? json
+            return ("chart.bar.xaxis", "\(prefix)Poll: \(question)")
         case let body where body?.hasPrefix("call:") == true:
             return ("phone.fill", String((body ?? "").dropFirst(5)))
         case let body:

@@ -99,10 +99,16 @@ struct PollBubble: View {
     @State private var votes: [StoredPollVote] = []
     @State private var mySelections: Set<Int> = []
 
-    private var question: String {
-        message.body.hasPrefix(pollPrefix)
+    private var payload: PollPayload? {
+        let json = message.body.hasPrefix(pollPrefix)
             ? String(message.body.dropFirst(pollPrefix.count))
             : message.body
+        return PollPayload.decode(json)
+    }
+
+    /// Older polls stored the bare question instead of JSON.
+    private var question: String {
+        payload?.question ?? String(message.body.dropFirst(message.body.hasPrefix(pollPrefix) ? pollPrefix.count : 0))
     }
 
     private var pollAuthor: String {
@@ -169,7 +175,11 @@ struct PollBubble: View {
 
     private func castVote(for idx: Int) {
         var newSelections: [Int]
-        if mySelections.contains(idx) {
+        if payload?.multiSelect == true {
+            var set = mySelections
+            if set.contains(idx) { set.remove(idx) } else { set.insert(idx) }
+            newSelections = set.sorted()
+        } else if mySelections.contains(idx) {
             newSelections = []
         } else {
             newSelections = [idx]
@@ -187,10 +197,7 @@ struct PollBubble: View {
     }
 
     private func parsePollOptions() -> [String] {
-        let json = message.body.hasPrefix(pollPrefix)
-            ? String(message.body.dropFirst(pollPrefix.count))
-            : message.body
-        return PollPayload.decode(json)?.options ?? []
+        payload?.options ?? []
     }
 }
 

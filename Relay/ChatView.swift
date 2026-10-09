@@ -2115,13 +2115,32 @@ private struct MessageBubble: View {
                 metadataRow(onBubble: false)
             }
         } else if let locPayload = LocationPayload.decode(message.body) {
-            LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing)
+            bubbleChrome(
+                VStack(alignment: .trailing, spacing: 6) {
+                    LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing)
+                    metadataRow
+                }
+                .padding(10)
+            )
         } else if message.body.hasPrefix(notepadPrefix) {
-            NotepadUpdateBubble(isOutgoing: message.isOutgoing)
+            bubbleChrome(
+                HStack(alignment: .lastTextBaseline, spacing: 7) {
+                    NotepadUpdateBubble(isOutgoing: message.isOutgoing)
+                    metadataRow
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+            )
         } else if message.body.hasPrefix("__poll__:") {
-            PollBubble(
-                message: message, service: service,
-                conversationId: conversationId, isOutgoing: message.isOutgoing
+            bubbleChrome(
+                VStack(alignment: .trailing, spacing: -4) {
+                    PollBubble(
+                        message: message, service: service,
+                        conversationId: conversationId, isOutgoing: message.isOutgoing
+                    )
+                    metadataRow
+                        .padding([.trailing, .bottom], 12)
+                }
             )
         } else if isViewOnce {
             ViewOnceOverlay(
@@ -2169,22 +2188,13 @@ private struct MessageBubble: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(
-                message.isOutgoing ? AnyShapeStyle(appearance.bubbleGradient) : AnyShapeStyle(Color(.systemBackground).opacity(0.92)),
-                in: .rect(cornerRadii: cornerRadii)
-            )
-            .overlay {
-                if !message.isOutgoing {
-                    UnevenRoundedRectangle(cornerRadii: cornerRadii, style: .continuous)
-                        .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
-                }
-            }
-            .shadow(
-                color: message.isOutgoing ? appearance.bubbleTint.opacity(0.30) : .black.opacity(0.05),
-                radius: 5, x: 0, y: 2
-            )
-            .foregroundStyle(message.isOutgoing ? .white : .primary)
+            .modifier(BubbleChrome(isOutgoing: message.isOutgoing, cornerRadii: cornerRadii, appearance: appearance))
         }
+    }
+
+    /// The standard bubble fill, border and shadow around `content`.
+    private func bubbleChrome<Content: View>(_ content: Content) -> some View {
+        content.modifier(BubbleChrome(isOutgoing: message.isOutgoing, cornerRadii: cornerRadii, appearance: appearance))
     }
 
     @ViewBuilder
@@ -3255,6 +3265,33 @@ private struct MessageInfoView: View {
     }
 }
 
+// MARK: - Bubble chrome
+
+private struct BubbleChrome: ViewModifier {
+    let isOutgoing: Bool
+    let cornerRadii: RectangleCornerRadii
+    let appearance: ChatAppearance
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                isOutgoing ? AnyShapeStyle(appearance.bubbleGradient) : AnyShapeStyle(Color(.systemBackground).opacity(0.92)),
+                in: .rect(cornerRadii: cornerRadii)
+            )
+            .overlay {
+                if !isOutgoing {
+                    UnevenRoundedRectangle(cornerRadii: cornerRadii, style: .continuous)
+                        .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
+                }
+            }
+            .shadow(
+                color: isOutgoing ? appearance.bubbleTint.opacity(0.30) : .black.opacity(0.05),
+                radius: 5, x: 0, y: 2
+            )
+            .foregroundStyle(isOutgoing ? .white : .primary)
+    }
+}
+
 // MARK: - LocationBubble
 
 private struct LocationBubble: View {
@@ -3288,6 +3325,7 @@ private struct LocationBubble: View {
     /// Received locations don't load map tiles until the user asks: fetching
     /// tiles tells Apple's map servers (with our IP) where the sender is.
     @State private var mapRevealed = false
+    @State private var showingFullMap = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -3299,6 +3337,18 @@ private struct LocationBubble: View {
                 .frame(height: 150)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .disabled(true)
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .padding(7)
+                        .background(.regularMaterial, in: .circle)
+                        .padding(6)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 10))
+                .onTapGesture { showingFullMap = true }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Opens the map full screen")
                 // Recenter as a live share moves.
                 .onChange(of: payload.lat) { _, _ in recenter() }
                 .onChange(of: payload.lng) { _, _ in recenter() }
@@ -3335,6 +3385,81 @@ private struct LocationBubble: View {
             .foregroundStyle(isOutgoing ? .white.opacity(0.8) : .secondary)
         }
         .frame(maxWidth: 240)
+        .fullScreenCover(isPresented: $showingFullMap) {
+            // Re-evaluated as the bubble re-renders, so a live share keeps moving.
+            FullScreenLocationView(payload: payload)
+        }
+    }
+}
+
+/// Interactive full-screen map for a shared (or live) location.
+private struct FullScreenLocationView: View {
+    let payload: LocationPayload
+    @Environment(\.dismiss) private var dismiss
+    @State private var position: MapCameraPosition
+    @State private var following = true
+
+    init(payload: LocationPayload) {
+        self.payload = payload
+        _position = State(initialValue: Self.region(for: payload))
+    }
+
+    private static func region(for payload: LocationPayload) -> MapCameraPosition {
+        .region(MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: payload.lat, longitude: payload.lng),
+            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+        ))
+    }
+
+    private var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: payload.lat, longitude: payload.lng)
+    }
+
+    private var isLive: Bool { !payload.stop && !payload.isExpired }
+
+    var body: some View {
+        NavigationStack {
+            Map(position: $position) {
+                Marker(isLive ? "Live location" : "Shared location", coordinate: coordinate)
+                    .tint(.red)
+            }
+            .mapControls {
+                MapCompass()
+                MapScaleView()
+            }
+            .simultaneousGesture(DragGesture().onChanged { _ in following = false })
+            .onChange(of: payload.lat) { _, _ in follow() }
+            .onChange(of: payload.lng) { _, _ in follow() }
+            .ignoresSafeArea(edges: .bottom)
+            .navigationTitle(isLive ? "Live Location" : "Location")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Button {
+                        following = true
+                        withAnimation { position = Self.region(for: payload) }
+                    } label: {
+                        Label("Center", systemImage: following ? "location.fill" : "location")
+                    }
+                    Spacer()
+                    Button {
+                        let item = MKMapItem(location: CLLocation(latitude: payload.lat, longitude: payload.lng), address: nil)
+                        item.name = isLive ? "Live location" : "Shared location"
+                        item.openInMaps()
+                    } label: {
+                        Label("Open in Maps", systemImage: "map")
+                    }
+                }
+            }
+        }
+    }
+
+    private func follow() {
+        guard following else { return }
+        withAnimation(.easeInOut(duration: 0.5)) { position = Self.region(for: payload) }
     }
 }
 
