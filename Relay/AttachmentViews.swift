@@ -389,7 +389,7 @@ struct AttachmentPrivacyOverlay: View {
 
     var body: some View {
         Image(systemName: "lock.fill")
-            .font(.system(size: 42, weight: .semibold))
+            .font(.system(size: 38, weight: .light))
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.45), radius: 8, y: 3)
             .accessibilityLabel(label)
