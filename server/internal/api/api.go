@@ -301,6 +301,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
 	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
+	mux.HandleFunc("POST /v1/accounts/password-reset", s.handlePasswordReset) // unauthenticated; proof = fresh Supabase recovery session
+	mux.HandleFunc("PUT /v1/accounts/me/email", s.auth(s.handleUpdateEmail))
 	mux.HandleFunc("PUT /v1/accounts/me/discoverability", s.auth(s.handleSetDiscoverability))
 	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.handleSetAccountPassword))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
@@ -614,6 +616,42 @@ type supabaseUser struct {
 	ID             string
 	Email          string
 	EmailConfirmed bool
+	// RecoveredAt is when this session was created by a password-recovery
+	// code (the token's amr "recovery" entry); zero if it wasn't.
+	RecoveredAt time.Time
+}
+
+// recoveryAuthTime reads when a Supabase access token was minted by a
+// password-recovery sign-in, from its "amr" claim. Only call it on a token
+// Supabase has just vouched for (GET /auth/v1/user succeeded): the payload is
+// decoded, not re-verified.
+func recoveryAuthTime(accessToken string) time.Time {
+	parts := strings.Split(accessToken, ".")
+	if len(parts) != 3 {
+		return time.Time{}
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}
+	}
+	var claims struct {
+		AMR []struct {
+			Method    string `json:"method"`
+			Timestamp int64  `json:"timestamp"`
+		} `json:"amr"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, m := range claims.AMR {
+		if m.Method == "recovery" {
+			if t := time.Unix(m.Timestamp, 0); t.After(latest) {
+				latest = t
+			}
+		}
+	}
+	return latest
 }
 
 // supabaseHTTPClient bounds every server-to-server Supabase call.
@@ -657,7 +695,8 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 	set := func(p *string) bool { return p != nil && *p != "" }
 	confirmed := body.Email != "" &&
 		(set(body.EmailConfirmedAt) || (set(body.ConfirmedAt) && body.Phone == ""))
-	return supabaseUser{ID: body.ID, Email: body.Email, EmailConfirmed: confirmed}, nil
+	return supabaseUser{ID: body.ID, Email: body.Email, EmailConfirmed: confirmed,
+		RecoveredAt: recoveryAuthTime(accessToken)}, nil
 }
 
 // sealedDummyAccessKey is compared against when a sealed send names an unknown
@@ -1086,6 +1125,114 @@ func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request
 // same bcrypt work, and repeated failures for one email back off
 // exponentially — applied identically whether or not the email is registered,
 // so neither status, timing nor lockout reveals account existence.
+// passwordResetWindow bounds how old the Supabase recovery sign-in may be.
+const passwordResetWindow = 15 * time.Minute
+
+// handlePasswordReset is "forgot password". The client proves control of the
+// account's verified email with a Supabase session minted by a password-
+// recovery code (amr "recovery", within passwordResetWindow) — an ordinary
+// social or password session is NOT enough, so a stolen session can't be used
+// to get past the account-password lock. The account gets the new account
+// password and, like any fresh sign-in, its devices are replaced by this one.
+func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !accountCreationLimiter.allow("reset:" + ip) {
+		httpError(w, http.StatusTooManyRequests, "password reset rate limit exceeded; try again later")
+		return
+	}
+	var req struct {
+		AccessToken     string `json:"accessToken"`
+		AccountPassword string `json:"accountPassword"`
+		Password        string `json:"password"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.AccessToken == "" ||
+		len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes ||
+		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
+		httpError(w, http.StatusBadRequest, "accessToken, accountPassword (8–1024) and password (8–1024) required")
+		return
+	}
+	if s.supabaseURL == "" {
+		httpError(w, http.StatusServiceUnavailable, "password reset not configured")
+		return
+	}
+	user, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
+	if err != nil || !user.EmailConfirmed {
+		httpError(w, http.StatusUnauthorized, "invalid or expired reset session")
+		return
+	}
+	if user.RecoveredAt.IsZero() || time.Since(user.RecoveredAt) > passwordResetWindow {
+		httpError(w, http.StatusForbidden, "a fresh password-recovery code is required")
+		return
+	}
+	dev, err := s.store.ResetAccountPassword(user.ID, s.emailToken(user.Email), req.AccountPassword, req.Password)
+	switch {
+	case errors.Is(err, store.ErrAccountNotFound):
+		httpError(w, http.StatusNotFound, "no Relay account for this email")
+		return
+	case errors.Is(err, store.ErrIdentityInUse):
+		httpError(w, http.StatusConflict, errSignInInstead)
+		return
+	case err != nil:
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"accountId": dev.AccountID,
+		"username":  dev.Username,
+		"deviceId":  dev.DeviceID,
+		"mailboxId": dev.MailboxID,
+	})
+	s.retireReplacedDevices(dev)
+}
+
+// handleUpdateEmail runs after the user confirmed a new email with Supabase:
+// the client sends its (now updated) Supabase session, the relay checks it
+// belongs to this account's linked Supabase user and that the new email is
+// confirmed, then re-keys the account's email token (recovery and the opt-in
+// email discovery follow the new address).
+func (s *Server) handleUpdateEmail(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	var req struct {
+		AccessToken string `json:"accessToken"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.AccessToken == "" {
+		httpError(w, http.StatusBadRequest, "accessToken required")
+		return
+	}
+	if s.supabaseURL == "" {
+		httpError(w, http.StatusServiceUnavailable, "email change not configured")
+		return
+	}
+	user, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
+	if err != nil || !user.EmailConfirmed {
+		httpError(w, http.StatusUnauthorized, "invalid session or unconfirmed email")
+		return
+	}
+	linked, err := s.store.SupabaseUserID(dev.AccountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	if linked == "" || linked != user.ID {
+		httpError(w, http.StatusForbidden, "this sign-in doesn't belong to your account")
+		return
+	}
+	token := s.emailToken(user.Email)
+	if token == nil {
+		httpError(w, http.StatusServiceUnavailable, "email features unavailable")
+		return
+	}
+	switch err := s.store.SetAccountEmailToken(dev.AccountID, token); {
+	case errors.Is(err, store.ErrIdentityInUse):
+		httpError(w, http.StatusConflict, "that email is already used by another account")
+		return
+	case err != nil:
+		internalError(w, err)
+		return
+	}
+	s.reindexAccount(dev.AccountID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow("recover:" + ip) {

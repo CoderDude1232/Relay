@@ -233,3 +233,50 @@ func TestRemoveDeviceOne(t *testing.T) {
 		t.Fatalf("devices after removing device 1 = %+v (err %v)", devs, err)
 	}
 }
+
+// Forgot-password: the account's password changes and its devices are
+// replaced by one new device, found by Supabase id or by email token.
+func TestResetAccountPassword(t *testing.T) {
+	s := openTestStore(t)
+	token := []byte(uniqueName("tok"))
+	acct, _, err := s.CreateAccount(uniqueName("reset"), token, "", "device-pw-1", "old-account-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetAccountPassword("nobody-"+uniqueName("x"), []byte("unknown"), "new-account-pw", "dpw"); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("unknown account: err = %v", err)
+	}
+	dev, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, "new-account-pw", "device-pw-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev.AccountID != acct || len(dev.ReplacedDevices) != 1 || dev.ReplacedDevices[0] != 1 {
+		t.Fatalf("reset = %+v", dev)
+	}
+	// The new password works for recovery; the old one doesn't.
+	if _, _, err := s.RecoverAccount(token, "old-account-pw"); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("old password still accepted: %v", err)
+	}
+	if _, _, err := s.RecoverAccount(token, "new-account-pw"); err != nil {
+		t.Fatalf("new password rejected: %v", err)
+	}
+}
+
+// Email change: the token moves; a token another account holds is refused.
+func TestSetAccountEmailToken(t *testing.T) {
+	s := openTestStore(t)
+	a, _, err := s.CreateAccount(uniqueName("ea"), []byte(uniqueName("ta")), "", "pw-a-123456", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken := []byte(uniqueName("tb"))
+	if _, _, err := s.CreateAccount(uniqueName("eb"), taken, "", "pw-b-123456", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccountEmailToken(a, []byte(uniqueName("tc"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAccountEmailToken(a, taken); !errors.Is(err, ErrIdentityInUse) {
+		t.Fatalf("taken token: err = %v", err)
+	}
+}

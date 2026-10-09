@@ -907,6 +907,72 @@ func (s *Store) SetAccountPassword(accountID, accountPassword string) error {
 	return nil
 }
 
+// ResetAccountPassword handles "forgot password": the caller has proven, via a
+// fresh Supabase password-recovery sign-in, that it controls the account's
+// verified email. It finds the account (by Supabase user id, then by email
+// token), sets the new account password, and — like any fresh sign-in on a new
+// device — replaces the account's devices with one new device.
+// ErrAccountNotFound if no account matches.
+func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, accountPassword, devicePassword string) (dev AddedDevice, err error) {
+	ctx := context.Background()
+	accountHash, err := bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx,
+		`SELECT id, username FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
+	).Scan(&dev.AccountID, &dev.Username)
+	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
+		err = tx.QueryRow(ctx,
+			`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
+		).Scan(&dev.AccountID, &dev.Username)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AddedDevice{}, ErrAccountNotFound
+	}
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`UPDATE accounts SET account_password_hash = $1,
+		        supabase_user_id = CASE WHEN supabase_user_id IS NULL OR supabase_user_id = '' THEN $2 ELSE supabase_user_id END
+		 WHERE id = $3`, accountHash, supabaseUserID, dev.AccountID); err != nil {
+		return AddedDevice{}, accountInsertError(err)
+	}
+	if dev.ReplacedDevices, err = replaceDevicesTx(ctx, tx, dev.AccountID); err != nil {
+		return AddedDevice{}, err
+	}
+	if dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, dev.AccountID, deviceHash); err != nil {
+		return AddedDevice{}, err
+	}
+	return dev, tx.Commit(ctx)
+}
+
+// SetAccountEmailToken records the keyed token of an account's newly verified
+// email (after an email change). ErrIdentityInUse if another account already
+// uses that email; ErrAccountNotFound if the account is gone.
+func (s *Store) SetAccountEmailToken(accountID string, emailToken []byte) error {
+	tag, err := s.db.Exec(context.Background(),
+		`UPDATE accounts SET email_token = $1 WHERE id = $2`, emailToken, accountID)
+	if err != nil {
+		return accountInsertError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAccountNotFound
+	}
+	return nil
+}
+
 // ProvisionOAuthAccount signs a Supabase-authenticated user into their relay
 // account, creating it on first use, and provisions a fresh device. The caller
 // MUST have already verified the Supabase access token, so supabaseUserID is
