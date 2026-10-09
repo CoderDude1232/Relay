@@ -88,14 +88,15 @@ key-change message loss, app/NSE decrypt race, Siri vs panic mode, privacy
 copy, friendly errors, accessibility, iPad fixes.
 
 Still open:
-- [ ] Xcode (owner): one deployment target for all targets; extension display
+- [x] Xcode (done 2026-10-09, commit 96f1b9f): one deployment target for all targets; extension display
       names = "Relay"; project-level team HK396F3767; remove UIStatusBarHidden;
       remove the RelayBroadcastUploadSetupUI leftovers; fix Camera / Microphone /
       Contacts usage strings; delete the Local Network and NFC usage strings.
-- [ ] Export compliance: decide ITSAppUsesNonExemptEncryption (E2EE → likely
-      YES + mass-market exemption / BIS self-classification).
-- [ ] Sign in with Apple revocation: create a SIWA key in the Apple developer
-      portal, copy it to the VPS, add `-siwa-key/-siwa-key-id` to relayd.
+- [x] ITSAppUsesNonExemptEncryption = YES (set 2026-10-09). Still to do:
+      mass-market exemption answers in App Store Connect + annual BIS
+      self-classification report.
+- [x] Sign in with Apple revocation: key MFV3G8G4PD at /opt/relay/siwa.p8
+      (root 0600), relayd runs with -siwa-* flags (2026-10-09).
 - [ ] Device-test calls (voice/video over TURN) and iCloud backup/restore.
 - [ ] Later: fetch prekey bundles anonymously (access-key gated) and exchange
       access keys end-to-end, so the relay can't see who fetches whose keys.
