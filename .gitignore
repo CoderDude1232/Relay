@@ -28,3 +28,5 @@ android/app/google-services.json
 
 # Private signing keys (Sign in with Apple, APNs, App Store Connect API) — never commit
 *.p8
+# Local API tokens — never commit
+.cloudflare-token
