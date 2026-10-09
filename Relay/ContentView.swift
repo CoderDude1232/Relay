@@ -215,6 +215,7 @@ struct MainTabView: View {
     @Environment(AppModel.self) private var model
     @Environment(CallManager.self) private var callManager
     @State private var callMinimized = false
+    @State private var groupCallMinimized = false
     @State private var deepLinkError: String?
     @State private var selectedTab = 0
     @State private var joinGroupError: String?
@@ -406,10 +407,27 @@ struct MainTabView: View {
                 .zIndex(2)
             }
 
-            if callManager.isInGroupCall {
-                GroupCallView(service: service)
-                    .transition(.opacity)
-                    .zIndex(3)
+            if callManager.isInGroupCall && !groupCallMinimized {
+                GroupCallView(service: service, onMinimize: callManager.groupRingInfo == nil ? {
+                    withAnimation(.spring(duration: 0.3)) { groupCallMinimized = true }
+                } : nil)
+                .transition(.opacity)
+                .zIndex(3)
+            }
+            if callManager.isInGroupCall && groupCallMinimized {
+                MinimizedCallBar(
+                    callManager: callManager,
+                    peerName: callManager.groupPeers.count == 1
+                        ? (callManager.groupPeers.values.first?.peerName ?? callManager.groupCallDisplayName)
+                        : callManager.groupCallDisplayName,
+                    onReturn: { withAnimation(.spring(duration: 0.3)) { groupCallMinimized = false } },
+                    status: callManager.groupPeers.isEmpty ? "Waiting for others"
+                        : "\(callManager.groupPeers.count + 1) in call",
+                    onEnd: { callManager.leaveGroupCall() }
+                )
+                .padding(.bottom, 49)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(1)
             }
 
             // Call links: host admit prompts, and the joiner's waiting card.
@@ -443,6 +461,9 @@ struct MainTabView: View {
             }
         }
         .animation(.spring(duration: 0.3), value: callMinimized)
+        .onChange(of: callManager.isInGroupCall) { _, inCall in
+            if !inCall { groupCallMinimized = false }
+        }
         .onChange(of: isCallActive) { _, active in
             if active {
                 UIApplication.shared.sendAction(
@@ -601,6 +622,9 @@ private struct MinimizedCallBar: View {
     let callManager: CallManager
     let peerName: String
     let onReturn: () -> Void
+    /// Group / call-link calls supply their own status and hang-up.
+    var status: String? = nil
+    var onEnd: (() -> Void)? = nil
 
     @State private var elapsed = 0
 
@@ -628,7 +652,7 @@ private struct MinimizedCallBar: View {
                     Text(peerName)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
-                    Text(statusText)
+                    Text(status ?? statusText)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -636,7 +660,7 @@ private struct MinimizedCallBar: View {
                 Spacer()
 
                 Button {
-                    callManager.endActiveCall()
+                    if let onEnd { onEnd() } else { callManager.endActiveCall() }
                 } label: {
                     Image(systemName: "phone.down.fill")
                         .font(.system(size: 14, weight: .semibold))

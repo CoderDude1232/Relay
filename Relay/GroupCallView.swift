@@ -15,6 +15,7 @@ import WebRTC
 
 struct GroupCallView: View {
     let service: MessagingService
+    var onMinimize: (() -> Void)? = nil
     @Environment(CallManager.self) private var callManager
     @State private var elapsed = 0
     @State private var connectedAt: Date?
@@ -27,8 +28,11 @@ struct GroupCallView: View {
 
     var body: some View {
         ZStack {
-            CallBackdrop(name: callManager.groupCallDisplayName,
-                         photo: peers.count == 1 ? avatar(peers[0]) : nil)
+            // One other person: same backdrop as a 1:1 call — their photo as a
+            // vivid blur, or their avatar colour.
+            CallBackdrop(name: peers.count == 1 ? peers[0].peerName : callManager.groupCallDisplayName,
+                         photo: peers.count == 1 ? avatar(peers[0]) : nil,
+                         matchAvatar: peers.count == 1)
 
             if callManager.groupRingInfo != nil {
                 incomingLayout
@@ -118,7 +122,7 @@ struct GroupCallView: View {
                     .padding(.horizontal, 16)
                 Spacer()
                 controlBar
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 50)
             }
 
             if isVideo, let track = callManager.groupCallLocalVideoTrack {
@@ -130,6 +134,16 @@ struct GroupCallView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
+            if let onMinimize {
+                Button(action: onMinimize) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .glassCompat(in: .circle)
+                }
+                .accessibilityLabel("Minimize call")
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(peers.count == 1 ? peers[0].peerName : callManager.groupCallDisplayName)
                     .font(.headline)
@@ -268,40 +282,63 @@ struct GroupCallView: View {
     // MARK: - Controls
 
     private var controlBar: some View {
-        HStack(spacing: 14) {
-            roundButton(icon: callManager.isSpeaker ? "speaker.wave.3.fill" : "speaker.fill",
-                        on: callManager.isSpeaker, label: "Speaker") { callManager.toggleSpeaker() }
-            roundButton(icon: callManager.isMuted ? "mic.slash.fill" : "mic.fill",
-                        on: callManager.isMuted, label: callManager.isMuted ? "Unmute" : "Mute") { callManager.toggleMute() }
+        HStack(spacing: 0) {
+            Spacer()
+            audioRoundButton(
+                icon: callManager.isSpeaker ? "speaker.wave.3.fill" : "speaker.wave.2.fill",
+                label: "Speaker",
+                background: callManager.isSpeaker ? .white.opacity(0.35) : .white.opacity(0.18),
+                foreground: .white
+            ) { callManager.toggleSpeaker() }
+            Spacer()
+            audioRoundButton(
+                icon: callManager.isMuted ? "mic.slash.fill" : "mic.fill",
+                label: callManager.isMuted ? "Unmute" : "Mute",
+                background: callManager.isMuted ? .white.opacity(0.18) : .white,
+                foreground: callManager.isMuted ? .white : .black
+            ) { callManager.toggleMute() }
+            Spacer()
             if isVideo {
-                roundButton(icon: callManager.isVideoEnabled ? "video.fill" : "video.slash.fill",
-                            on: !callManager.isVideoEnabled, label: "Camera") { callManager.toggleVideo() }
-                roundButton(icon: "arrow.triangle.2.circlepath.camera.fill", on: false, label: "Flip camera") {
-                    callManager.flipGroupCamera()
-                }
+                audioRoundButton(
+                    icon: callManager.isVideoEnabled ? "video.fill" : "video.slash.fill",
+                    label: callManager.isVideoEnabled ? "Camera" : "No Camera",
+                    background: callManager.isVideoEnabled ? .white.opacity(0.18) : .white.opacity(0.10),
+                    foreground: .white
+                ) { callManager.toggleVideo() }
+                Spacer()
             }
-            Button { callManager.leaveGroupCall() } label: {
-                Image(systemName: "phone.down.fill")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 58, height: 58)
-                    .background(Color.red, in: .circle)
-            }
-            .accessibilityLabel("Leave call")
+            audioRoundButton(
+                icon: "phone.down.fill",
+                label: "Leave",
+                background: Color(red: 0.93, green: 0.28, blue: 0.20),
+                foreground: .white
+            ) { callManager.leaveGroupCall() }
+            Spacer()
         }
-        .padding(10)
-        .glassCompat(in: .capsule)
     }
 
-    private func roundButton(icon: String, on: Bool, label: String, action: @escaping () -> Void) -> some View {
+    private func audioRoundButton(
+        icon: String,
+        label: String,
+        background: Color,
+        foreground: Color,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(on ? Color.black : Color.white)
-                .frame(width: 58, height: 58)
-                .background(on ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.white.opacity(0.14)), in: .circle)
+            VStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 26, weight: .semibold))
+                    .frame(width: 72, height: 72)
+                    .background(background, in: .circle)
+                    .foregroundStyle(foreground)
+                Text(label)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+            .frame(width: 80)
         }
-        .accessibilityLabel(label)
     }
 
     private func bigButton(icon: String, tint: Color, label: String, action: @escaping () -> Void) -> some View {
@@ -325,17 +362,29 @@ struct GroupCallView: View {
 private struct CallBackdrop: View {
     let name: String
     let photo: Data?
+    /// One other person: match CallView exactly (photo wash or avatar-colour gradient).
+    var matchAvatar = false
 
     var body: some View {
         ZStack {
-            Color(red: 0.04, green: 0.03, blue: 0.07)
+            Color.black
             if let photo, let image = DecodedImageCache.image(for: photo) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .blur(radius: 80, opaque: true)
-                    .saturation(1.8)
-                    .overlay(Color.black.opacity(0.45))
+                    .saturation(2.2)
+                    .brightness(-0.05)
+                    .overlay(Color.black.opacity(0.38))
+            } else if matchAvatar {
+                LinearGradient(
+                    stops: [
+                        .init(color: color.opacity(0.80), location: 0),
+                        .init(color: color.opacity(0.40), location: 0.40),
+                        .init(color: color.opacity(0.05), location: 0.80),
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
             } else {
                 RadialGradient(colors: [color.opacity(0.55), .clear],
                                center: UnitPoint(x: 0.5, y: 0.15), startRadius: 0, endRadius: 600)
@@ -344,6 +393,7 @@ private struct CallBackdrop: View {
         .ignoresSafeArea()
     }
 
+    /// Same palette and hash as AvatarView, so it matches the avatar's colour.
     private var color: Color {
         let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
         var hash = 0
