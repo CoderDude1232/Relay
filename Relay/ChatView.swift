@@ -2115,12 +2115,9 @@ private struct MessageBubble: View {
                 metadataRow(onBubble: false)
             }
         } else if let locPayload = LocationPayload.decode(message.body) {
-            VStack(alignment: .trailing, spacing: 6) {
-                LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing)
-                metadataRow(onBubble: false)
-            }
-            .padding(10)
-            .modifier(NeutralCard())
+            // Just the map, with live status + time + delivery underneath.
+            LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing,
+                           footer: AnyView(metadataRow(onBubble: false)))
         } else if message.body.hasPrefix(notepadPrefix) {
             bubbleChrome(
                 HStack(alignment: .lastTextBaseline, spacing: 7) {
@@ -3311,12 +3308,15 @@ private struct NeutralCard: ViewModifier {
 private struct LocationBubble: View {
     let payload: LocationPayload
     let isOutgoing: Bool
+    /// Time + delivery status, shown at the end of the status line.
+    let footer: AnyView
 
     @State private var position: MapCameraPosition
 
-    init(payload: LocationPayload, isOutgoing: Bool) {
+    init(payload: LocationPayload, isOutgoing: Bool, footer: AnyView) {
         self.payload = payload
         self.isOutgoing = isOutgoing
+        self.footer = footer
         _position = State(initialValue: .region(MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: payload.lat, longitude: payload.lng),
             span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
@@ -3348,8 +3348,8 @@ private struct LocationBubble: View {
                     Marker("", coordinate: coordinate)
                         .tint(.red)
                 }
-                .frame(height: 150)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .frame(height: 170)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .disabled(true)
                 .overlay(alignment: .topTrailing) {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -3359,7 +3359,7 @@ private struct LocationBubble: View {
                         .background(.regularMaterial, in: .circle)
                         .padding(6)
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 10))
+                .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .onTapGesture { showingFullMap = true }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityHint("Opens the map full screen")
@@ -3381,8 +3381,8 @@ private struct LocationBubble: View {
                     }
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 150)
-                    .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 10))
+                    .frame(height: 170)
+                    .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Shared location. Tap to show map.")
@@ -3395,8 +3395,11 @@ private struct LocationBubble: View {
                      : payload.isExpired ? "Location expired"
                      : "Live location")
                     .font(.caption)
+                Spacer(minLength: 8)
+                footer
             }
             .foregroundStyle(.secondary)
+            .padding(.horizontal, 4)
         }
         .frame(maxWidth: 240)
         .fullScreenCover(isPresented: $showingFullMap) {
