@@ -203,15 +203,17 @@ struct SettingsView: View {
                         }
                     }
                     .confirmationDialog(
-                        "Sign out and delete all local messages?",
+                        "Sign out of Relay?",
                         isPresented: $confirmingSignOut,
                         titleVisibility: .visible
                     ) {
-                        Button("Sign Out & Delete", role: .destructive) {
+                        Button("Sign Out", role: .destructive) {
                             model.signOut()
                         }
                     } message: {
-                        Text("Messages on this device will be deleted. You can restore them only from an iCloud backup or another linked device.")
+                        Text(CloudBackupManager.shared.isEnabled
+                             ? "Your account stays active — sign back in anytime. Chats are removed from this device, and you can restore them from your iCloud backup when you sign back in."
+                             : "Your account stays active — sign back in anytime. Chats are removed from this device and iCloud Backup is off, so they can't be restored. Turn on iCloud Backup first to keep them.")
                     }
                     Button(role: .destructive) {
                         UINotificationFeedbackGenerator().notificationOccurred(.warning)

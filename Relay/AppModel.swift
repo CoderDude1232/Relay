@@ -41,6 +41,9 @@ final class AppModel {
     static let identityProvisionedKey = "relay.identityProvisioned"
 
     private(set) var phase: Phase = .loading
+    /// Set when an existing account signs in on this device; the main screen
+    /// then looks for an iCloud backup to offer (and clears it).
+    var shouldOfferBackupRestore = false
     /// Set by onOpenURL when the user opens a relay://add/<username> link.
     var pendingDeepLinkUsername: String?
     /// Set by onOpenURL when the user opens a relay://join/<token> invite link.
@@ -390,6 +393,7 @@ final class AppModel {
             if created {
                 service.noteAccountCreated(username: resolvedUsername)
             } else {
+                shouldOfferBackupRestore = true
                 service.noteSignedIn(username: resolvedUsername)
             }
             uploadPushTokenIfReady()
@@ -567,6 +571,7 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountRecovered(username: username)
+        shouldOfferBackupRestore = true
         UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
@@ -632,6 +637,7 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountRecovered(username: username)
+        shouldOfferBackupRestore = true
         UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()

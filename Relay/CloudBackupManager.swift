@@ -115,7 +115,8 @@ final class CloudBackupManager {
             let now = Date()
             // The timestamp travels INSIDE the ciphertext — CloudKit only sees
             // an opaque blob plus a format number.
-            let envelope = BackupEnvelopeV2(updatedAt: now, snapshot: snapshot)
+            let envelope = BackupEnvelopeV2(updatedAt: now, snapshot: snapshot,
+                                            accountId: service.credentials.accountId)
             let plaintext = try Self.encoder.encode(envelope)
             let sealed = try AES.GCM.seal(plaintext, using: key).combined!
 
@@ -191,6 +192,9 @@ final class CloudBackupManager {
     private struct BackupEnvelopeV2: Codable {
         let updatedAt: Date
         let snapshot: MessagingService.BackupSnapshot
+        /// Which account made it (inside the ciphertext). Optional: older
+        /// backups didn't record it.
+        var accountId: String?
     }
 
     /// Debounced auto-backup, safe to call after any change / on background.
@@ -205,6 +209,40 @@ final class CloudBackupManager {
     }
 
     // MARK: - Restore
+
+    /// A backup found right after sign-in, decrypted and ready to import.
+    struct FoundBackup {
+        let updatedAt: Date
+        fileprivate let snapshot: MessagingService.BackupSnapshot
+    }
+
+    /// After signing in, looks for this account's iCloud backup using the
+    /// recovery key still on this device (it survives sign-out). Returns nil —
+    /// so sign-in just continues without history — when there's no key, no
+    /// iCloud, no backup, or the backup belongs to a different account.
+    func findBackupAfterSignIn(accountId: String) async -> FoundBackup? {
+        guard let recoveryKey = recoveryKeyData(),
+              (try? await accountAvailable()) == true,
+              let record = try? await fetchRecord(named: Self.recordName(recoveryKey: recoveryKey)),
+              let asset = record["payload"] as? CKAsset, let url = asset.fileURL,
+              let sealed = try? Data(contentsOf: url),
+              let box = try? AES.GCM.SealedBox(combined: sealed),
+              let plaintext = try? AES.GCM.open(box, using: backupKey(from: recoveryKey)),
+              let envelope = try? JSONDecoder().decode(BackupEnvelopeV2.self, from: plaintext),
+              envelope.accountId == accountId,
+              !envelope.snapshot.conversations.isEmpty
+        else { return nil }
+        return FoundBackup(updatedAt: envelope.updatedAt, snapshot: envelope.snapshot)
+    }
+
+    /// Imports a backup returned by `findBackupAfterSignIn` and resumes backups.
+    func restore(_ found: FoundBackup, into service: MessagingService) {
+        service.importBackupSnapshot(found.snapshot)
+        isEnabled = true
+        lastBackup = found.updatedAt
+        status = .success(Date())
+        service.noteBackupRestored(from: found.updatedAt)
+    }
 
     /// Fetches and imports the backup for `accountId`, decrypting with the
     /// user-entered recovery key. Persists the key locally on success so future

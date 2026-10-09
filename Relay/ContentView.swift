@@ -4,6 +4,7 @@
 //
 
 import LocalAuthentication
+import RelayKit
 import SecureStorage
 import SwiftUI
 import UIKit
@@ -16,6 +17,7 @@ struct ContentView: View {
     @State private var isLocked = UserDefaults.standard.bool(forKey: "relay.screenLockEnabled")
     @State private var backgroundedAt: Date? = nil
     @State private var isAuthenticating = false
+    @State private var foundBackup: CloudBackupManager.FoundBackup?
 
     @AppStorage("relay.screenLockEnabled") private var screenLockEnabled = false
     @AppStorage("relay.screenLockTimeout") private var screenLockTimeout = 60
@@ -30,6 +32,25 @@ struct ContentView: View {
             case .ready(let service):
                 MainTabView(service: service)
                     .environment(\.relayAppLocked, isLocked)
+                    .task(id: model.shouldOfferBackupRestore) {
+                        guard model.shouldOfferBackupRestore else { return }
+                        model.shouldOfferBackupRestore = false
+                        // No backup → nothing to ask; the account just starts
+                        // without history.
+                        foundBackup = await CloudBackupManager.shared
+                            .findBackupAfterSignIn(accountId: service.credentials.accountId)
+                    }
+                    .alert("Restore Your Messages?", isPresented: Binding(
+                        get: { foundBackup != nil },
+                        set: { if !$0 { foundBackup = nil } }
+                    ), presenting: foundBackup) { found in
+                        Button("Restore") {
+                            CloudBackupManager.shared.restore(found, into: service)
+                        }
+                        Button("Start Fresh", role: .cancel) {}
+                    } message: { found in
+                        Text("An iCloud backup from \(found.updatedAt.formatted(date: .abbreviated, time: .shortened)) was found for this account.")
+                    }
             case .failed(let message):
                 StorageUnavailableView(message: message)
             }
