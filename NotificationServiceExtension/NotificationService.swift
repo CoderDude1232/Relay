@@ -330,6 +330,7 @@ class NotificationService: UNNotificationServiceExtension {
         // raw marker into the banner.
         let previewBody = notification.body.hasPrefix(PendingControlStore.notepadPrefix)
             ? "📝 Updated the shared notepad"
+            : notification.body == "__sticker__" ? "Sent a sticker"
             : notification.body
 
         // Never fall back to (part of) the sender's account id in a banner.

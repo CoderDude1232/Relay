@@ -356,6 +356,7 @@ public final class MessageStore: @unchecked Sendable {
             SELECT c.id, c.peer_account, c.peer_username, c.last_message_at,
                    (SELECT CASE
                         WHEN m.body LIKE '__relay_loc__%' THEN '~loc~'
+                        WHEN m.body = '__sticker__' THEN '~sticker~'
                         WHEN (m.body IS NULL OR m.body = '') AND
                              EXISTS(SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.content_type LIKE 'image/%') THEN '~photo~'
                         WHEN (m.body IS NULL OR m.body = '') AND

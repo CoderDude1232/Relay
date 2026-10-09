@@ -153,6 +153,8 @@ struct ConversationListView: View {
                 Button("1 Week")  { service.setMuteDuration(id, seconds: 7 * 24 * 3600) }
                 Button("Forever") { service.setMuteDuration(id, seconds: -1) }
                 Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("You'll still be notified when someone @mentions you.")
             }
             .confirmationDialog(deleteDialogTitle, isPresented: Binding(
                 get: { conversationToDelete != nil },
@@ -1297,6 +1299,7 @@ private struct ConversationRow: View {
         switch conversation.lastMessageBody {
         case "~loc~":   return ("location.fill", "\(prefix)Location")
         case "~photo~": return ("photo.fill", "\(prefix)Photo")
+        case "~sticker~": return ("face.dashed", "\(prefix)Sticker")
         case "~audio~": return ("waveform", "\(prefix)Voice note")
         case "~file~":  return ("paperclip", "\(prefix)Attachment")
         case let body where body?.hasPrefix("__poll__:") == true:

@@ -66,6 +66,7 @@ struct ChatView: View {
     // Notepad
     @State private var showingNotepad = false
     @State private var showingPollComposer = false
+    @State private var showingStickers = false
     // Schedule
     @State private var showingSchedulePicker = false
     @State private var scheduledDate = Date().addingTimeInterval(3600)
@@ -676,6 +677,19 @@ struct ChatView: View {
                 clearPendingAttachments()
             }
         }
+        .sheet(isPresented: $showingStickers) {
+            StickerPickerSheet { png in
+                let size = UIImage(data: png)?.size ?? CGSize(width: 384, height: 384)
+                let sticker = MessagingService.PendingAttachment(
+                    data: png, contentType: "image/png", filename: nil,
+                    width: Int(size.width), height: Int(size.height)
+                )
+                Task {
+                    await service.sendMessage(MessagingService.stickerMarker, in: conversationId,
+                                              replyTo: nil, attachments: [sticker])
+                }
+            }
+        }
         .sheet(isPresented: $showingPollComposer) {
             PollComposerSheet { question, options, multiSelect in
                 Task { await service.sendPoll(question: question, options: options, multiSelect: multiSelect, in: conversationId) }
@@ -1143,6 +1157,7 @@ struct ChatView: View {
                                 Button("File", systemImage: "doc") { showingFileImporter = true }
                                 Button("Location", systemImage: "location.fill") { showingLocationPicker = true }
                                 Button("Poll", systemImage: "chart.bar.xaxis") { showingPollComposer = true }
+                                Button("Sticker", systemImage: "face.dashed") { showingStickers = true }
                             }
                             Button("Emoji", systemImage: "face.smiling") { showingComposerEmoji = true }
                             Button(showFormattingBar ? "Hide Formatting" : "Format", systemImage: "textformat") {
@@ -2143,6 +2158,17 @@ private struct MessageBubble: View {
                 message: message, service: service,
                 conversationId: conversationId, isOutgoing: message.isOutgoing
             )
+        } else if message.body == MessagingService.stickerMarker, message.attachments.count == 1,
+                  let sticker = message.attachments.first, sticker.isImage {
+            // Sticker: the image itself, no bubble, time + status underneath.
+            VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 4) {
+                AttachmentImageView(
+                    attachment: sticker, service: service, conversationId: conversationId,
+                    requiresBiometric: mediaRequiresBiometric, senderName: avatarName, isSticker: true
+                )
+                metadataRow(onBubble: false)
+                    .padding(.horizontal, 4)
+            }
         } else if !message.attachments.isEmpty && message.body.isEmpty && message.replyTo == nil
                     && message.attachments.allSatisfy(\.isImage) {
             // Image-only message: show the image(s) with no bubble fill, and the
@@ -2649,7 +2675,8 @@ private struct QuotedContentView: View {
                 Text(authorName)
                     .font(.caption2.weight(.semibold))
                     .opacity(isOutgoing ? 1 : 0.8)
-                Text(quote.text.isEmpty ? "Message" : quote.text)
+                Text(quote.text.isEmpty ? "Message"
+                     : quote.text == MessagingService.stickerMarker ? "Sticker" : quote.text)
                     .font(.footnote)
                     .lineLimit(2)
                     .opacity(isOutgoing ? 0.8 : 0.7)
@@ -2785,6 +2812,8 @@ private struct AttachmentImageView: View {
     let conversationId: String
     let requiresBiometric: Bool
     var senderName: String = ""
+    /// Stickers: smaller, whole image visible, no rounded crop.
+    var isSticker = false
 
     @State private var image: UIImage?
     @State private var gifData: Data?
@@ -2822,7 +2851,7 @@ private struct AttachmentImageView: View {
             } else if let image {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: isSticker ? .fit : .fill)
                     .blur(radius: (requiresBiometric && !isUnlocked) ? 18 : 0)
                     .overlay {
                         if requiresBiometric && !isUnlocked {
@@ -2854,8 +2883,8 @@ private struct AttachmentImageView: View {
                 .onTapGesture { if failed { Task { await load() } } }
             }
         }
-        .frame(width: 240, height: height)
-        .clipShape(.rect(cornerRadius: 16))
+        .frame(width: isSticker ? 150 : 240, height: isSticker ? 150 : height)
+        .clipShape(.rect(cornerRadius: isSticker ? 0 : 16))
         .task(id: attachment.id) { await load() }
         .fullScreenCover(item: $preview, onDismiss: cleanUpPreviewFile) { item in
             QuickLookPreview(url: item.url, title: senderName)

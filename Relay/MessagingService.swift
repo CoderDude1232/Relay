@@ -2984,6 +2984,9 @@ final class MessagingService {
 
     /// Body prefix marking view-once media.
     static let viewOncePrefix = "~once~"
+    /// Body of a sticker message (one transparent image attachment, no text).
+    /// Mirrored in MessageStore's chat-list preview and the NSE.
+    static let stickerMarker = "__sticker__"
 
     func attachmentPlaintext(_ attachment: StoredAttachment) -> Data? {
         guard let ciphertext = try? attachmentStore.read(attachment.id) else { return nil }
