@@ -220,11 +220,6 @@
 			path = RelayBroadcastUpload;
 			sourceTree = "<group>";
 		};
-		ECFD00BF30302C0300F3E5E4 /* RelayBroadcastUploadSetupUI */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = RelayBroadcastUploadSetupUI;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -301,7 +296,6 @@
 				EC3C50EB300B766C00D20386 /* Relay */,
 				EC3C50FC300B81C300D20386 /* NotificationServiceExtension */,
 				ECFD00B330302C0300F3E5E4 /* RelayBroadcastUpload */,
-				ECFD00BF30302C0300F3E5E4 /* RelayBroadcastUploadSetupUI */,
 				EC47B63830428F60009C986A /* RelayShareExtension */,
 				EC47B6543042CECE009C986A /* RelayWidgetExtension */,
 				EC47B6703042CF4B009C986A /* RelayNotificationContent */,
@@ -751,7 +745,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 2P24M8G2CJ;
+				DEVELOPMENT_TEAM = HK396F3767;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -769,7 +763,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
@@ -815,7 +809,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 2P24M8G2CJ;
+				DEVELOPMENT_TEAM = HK396F3767;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -827,7 +821,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -851,13 +845,11 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Relay/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NFCReaderUsageDescription = "Relay reads NFC tags to add contacts, and can write your contact link to an NFC sticker so others can add you with a tap.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera for encrypted video calls.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "Relay matches your contacts emails against your existing conversations so you can see which contacts are on Relay. No contact data leaves your device.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera for encrypted video calls and to scan QR codes for adding contacts, verifying safety numbers and linking devices.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "When you choose Find Contacts, Relay checks which of your contacts' email addresses belong to Relay accounts. The addresses are blinded on your device first, so Relay's servers never see them, and your address book is never stored.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Relay uses Face ID to unlock chats and attachment previews.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your local relay server over your Wi-Fi network to send and receive messages.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with people you choose, and, if you turn it on, to show an approximate region on your own devices' names. Your location is end-to-end encrypted.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls and to record voice messages.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Relay saves images you choose to save, such as your safety-number QR code, to your photo library. Relay can only add photos; it cannot see your library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Relay uses Siri to suggest your recent contacts when you share content from other apps.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Relay transcribes voice messages into text when you ask it to. Recognition runs entirely on your device, and audio never leaves it.";
@@ -865,10 +857,8 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
-				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -902,13 +892,11 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Relay/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
-				INFOPLIST_KEY_NFCReaderUsageDescription = "Relay reads NFC tags to add contacts, and can write your contact link to an NFC sticker so others can add you with a tap.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera for encrypted video calls.";
-				INFOPLIST_KEY_NSContactsUsageDescription = "Relay matches your contacts emails against your existing conversations so you can see which contacts are on Relay. No contact data leaves your device.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Relay uses the camera for encrypted video calls and to scan QR codes for adding contacts, verifying safety numbers and linking devices.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "When you choose Find Contacts, Relay checks which of your contacts' email addresses belong to Relay accounts. The addresses are blinded on your device first, so Relay's servers never see them, and your address book is never stored.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Relay uses Face ID to unlock chats and attachment previews.";
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Relay connects to your local relay server over your Wi-Fi network to send and receive messages.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Relay uses your location to share it live with people you choose, and, if you turn it on, to show an approximate region on your own devices' names. Your location is end-to-end encrypted.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Relay uses the microphone for encrypted voice and video calls and to record voice messages.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Relay saves images you choose to save, such as your safety-number QR code, to your photo library. Relay can only add photos; it cannot see your library.";
 				INFOPLIST_KEY_NSSiriUsageDescription = "Relay uses Siri to suggest your recent contacts when you share content from other apps.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Relay transcribes voice messages into text when you ask it to. Recognition runs entirely on your device, and audio never leaves it.";
@@ -916,10 +904,8 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
-				INFOPLIST_KEY_UIStatusBarHidden = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -948,7 +934,7 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NotificationServiceExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = NotificationServiceExtension;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -980,7 +966,7 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NotificationServiceExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = NotificationServiceExtension;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1012,9 +998,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayShareExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayShareExtension;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1043,9 +1028,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayShareExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayShareExtension;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1076,9 +1060,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayWidgetExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayWidget;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1109,9 +1092,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayWidgetExtension/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayWidget;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1140,9 +1122,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayNotificationContent/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayNotificationContent;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1171,9 +1152,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayNotificationContent/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayNotificationContent;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1202,9 +1182,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayIntents/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayIntents;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1233,9 +1212,8 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = RelayIntents/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayIntents;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1266,7 +1244,6 @@
 				INFOPLIST_FILE = RelayBroadcastUpload/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1297,7 +1274,6 @@
 				INFOPLIST_FILE = RelayBroadcastUpload/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
