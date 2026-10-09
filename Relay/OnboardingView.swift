@@ -265,32 +265,36 @@ private struct WelcomeView: View {
     @State private var pendingCodeVerifier: String?
     @State private var googleWebSession: ASWebAuthenticationSession?
 
+    private static let buttonHeight: CGFloat = 52
+    private static let buttonShape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+
     var body: some View {
         VStack(spacing: 0) {
-            Spacer()
+            Spacer(minLength: 24)
 
             // Brand
-            VStack(spacing: 14) {
+            VStack(spacing: 18) {
                 Image("RelayLogo")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 250)
+                    .frame(width: 210)
+                    .accessibilityLabel("Relay")
                 Text("Private messaging,\nend-to-end encrypted.")
-                    .font(.system(size: 17, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .font(.title3)
+                    .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
-                    .lineSpacing(3)
+                    .lineSpacing(2)
             }
 
-            Spacer()
+            Spacer(minLength: 24)
 
             // Actions
-            VStack(spacing: 10) {
+            VStack(spacing: 12) {
                 if oauthLoading {
                     ProgressView()
                         .tint(.white)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 54)
+                        .frame(height: Self.buttonHeight * 3 + 24)
                 } else {
                     SignInWithAppleButton(.continue) { request in
                         request.requestedScopes = [.email, .fullName]
@@ -299,28 +303,33 @@ private struct WelcomeView: View {
                     }
                     .signInWithAppleButtonStyle(.white)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 54)
-                    .clipShape(.rect(cornerRadius: 14, style: .continuous))
+                    .frame(height: Self.buttonHeight)
+                    .clipShape(Self.buttonShape)
 
                     Button(action: startGoogleSignIn) {
-                        HStack(spacing: 10) {
-                            GoogleGLogo().frame(width: 20, height: 20)
+                        HStack(spacing: 8) {
+                            GoogleGLogo().frame(width: 18, height: 18)
                             Text("Continue with Google")
-                                .font(.system(size: 17, weight: .semibold))
-                                .foregroundStyle(Color(red: 0.2, green: 0.2, blue: 0.2))
                         }
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundStyle(.black)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 54)
-                        .background(Color.white, in: .rect(cornerRadius: 14, style: .continuous))
+                        .frame(height: Self.buttonHeight)
+                        .background(Color.white, in: Self.buttonShape)
                     }
 
                     Button(action: onSignUp) {
-                        Text("Create account with email")
-                            .font(.system(size: 17, weight: .semibold))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 54)
-                            .background(Color.white.opacity(0.13), in: .rect(cornerRadius: 14, style: .continuous))
-                            .foregroundStyle(.white)
+                        HStack(spacing: 8) {
+                            Image(systemName: "envelope.fill")
+                                .font(.system(size: 16, weight: .medium))
+                            Text("Continue with Email")
+                        }
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: Self.buttonHeight)
+                        .background(Color.white.opacity(0.08), in: Self.buttonShape)
+                        .overlay(Self.buttonShape.strokeBorder(.white.opacity(0.22), lineWidth: 1))
                     }
                 }
 
@@ -329,33 +338,28 @@ private struct WelcomeView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                // Sign-in row — visible, clearly labeled for returning users
                 Button(action: onSignIn) {
-                    HStack {
-                        Text("Already have an account?")
-                            .foregroundStyle(.white.opacity(0.5))
-                        Text("Sign in")
-                            .foregroundStyle(.white.opacity(0.85))
-                            .fontWeight(.semibold)
-                    }
-                    .font(.subheadline)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
+                    (Text("Already have an account? ").foregroundStyle(.white.opacity(0.6))
+                     + Text("Sign in").foregroundStyle(.white).fontWeight(.semibold))
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: 44)
                 }
+                .padding(.top, 4)
 
                 Button(action: onLinkDevice) {
-                    Text("Link existing device")
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.3))
+                    Label("Link to an existing device", systemImage: "qrcode.viewfinder")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(minHeight: 32)
                 }
-                .padding(.top, 2)
 
                 LegalFooter()
-                    .padding(.top, 6)
+                    .padding(.top, 12)
             }
             .frame(maxWidth: 420)
-            .padding(.horizontal, 28)
-            .padding(.bottom, 52)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
         }
     }
 

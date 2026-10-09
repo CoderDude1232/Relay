@@ -218,7 +218,7 @@ actor SupabaseAuth {
 
         if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let decoded = try? JSONDecoder().decode(SupabaseErrorBody.self, from: data)
-            let bodyMsg = decoded?.message ?? decoded?.msg
+            let bodyMsg = decoded?.message ?? decoded?.msg ?? decoded?.error_description
             let rawSnippet = bodyMsg == nil
                 ? (String(data: data.prefix(200), encoding: .utf8).map { " — \($0)" } ?? "")
                 : ""
@@ -287,6 +287,8 @@ private struct SupabasePendingUser: Decodable, Sendable {
 private struct SupabaseErrorBody: Decodable, Sendable {
     let message: String?
     let msg: String?
+    /// OAuth-style errors (e.g. the id_token grant) use these instead.
+    let error_description: String?
 }
 
 // MARK: - Errors

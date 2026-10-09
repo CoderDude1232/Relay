@@ -168,6 +168,7 @@ struct InlineErrorBanner: View {
     var body: some View {
         Label(message, systemImage: "xmark.circle.fill")
             .font(.footnote)
+            .fixedSize(horizontal: false, vertical: true)
             .foregroundStyle(Color.red.opacity(0.9))
             .padding(.horizontal, DS.Spacing.md)
             .padding(.vertical, DS.Spacing.sm)
