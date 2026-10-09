@@ -499,9 +499,13 @@ private struct AuthView: View {
     @State private var confirmPassword = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
+    // Email confirmation: Supabase sent a 6-digit code to `email`.
+    @State private var awaitingCode = false
+    @State private var code = ""
+    @State private var resendNote: String?
     @FocusState private var focused: Field?
 
-    enum Field: Hashable { case email, password, confirm }
+    enum Field: Hashable { case email, password, confirm, code }
 
     private var canSubmit: Bool {
         guard !isLoading, !email.isEmpty, password.count >= 8 else { return false }
@@ -509,6 +513,93 @@ private struct AuthView: View {
     }
 
     var body: some View {
+        if awaitingCode {
+            codeEntry
+        } else {
+            signUpForm
+        }
+    }
+
+    private var codeEntry: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                HStack {
+                    Button {
+                        awaitingCode = false
+                        code = ""
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: .circle)
+                    }
+                    .accessibilityLabel("Back")
+                    Spacer()
+                }
+                .padding(.top, 16)
+
+                VStack(spacing: 6) {
+                    Text("Check your email")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Enter the 6-digit code we sent to \(email).")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 24)
+                .padding(.bottom, 12)
+
+                AuthField(icon: "number", placeholder: "6-digit code",
+                          text: $code, focused: $focused, field: .code,
+                          contentType: .oneTimeCode, keyboard: .numberPad)
+                    .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+
+                if let errorMessage {
+                    InlineErrorBanner(errorMessage)
+                }
+
+                Button(action: verifyCode) {
+                    ZStack {
+                        if isLoading {
+                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        } else {
+                            Text("Verify")
+                                .font(.headline)
+                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        code.count == 6 && !isLoading ? Color.white : Color.white.opacity(0.3),
+                        in: .rect(cornerRadius: 16, style: .continuous)
+                    )
+                }
+                .disabled(code.count != 6 || isLoading)
+
+                Button("Resend code", action: resendCode)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .disabled(isLoading)
+                if let resendNote {
+                    Text(resendNote)
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 24)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .onAppear { focused = .code }
+        .onChange(of: code) { _, new in
+            let digits = String(new.filter(\.isNumber).prefix(6))
+            if digits != new { code = digits }
+        }
+    }
+
+    private var signUpForm: some View {
         ScrollView {
             VStack(spacing: 0) {
                 HStack {
@@ -604,12 +695,44 @@ private struct AuthView: View {
         focused = nil
         Task {
             do {
-                let session = try await SupabaseAuth.shared.signUp(email: email, password: password)
-                try await onComplete(session, password)
+                switch try await SupabaseAuth.shared.signUp(email: email, password: password) {
+                case .signedIn(let session):
+                    try await onComplete(session, password)
+                case .confirmationRequired:
+                    code = ""
+                    resendNote = nil
+                    awaitingCode = true
+                }
             } catch {
                 errorMessage = FriendlyError.message(for: error)
             }
             isLoading = false
+        }
+    }
+
+    private func verifyCode() {
+        errorMessage = nil
+        isLoading = true
+        Task {
+            do {
+                let session = try await SupabaseAuth.shared.verifySignUpCode(email: email, code: code)
+                try await onComplete(session, password)
+            } catch {
+                errorMessage = "That code didn't work. Check it, or tap Resend code."
+            }
+            isLoading = false
+        }
+    }
+
+    private func resendCode() {
+        errorMessage = nil
+        Task {
+            do {
+                try await SupabaseAuth.shared.resendSignUpCode(email: email)
+                resendNote = "Sent. It can take a minute to arrive — check your spam folder too."
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
         }
     }
 }

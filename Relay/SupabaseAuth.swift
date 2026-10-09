@@ -46,8 +46,30 @@ actor SupabaseAuth {
 
     // MARK: - Public API
 
-    func signUp(email: String, password: String) async throws -> SupabaseSession {
-        try await post(path: "/auth/v1/signup", body: ["email": email, "password": password])
+    enum SignUpResult {
+        /// Email confirmation is off: signed in straight away.
+        case signedIn(SupabaseSession)
+        /// Supabase emailed a 6-digit code; verify it with `verifySignUpCode`.
+        case confirmationRequired
+    }
+
+    func signUp(email: String, password: String) async throws -> SignUpResult {
+        let data = try await send(path: "/auth/v1/signup", body: ["email": email, "password": password])
+        // With "Confirm email" on, Supabase returns the user without a session.
+        guard let raw = try? JSONDecoder().decode(SupabaseRawSession.self, from: data) else {
+            return .confirmationRequired
+        }
+        return .signedIn(store(raw))
+    }
+
+    /// Exchanges the 6-digit code from the confirmation email for a session.
+    func verifySignUpCode(email: String, code: String) async throws -> SupabaseSession {
+        try await post(path: "/auth/v1/verify", body: ["type": "signup", "email": email, "token": code])
+    }
+
+    /// Sends the confirmation email again.
+    func resendSignUpCode(email: String) async throws {
+        _ = try await send(path: "/auth/v1/resend", body: ["type": "signup", "email": email])
     }
 
     func signIn(email: String, password: String) async throws -> SupabaseSession {
@@ -90,6 +112,23 @@ actor SupabaseAuth {
     // MARK: - Private
 
     private func post(path: String, body: [String: String]) async throws -> SupabaseSession {
+        let data = try await send(path: path, body: body)
+        return store(try JSONDecoder().decode(SupabaseRawSession.self, from: data))
+    }
+
+    private func store(_ raw: SupabaseRawSession) -> SupabaseSession {
+        let s = SupabaseSession(accessToken: raw.access_token,
+                                refreshToken: raw.refresh_token,
+                                userId: raw.user.id,
+                                email: raw.user.email ?? "")
+        session = s
+        if let encoded = try? JSONEncoder().encode(s) {
+            Self.kcSave(encoded)
+        }
+        return s
+    }
+
+    private func send(path: String, body: [String: String]) async throws -> Data {
         guard let url = URL(string: SupabaseConfig.projectURL + path) else {
             throw SupabaseError.badConfig
         }
@@ -128,17 +167,7 @@ actor SupabaseAuth {
             let msg = bodyMsg ?? "Authentication failed"
             throw SupabaseError.server("HTTP \(http.statusCode): \(msg)\(rawSnippet)")
         }
-
-        let raw = try JSONDecoder().decode(SupabaseRawSession.self, from: data)
-        let s = SupabaseSession(accessToken: raw.access_token,
-                                refreshToken: raw.refresh_token,
-                                userId: raw.user.id,
-                                email: raw.user.email ?? "")
-        session = s
-        if let encoded = try? JSONEncoder().encode(s) {
-            Self.kcSave(encoded)
-        }
-        return s
+        return data
     }
 
     // MARK: - Keychain (access + refresh tokens are credentials; use Keychain)
