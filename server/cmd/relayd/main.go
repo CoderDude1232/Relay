@@ -106,6 +106,7 @@ func main() {
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
 	apnsTopic := flag.String("apns-topic", "app.relaymsg", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
+	trustedProxies := flag.String("trusted-proxies", "", "honour CF-Connecting-IP only from these proxies: \"cloudflare\" (built-in Cloudflare ranges) or comma-separated CIDRs; empty = never")
 	siwaKey := flag.String("siwa-key", "", "path to a Sign in with Apple .p8 key (enables revoking the user's Apple grant on DELETE /v1/accounts/me)")
 	siwaKeyID := flag.String("siwa-key-id", "", "Sign in with Apple key id")
 	siwaTeamID := flag.String("siwa-team-id", "", "Apple team id for Sign in with Apple (default: -apns-team-id)")
@@ -187,6 +188,10 @@ func main() {
 			apiServer.SetSupabaseServiceKey(string(key))
 			slog.Info("supabase auth-user deletion enabled")
 		}
+	}
+	if err := api.SetTrustedProxies(*trustedProxies); err != nil {
+		slog.Error("invalid -trusted-proxies", "err", err)
+		os.Exit(1)
 	}
 	if *siwaKey != "" {
 		teamID := *siwaTeamID

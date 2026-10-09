@@ -1,7 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,7 +15,79 @@ import (
 // the full IPv4 address, or the /64 prefix of an IPv6 address. It is only ever
 // used as limiter input (which hashes it); it is never logged or stored.
 func clientIP(r *http.Request) string {
-	return limitkey.IPBucket(r.RemoteAddr)
+	return limitkey.IPBucket(sourceAddr(r))
+}
+
+// trustedProxies are the networks whose forwarded client address we accept
+// (Cloudflare, when the relay sits behind it). Set once at startup, before
+// serving; empty means proxy headers are never trusted.
+var trustedProxies []netip.Prefix
+
+// sourceAddr is the address limits should key on. Behind a trusted proxy every
+// connection comes from the proxy, so per-IP limits (and the failed-auth
+// lockout) would lump all users together; the proxy's CF-Connecting-IP header
+// carries the real client. The header is honoured ONLY when the TCP peer is a
+// trusted proxy — anyone else could set it to dodge or poison rate limits.
+func sourceAddr(r *http.Request) string {
+	if len(trustedProxies) == 0 {
+		return r.RemoteAddr
+	}
+	peer, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	from := peer.Addr().Unmap()
+	trusted := false
+	for _, p := range trustedProxies {
+		if p.Contains(from) {
+			trusted = true
+			break
+		}
+	}
+	if !trusted {
+		return r.RemoteAddr
+	}
+	client, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("CF-Connecting-IP")))
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return client.Unmap().String()
+}
+
+// cloudflareRanges are Cloudflare's published edge ranges
+// (https://www.cloudflare.com/ips/, checked 2026-10-09).
+var cloudflareRanges = []string{
+	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+	"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+	"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+	"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+}
+
+// SetTrustedProxies configures whose CF-Connecting-IP header is honoured:
+// "" (none), "cloudflare" (the built-in Cloudflare ranges), or a
+// comma-separated CIDR list.
+func SetTrustedProxies(spec string) error {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		trustedProxies = nil
+		return nil
+	}
+	cidrs := strings.Split(spec, ",")
+	if spec == "cloudflare" {
+		cidrs = cloudflareRanges
+	}
+	var out []netip.Prefix
+	for _, c := range cidrs {
+		p, err := netip.ParsePrefix(strings.TrimSpace(c))
+		if err != nil {
+			return fmt.Errorf("trusted proxy %q: %w", c, err)
+		}
+		out = append(out, p.Masked())
+	}
+	trustedProxies = out
+	return nil
 }
 
 // tokenBucketLimiter is a keyed token bucket. Unlike slidingWindowLimiter it
