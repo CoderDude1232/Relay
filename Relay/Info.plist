@@ -19,7 +19,7 @@
 		</dict>
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<false/>
 	<key>RelayICEServerURLs</key>
 	<array>
 		<string>turn:api.relaymsg.app:3478?transport=udp</string>
