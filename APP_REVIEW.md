@@ -127,8 +127,7 @@ and Apple CryptoKit), used to protect user communications.
 
 - ~~**libsignal is AGPL-3.0.**~~ Done 2026-10-10: the repo is public under
   AGPL-3.0 (github.com/CoderDude1232/Relay) and relaymsg.app/source links it.
-- **Export compliance:** `ITSAppUsesNonExemptEncryption` is `NO` in `Info.plist`,
-  but `TESTFLIGHT.md` says the plan was `YES` plus the mass-market exemption and
-  the annual BIS self-classification report. The questionnaire answer in App
-  Store Connect must match whichever is right. Confirm with Morgan before external
-  testing.
+- **Export compliance:** answered in App Store Connect 2026-10-10: standard
+  algorithms, mass-market exemption, no documents required. That matches
+  `ITSAppUsesNonExemptEncryption = NO` in `Info.plist`, so later builds skip the
+  questionnaire.

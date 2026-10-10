@@ -6,7 +6,7 @@
       backup/restore, groups, call links, mid-call TURN failover (run the outage
       test from the `relay-vps-deploy` memory while a call is up).
 - [ ] CloudKit **production** schema deploy (Morgan) — `APP_REVIEW.md` §1.
-- [ ] Reviewer demo account + export-compliance answer — `APP_REVIEW.md`.
+- [x] Reviewer demo accounts + export-compliance answer (2026-10-10).
 - [x] Server batch deployed (contentless push, email-at-rest, groups, sealed
       sender, blinded discovery, Supabase codes, TURN failover).
 - [x] Source published (AGPL-3.0), 2026-10-10.
