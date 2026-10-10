@@ -329,14 +329,8 @@ struct ConversationListView: View {
                         activeLabel = (activeLabel == label) ? nil : label
                     }
                 }
-                Button { showingFolderManager = true } label: {
-                    Image(systemName: "folder.badge.gearshape")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .frame(minHeight: 32)
-                }
-                .accessibilityLabel("Edit chat folders")
+                IconPill(systemImage: "folder.badge.gearshape") { showingFolderManager = true }
+                    .accessibilityLabel("Edit chat folders")
             }
             .padding(.horizontal, DS.Spacing.lg)
             .padding(.vertical, DS.Spacing.sm)

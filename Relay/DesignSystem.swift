@@ -128,6 +128,40 @@ struct Pill: View {
     }
 }
 
+/// A round glass button the same height as a `Pill`, for an icon beside pills.
+struct IconPill: View {
+    let systemImage: String
+    var action: () -> Void = {}
+
+    var body: some View {
+        Button(action: action) {
+            // Drawn as text so the height matches a Pill's text at every type size.
+            SquareFrame {
+                Text(Image(systemName: systemImage))
+                    .font(.subheadline.weight(.medium))
+                    .padding(.vertical, DS.Spacing.sm - 2)
+            }
+            .foregroundStyle(.primary)
+            .glassCompat(in: .circle)
+            .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Sizes its content into a square as wide as the content is tall.
+private struct SquareFrame: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(.unspecified) ?? .zero
+        let side = max(size.width, size.height)
+        return CGSize(width: side, height: side)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: .unspecified)
+    }
+}
+
 /// Avatar for the official, read-only "Relay" system chat.
 struct RelayOfficialAvatar: View {
     var size: CGFloat = 54
