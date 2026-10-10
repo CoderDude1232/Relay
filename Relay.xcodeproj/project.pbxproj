@@ -1023,7 +1023,7 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayWatch;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = app.relaymsg;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1042,7 +1042,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
 		};
@@ -1056,7 +1056,7 @@
 				DEVELOPMENT_TEAM = HK396F3767;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = RelayWatch;
+				INFOPLIST_KEY_CFBundleDisplayName = Relay;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = app.relaymsg;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1075,7 +1075,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};
@@ -1098,7 +1098,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RelayWatch Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RelayWatch Watch App";
-				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
 		};
@@ -1121,7 +1121,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/RelayWatch Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RelayWatch Watch App";
-				WATCHOS_DEPLOYMENT_TARGET = 27.0;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};
