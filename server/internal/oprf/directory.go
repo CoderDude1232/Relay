@@ -83,6 +83,21 @@ func SealDirectoryEntry(token []byte, accountID, username string) ([]byte, error
 	return aead.Seal(nonce, nonce, []byte(accountID+"\n"+username), nil), nil
 }
 
+// SealDirectoryAccessKey seals an account's sealed-sender access key under the
+// same token-derived key as its directory entry (served as accessBox), so a
+// client that found the account can fetch its keys anonymously right away.
+func SealDirectoryAccessKey(token, accessKey []byte) ([]byte, error) {
+	aead, err := entryAEAD(token)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	return aead.Seal(nonce, nonce, accessKey, []byte("relay-access-key")), nil
+}
+
 // OpenDirectoryEntry is the client-side inverse (used by tests and as the
 // reference for other clients).
 func OpenDirectoryEntry(token, box []byte) (accountID, username string, err error) {

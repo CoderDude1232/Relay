@@ -328,6 +328,10 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS bucket INTEGER`,
 		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS tag BYTEA`,
 		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS box BYTEA`,
+		// The account's sealed-sender access key, sealed under the same
+		// token-derived key as box — so whoever can find an account by username
+		// can fetch its keys anonymously from the first contact.
+		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS access_box BYTEA`,
 		`CREATE INDEX IF NOT EXISTS idx_directory_bucket ON directory (bucket)`,
 		// Encrypted group invites: the relay stores an opaque ciphertext blob
 		// keyed by a token; the decrypt key travels in the invite URL fragment,
@@ -2594,13 +2598,15 @@ type DirectoryEntry struct {
 	Bucket    uint16
 	Tag       []byte
 	Box       []byte
+	AccessBox []byte // nil when the account has no access key
 }
 
 // BucketEntry is one row of a directory bucket as served to clients.
 type BucketEntry struct {
-	Bucket uint16
-	Tag    []byte
-	Box    []byte
+	Bucket    uint16
+	Tag       []byte
+	Box       []byte
+	AccessBox []byte
 }
 
 // AccountDirInfo is the identifier material the API layer needs to (re)build an
@@ -2612,13 +2618,14 @@ type AccountDirInfo struct {
 	EmailToken []byte
 	// EmailDiscoverable is the owner's opt-in for an email directory entry.
 	EmailDiscoverable bool
+	AccessKey         []byte
 }
 
 // AllAccountsForDirectory returns every account's username + email token so the
 // API can (re)build the full directory index at startup.
 func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	rows, err := s.db.Query(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token, email_discoverable FROM accounts ORDER BY created_at, id`)
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable, access_key FROM accounts ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2626,7 +2633,7 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	var out []AccountDirInfo
 	for rows.Next() {
 		var a AccountDirInfo
-		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable); err != nil {
+		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable, &a.AccessKey); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -2638,9 +2645,9 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 func (s *Store) AccountForDirectory(accountID string) (AccountDirInfo, error) {
 	var a AccountDirInfo
 	err := s.db.QueryRow(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token, email_discoverable FROM accounts WHERE id = $1`,
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable, access_key FROM accounts WHERE id = $1`,
 		accountID,
-	).Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable)
+	).Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable, &a.AccessKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrAccountNotFound
 	}
@@ -2686,10 +2693,10 @@ func (s *Store) ReplaceDirectory(entries []DirectoryEntry) error {
 // identifier could hijack another user's discovery entry.
 func upsertDirectoryEntry(ctx context.Context, tx pgx.Tx, e DirectoryEntry) error {
 	tag, err := tx.Exec(ctx,
-		`INSERT INTO directory (token, account_id, kind, bucket, tag, box) VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (token) DO UPDATE SET kind = EXCLUDED.kind, bucket = EXCLUDED.bucket, tag = EXCLUDED.tag, box = EXCLUDED.box
+		`INSERT INTO directory (token, account_id, kind, bucket, tag, box, access_box) VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (token) DO UPDATE SET kind = EXCLUDED.kind, bucket = EXCLUDED.bucket, tag = EXCLUDED.tag, box = EXCLUDED.box, access_box = EXCLUDED.access_box
          WHERE directory.account_id = EXCLUDED.account_id`,
-		e.Token, e.AccountID, e.Kind, int32(e.Bucket), e.Tag, e.Box)
+		e.Token, e.AccountID, e.Kind, int32(e.Bucket), e.Tag, e.Box, e.AccessBox)
 	if err != nil {
 		return err
 	}
@@ -2730,7 +2737,7 @@ func (s *Store) DirectoryBuckets(buckets []uint16) ([]BucketEntry, error) {
 		ids[i] = int32(b)
 	}
 	rows, err := s.db.Query(context.Background(),
-		`SELECT bucket, tag, box FROM directory
+		`SELECT bucket, tag, box, access_box FROM directory
          WHERE bucket = ANY($1) AND tag IS NOT NULL AND box IS NOT NULL`, ids)
 	if err != nil {
 		return nil, err
@@ -2740,7 +2747,7 @@ func (s *Store) DirectoryBuckets(buckets []uint16) ([]BucketEntry, error) {
 	for rows.Next() {
 		var e BucketEntry
 		var b int32
-		if err := rows.Scan(&b, &e.Tag, &e.Box); err != nil {
+		if err := rows.Scan(&b, &e.Tag, &e.Box, &e.AccessBox); err != nil {
 			return nil, err
 		}
 		e.Bucket = uint16(b)

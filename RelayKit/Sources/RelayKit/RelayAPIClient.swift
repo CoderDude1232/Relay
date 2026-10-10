@@ -24,11 +24,14 @@ public struct DirectoryMatch: Sendable, Equatable {
     public let token: Data
     public let accountId: String
     public let username: String
+    /// The account's sealed-sender access key, when the relay serves it.
+    public let accessKey: Data?
 
-    public init(token: Data, accountId: String, username: String) {
+    public init(token: Data, accountId: String, username: String, accessKey: Data? = nil) {
         self.token = token
         self.accountId = accountId
         self.username = username
+        self.accessKey = accessKey
     }
 }
 
@@ -290,7 +293,8 @@ public struct RelayAPIClient: Sendable {
             for bucket in chunk {
                 for token in byBucket[bucket] ?? [] {
                     if let hit = DirectoryBuckets.match(token: token, in: entries[bucket] ?? []) {
-                        matches.append(DirectoryMatch(token: token, accountId: hit.accountId, username: hit.username))
+                        matches.append(DirectoryMatch(token: token, accountId: hit.accountId,
+                                                      username: hit.username, accessKey: hit.accessKey))
                     }
                 }
             }
@@ -303,7 +307,7 @@ public struct RelayAPIClient: Sendable {
     /// holds in each requested bucket. Prefer `directoryResolve(tokens:)`.
     public func directoryBuckets(_ buckets: [UInt16]) async throws -> [UInt16: [DirectoryBucketEntry]] {
         struct Req: Encodable { let buckets: [UInt16] }
-        struct EntryDTO: Decodable { let tag: String; let box: String }
+        struct EntryDTO: Decodable { let tag: String; let box: String; let accessBox: String? }
         struct BucketDTO: Decodable { let bucket: UInt16; let entries: [EntryDTO] }
         struct Response: Decodable { let buckets: [BucketDTO] }
         let r: Response = try await request("POST", "v1/directory/buckets", body: Req(buckets: buckets))
@@ -311,7 +315,7 @@ public struct RelayAPIClient: Sendable {
         for b in r.buckets {
             out[b.bucket] = b.entries.compactMap { e in
                 guard let tag = Data(base64Encoded: e.tag), let box = Data(base64Encoded: e.box) else { return nil }
-                return DirectoryBucketEntry(tag: tag, box: box)
+                return DirectoryBucketEntry(tag: tag, box: box, accessBox: e.accessBox.flatMap { Data(base64Encoded: $0) })
             }
         }
         return out

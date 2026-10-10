@@ -757,6 +757,11 @@ final class MessagingService {
         guard let match = try await api.directoryResolve(tokens: [token]).first else {
             throw RelayAPIError.http(status: 404, message: "no such user")
         }
+        // The directory also hands us their access key, so even the first key
+        // fetch for this person is anonymous.
+        if let accessKey = match.accessKey, match.accountId != credentials.accountId {
+            rememberAccessKey(accessKey, for: match.accountId)
+        }
         return match.accountId
     }
 
@@ -3266,6 +3271,14 @@ final class MessagingService {
         // Once we know a peer's access key, fetch anonymously: the relay can't
         // tell who is asking for whose keys. A 403 means the key was rotated;
         // forget it and fall back to the signed fetch, which returns the new one.
+        // Someone new (e.g. replying to their first message): we know their
+        // username from the sealed sender certificate, so look them up in the
+        // blinded directory to get the access key instead of signing the fetch.
+        if account != credentials.accountId, knownAccessKey(account) == nil,
+           let username = cachedUsername(account),
+           let resolved = try? await resolveAccount(username: username), resolved != account {
+            log.info("directory username now belongs to a different account; using the signed fetch")
+        }
         if account != credentials.accountId, let known = knownAccessKey(account),
            let anonymous = try await fetchBundlesAnonymously(account, accessKey: known) {
             bundles = anonymous

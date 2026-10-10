@@ -222,9 +222,17 @@ func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry
 			slog.Error("directory: seal entry failed", "err", privlog.Error(err))
 			return
 		}
+		var accessBox []byte
+		if len(a.AccessKey) == 32 {
+			if accessBox, err = oprf.SealDirectoryAccessKey(token, a.AccessKey); err != nil {
+				slog.Error("directory: seal access key failed", "err", privlog.Error(err))
+				accessBox = nil
+			}
+		}
 		entries = append(entries, store.DirectoryEntry{
 			Token: token, AccountID: a.AccountID, Kind: kind,
 			Bucket: oprf.DirectoryBucket(token), Tag: oprf.DirectoryTag(token), Box: box,
+			AccessBox: accessBox,
 		})
 	}
 	if a.Username != "" {
@@ -912,6 +920,8 @@ func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev 
 		internalError(w, err)
 		return
 	}
+	// The directory carries the access key (sealed) for anonymous first contact.
+	s.reindexAccount(dev.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1025,8 +1035,9 @@ func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	type entry struct {
-		Tag b64 `json:"tag"`
-		Box b64 `json:"box"`
+		Tag       b64 `json:"tag"`
+		Box       b64 `json:"box"`
+		AccessBox b64 `json:"accessBox,omitempty"`
 	}
 	type bucket struct {
 		Bucket  uint16  `json:"bucket"`
@@ -1034,7 +1045,7 @@ func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, 
 	}
 	byBucket := make(map[uint16][]entry, len(buckets))
 	for _, e := range rows {
-		byBucket[e.Bucket] = append(byBucket[e.Bucket], entry{Tag: e.Tag, Box: e.Box})
+		byBucket[e.Bucket] = append(byBucket[e.Bucket], entry{Tag: e.Tag, Box: e.Box, AccessBox: e.AccessBox})
 	}
 	out := make([]bucket, 0, len(buckets))
 	for _, b := range buckets {

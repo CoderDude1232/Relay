@@ -24,10 +24,14 @@ import Foundation
 public struct DirectoryBucketEntry: Sendable, Equatable {
     public let tag: Data
     public let box: Data
+    /// The account's sealed-sender access key, sealed under the same key as
+    /// `box` (newer relays). Lets the first key fetch be anonymous.
+    public let accessBox: Data?
 
-    public init(tag: Data, box: Data) {
+    public init(tag: Data, box: Data, accessBox: Data? = nil) {
         self.tag = tag
         self.box = box
+        self.accessBox = accessBox
     }
 }
 
@@ -67,11 +71,23 @@ public enum DirectoryBuckets {
         return (String(text[..<sep]), String(text[text.index(after: sep)...]))
     }
 
+    /// Opens an entry's access box → the 32-byte access key.
+    public static func openAccessKey(box: Data, token: Data) -> Data? {
+        guard let sealed = try? AES.GCM.SealedBox(combined: box),
+              let key = try? AES.GCM.open(sealed, using: entryKey(for: token),
+                                          authenticating: Data("relay-access-key".utf8)),
+              key.count == 32
+        else { return nil }
+        return key
+    }
+
     /// Finds and opens this token's entry among a bucket's entries, if present.
-    public static func match(token: Data, in entries: [DirectoryBucketEntry]) -> (accountId: String, username: String)? {
+    public static func match(token: Data, in entries: [DirectoryBucketEntry]) -> (accountId: String, username: String, accessKey: Data?)? {
         let mine = tag(for: token)
         for entry in entries where entry.tag == mine {
-            if let hit = open(box: entry.box, token: token) { return hit }
+            if let hit = open(box: entry.box, token: token) {
+                return (hit.accountId, hit.username, entry.accessBox.flatMap { openAccessKey(box: $0, token: token) })
+            }
         }
         return nil
     }

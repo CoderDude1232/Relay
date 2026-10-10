@@ -40,7 +40,7 @@ func (s *Store) DirectoryBucketsFor(buckets []uint16, demo bool) ([]BucketEntry,
 		ids[i] = int32(b)
 	}
 	rows, err := s.db.Query(context.Background(),
-		`SELECT d.bucket, d.tag, d.box FROM directory d JOIN accounts a ON a.id = d.account_id
+		`SELECT d.bucket, d.tag, d.box, d.access_box FROM directory d JOIN accounts a ON a.id = d.account_id
          WHERE d.bucket = ANY($1) AND d.tag IS NOT NULL AND d.box IS NOT NULL AND a.is_demo = $2`, ids, demo)
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func (s *Store) DirectoryBucketsFor(buckets []uint16, demo bool) ([]BucketEntry,
 	for rows.Next() {
 		var e BucketEntry
 		var b int32
-		if err := rows.Scan(&b, &e.Tag, &e.Box); err != nil {
+		if err := rows.Scan(&b, &e.Tag, &e.Box, &e.AccessBox); err != nil {
 			return nil, err
 		}
 		e.Bucket = uint16(b)
