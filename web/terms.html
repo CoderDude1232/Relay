@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — Terms of Service</title>
+<meta name="description" content="The terms you agree to when you use Relay: what we provide, what we ask of you, and what happens if either side stops.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://relaymsg.app/terms">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Relay">
+<meta property="og:title" content="Relay — Terms of Service">
+<meta property="og:description" content="The terms you agree to when you use Relay: what we provide, what we ask of you, and what happens if either side stops.">
+<meta property="og:url" content="https://relaymsg.app/terms">
+<meta property="og:image" content="https://relaymsg.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Applied before first paint so a stored choice never flashes the other theme. */
+(function () {
+  try {
+    var t = localStorage.getItem("relay-theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell wide nav-inner">
+    <a class="brand" href="/">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#features">Features</a>
+      <a href="/#storage">What we store</a>
+      <a href="/#limits">Limits</a>
+      <a href="/security">How it works</a>
+      <a href="/download">Download</a>
+    </nav>
+    <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Switch theme">
+      <svg class="i-light" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3.1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.95 3.05l-1.13 1.13M4.18 11.82l-1.13 1.13M12.95 12.95l-1.13-1.13M4.18 4.18L3.05 3.05"
+              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg class="i-dark" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M13.8 9.9A6.2 6.2 0 0 1 6.1 2.2a6.2 6.2 0 1 0 7.7 7.7Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main" class="shell doc">
+
+  <div class="doc-head">
+    <p class="lbl">Effective 13 September 2026 · Version 1.1</p>
+    <h1>Terms of Service</h1>
+    <p class="doc-lede">
+      What we provide, what we ask of you, and what happens if either side stops.
+    </p>
+  </div>
+
+  <section class="doc-section">
+    <h2>The agreement</h2>
+    <div>
+      <p>
+        These terms are between you and <strong>Morgan Daly</strong>, who operates Relay from
+        <strong>Queensland, Australia</strong>. Using Relay means you accept them. If you don't,
+        don't use it.
+      </p>
+      <p>
+        You need to be at least 13 years old, and old enough to agree to a contract where you live.
+        If you're under 18, you should have a parent or guardian read these with you.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Your licence</h2>
+    <div>
+      <p>
+        We grant you a personal, non-exclusive, non-transferable licence to install and use Relay
+        on devices you own or control, for as long as you follow these terms. That's a licence to
+        use the app, not ownership of it — we keep the rights in the software, the name and the
+        mark.
+      </p>
+      <p>
+        You may not sell, rent or sublicense Relay, or strip out our branding and pass it off as
+        your own.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Your account</h2>
+    <div>
+      <p>
+        An account needs a username and an email address. Keep access to the address — losing it
+        may mean losing access to Relay, and we have no other way to verify you're you.
+      </p>
+      <p>
+        Your username is public, so choose it carefully. We can reclaim a username that
+        impersonates someone, or that breaks the rules below.
+      </p>
+      <p>
+        Your encryption keys live on your device. If you lose every device you've used, your
+        message history is gone. We can't recover it, because we never had it. That's a design
+        decision, not an oversight.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>What you send</h2>
+    <div>
+      <p>
+        Your messages are yours. We claim no ownership of them and no licence to them — we can't
+        read them in any case.
+      </p>
+      <p>
+        You're responsible for what you send and for having the right to send it. Because messages
+        are encrypted end to end, we can't moderate content, and we don't try to.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Acceptable use</h2>
+    <div>
+      <p>Don't use Relay to:</p>
+      <ul class="doc-list">
+        <li>break the law, or help anyone else do it</li>
+        <li>share child sexual abuse material, in any form</li>
+        <li>impersonate another person or organisation</li>
+        <li>harass, threaten, or send unsolicited bulk messages</li>
+        <li>distribute malware, or attack our service or anyone else's</li>
+        <li>defeat rate limits or abuse protections, or automate account creation</li>
+      </ul>
+      <p>
+        We can suspend or close an account we have good reason to believe is doing these things.
+        What we can act on is account-level behaviour — we can't see message content, so reports
+        about what someone said are something we're unable to verify or act on.
+      </p>
+      <p>
+        What you can do, at any time and without asking us, is block the sender in the app. That
+        works whatever we can or can't see.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Security research</h2>
+    <div>
+      <p>
+        Testing Relay's security is welcome, and nothing in these terms is meant to discourage it.
+        Report what you find to <a href="mailto:security@relaymsg.app">security@relaymsg.app</a>
+        before disclosing it elsewhere, don't access other people's data, and don't degrade the
+        service for anyone else.
+      </p>
+      <p>
+        Research done on that basis is authorised, and we won't pursue you for it.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Encryption and where you are</h2>
+    <div>
+      <p>
+        Relay contains strong encryption, and some countries restrict importing, using or
+        re-exporting it. Using Relay is your decision and your responsibility where you are.
+      </p>
+      <p>
+        You confirm you're not located in a country subject to an applicable trade embargo, and
+        that you're not on a prohibited or restricted party list.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Availability</h2>
+    <div>
+      <p>
+        Relay is provided as it is. We don't promise it will be available without interruption,
+        free of faults, or that every message will arrive. A message not collected within its
+        retention window is deleted and won't be delivered.
+      </p>
+      <p>
+        We may change, suspend or discontinue parts of the service. Where a change materially
+        reduces what Relay does, we'll give notice in the app before it takes effect if we can.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Ending it</h2>
+    <div>
+      <p>
+        You can stop using Relay and delete your account at any time, from inside the app or by
+        writing to <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>.
+      </p>
+      <p>
+        We can end your access if you break these terms, or if we discontinue the service. If we
+        shut Relay down we'll give notice in the app and on this site beforehand where we can. The
+        licence ends when your access does; everything on your own device stays yours.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Liability</h2>
+    <div>
+      <p>
+        To the extent the law allows, we aren't liable for indirect or consequential loss, for lost
+        data or lost messages, or for anything arising from how someone you messaged handles what
+        you sent them.
+      </p>
+      <p>
+        Nothing here limits liability that can't be limited by law — including under the Australian
+        Consumer Law, and for death or personal injury caused by negligence, or for fraud. Where a
+        consumer guarantee applies that we can't exclude, our liability is limited to supplying the
+        service again.
+      </p>
+      <p>
+        For a free app, supplying it again means restoring your access to Relay — getting your
+        account working so you can send and receive. <strong>It does not mean recovering your
+        messages.</strong> Your history exists only on your own devices, so there is nothing on our
+        side to restore it from, and no remedy can conjure it back.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>If you got Relay from the App Store</h2>
+    <div>
+      <p>
+        Apple requires us to set these out, and they're worth knowing:
+      </p>
+      <ul class="doc-list">
+        <li>This agreement is between you and us. Apple isn't a party to it, and we — not Apple — are responsible for Relay and its content.</li>
+        <li>Your licence covers Apple-branded devices you own or control, subject to the App Store Terms of Service.</li>
+        <li>Support is ours to provide. Apple has no obligation to furnish maintenance or support for Relay.</li>
+        <li>If Relay fails to conform to a warranty we've given, you can tell Apple, and Apple will refund the purchase price — which is nothing, since Relay is free. Apple has no other warranty obligation.</li>
+        <li>We, not Apple, handle any claim about Relay — product liability, a failure to meet a legal requirement, or a consumer protection claim.</li>
+        <li>We, not Apple, handle any claim that Relay infringes someone's intellectual property.</li>
+        <li>Apple and its subsidiaries are third-party beneficiaries of these terms and may enforce them against you.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Changes</h2>
+    <div>
+      <p>
+        We may update these terms. If a change materially affects you, we'll say so on this page
+        and in the app before it takes effect. Continuing to use Relay after that means you accept
+        the new version.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Law</h2>
+    <div>
+      <p>
+        These terms are governed by the laws of <strong>Queensland, Australia</strong>, and
+        disputes go to the courts of Queensland. Nothing here limits your rights under the
+        Australian Consumer Law, and if you're a consumer elsewhere it doesn't remove protections
+        you have where you live.
+      </p>
+      <p>
+        If any part of these terms turns out to be unenforceable, the rest still stands. Not
+        enforcing something straight away doesn't mean we've given it up. These terms and the
+        <a href="/privacy">privacy policy</a> are the whole agreement between us about Relay.
+      </p>
+      <p>
+        Questions about any of this: <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell wide foot-inner">
+    <p class="foot-brand">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms" aria-current="page">Terms</a>
+      <a href="/security">Security</a>
+      <a href="/source">Source</a>
+      <a href="/compare">Compare</a>
+      <a href="/changelog">What's new</a>
+      <a href="/support">Support</a>
+      <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# Invite pages (/add/, /c/, /g/) are served with "noindex"; they're left
+# crawlable so search engines can see that.
+
+Sitemap: https://relaymsg.app/sitemap.xml

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Relay">
+  <defs>
+    <linearGradient id="bolt" x1="0%" y1="0%" x2="60%" y2="100%">
+      <stop offset="0" stop-color="#F63BFF"/>
+      <stop offset="1" stop-color="#C611D6"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="#12090F"/>
+  <!-- the bolt from the wordmark, its 685x310 coordinates fitted to this box -->
+  <polygon fill="url(#bolt)"
+    points="16.92,5.50 12.78,17.26 15.54,17.26 15.08,26.50 19.22,13.90 16.46,13.90"/>
+</svg>

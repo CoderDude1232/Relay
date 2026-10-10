@@ -1,0 +1,21 @@
+/.well-known/apple-app-site-association
+  Content-Type: application/json
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+# Invite URLs carry a token in the path, and /g/ carries a secret key in the
+# fragment. Send no referrer at all from these, and keep them out of indexes.
+/add/*
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex
+/c/*
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex
+/g/*
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex
+/call/*
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex

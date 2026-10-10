@@ -1,0 +1,8 @@
+/add/* /add/ 200
+/add /add/ 200
+/c/* /c/ 200
+/c /c/ 200
+/g/* /g/ 200
+/g /g/ 200
+/call/* /call/ 200
+/call /call/ 200

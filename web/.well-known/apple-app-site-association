@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["HK396F3767.app.relaymsg"],
+        "components": [
+          { "/": "/add/*" },
+          { "/": "/c/*" },
+          { "/": "/g/*" },
+          { "/": "/call/*" }
+        ]
+      }
+    ]
+  }
+}

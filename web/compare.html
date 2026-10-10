@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — Relay compared</title>
+<meta name="description" content="How Relay compares with WhatsApp, Signal and Telegram on phone numbers, default encryption, group chats and server-side history.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://relaymsg.app/compare">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Relay">
+<meta property="og:title" content="Relay — Relay compared">
+<meta property="og:description" content="How Relay compares with WhatsApp, Signal and Telegram on phone numbers, default encryption, group chats and server-side history.">
+<meta property="og:url" content="https://relaymsg.app/compare">
+<meta property="og:image" content="https://relaymsg.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Applied before first paint so a stored choice never flashes the other theme. */
+(function () {
+  try {
+    var t = localStorage.getItem("relay-theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#features">Features</a>
+      <a href="/#storage">What we store</a>
+      <a href="/#limits">Limits</a>
+      <a href="/security">How it works</a>
+      <a href="/download">Download</a>
+    </nav>
+    <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Switch theme">
+      <svg class="i-light" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3.1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.95 3.05l-1.13 1.13M4.18 11.82l-1.13 1.13M12.95 12.95l-1.13-1.13M4.18 4.18L3.05 3.05"
+              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg class="i-dark" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M13.8 9.9A6.2 6.2 0 0 1 6.1 2.2a6.2 6.2 0 1 0 7.7 7.7Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main" class="shell doc">
+
+  <div class="doc-head">
+    <p class="lbl">Last checked: October 2026</p>
+    <h1>Relay compared</h1>
+    <p class="doc-lede">
+      Every messenger makes different trade-offs. Here's where Relay sits next to three you've
+      probably used, on the questions people ask most.
+    </p>
+  </div>
+
+  <div class="table-wrap table-wide">
+    <table class="table compare">
+      <thead>
+        <tr>
+          <th scope="col"><span class="skip">Question</span></th>
+          <th scope="col">Relay</th>
+          <th scope="col">WhatsApp</th>
+          <th scope="col">Signal</th>
+          <th scope="col">Telegram</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">Phone number required to sign up</th>
+          <td><b>No</b> — a username and an email address</td>
+          <td>Yes</td>
+          <td>Yes</td>
+          <td>Yes</td>
+        </tr>
+        <tr>
+          <th scope="row">End-to-end encryption on by default for all chats</th>
+          <td><b>Yes</b></td>
+          <td>Yes, for personal chats</td>
+          <td>Yes</td>
+          <td>No — only Secret Chats, which you start separately</td>
+        </tr>
+        <tr>
+          <th scope="row">Group chats end-to-end encrypted by default</th>
+          <td><b>Yes</b></td>
+          <td>Yes</td>
+          <td>Yes</td>
+          <td>No — Secret Chats are one-to-one only</td>
+        </tr>
+        <tr>
+          <th scope="row">Server keeps your message history</th>
+          <td><b>No</b> — deleted once delivered</td>
+          <td>Not by default — history is kept on your device</td>
+          <td>Not by default — history is kept on your device</td>
+          <td>Yes — regular chats are stored in Telegram's cloud</td>
+        </tr>
+        <tr>
+          <th scope="row">Uses the Signal Protocol</th>
+          <td><b>Yes</b></td>
+          <td>Yes</td>
+          <td>Yes</td>
+          <td>No — uses its own protocol, MTProto</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="doc-section">
+    <h2>Reading the table</h2>
+    <div>
+      <p>
+        WhatsApp and Signal are built on the same Signal Protocol Relay uses, and all three encrypt
+        conversations end to end by default. The clearest difference from both is how you sign up:
+        Relay needs no phone number, just a username and an email address.
+      </p>
+      <p>
+        "Deleted once delivered" means an encrypted message waits on our servers only until the
+        recipient's phone collects it, or 14 days if it never does. Relay's optional backup goes to
+        your own iCloud, encrypted with a recovery key only you hold.
+        <a href="/security">How Relay works</a> covers the details.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Out of date?</h2>
+    <div>
+      <p>
+        Other apps change, and this page was last checked in October 2026. If something here is
+        out of date, tell us at <a href="mailto:support@relaymsg.app">support@relaymsg.app</a> and
+        we'll correct it.
+      </p>
+      <p>
+        WhatsApp, Signal and Telegram are trademarks of their respective owners. Relay isn't
+        affiliated with any of them.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-inner">
+    <p class="foot-brand">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms">Terms</a>
+      <a href="/security">Security</a>
+      <a href="/source">Source</a>
+      <a href="/compare" aria-current="page">Compare</a>
+      <a href="/changelog">What's new</a>
+      <a href="/support">Support</a>
+      <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

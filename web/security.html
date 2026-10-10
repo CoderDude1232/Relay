@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — How Relay works</title>
+<meta name="description" content="How Relay protects your messages, in plain language: what our servers see, what they never see, and where the encryption ends.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://relaymsg.app/security">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Relay">
+<meta property="og:title" content="Relay — How Relay works">
+<meta property="og:description" content="How Relay protects your messages, in plain language: what our servers see, what they never see, and where the encryption ends.">
+<meta property="og:url" content="https://relaymsg.app/security">
+<meta property="og:image" content="https://relaymsg.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Applied before first paint so a stored choice never flashes the other theme. */
+(function () {
+  try {
+    var t = localStorage.getItem("relay-theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#features">Features</a>
+      <a href="/#storage">What we store</a>
+      <a href="/#limits">Limits</a>
+      <a href="/security" aria-current="page">How it works</a>
+      <a href="/download">Download</a>
+    </nav>
+    <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Switch theme">
+      <svg class="i-light" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3.1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.95 3.05l-1.13 1.13M4.18 11.82l-1.13 1.13M12.95 12.95l-1.13-1.13M4.18 4.18L3.05 3.05"
+              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg class="i-dark" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M13.8 9.9A6.2 6.2 0 0 1 6.1 2.2a6.2 6.2 0 1 0 7.7 7.7Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main" class="shell doc">
+
+  <div class="doc-head">
+    <p class="lbl">Security</p>
+    <h1>How Relay works</h1>
+    <p class="doc-lede">
+      What happens to a message between your phone and someone else's, what our servers can
+      see along the way, and where the protection stops.
+    </p>
+  </div>
+
+  <section class="doc-section">
+    <h2>The short version</h2>
+    <div>
+      <ul class="doc-list">
+        <li>Messages, photos, voice notes, calls and group chats are end-to-end encrypted with the Signal Protocol. Only the devices in the conversation hold the keys.</li>
+        <li>Our servers can't see who sent a message, can't read it, and delete it as soon as the recipient's phone confirms it arrived.</li>
+        <li>No phone number. An account is a username and an email address.</li>
+        <li>When you look someone up, the username or email you search for is blinded on your phone first, so our servers never see it.</li>
+        <li>The server keeps no record of your groups — not their names, not their members.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>The encryption</h2>
+    <div>
+      <p>
+        Relay uses the <strong>Signal Protocol</strong>, through Signal's own open-source library,
+        <a href="https://github.com/signalapp/libsignal">libsignal</a>. Conversations start with
+        <strong>PQXDH</strong>, a key exchange designed to resist attack by future quantum
+        computers, and continue with the <strong>Double Ratchet</strong>, which gives every message
+        a fresh key. A key stolen later can't unlock messages that came before it.
+      </p>
+      <p>
+        Your keys are generated on your phone. Your identity key is kept in the iPhone's Keychain,
+        protected by a key held in the Secure Enclave, and it leaves your phone only end-to-end
+        encrypted, to your own devices, when you link a new one.
+      </p>
+      <p>
+        Messages are padded to a handful of fixed sizes before they're encrypted, so the size of
+        what's sent gives little away about what it says.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Your account</h2>
+    <div>
+      <p>
+        You sign up with Apple, Google, or an email address — there's no phone number anywhere in
+        it. Sign-in itself is handled by Supabase, our authentication provider. Relay's own servers
+        keep a one-way, keyed token derived from your email rather than the address itself.
+      </p>
+      <p>
+        People can't find you by email unless you turn on <strong>Find Me by Email</strong>; it's
+        off by default. Your username is how people add you.
+      </p>
+      <p>
+        You can set an <strong>account password</strong>. Once it's set, signing in to your account
+        on a new phone needs it — so someone who gets into your email still can't take over your
+        Relay account. Signing in on a new phone also signs out your old one.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Sending a message</h2>
+    <div>
+      <p>
+        Every message is sent with <strong>sealed sender</strong>. The sender's identity travels
+        inside the encrypted message, so our server delivers it knowing only which device mailbox
+        it's for — not who it came from. Sealed sender is always on; there's no setting to get
+        wrong.
+      </p>
+      <p>
+        If the recipient's phone is offline, the encrypted message waits in that mailbox. As soon
+        as the phone collects it and confirms receipt, the server deletes it. A message that's
+        never collected is deleted after 14 days.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Finding people</h2>
+    <div>
+      <p>
+        Looking someone up uses <strong>blinded contact discovery</strong>. Your phone scrambles
+        the username or email with a random value before sending it; the server does its half of
+        the calculation on something it can't read, and your phone finishes the match locally. The
+        server never learns what you searched for, or whether it found anything.
+      </p>
+      <p>
+        Relay only looks at your address book if you tap Find Contacts, and your contacts are never
+        uploaded.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Groups</h2>
+    <div>
+      <p>
+        A group chat gets the same encryption as a one-to-one chat. The group's name,
+        members and admins are managed by the members' phones and shared between them end-to-end
+        encrypted. Our server keeps no group roster at all.
+      </p>
+      <p>
+        A group invite link holds its decryption key in the part of the link after the
+        <code>#</code>, which browsers never send to a server — including ours.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Photos and files</h2>
+    <div>
+      <p>
+        Attachments are encrypted on your phone before they're uploaded. The server stores
+        ciphertext it can't read, for up to 14 days so the other phone has time to fetch it, then
+        deletes it whether it was collected or not. Photos have their location and other metadata
+        removed before they're sent.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Notifications</h2>
+    <div>
+      <p>
+        By default the push notification Apple delivers is an empty wake-up: no sender, no preview,
+        no message. Your phone then fetches the encrypted message from Relay, decrypts it, and
+        draws the notification itself.
+      </p>
+      <p>
+        If you turn on <strong>Faster Alerts</strong>, the encrypted message rides inside the push
+        instead. It's still end-to-end encrypted and still sealed, so Apple can't read it or see
+        who sent it.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Calls</h2>
+    <div>
+      <p>
+        Voice and video calls use WebRTC and are end-to-end encrypted. With
+        <strong>Relay-Only Calls</strong>, on by default, a call is relayed through our own call
+        server rather than connecting the two phones directly, so the other person never sees your
+        IP address. If our server can't be reached, the call fails rather than quietly connecting
+        directly.
+      </p>
+      <p>
+        If our call server is down or close to overloaded, new calls are relayed through
+        Cloudflare's call relay until it recovers. Either relay sees the IP addresses in a call and
+        how much data passes between them — never what's said.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>On your phone</h2>
+    <div>
+      <p>
+        Your message history lives on your phone in a database encrypted with
+        <strong>SQLCipher</strong>. Its key is wrapped by the Secure Enclave, so the file is
+        unreadable to anything that gets at it outside the app.
+      </p>
+      <p>
+        <strong>Emergency Wipe</strong> erases messages and keys on all of your devices at once.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Backups</h2>
+    <div>
+      <p>
+        iCloud Backup is optional and off until you turn it on. Your backup is encrypted on your
+        phone with a <strong>recovery key</strong> that only you hold, then stored in your own
+        iCloud. Apple and Relay see only ciphertext.
+      </p>
+      <p>
+        That cuts both ways: lose the recovery key and the backup can't be opened, by anyone. A
+        restore brings back your message history; your encrypted sessions start afresh, so your
+        contacts will see your safety number change.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Checking who you're talking to</h2>
+    <div>
+      <p>
+        Every conversation has a <strong>safety number</strong> you can compare with the other
+        person, in person or over a channel you trust. If it matches, no one is sitting in the
+        middle.
+      </p>
+      <p>
+        If a contact's key changes — a new phone, a reinstall, or something worse — Relay tells
+        you, and holds back new messages to them until you've acknowledged the change.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>What our servers hold</h2>
+    <div>
+      <ul class="doc-list">
+        <li>Your username, and a keyed one-way token derived from your email.</li>
+        <li>Your devices, each with a hashed password, and a hashed account password if you set one.</li>
+        <li>Push tokens, so your devices can be woken.</li>
+        <li>Your public keys, so people can start encrypted chats with you.</li>
+        <li>Encrypted messages waiting for an offline device — until collected, or 14 days.</li>
+        <li>Encrypted attachments — up to 14 days.</li>
+        <li>Encrypted group invite links, until they expire.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>What they never see</h2>
+    <div>
+      <ul class="doc-list">
+        <li>What you write, send or say — in any readable form.</li>
+        <li>Who sent a message.</li>
+        <li>Your address book, or the usernames and emails you search for.</li>
+        <li>Your groups: their names, members or admins.</li>
+        <li>Your private keys or your backup's recovery key.</li>
+        <li>Your location.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Where it ends</h2>
+    <div>
+      <p>
+        Encryption protects what you say. It can't hide everything around it, and we'd rather you
+        knew exactly where the line is.
+      </p>
+      <ul class="doc-list">
+        <li><b>Network metadata.</b> Connections to our servers pass through Cloudflare, which can see your IP address, when you connect, and the account identifier attached to signed requests. It can't see message content or who you message.</li>
+        <li><b>Push notifications.</b> Apple can see that your phone received a push, and when.</li>
+        <li><b>Looking up someone's keys.</b> To start an encrypted chat, your phone downloads the other person's public keys. It does this anonymously: it proves it may contact them with a key it got from the private directory lookup, so our servers can't tell who is asking for whose keys. Only for accounts that haven't updated the app yet does it fall back to a request signed by your device.</li>
+        <li><b>Calls.</b> The call relay sees the IP addresses taking part. Turn Relay-Only Calls off and the two phones may connect directly, which shows each person the other's IP address.</li>
+        <li><b>Your device.</b> Messages are decrypted on your phone to be shown to you. Anyone who can unlock it, or malware running on it, can read them.</li>
+        <li><b>The other person.</b> They can screenshot, forward or repeat anything you send. No messenger can change that.</li>
+        <li><b>Your sign-in provider.</b> Supabase holds your email address and sign-in records; Apple or Google do too if you sign in with them.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Read more</h2>
+    <div>
+      <p>
+        The <a href="/privacy">privacy policy</a> sets out what we collect and what we could be
+        compelled to hand over. <a href="/source">Source code &amp; licences</a> lists the
+        open-source components inside Relay and how to get the app's source.
+        <a href="/compare">Relay compared</a> puts these choices next to other messengers.
+      </p>
+      <p>
+        Found a security problem? Write to
+        <a href="mailto:security@relaymsg.app">security@relaymsg.app</a>.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-inner">
+    <p class="foot-brand">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms">Terms</a>
+      <a href="/security" aria-current="page">Security</a>
+      <a href="/source">Source</a>
+      <a href="/compare">Compare</a>
+      <a href="/changelog">What's new</a>
+      <a href="/support">Support</a>
+      <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — a private messenger for iPhone</title>
+<meta name="description" content="Encrypted calls, group chats, photos and voice notes on iPhone. Your messages are deleted from our servers the moment they arrive. Join the waitlist.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://relaymsg.app/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Relay — a private messenger for iPhone">
+<meta property="og:description" content="Encrypted calls, groups, photos and voice notes. Nothing kept once it arrives.">
+<meta property="og:url" content="https://relaymsg.app/">
+<meta property="og:image" content="https://relaymsg.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Relay — say anything. Encrypted calls, group chats, photos and voice notes.">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://relaymsg.app/#org",
+      "name": "Relay",
+      "url": "https://relaymsg.app/",
+      "logo": "https://relaymsg.app/images/relay-logo-dark-ink.png",
+      "email": "support@relaymsg.app"
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://relaymsg.app/#website",
+      "name": "Relay",
+      "url": "https://relaymsg.app/",
+      "publisher": { "@id": "https://relaymsg.app/#org" }
+    }
+  ]
+}
+</script>
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Applied before first paint so a stored choice never flashes the other theme. */
+(function () {
+  try {
+    var t = localStorage.getItem("relay-theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell wide nav-inner">
+    <a class="brand" href="/">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#features">Features</a>
+      <a href="#storage">What we store</a>
+      <a href="#limits">Limits</a>
+      <a href="/security">How it works</a>
+      <a href="/download">Download</a>
+    </nav>
+    <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Switch theme">
+      <svg class="i-light" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3.1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.95 3.05l-1.13 1.13M4.18 11.82l-1.13 1.13M12.95 12.95l-1.13-1.13M4.18 4.18L3.05 3.05"
+              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg class="i-dark" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M13.8 9.9A6.2 6.2 0 0 1 6.1 2.2a6.2 6.2 0 1 0 7.7 7.7Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ============================================================ hero -- -->
+  <section class="shell wide hero">
+    <div class="hero-copy">
+      <h1>Say anything.</h1>
+      <p class="sub">
+        Encrypted calls, group chats, photos and voice notes — and nothing left behind
+        once it arrives.
+      </p>
+
+      <form class="signup" id="waitlist" novalidate>
+        <div class="field-row">
+          <label class="skip" for="email">Email address</label>
+          <input type="email" id="email" name="email" placeholder="you@example.com" autocomplete="email" required>
+          <button class="btn" type="submit">Join the waitlist</button>
+        </div>
+        <p class="form-status" id="waitlist-status" role="status" aria-live="polite"></p>
+        <p class="signup-note">One email when Relay ships. <a href="/privacy">How we handle it</a>.</p>
+      </form>
+    </div>
+
+    <div class="hero-shot">
+      <img class="on-light" src="images/hero-light.jpg"
+           alt="A Relay conversation open on an iPhone" width="900" height="1956">
+      <img class="on-dark" src="images/hero-dark.jpg"
+           alt="A Relay conversation open on an iPhone" width="900" height="1956">
+      <span class="hero-island" aria-hidden="true"></span>
+    </div>
+  </section>
+
+  <!-- ======================================================== features -- -->
+  <section class="band grey" id="features">
+    <div class="shell wide">
+      <div class="mid">
+        <h2>A messenger, all the way through.</h2>
+        <p class="sub">Nothing is bolted on and nothing is a weaker version of itself.</p>
+      </div>
+
+      <div class="tiles">
+        <div class="tile">
+            <h3>Calls that stay between you</h3>
+            <p>Voice and video, one to one or with the whole group, encrypted like everything else.</p>
+          </div>
+
+        <div class="tile">
+            <h3>Groups, not group mode</h3>
+            <p>A group chat gets the same protection as a one-to-one conversation.</p>
+          </div>
+
+        <div class="tile">
+            <h3>Photos, files, voice notes</h3>
+            <p>Encrypted on your phone before any of it leaves it.</p>
+          </div>
+
+        <div class="tile">
+            <h3>Messages that don't stay</h3>
+            <p>Set a timer and they go from both devices, not just yours.</p>
+          </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================= privacy -- -->
+  <section class="band magenta" id="storage">
+    <div class="shell wide">
+      <div class="mid">
+        <h2>Delivered means deleted.</h2>
+        <p class="sub">
+          Encrypted end to end with the Signal Protocol and a post-quantum key exchange —
+          then not left sitting on a server waiting to become someone else's problem.
+        </p>
+      </div>
+
+      <div class="cols">
+        <div class="keep">
+          <h3>What's on our servers</h3>
+          <ul>
+            <li>Your username and email address</li>
+            <li>Your encrypted message, until your phone collects it</li>
+          </ul>
+        </div>
+        <div class="gone">
+          <h3>What never is</h3>
+          <ul>
+            <li>Anything you wrote, in readable form</li>
+            <li>Who you were talking to</li>
+            <li>Your contacts</li>
+            <li>Analytics, of any kind</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================== limits -- -->
+  <section class="band" id="limits">
+    <div class="shell wide">
+      <div class="mid">
+        <h2>Where the encryption ends.</h2>
+        <p class="sub">Every messenger has a boundary. Here's exactly where Relay's sits.</p>
+      </div>
+
+      <div class="points">
+        <div class="point">
+          <h3>At your screen</h3>
+          <p>Messages are decrypted on your device, so whoever can unlock it can read them.</p>
+        </div>
+        <div class="point">
+          <h3>At the other person</h3>
+          <p>They can screenshot or repeat anything you send. No messenger changes that.</p>
+        </div>
+        <div class="point">
+          <h3>Not on our servers</h3>
+          <p>Nothing readable, nothing kept — which is the part most apps get wrong.</p>
+        </div>
+        <div class="point">
+          <h3>Not readable in backups</h3>
+          <p>Your history stays on your devices. Optional iCloud Backup is encrypted with a key only you hold.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= cta -- -->
+  <section class="band grey">
+    <div class="shell mid">
+      <h2>Be first on it.</h2>
+      <p class="sub">One email the day it lands. Nothing else, ever.</p>
+      <form class="signup" id="waitlist-2" novalidate>
+        <div class="field-row">
+          <label class="skip" for="email-2">Email address</label>
+          <input type="email" id="email-2" name="email" placeholder="you@example.com" autocomplete="email" required>
+          <button class="btn" type="submit">Join the waitlist</button>
+        </div>
+        <p class="form-status" id="waitlist-2-status" role="status" aria-live="polite"></p>
+      </form>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell wide foot-inner">
+    <p class="foot-brand">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms">Terms</a>
+      <a href="/security">Security</a>
+      <a href="/source">Source</a>
+      <a href="/compare">Compare</a>
+      <a href="/changelog">What's new</a>
+      <a href="/support">Support</a>
+      <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

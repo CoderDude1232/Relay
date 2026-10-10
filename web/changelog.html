@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — What's new</title>
+<meta name="description" content="What's changed in the Relay iPhone app, month by month.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://relaymsg.app/changelog">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Relay">
+<meta property="og:title" content="Relay — What's new">
+<meta property="og:description" content="What's changed in the Relay iPhone app, month by month.">
+<meta property="og:url" content="https://relaymsg.app/changelog">
+<meta property="og:image" content="https://relaymsg.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Applied before first paint so a stored choice never flashes the other theme. */
+(function () {
+  try {
+    var t = localStorage.getItem("relay-theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#features">Features</a>
+      <a href="/#storage">What we store</a>
+      <a href="/#limits">Limits</a>
+      <a href="/security">How it works</a>
+      <a href="/download">Download</a>
+    </nav>
+    <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Switch theme">
+      <svg class="i-light" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3.1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.95 3.05l-1.13 1.13M4.18 11.82l-1.13 1.13M12.95 12.95l-1.13-1.13M4.18 4.18L3.05 3.05"
+              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg class="i-dark" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M13.8 9.9A6.2 6.2 0 0 1 6.1 2.2a6.2 6.2 0 1 0 7.7 7.7Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main" class="shell doc">
+
+  <div class="doc-head">
+    <p class="lbl">Changelog</p>
+    <h1>What's new</h1>
+    <p class="doc-lede">
+      What's changed in the Relay app, month by month, newest first. The TestFlight beta is next —
+      <a href="/download">the download page</a> has the latest.
+    </p>
+  </div>
+
+  <section class="doc-section">
+    <h2>October 2026</h2>
+    <div>
+      <ul class="doc-list">
+        <li><b>Sign in without a password.</b> Get a one-time code by email instead. Forgotten passwords and email changes also work with emailed codes now.</li>
+        <li><b>Account password.</b> Set one and it's required to sign in to your account on a new phone, so access to your email alone isn't enough to take it over.</li>
+        <li><b>Find Me by Email is opt-in.</b> People can't find you by your email address unless you turn it on.</li>
+        <li><b>View-once media, forwarding and a QR scanner</b> for adding people in person.</li>
+        <li><b>Polls</b> show their question in the chat and the chat list, and support multiple choices. Polls, locations and notes now show the time and delivery status.</li>
+        <li><b>Location messages</b> show just the map, with a full-screen live map when you tap it.</li>
+        <li>Photo-only and emoji-only messages show their time and delivery status underneath.</li>
+        <li>Photos have their location and other metadata removed before they're sent.</li>
+        <li>Links you receive ask before opening, and map previews don't load until you ask.</li>
+        <li>Incoming call alerts no longer carry who's calling; your phone learns that from the encrypted call itself.</li>
+        <li>New calls move to a backup call relay when ours is down or overloaded, so calls keep connecting.</li>
+        <li>Linking a device and Emergency Wipe now ask for your device passcode.</li>
+        <li>Your devices list shows each device's model and region, shared end-to-end encrypted, and no longer shows duplicates.</li>
+        <li><b>Report and block.</b> Report a contact, a group, or a member of a group from their info screen.</li>
+        <li><b>Delete your account</b> from your profile. Deleting it also revokes Sign in with Apple.</li>
+        <li>Your contacts are only checked when you tap Find Contacts, and Relay remembers your answer.</li>
+        <li>iCloud backups run daily, stored under a name that can't be tied to your Relay account.</li>
+        <li>On iPad: easier-to-read message widths, and ⌘↩ to send.</li>
+        <li>Clearer error messages, VoiceOver labels on icon-only buttons and the safety-number screen, and a refreshed welcome screen.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>September 2026</h2>
+    <div>
+      <ul class="doc-list">
+        <li><b>Sealed sender</b> on every message: our servers can't see who sent it.</li>
+        <li><b>Blinded contact discovery.</b> The usernames and emails you look up are scrambled on your phone, so our servers never see them.</li>
+        <li><b>Encrypted groups.</b> Group names, members and admins are kept by the members' phones only; our servers keep no group records. Group invite links are encrypted too.</li>
+        <li><b>Encrypted iCloud Backup</b>, protected by a recovery key only you hold.</li>
+        <li><b>Multi-device sync.</b> What you do on one of your devices is mirrored to the others.</li>
+        <li><b>Voice and video calls</b>, relayed through our call server by default so the other person never sees your IP address.</li>
+        <li><b>Sign in with Apple or Google</b>, plus contact invite links and a QR code to share.</li>
+        <li>Notifications are a content-free wake-up by default. Faster Alerts, if you turn it on, carries the encrypted message inside the push.</li>
+        <li>Our servers stop storing your email address in readable form.</li>
+        <li>Account recovery, group profiles and username search.</li>
+        <li>Live location updates as one moving bubble instead of a new message each time.</li>
+        <li>Messages keep arriving when the usual connection is blocked.</li>
+        <li>Reactions and a native press-and-hold menu on messages, and a new app icon.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>August 2026</h2>
+    <div>
+      <ul class="doc-list">
+        <li><b>Group chats</b>, end-to-end encrypted.</li>
+        <li><b>Voice notes and file attachments</b>, with previews in the composer.</li>
+        <li><b>Profiles.</b> Your display name and photo, shared end-to-end encrypted with the people you talk to.</li>
+        <li>Contact cards and custom names for your contacts.</li>
+        <li>Custom chat wallpapers and bubble colours.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>July 2026</h2>
+    <div>
+      <ul class="doc-list">
+        <li><b>The first build</b>: one-to-one messaging, end-to-end encrypted with the Signal Protocol and a post-quantum key exchange.</li>
+        <li><b>Safety numbers</b>, to check no one is sitting between you and the person you're talking to.</li>
+        <li><b>Photos</b>, encrypted on your phone before they're sent.</li>
+        <li><b>Push notifications.</b></li>
+        <li>Unsend a message you've sent.</li>
+      </ul>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-inner">
+    <p class="foot-brand">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms">Terms</a>
+      <a href="/security">Security</a>
+      <a href="/source">Source</a>
+      <a href="/compare">Compare</a>
+      <a href="/changelog" aria-current="page">What's new</a>
+      <a href="/support">Support</a>
+      <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

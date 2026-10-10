@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — Support</title>
+<meta name="description" content="Get help with Relay, report a bug, or disclose a security issue. Answers to the questions a no-metadata messenger tends to raise.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://relaymsg.app/support">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Relay">
+<meta property="og:title" content="Relay — Support">
+<meta property="og:description" content="Get help with Relay, report a bug, or disclose a security issue. Answers to the questions a no-metadata messenger tends to raise.">
+<meta property="og:url" content="https://relaymsg.app/support">
+<meta property="og:image" content="https://relaymsg.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Applied before first paint so a stored choice never flashes the other theme. */
+(function () {
+  try {
+    var t = localStorage.getItem("relay-theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#features">Features</a>
+      <a href="/#storage">What we store</a>
+      <a href="/#limits">Limits</a>
+      <a href="/security">How it works</a>
+      <a href="/download">Download</a>
+    </nav>
+    <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Switch theme">
+      <svg class="i-light" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3.1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.95 3.05l-1.13 1.13M4.18 11.82l-1.13 1.13M12.95 12.95l-1.13-1.13M4.18 4.18L3.05 3.05"
+              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg class="i-dark" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M13.8 9.9A6.2 6.2 0 0 1 6.1 2.2a6.2 6.2 0 1 0 7.7 7.7Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main" class="shell doc">
+
+  <div class="doc-head">
+    <p class="lbl">Replies within two working days · Queensland time (AEST)</p>
+    <h1>Support</h1>
+    <p class="doc-lede">
+      Relay hasn't launched yet. A person reads everything sent to the addresses below.
+    </p>
+  </div>
+
+    <section class="doc-section">
+      <h2>Reach us</h2>
+      <div>
+        <dl class="kv">
+          <div>
+            <dt>General</dt>
+            <dd><a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a></dd>
+          </div>
+          <div>
+            <dt>Bugs</dt>
+            <dd><a href="mailto:bugs@relaymsg.app">bugs@relaymsg.app</a> — iOS version, device, and what you expected to happen</dd>
+          </div>
+          <div>
+            <dt>Security</dt>
+            <dd><a href="mailto:security@relaymsg.app">security@relaymsg.app</a></dd>
+          </div>
+          <div>
+            <dt>Privacy</dt>
+            <dd><a href="mailto:privacy@relaymsg.app">privacy@relaymsg.app</a></dd>
+          </div>
+        </dl>
+        <p>
+          We can see that an account exists, but not a single thing inside it — no messages, no
+          contacts, no history. Support is mostly advice rather than intervention, so include as
+          much detail as you can.
+        </p>
+      </div>
+    </section>
+
+    <section class="doc-section">
+      <h2>Common questions</h2>
+      <div class="faq">
+
+        <details open>
+          <summary>When does Relay come out?</summary>
+          <div class="answer">
+            <p>
+              No date yet. <a href="/download">The download page</a> tracks where things
+              stand, and the waitlist there will get you one email when it's out.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>Will there be an Android version?</summary>
+          <div class="answer">
+            <p>
+              Not at launch — one platform properly first. It's on the roadmap, but we'd rather
+              say nothing about timing than say something wrong.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>How do I add someone?</summary>
+          <div class="answer">
+            <p>
+              Share your Relay link or your username over a channel you already trust, or scan
+              each other's code in person. Usernames are public, but there's no directory to
+              browse or search through.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>I lost my phone. Can I get my messages back?</summary>
+          <div class="answer">
+            <p>
+              Only if you turned on <b>iCloud Backup</b> (Profile → Data &amp; Storage → Backup &amp;
+              Restore) and still have your recovery key. The backup is encrypted on your phone with
+              that key before it reaches iCloud, so neither we nor Apple can read it — and without
+              the key it can't be restored. We never have a copy of your messages ourselves.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>If the server keeps nothing, how does a message reach me when my phone is off?</summary>
+          <div class="answer">
+            <p>
+              It waits on our servers, encrypted, with nothing attached saying who it's from or
+              who it's for. Once your phone collects it, it's deleted.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>What encryption does Relay use?</summary>
+          <div class="answer">
+            <p>
+              The <a href="https://signal.org/docs/">Signal Protocol</a> — the same design behind
+              Signal and WhatsApp — with a post-quantum key exchange and the Double Ratchet, so
+              past messages stay protected even if a key is compromised later.
+            </p>
+            <p>
+              On your phone, the local message database is encrypted with SQLCipher. We didn't
+              invent any of this, which is the point: the cryptography is the part you least want
+              someone being creative with.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>What does Relay cost?</summary>
+          <div class="answer">
+            <p>
+              Nothing. No subscription, no in-app purchases, no ads, and no paid tier holding
+              features back. An app that doesn't collect anything has nothing to sell, which is
+              rather the point.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>Do you accept law enforcement requests?</summary>
+          <div class="answer">
+            <p>
+              We respond to valid legal process, and can only produce what exists: the email
+              address on an account, and any undelivered message as encrypted data we can't read.
+              No contacts, and no message history. See the
+              <a href="/privacy">privacy policy</a>.
+            </p>
+          </div>
+        </details>
+
+        <details>
+          <summary>I found a security problem.</summary>
+          <div class="answer">
+            <p>
+              <a href="mailto:security@relaymsg.app">security@relaymsg.app</a>. We'll reply and
+              agree a disclosure timeline with you. We won't ask you to stay quiet indefinitely,
+              and we won't threaten you for reporting.
+            </p>
+          </div>
+        </details>
+
+      </div>
+    </section>
+
+    <section class="doc-section">
+      <h2>Requirements</h2>
+      <div>
+        <dl class="kv">
+          <div><dt>Platform</dt><dd>iOS 26 or later · iPhone and iPad</dd></div>
+          <div><dt>Account</dt><dd>A username and an email address. Phone number sign-in is planned.</dd></div>
+          <div><dt>Price</dt><dd>Free. No subscription, no in-app purchases, no ads.</dd></div>
+        </dl>
+      </div>
+    </section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-inner">
+    <p class="foot-brand">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms">Terms</a>
+      <a href="/security">Security</a>
+      <a href="/source">Source</a>
+      <a href="/compare">Compare</a>
+      <a href="/changelog">What's new</a>
+      <a href="/support" aria-current="page">Support</a>
+      <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
