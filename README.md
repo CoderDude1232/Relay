@@ -35,3 +35,14 @@ top level, and moving them would break the project. Its pieces:
   (crypto choices, delivery semantics, auth) are documented in the root
   `CLAUDE.md` "Non-negotiable protocol/security decisions" section.
 - **Ongoing work:** `TODO.md`, on-device verification checklist: `TESTING.md`.
+
+## License
+
+Relay is free software, licensed under the **GNU Affero General Public License
+v3.0** (see [`LICENSE`](LICENSE)). It's built on
+[libsignal](https://github.com/signalapp/libsignal), which is AGPL-3.0 too;
+other components keep their own licences (listed in the app under Profile →
+Privacy → Acknowledgements, and at https://relaymsg.app/source).
+
+Security issues: please email security@relaymsg.app rather than opening a
+public issue.
