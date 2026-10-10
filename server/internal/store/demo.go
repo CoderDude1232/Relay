@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Demo accounts (accounts.is_demo) are review/test accounts, set by an
@@ -96,4 +99,62 @@ func (s *Store) SetDemoAccount(accountID string, demo bool) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// DemoSignIn provisions a fresh device on a demo account (replacing its
+// devices, like any sign-in), for the review-code sign-in. It prefers a demo
+// account with no device signed in, so a second reviewer device gets the
+// other demo account instead of signing the first one out.
+func (s *Store) DemoSignIn() (dev AddedDevice, devicePassword string, err error) {
+	ctx := context.Background()
+	err = s.db.QueryRow(ctx, `
+        SELECT a.id, a.username FROM accounts a WHERE a.is_demo
+        ORDER BY (SELECT count(*) FROM devices d WHERE d.account_id = a.id), a.username
+        LIMIT 1`).Scan(&dev.AccountID, &dev.Username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AddedDevice{}, "", ErrNotFound
+	}
+	if err != nil {
+		return AddedDevice{}, "", err
+	}
+	var raw [32]byte
+	if _, err = rand.Read(raw[:]); err != nil {
+		return AddedDevice{}, "", err
+	}
+	devicePassword = hex.EncodeToString(raw[:])
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
+	if err != nil {
+		return AddedDevice{}, "", err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return AddedDevice{}, "", err
+	}
+	defer tx.Rollback(ctx)
+	if dev.ReplacedDevices, err = replaceDevicesTx(ctx, tx, dev.AccountID); err != nil {
+		return AddedDevice{}, "", err
+	}
+	if dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, dev.AccountID, deviceHash); err != nil {
+		return AddedDevice{}, "", err
+	}
+	return dev, devicePassword, tx.Commit(ctx)
+}
+
+// DemoPeers returns the usernames of the other demo accounts.
+func (s *Store) DemoPeers(accountID string) ([]string, error) {
+	rows, err := s.db.Query(context.Background(),
+		`SELECT username FROM accounts WHERE is_demo AND id <> $1 ORDER BY username`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
 }

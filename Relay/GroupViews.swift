@@ -322,8 +322,8 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    // Invite link (admin-only)
-                    if isAdmin {
+                    // Invite link (admin-only; not on demo accounts)
+                    if isAdmin && !service.isDemoAccount {
                         Section("Invite") {
                             Button {
                                 run {

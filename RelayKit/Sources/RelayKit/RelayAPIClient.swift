@@ -126,6 +126,29 @@ public struct RelayAPIClient: Sendable {
     /// (verified) email on file and provisions a new device. Every failure —
     /// unknown email, no recovery password, wrong password — is the same
     /// `.http(401, …)`; repeated failures get `.http(429, …)`.
+    /// App Review sign-in: a short review code signs this device in to one of
+    /// the isolated demo accounts (no email or password).
+    public func demoSignIn(code: String) async throws -> (credentials: RelayCredentials, username: String) {
+        struct Response: Decodable {
+            let accountId: String
+            let username: String
+            let deviceId: UInt32
+            let devicePassword: String
+        }
+        let response: Response = try await request(
+            "POST", "v1/accounts/demo-signin", body: ["code": code], authenticated: false
+        )
+        return (RelayCredentials(accountId: response.accountId, deviceId: response.deviceId,
+                                 password: response.devicePassword), response.username)
+    }
+
+    /// Whether this account is a demo account, and the other demo accounts.
+    public func demoStatus() async throws -> (demo: Bool, peers: [String]) {
+        struct Response: Decodable { let demo: Bool; let peers: [String] }
+        let r: Response = try await request("GET", "v1/accounts/me/demo", body: nil as String?)
+        return (r.demo, r.peers)
+    }
+
     public func recoverAccount(email: String, accountPassword: String) async throws -> (credentials: RelayCredentials, username: String) {
         struct Response: Decodable {
             let accountId: String

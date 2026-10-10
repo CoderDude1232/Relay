@@ -968,6 +968,7 @@ private struct RecoveryView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showingForgotPassword = false
+    @State private var showingReviewCode = false
     @FocusState private var focused: RecoveryField?
 
     enum RecoveryField: Hashable { case email, password }
@@ -1086,12 +1087,20 @@ private struct RecoveryView: View {
                     .padding(.horizontal, 40)
                     .padding(.top, 12)
 
+                Button("Sign in with a review code") { showingReviewCode = true }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.top, 20)
+
                 Spacer().frame(height: 40)
             }
         }
         .scrollDismissesKeyboard(.interactively)
         .sheet(isPresented: $showingForgotPassword) {
             ForgotPasswordSheet(initialEmail: email, onComplete: onComplete)
+        }
+        .sheet(isPresented: $showingReviewCode) {
+            ReviewCodeSheet(onComplete: onComplete)
         }
     }
 
@@ -1111,6 +1120,65 @@ private struct RecoveryView: View {
                 errorMessage = FriendlyError.message(for: error)
             }
             isLoading = false
+        }
+    }
+}
+
+/// App Review: one short code signs in to an isolated demo account.
+private struct ReviewCodeSheet: View {
+    let onComplete: () -> Void
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var code = ""
+    @State private var working = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Review code", text: $code)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .font(.body.monospaced())
+                } footer: {
+                    Text(errorMessage ?? "For App Review and testing. The code signs in to a demo account that can only message other demo accounts.")
+                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+                }
+            }
+            .navigationTitle("Review Sign-In")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(working)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if working {
+                        ProgressView()
+                    } else {
+                        Button("Sign In") { signIn() }
+                            .bold()
+                            .disabled(code.trimmingCharacters(in: .whitespaces).count < 6)
+                    }
+                }
+            }
+            .interactiveDismissDisabled(working)
+        }
+        .presentationDetents([.medium])
+    }
+
+    private func signIn() {
+        working = true
+        errorMessage = nil
+        Task {
+            do {
+                try await model.demoSignIn(serverURL: RelayConfig.serverURL, code: code)
+                dismiss()
+                onComplete()
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            working = false
         }
     }
 }

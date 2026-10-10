@@ -759,8 +759,11 @@ private struct NewChatSheet: View {
                         }
                     }
 
-                    // Contact sections — only after the user explicitly asks.
-                    if !discoveryStarted {
+                    // Contact sections — only after the user explicitly asks
+                    // (never on demo accounts: they can't reach real users).
+                    if service.isDemoAccount {
+                        EmptyView()
+                    } else if !discoveryStarted {
                         Section {
                             Button {
                                 requestContactDiscovery()

@@ -356,8 +356,29 @@ final class MessagingService {
 
     private var didSweepInterruptedSends = false
 
+    // MARK: Demo accounts (App Review)
+
+    static let demoAccountKey = "relay.isDemoAccount"
+
+    /// A demo account (set on the server): it can only reach other demo
+    /// accounts, and its login can't change. The UI hides what's switched off.
+    var isDemoAccount: Bool = UserDefaults.standard.bool(forKey: MessagingService.demoAccountKey)
+
+    /// Asks the relay whether this is a demo account; if so, makes sure the
+    /// other demo accounts are already in the chat list for the reviewer.
+    func refreshDemoStatus() async {
+        guard let status = try? await apiClient.demoStatus() else { return }
+        isDemoAccount = status.demo
+        UserDefaults.standard.set(status.demo, forKey: Self.demoAccountKey)
+        guard status.demo else { return }
+        for peer in status.peers where !conversations.contains(where: { !$0.isGroup && $0.peerUsername == peer }) {
+            _ = try? await startConversation(username: peer)
+        }
+    }
+
     func start() {
         guard connectionTask == nil else { return }
+        Task { await refreshDemoStatus() }
         if !didSweepInterruptedSends {
             // Only on the first start of this process: nothing can be mid-send
             // yet, so anything still "sending" was interrupted by a kill.

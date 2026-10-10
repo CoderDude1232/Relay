@@ -38,7 +38,11 @@ changed, and "Delete Account" resets them instead of deleting (see
 3. Ask Claude (or run the SQL in `server/README.md`) to mark both as demo.
 4. From A, start a chat with `relay_review_b` and exchange a few messages and a
    photo, so the reviewer sees a real conversation.
-5. Give Apple both logins (email + account password). They sign in with
+5. Simplest for Apple: the **review code** (in 1Password; on the server at
+   `/opt/relay/demo-code`). Sign in → *Sign in with a review code*. The first
+   device gets one demo account, a second device the other, and each already
+   has a chat with the other demo account. Also give both email logins as a
+   fallback (email + account password). They sign in with
    *Already have an account? Sign in*. Don't use the accounts yourself during
    review: each sign-in signs the other device out.
 

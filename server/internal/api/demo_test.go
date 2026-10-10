@@ -43,3 +43,57 @@ func TestDemoAccounts(t *testing.T) {
 		t.Fatalf("demo account should survive deletion as a demo account: demo=%v err=%v", demo, err)
 	}
 }
+
+func TestDemoSignInAndStatus(t *testing.T) {
+	env := newTestEnv(t)
+	a := env.register("rv-a", "password-a")
+	b := env.register("rv-b", "password-b")
+	normal := env.register("rv-normal", "password-n")
+	for _, c := range []*client{a, b} {
+		if err := env.api.store.SetDemoAccount(c.accountID, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	demoFlags.mu.Lock()
+	demoFlags.entries = map[string]demoCacheEntry{}
+	demoFlags.mu.Unlock()
+
+	// Off until a code is configured; wrong code refused; right code (any case) works.
+	env.doJSON("POST", "/v1/accounts/demo-signin", "", "", map[string]string{"code": "x"}, http.StatusUnauthorized, nil)
+	env.api.SetDemoCode("Review-Code-123\n")
+	env.doJSON("POST", "/v1/accounts/demo-signin", "", "", map[string]string{"code": "wrong"}, http.StatusUnauthorized, nil)
+	var resp struct {
+		AccountID string `json:"accountId"`
+		Username  string `json:"username"`
+	}
+	env.doJSON("POST", "/v1/accounts/demo-signin", "", "", map[string]string{"code": "review-code-123"}, http.StatusCreated, &resp)
+	if demo, err := env.api.store.IsDemoAccount(resp.AccountID); err != nil || !demo {
+		t.Fatalf("demo sign-in landed on a non-demo account: %+v", resp)
+	}
+	if resp.AccountID == normal.accountID {
+		t.Fatal("demo sign-in must never reach a normal account")
+	}
+
+	// Status: demo with the other demo account as peer; normal accounts see nothing.
+	var st struct {
+		Demo  bool     `json:"demo"`
+		Peers []string `json:"peers"`
+	}
+	env.doJSON("GET", "/v1/accounts/me/demo", b.authUser(), b.password, nil, http.StatusOK, &st)
+	hasA := false
+	for _, p := range st.Peers {
+		if p == a.username {
+			hasA = true
+		}
+		if p == b.username || p == normal.username {
+			t.Fatalf("peers must be other demo accounts only: %v", st.Peers)
+		}
+	}
+	if !st.Demo || !hasA {
+		t.Fatalf("demo status for b: %+v (want peer %s)", st, a.username)
+	}
+	env.doJSON("GET", "/v1/accounts/me/demo", normal.authUser(), normal.password, nil, http.StatusOK, &st)
+	if st.Demo || len(st.Peers) != 0 {
+		t.Fatalf("normal account should not be demo: %+v", st)
+	}
+}

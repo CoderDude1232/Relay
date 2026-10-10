@@ -461,3 +461,12 @@ Username, account password, email change, password reset and email
 discoverability return `403 "This is a demo account, so this is turned off."`.
 `DELETE /v1/accounts/me` **resets** a demo account instead (devices, prekeys and
 queues removed, sockets closed, `204`) and keeps the account and its login.
+
+Review sign-in: with `-demo-code-file` (a file holding a short code, e.g.
+`REVIEW-XXXXXX`), `POST /v1/accounts/demo-signin {code}` (unauthenticated,
+case-insensitive, 401 on a wrong code, per-IP limited) signs a new device in to
+a demo account — the one with the fewest signed-in devices, so a second device
+gets the other demo account — and answers like `/v1/accounts/recover`.
+`GET /v1/accounts/me/demo` (sig) → `{demo, peers[]}` (peers = the other demo
+accounts' usernames); the app uses it to hide what's switched off and to put the
+other demo accounts in the chat list.

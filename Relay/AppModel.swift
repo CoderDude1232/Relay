@@ -581,6 +581,42 @@ final class AppModel {
         Task { try? await service.publishInitialKeys() }
     }
 
+    /// App Review: signs in to a demo account with the review code.
+    func demoSignIn(serverURL: URL, code: String) async throws {
+        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
+        let (credentials, username): (RelayCredentials, String)
+        do {
+            (credentials, username) = try await api.demoSignIn(code: code.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch RelayAPIError.http(status: 401, _) {
+            struct CodeError: LocalizedError {
+                var errorDescription: String? { "That review code isn't valid." }
+            }
+            throw CodeError()
+        } catch {
+            throw SetupError(step: "Review sign-in", underlying: error)
+        }
+        let service: MessagingService
+        do {
+            service = try await makeService(credentials: credentials, serverURL: serverURL, username: username)
+        } catch {
+            throw SetupError(step: "Open local storage", underlying: error)
+        }
+        let saved = SavedAccount(
+            accountId: credentials.accountId, deviceId: credentials.deviceId,
+            password: credentials.password, serverURL: serverURL,
+            username: username, email: nil, supabaseUserId: nil
+        )
+        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        service.isDemoAccount = true
+        UserDefaults.standard.set(true, forKey: MessagingService.demoAccountKey)
+        service.start()
+        phase = .ready(service)
+        uploadPushTokenIfReady()
+        publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
+        Task { try? await service.publishInitialKeys() }
+    }
+
     /// "Forgot password": verifies the emailed recovery code with Supabase, sets
     /// the new account password on the relay and signs this device in. Like any
     /// fresh sign-in, the account's other devices are signed out.

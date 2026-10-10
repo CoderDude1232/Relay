@@ -135,9 +135,11 @@ struct CallsView: View {
                 markMissedCallsSeen()
             }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { showingCallLinks = true } label: {
-                        Label("Call Links", systemImage: "link")
+                if !service.isDemoAccount {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { showingCallLinks = true } label: {
+                            Label("Call Links", systemImage: "link")
+                        }
                     }
                 }
                 if !service.callHistory.isEmpty {

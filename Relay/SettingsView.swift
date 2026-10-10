@@ -99,7 +99,8 @@ struct SettingsView: View {
                     }
                 }
 
-                // MARK: Invite
+                // MARK: Invite (not on demo accounts: they can't reach real users)
+                if !service.isDemoAccount {
                 Section {
                     Button {
                         showingInvite = true
@@ -114,6 +115,7 @@ struct SettingsView: View {
                         InviteShareSheet(username: service.username)
                             .ignoresSafeArea()
                     }
+                }
                 }
 
                 // MARK: Support
@@ -211,7 +213,7 @@ struct SettingsView: View {
                     } label: {
                         HStack(spacing: 14) {
                             SettingsIcon(systemName: "person.crop.circle.badge.xmark", color: .red, useColor: true)
-                            Text("Delete Account").foregroundStyle(.red)
+                            Text(service.isDemoAccount ? "Reset Demo Account" : "Delete Account").foregroundStyle(.red)
                         }
                     }
                 } footer: {
@@ -299,6 +301,7 @@ private struct AccountSettingsView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+                if !service.isDemoAccount {
                 Button {
                     SecurePasteboard.copy("https://\(addLink)")
                     linkCopied = true
@@ -316,12 +319,16 @@ private struct AccountSettingsView: View {
                     }
                 }
                 .tint(.primary)
+                }
             } header: {
                 Text("Identity")
             } footer: {
-                Text("People can start a chat with you using your username, link, or QR code — no phone number or email needed.")
+                Text(service.isDemoAccount
+                     ? "This is a demo account for testing Relay. It can only message other demo accounts, and its sign-in details can't be changed."
+                     : "People can start a chat with you using your username, link, or QR code — no phone number or email needed.")
             }
 
+            if !service.isDemoAccount {
             Section {
                 Button { showingQR = true } label: {
                     HStack(spacing: 14) {
@@ -383,6 +390,7 @@ private struct AccountSettingsView: View {
             } footer: {
                 Text(discoverabilityError ?? "Off by default. When on, people who have your email address can find your username. Lookups are blinded, so Relay never sees the addresses searched.")
             }
+            } // not a demo account
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
@@ -451,8 +459,10 @@ private struct DataStorageSettingsView: View {
                 NavigationLink(destination: BackupView(service: service)) {
                     SettingsNavRow(systemName: "arrow.clockwise.icloud.fill", color: .accentColor, title: "Backup & Restore")
                 }
-                NavigationLink(destination: ContactSyncView(service: service)) {
-                    SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .accentColor, title: "Contact Syncing")
+                if !service.isDemoAccount {
+                    NavigationLink(destination: ContactSyncView(service: service)) {
+                        SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .accentColor, title: "Contact Syncing")
+                    }
                 }
             }
 
@@ -953,12 +963,15 @@ private struct EditProfileSheet: View {
                             if let username = service.username {
                                 Text("@\(username)").foregroundStyle(.secondary)
                             }
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                            if !service.isDemoAccount {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
                         }
                     }
                     .tint(.primary)
+                    .disabled(service.isDemoAccount) // demo login is fixed
                 }
 
                 Section {
@@ -1589,6 +1602,21 @@ private struct DeleteAccountSheet: View {
         NavigationStack {
             Form {
                 Section {
+                    if service.isDemoAccount {
+                        Label {
+                            Text("This is a demo account, so it's reset instead of deleted.")
+                        } icon: {
+                            Image(systemName: "arrow.counterclockwise.circle.fill").foregroundStyle(.orange)
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("• Its devices are signed out and its keys and undelivered messages are removed from the server.")
+                            Text("• All messages and media on this iPhone are erased.")
+                            Text("• The same review sign-in works again afterwards.")
+                            Text("• A normal account is deleted permanently, its username released.")
+                        }
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    } else {
                     Label {
                         Text("This permanently deletes your Relay account. It can't be undone.")
                     } icon: {
@@ -1602,6 +1630,7 @@ private struct DeleteAccountSheet: View {
                     }
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section {
@@ -1629,7 +1658,7 @@ private struct DeleteAccountSheet: View {
                             if isDeleting {
                                 ProgressView()
                             } else {
-                                Text("Delete Account Permanently").bold()
+                                Text(service.isDemoAccount ? "Reset Demo Account" : "Delete Account Permanently").bold()
                             }
                             Spacer()
                         }
@@ -1637,7 +1666,7 @@ private struct DeleteAccountSheet: View {
                     .disabled(!confirmed || isDeleting)
                 }
             }
-            .navigationTitle("Delete Account")
+            .navigationTitle(service.isDemoAccount ? "Reset Demo Account" : "Delete Account")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

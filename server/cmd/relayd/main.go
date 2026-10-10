@@ -118,6 +118,7 @@ func main() {
 	turnStatusURL := flag.String("turn-status-url", "", "turnload agent URL on the TURN box (e.g. http://turn.example:9478/status); with -cloudflare-turn-key-id, calls fail over to Cloudflare before coturn is overloaded")
 	cfTURNKeyID := flag.String("cloudflare-turn-key-id", "", "Cloudflare Realtime TURN key id (enables failover to Cloudflare TURN when our coturn is down or overloaded)")
 	cfTURNTokenFile := flag.String("cloudflare-turn-token-file", "", "path to a file holding the Cloudflare TURN key's API token")
+	demoCodeFile := flag.String("demo-code-file", "", "path to a file holding the App Review sign-in code (enables POST /v1/accounts/demo-signin)")
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
 	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
 	supabaseServiceKeyFile := flag.String("supabase-service-key-file", "", "path to a file holding the Supabase service-role key (enables deleting the Supabase auth user on account deletion)")
@@ -178,6 +179,15 @@ func main() {
 	}
 
 	apiServer := api.New(st, h, blobs, *turnURLs, *turnSecret)
+	if *demoCodeFile != "" {
+		code, err := os.ReadFile(*demoCodeFile)
+		if err != nil {
+			slog.Error("read demo code", "err", err)
+			os.Exit(1)
+		}
+		apiServer.SetDemoCode(string(code))
+		slog.Info("review-code demo sign-in enabled")
+	}
 	if *cfTURNKeyID != "" {
 		token, err := os.ReadFile(*cfTURNTokenFile)
 		if err != nil {

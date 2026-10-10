@@ -39,13 +39,14 @@ import (
 )
 
 type Server struct {
-	store      *store.Store
-	hub        *hub.Hub
-	blobs      *blob.Store
-	turnURLs   []string // empty = TURN not configured
-	turnSecret string
-	turnHealth *TURNHealth     // nil = no failover
-	cfTURN     *CloudflareTURN // nil = no failover
+	store        *store.Store
+	hub          *hub.Hub
+	blobs        *blob.Store
+	turnURLs     []string // empty = TURN not configured
+	turnSecret   string
+	demoCodeHash []byte          // sha256 of the review code; nil = demo sign-in off
+	turnHealth   *TURNHealth     // nil = no failover
+	cfTURN       *CloudflareTURN // nil = no failover
 
 	// Supabase social-login verification. When supabaseURL is set, the OAuth
 	// account endpoint verifies a user's Supabase access token by asking
@@ -267,6 +268,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/accounts", s.handleCreateAccount)
 	mux.HandleFunc("POST /v1/accounts/oauth", s.handleOAuthAccount)
 	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
+	mux.HandleFunc("POST /v1/accounts/demo-signin", s.handleDemoSignIn) // unauthenticated; review code
+	mux.HandleFunc("GET /v1/accounts/me/demo", s.auth(s.handleDemoStatus))
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))
