@@ -13,7 +13,9 @@
 
 ## Siri / CarPlay sending (found 2026-10-09)
 
-- [ ] Messages sent with Siri ("Send a Relay message to …", including in CarPlay)
+- [x] Fixed 2026-10-10: the app handles `INSendMessageIntent` itself (`SiriSendHandler`)
+      and sends immediately; device-verified. Original report:
+      Messages sent with Siri ("Send a Relay message to …", including in CarPlay)
       are queued by the Intents extension (`RelayIntents/IntentHandler.swift`) and
       only go out the next time the app runs, though Siri says "Sent". Fix options:
       handle `INSendMessageIntent` in the app (`application(_:handlerFor:)`, app is
