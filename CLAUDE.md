@@ -25,8 +25,12 @@ Staged plan with a **user check-in between stages** (don't build ahead):
    fully E2E — the relay keeps **no** group state), media/attachments, calls
    (WebRTC + TURN), profiles, sealed sender, blinded discovery, encrypted iCloud
    backup, device linking, remote wipe (nuke), and `Relay-Sig` request-signature
-   auth. Now underway: an **Android client** (`android/`) and hardening — see
-   `TODO.md`. Current focus is deploy + device-testing the built batch (`TESTING.md`).
+   auth (the iOS client signs every authenticated request).
+8. ✅ Since 2026-10: Supabase sign-in (email/Apple/Google) with emailed codes
+   (sign-up, passwordless, forgot password, email change), registration lock,
+   chat folders, call links, stickers, mid-call TURN failover to Cloudflare,
+   iCloud-restore offer after sign-in. On TestFlight (internal testers).
+   Remaining release blockers: see "Where to pick up".
 
 ## Repo layout
 
@@ -94,9 +98,14 @@ with the same wire contract. Wire-affecting changes land in `proto/` +
   bundle re-fetch so the sender covers all of a recipient's devices (minus own
   device on self-sends). Sealed sends go over the unauthenticated
   `POST /v1/messages/sealed` path instead.
-- Auth: `Relay-Sig` per-request ECDSA-P256 signatures (preferred; keyed on the
-  device auth key) **or** HTTP Basic `"<accountUUID>.<deviceId>" : devicePassword`
-  during the transition — for both REST and the WS upgrade. See `server/README.md`.
+- Auth: `Relay-Sig` per-request ECDSA-P256 signatures, keyed on the device auth
+  key; the iOS client signs every authenticated request (REST + WS upgrade).
+  HTTP Basic `"<accountUUID>.<deviceId>" : devicePassword` remains only to
+  bootstrap the auth key. See `server/README.md`.
+- Calls: relay-only (TURN) by default. Our coturn is the only TURN handed out
+  while healthy; relayd fails over to Cloudflare Realtime TURN when it's down,
+  overloaded or near its monthly allowance (`server/cmd/turnload`), and live
+  calls reconnect (ICE restart). See `server/README.md` "TURN failover".
 - UI: SwiftUI + Liquid Glass (glass on chrome only, flat fills for bubbles).
 
 ## Deliberate gaps (not bugs)
@@ -112,8 +121,23 @@ with the same wire contract. Wire-affecting changes land in `proto/` +
 exist — they used to be listed here. The Keychain/Secure-Enclave path is
 device-verified.)
 
+## Production (commands: the `relay-vps-deploy` memory)
+
+- API `api.relaymsg.app` is Cloudflare-proxied; its origin IP must never appear
+  in public DNS, docs, commits or PTR records. TURN `turn.relaymsg.app` is a
+  separate grey-cloud box. Both: SSH key-only, key held in the 1Password SSH agent.
+- Website: separate repo `relay-web` (Cloudflare Pages, deploys from `main`).
+- Secrets (tokens, keys, root passwords, backup key) live in the owner's
+  1Password "Relay" vault, not on disk.
+- **This repo is public** (AGPL-3.0, required by libsignal). Never commit
+  secrets or the API origin IP; GitHub secret scanning + push protection are on.
+
 ## Dev environment quirks (this Mac)
 
+- Release/TestFlight builds use `/Applications/Xcode.app`: prefix xcodebuild with
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (xcode-select points
+  at the command-line tools). Upload = archive + `-exportArchive` with an
+  ExportOptions plist (`destination` upload, team HK396F3767).
 - **No Homebrew.** Go 1.26.5 → `~/sdk/go/bin`, protoc 35.1 → `~/sdk/protoc/bin`,
   protoc-gen-go → `~/go/bin`, protoc-gen-swift (built from source) →
   `~/sdk/swift-protobuf/.build/release/`. None on default PATH — export per
@@ -153,14 +177,11 @@ device-verified.)
 
 ## Where to pick up
 
-The core iOS app and its privacy program are shipped (see the build-status list
-above). Current focus:
-1. **Deploy + device-test the built batch** — contentless push, email-at-rest,
-   groups, sealed sender, blinded discovery, multi-device sync, iCloud backup.
-   Checklist: `TESTING.md`; tracked in `TODO.md` ("NEXT").
-2. **`Relay-Sig` client signer** — the server accepts signatures; iOS still sends
-   HTTP Basic. Plumb the device auth key into `RelayKit` (REST + WS) + extensions,
-   then retire Basic. See `TODO.md` and the `relay-auth-hardening` memory.
-3. **Android client** (`android/`, its own `CLAUDE.md`) — must interoperate with
-   the same wire contract; the server-side FCM sender for it landed in `server/`.
-4. Deferred: DDoS/origin-IP hiding (`TODO.md`).
+The iOS app is feature-complete for beta and on TestFlight. Before public
+TestFlight / App Store (`APP_REVIEW.md` has the steps):
+1. CloudKit production schema deploy (Morgan, CloudKit Console).
+2. Reviewer demo account (the owner creates it in the app).
+3. Export-compliance answer agreed with Morgan.
+4. Two-phone device-test pass (`TESTING.md`), incl. call-link calls and
+   mid-call TURN failover.
+Open engineering items: `TODO.md`. Android (`android/`) is parked — leave it alone.

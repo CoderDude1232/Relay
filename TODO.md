@@ -1,14 +1,15 @@
 # Relay — TODO
 
-## NEXT: deploy + device-test the built batch
+## NEXT (2026-10-10)
 
-A batch of changes is coded/committed but not live or not device-tested. Verify
-before building on top. Full checklist in [`TESTING.md`](TESTING.md).
-- [ ] Redeploy server (contentless push, email-at-rest, encrypted groups, sealed
-      sender, blinded discovery). Verify email backfill + no plaintext `email` column.
-- [ ] Two-physical-device pass: push (default + opt-in), multi-device sync, iCloud
-      backup/restore, groups, sealed sender. (Simulators can't do APNs/CloudKit.)
-- [ ] Deploy the CloudKit **production** schema (dev schema won't work for release).
+- [ ] Two-phone device pass (`TESTING.md`): push, multi-device sync, iCloud
+      backup/restore, groups, call links, mid-call TURN failover (run the outage
+      test from the `relay-vps-deploy` memory while a call is up).
+- [ ] CloudKit **production** schema deploy (Morgan) — `APP_REVIEW.md` §1.
+- [ ] Reviewer demo account + export-compliance answer — `APP_REVIEW.md`.
+- [x] Server batch deployed (contentless push, email-at-rest, groups, sealed
+      sender, blinded discovery, Supabase codes, TURN failover).
+- [x] Source published (AGPL-3.0), 2026-10-10.
 
 ## Siri / CarPlay sending (found 2026-10-09)
 

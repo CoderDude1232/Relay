@@ -119,11 +119,8 @@ and Apple CryptoKit), used to protect user communications.
 
 ## Before public release — legal/compliance, not App Review
 
-- **libsignal is AGPL-3.0.** Distributing the app (TestFlight external testers or
-  the App Store) requires offering its source to users. The GitHub repo
-  (`CoderDude1232/Relay`) is private. Either publish the app source, or put a
-  source offer in the app and on the site, before external distribution. This is
-  a licence obligation, separate from App Review.
+- ~~**libsignal is AGPL-3.0.**~~ Done 2026-10-10: the repo is public under
+  AGPL-3.0 (github.com/CoderDude1232/Relay) and relaymsg.app/source links it.
 - **Export compliance:** `ITSAppUsesNonExemptEncryption` is `NO` in `Info.plist`,
   but `TESTFLIGHT.md` says the plan was `YES` plus the mass-market exemption and
   the annual BIS self-classification report. The questionnaire answer in App
