@@ -109,6 +109,17 @@ final class MessagingService {
     /// Encrypted chat-list sync (AccountStorage.swift).
     @ObservationIgnored var accountStorageUploadTask: Task<Void, Never>?
     @ObservationIgnored var lastChatListFingerprint: String?
+    @ObservationIgnored private var siriPreviewTask: Task<Void, Never>?
+
+    /// Refreshes the Siri UI snapshot a moment after the chat list settles.
+    func scheduleSiriPreviewWrite() {
+        siriPreviewTask?.cancel()
+        siriPreviewTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            SiriPreviewCache.write(service: self)
+        }
+    }
     private(set) var callHistory: [StoredCall] = []
     private(set) var activeMessages: [StoredMessage] = []
     private(set) var activeConversationId: String?
@@ -4343,6 +4354,7 @@ final class MessagingService {
                 self.conversations = convs
                 self.updateShareConversationList()
                 self.scheduleAccountStorageUploadIfChanged()
+                self.scheduleSiriPreviewWrite()
                 return convs.map { conv in
                     let account = conv.groupId ?? conv.peerAccount
                     let name = conv.groupId.map { self.displayName(forAccount: $0) }

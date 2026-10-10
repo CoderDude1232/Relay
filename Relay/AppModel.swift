@@ -925,6 +925,7 @@ final class AppModel {
         ChatFolderStore.shared.reload()
         CallLinkStore.shared.clearAll()
         MyStickerStore.shared.wipe()
+        SiriPreviewCache.wipe()
         // Traces the OS keeps outside the app's files: Siri/share-sheet donations,
         // Spotlight entries and delivered notifications.
         INInteraction.deleteAll(completion: nil)
