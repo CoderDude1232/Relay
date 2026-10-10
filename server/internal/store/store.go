@@ -424,6 +424,8 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// accounts default to FALSE (their email entries disappear at the next
 		// directory rebuild, i.e. startup).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Review/test accounts, isolated from everyone else (store/demo.go).
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE`,
 		// Username reuse cooldown: a released name (rename or account deletion)
 		// can't be claimed by another account for UsernameReuseCooldown. Only
 		// keyed hashes are stored — never the name — plus the release time;
@@ -929,19 +931,23 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	}
 	defer tx.Rollback(ctx)
 
+	var demo bool
 	err = tx.QueryRow(ctx,
-		`SELECT id, username FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
-	).Scan(&dev.AccountID, &dev.Username)
+		`SELECT id, username, is_demo FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
+	).Scan(&dev.AccountID, &dev.Username, &demo)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
 		err = tx.QueryRow(ctx,
-			`SELECT id, username FROM accounts WHERE email_token = $1`, emailToken,
-		).Scan(&dev.AccountID, &dev.Username)
+			`SELECT id, username, is_demo FROM accounts WHERE email_token = $1`, emailToken,
+		).Scan(&dev.AccountID, &dev.Username, &demo)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AddedDevice{}, ErrAccountNotFound
 	}
 	if err != nil {
 		return AddedDevice{}, err
+	}
+	if demo {
+		return AddedDevice{}, ErrDemoAccount // locked credentials
 	}
 	if _, err = tx.Exec(ctx,
 		`UPDATE accounts SET account_password_hash = $1,

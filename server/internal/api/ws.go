@@ -290,6 +290,13 @@ func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *rel
 		return resp
 	}
 
+	// Demo accounts and everyone else can't reach each other: same answer as
+	// an unknown mailbox.
+	if s.crossesDemoLine(sender.AccountID, destination.AccountID) {
+		resp.Status = relaypb.SendStatus_SEND_STATUS_UNKNOWN_ACCOUNT
+		return resp
+	}
+
 	m := req.Messages[0]
 	if m.DeviceId != destination.DeviceID {
 		resp.ExtraDevices = append(resp.ExtraDevices, m.DeviceId)

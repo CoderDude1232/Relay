@@ -150,7 +150,9 @@ func TestCheckNowFailsOverImmediately(t *testing.T) {
 	get := func(q string) string {
 		w := httptest.NewRecorder()
 		s.handleTurnCredentials(w, httptest.NewRequest("GET", "/v1/turn-credentials"+q, nil), nil)
-		var r struct{ Username string `json:"username"` }
+		var r struct {
+			Username string `json:"username"`
+		}
 		json.Unmarshal(w.Body.Bytes(), &r)
 		return r.Username
 	}

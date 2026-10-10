@@ -448,3 +448,16 @@ Each call uses a fresh ES256 client-secret JWT (5-minute lifetime).
   salted hash, for at most 24 h.)
 - Queue-fairness and push-coalescing bookkeeping is in memory only and starts
   empty after a restart.
+
+## Demo accounts (App Review)
+
+`accounts.is_demo` marks review/test accounts, set by an operator:
+`UPDATE accounts SET is_demo = true WHERE username IN ('…', '…');`
+(the API caches the flag for up to a minute). Demo accounts are an island:
+directory lookups from a demo account only return demo accounts and nobody else
+ever sees them; key fetches (`GET /v1/keys/{account}`) and WebSocket sends across
+the line answer as if the account didn't exist (404 / `UNKNOWN_ACCOUNT`).
+Username, account password, email change, password reset and email
+discoverability return `403 "This is a demo account, so this is turned off."`.
+`DELETE /v1/accounts/me` **resets** a demo account instead (devices, prekeys and
+queues removed, sockets closed, `204`) and keeps the account and its login.

@@ -301,7 +301,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/keys", s.auth(s.handleSetKeys))
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
-	mux.HandleFunc("GET /v1/keys/{account}/sealed", s.handleGetKeysSealed) // unauthenticated by design (access-key capability)
+	mux.HandleFunc("GET /v1/keys/{account}/sealed", s.handleGetKeysSealed)          // unauthenticated by design (access-key capability)
 	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/password-reset", s.handlePasswordReset) // unauthenticated; proof = fresh Supabase recovery session
@@ -1015,7 +1015,8 @@ func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, 
 			buckets = append(buckets, uint16(b))
 		}
 	}
-	rows, err := s.store.DirectoryBuckets(buckets)
+	// Demo accounts only see demo accounts; everyone else never sees them.
+	rows, err := s.store.DirectoryBucketsFor(buckets, s.isDemo(dev.AccountID))
 	if err != nil {
 		internalError(w, err)
 		return
@@ -1175,6 +1176,9 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrIdentityInUse):
 		httpError(w, http.StatusConflict, errSignInInstead)
 		return
+	case errors.Is(err, store.ErrDemoAccount):
+		httpError(w, http.StatusForbidden, demoForbiddenMessage)
+		return
 	case err != nil:
 		internalError(w, err)
 		return
@@ -1194,6 +1198,9 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 // confirmed, then re-keys the account's email token (recovery and the opt-in
 // email discovery follow the new address).
 func (s *Server) handleUpdateEmail(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.refuseIfDemo(w, dev.AccountID) {
+		return
+	}
 	var req struct {
 		AccessToken string `json:"accessToken"`
 	}
@@ -1287,6 +1294,9 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.refuseIfDemo(w, dev.AccountID) {
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 	}
@@ -1314,6 +1324,9 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 // blinded-directory entry (opt-in; off by default) and reindexes the account.
 // Username entries are unaffected. Body: {"email": bool} — the field is required.
 func (s *Server) handleSetDiscoverability(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.refuseIfDemo(w, dev.AccountID) {
+		return
+	}
 	var req struct {
 		Email *bool `json:"email"`
 	}
@@ -1337,6 +1350,9 @@ var accountPasswordLimiter = newTokenBucketLimiter(10, time.Hour)
 // email recovery and the sign-in registration lock. Any signed device of the
 // account may set it (such a device already controls the account).
 func (s *Server) handleSetAccountPassword(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if s.refuseIfDemo(w, dev.AccountID) {
+		return
+	}
 	var req struct {
 		AccountPassword string `json:"accountPassword"`
 	}
@@ -2104,6 +2120,10 @@ func (s *Server) handleKeyCount(w http.ResponseWriter, r *http.Request, dev *sto
 // is available; `oneTimePreKey` is null when the pool is exhausted.
 func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	account := r.PathValue("account")
+	if s.crossesDemoLine(dev.AccountID, account) {
+		httpError(w, http.StatusNotFound, "unknown account/device or keys not yet uploaded")
+		return
+	}
 	// Exempt own-account fetches (device sync / session refresh). Rate-limit
 	// cross-account fetches to prevent prekey-pool depletion attacks.
 	if dev.AccountID != account {
@@ -2337,6 +2357,17 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 	}
 	if len(req.AppleAuthorizationCode) > 4096 {
 		httpError(w, http.StatusBadRequest, "appleAuthorizationCode too long")
+		return
+	}
+	// A demo account is reset instead: devices, keys and queues go, the login
+	// stays, so the same credentials keep working for the next reviewer.
+	if s.isDemo(dev.AccountID) {
+		if _, err := s.store.ResetDemoAccount(dev.AccountID); err != nil {
+			internalError(w, err)
+			return
+		}
+		s.hub.DisconnectAccount(dev.AccountID, "account deleted")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	// Read the linked Supabase user before the row (and the link) is gone.

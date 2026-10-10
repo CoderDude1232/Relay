@@ -24,21 +24,23 @@ every TestFlight build.
 
 No indexes are needed: the app fetches backups by record name only.
 
-## 2. Demo account for App Review (Ethan or Morgan, in the app)
+## 2. Demo accounts for App Review (owner creates, then the server marks them)
 
-Reviewers sign in with **email + account password** (welcome screen → *Already
-have an account? Sign in*). That path needs no emailed code.
+Two accounts, so the reviewer can message between them. Once marked as demo they
+can only reach each other (real users can't find them), their login can't be
+changed, and "Delete Account" resets them instead of deleting (see
+`server/README.md` "Demo accounts").
 
-1. Use an address you can receive mail at, e.g. `appreview@relaymsg.app`
-   forwarded to Morgan.
-2. On a spare device or simulator: *Continue with Email* → create the account →
-   enter the emailed code → pick username `appreview` (or similar).
-3. Profile → Account → **Account Password** → set a strong password.
-4. Optional but helpful: from your own account, start a chat with the demo
-   account and send a message and a photo, so the reviewer sees a real conversation.
-5. **Don't use the demo account on any device after submitting.** Signing in on a
-   new device signs out the others, so the reviewer and you would keep kicking
-   each other off.
+1. On a spare device/simulator: *Continue with Email* →
+   `ethandaly525+relayreview1@gmail.com` (codes arrive in the normal inbox) →
+   username e.g. `relay_review_a` → Profile → Account → **Account Password**.
+2. Same again with `+relayreview2` → `relay_review_b`.
+3. Ask Claude (or run the SQL in `server/README.md`) to mark both as demo.
+4. From A, start a chat with `relay_review_b` and exchange a few messages and a
+   photo, so the reviewer sees a real conversation.
+5. Give Apple both logins (email + account password). They sign in with
+   *Already have an account? Sign in*. Don't use the accounts yourself during
+   review: each sign-in signs the other device out.
 
 ## 3. App Store Connect: TestFlight external testing (Morgan)
 
