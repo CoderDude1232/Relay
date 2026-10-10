@@ -283,6 +283,9 @@ struct VideoPlayerBubble: View {
     @State private var failed = false
     @State private var isUnlocked = false
     @State private var showingPlayer = false
+    @State private var sensitiveChecked = false
+    @State private var isSensitive = false
+    @State private var confirmSensitive = false
 
     private var tint: Color { isOutgoing ? .white : .primary }
 
@@ -312,9 +315,20 @@ struct VideoPlayerBubble: View {
                 if requiresBiometric && !isUnlocked {
                     AttachmentPrivacyOverlay(label: "Unlock video")
                 }
+                if isSensitive && SensitiveContent.isRestricted {
+                    SensitiveMediaCover(restricted: true) {}
+                        .frame(width: 200, height: 120)
+                        .clipShape(.rect(cornerRadius: 12))
+                }
             }
         }
         .buttonStyle(.plain)
+        .alert("This video may be sensitive", isPresented: $confirmSensitive) {
+            Button("View") { showingPlayer = true }
+            Button("Cancel", role: .cancel) { cleanUpPlayerFile() }
+        } message: {
+            Text("Relay checked it on this iPhone and it may contain nudity.")
+        }
         .fullScreenCover(isPresented: $showingPlayer, onDismiss: cleanUpPlayerFile) {
             if let url = playerURL {
                 VideoPlayerSheet(url: url)
@@ -324,12 +338,15 @@ struct VideoPlayerBubble: View {
     }
 
     private func load() async {
-        guard !busy else { return }
+        guard !busy, !(isSensitive && SensitiveContent.isRestricted) else { return }
         if requiresBiometric && !isUnlocked {
             guard await BiometricGate.authenticate(reason: "Unlock this video in Relay.") else { return }
             isUnlocked = true
         }
-        if playerURL != nil { showingPlayer = true; return }
+        if playerURL != nil {
+            if isSensitive { confirmSensitive = true } else { showingPlayer = true }
+            return
+        }
         busy = true
         defer { busy = false }
         if !attachment.isDownloaded {
@@ -338,7 +355,16 @@ struct VideoPlayerBubble: View {
         guard let plaintext = service.attachmentPlaintext(attachment) else { failed = true; return }
         do {
             // Random filename + complete protection; deleted when the player closes.
-            playerURL = try TempMediaFiles.write(plaintext, originalName: attachment.filename, fallbackExtension: "mp4")
+            let url = try TempMediaFiles.write(plaintext, originalName: attachment.filename, fallbackExtension: "mp4")
+            playerURL = url
+            if !isOutgoing && !sensitiveChecked {
+                isSensitive = await SensitiveContent.isSensitive(videoAt: url, cacheKey: attachment.id)
+                sensitiveChecked = true
+            }
+            if isSensitive {
+                if SensitiveContent.isRestricted { cleanUpPlayerFile() } else { confirmSensitive = true }
+                return
+            }
             showingPlayer = true
         } catch { failed = true }
     }

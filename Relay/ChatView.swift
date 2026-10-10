@@ -30,6 +30,7 @@ struct ChatView: View {
     @State private var isOnScreen = false
     @State private var confirmingBulkDelete = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.openURL) private var openURL
 
     @State private var draft = ""
     @State private var replyingTo: StoredMessage?
@@ -40,6 +41,8 @@ struct ChatView: View {
     @State private var showingComposerEmoji = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var pendingAttachments: [MessagingService.PendingAttachment] = []
+    @State private var confirmSensitiveSend = false
+    @State private var sensitiveSendBlocked = false
     @State private var viewOnce = false
     @State private var showingPhotoPicker = false
     @State private var showingFileImporter = false
@@ -1212,6 +1215,18 @@ struct ChatView: View {
         .fileImporter(isPresented: $showingFileImporter, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result { loadPickedFile(url) }
         }
+        .alert("Send something sensitive?", isPresented: $confirmSensitiveSend) {
+            Button("Send Anyway") { sendNow() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This may contain nudity. Only send it if you're sure the person wants it, and remember it could be saved or shared.")
+        }
+        .alert("Can't send this", isPresented: $sensitiveSendBlocked) {
+            Button("OK", role: .cancel) {}
+            Button("Ways to Get Help") { openURL(SensitiveContent.helpURL) }
+        } message: {
+            Text("This photo or video may show private body parts. Talk to a parent or another adult you trust if someone asked you to send it.")
+        }
         .alert("Microphone Access Needed", isPresented: $recordDenied) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -1422,7 +1437,39 @@ struct ChatView: View {
         }
     }
 
+    /// Checks outgoing photos and videos first when Sensitive Content Warning
+    /// or Communication Safety is on.
     private func send() {
+        guard canSend else { return }
+        let media = pendingAttachments.filter { $0.contentType.hasPrefix("image/") || $0.contentType.hasPrefix("video/") }
+        guard editingMessage == nil, !media.isEmpty, SensitiveContent.isEnabled else {
+            sendNow()
+            return
+        }
+        Task {
+            for attachment in media where await Self.isSensitive(attachment) {
+                if SensitiveContent.isRestricted {
+                    sensitiveSendBlocked = true
+                } else {
+                    confirmSensitiveSend = true
+                }
+                return
+            }
+            sendNow()
+        }
+    }
+
+    private static func isSensitive(_ attachment: MessagingService.PendingAttachment) async -> Bool {
+        if attachment.contentType.hasPrefix("image/") {
+            return await SensitiveContent.isSensitive(imageData: attachment.data)
+        }
+        guard let url = try? TempMediaFiles.write(attachment.data, originalName: attachment.filename, fallbackExtension: "mp4")
+        else { return false }
+        defer { TempMediaFiles.remove(url) }
+        return await SensitiveContent.isSensitive(videoAt: url)
+    }
+
+    private func sendNow() {
         var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -2143,7 +2190,8 @@ private struct MessageBubble: View {
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 4) {
                 AttachmentImageView(
                     attachment: sticker, service: service, conversationId: conversationId,
-                    requiresBiometric: mediaRequiresBiometric, senderName: avatarName, isSticker: true
+                    requiresBiometric: mediaRequiresBiometric, senderName: avatarName, isSticker: true,
+                    isOutgoing: message.isOutgoing
                 )
                 metadataRow(onBubble: false)
                     .padding(.horizontal, 4)
@@ -2206,7 +2254,8 @@ private struct MessageBubble: View {
                     service: service,
                     conversationId: conversationId,
                     requiresBiometric: mediaRequiresBiometric,
-                    senderName: avatarName
+                    senderName: avatarName,
+                    isOutgoing: message.isOutgoing
                 )
             } else if attachment.isAudio {
                 VoiceNoteBubble(
@@ -2790,8 +2839,11 @@ private struct AttachmentImageView: View {
     var senderName: String = ""
     /// Stickers: smaller, whole image visible, no rounded crop.
     var isSticker = false
+    var isOutgoing = false
 
     @State private var image: UIImage?
+    @State private var isSensitive = false
+    @State private var sensitiveRevealed = false
     @State private var gifData: Data?
     @State private var failed = false
     @State private var preview: PreviewItem?
@@ -2859,7 +2911,15 @@ private struct AttachmentImageView: View {
                 .onTapGesture { if failed { Task { await load() } } }
             }
         }
+        .blur(radius: coversSensitive ? 40 : 0)
         .frame(width: isSticker ? 150 : 240, height: isSticker ? 150 : height)
+        .overlay {
+            if coversSensitive {
+                SensitiveMediaCover(restricted: SensitiveContent.isRestricted, compact: isSticker) {
+                    sensitiveRevealed = true
+                }
+            }
+        }
         .clipShape(.rect(cornerRadius: isSticker ? 0 : 16))
         .task(id: attachment.id) { await load() }
         .fullScreenCover(item: $preview, onDismiss: cleanUpPreviewFile) { item in
@@ -2884,6 +2944,9 @@ private struct AttachmentImageView: View {
             failed = true
             return
         }
+        if !isOutgoing {
+            isSensitive = await SensitiveContent.isSensitive(imageData: data, cacheKey: attachment.id)
+        }
         if isGIF {
             gifData = data
         } else if let ui = UIImage(data: data) {
@@ -2891,6 +2954,10 @@ private struct AttachmentImageView: View {
         } else {
             failed = true
         }
+    }
+
+    private var coversSensitive: Bool {
+        isSensitive && (SensitiveContent.isRestricted || !sensitiveRevealed)
     }
 
     private func unlock() async {
@@ -3644,6 +3711,7 @@ private struct ViewOnceOverlay: View {
     @State private var viewed = false
     @State private var image: UIImage?
     @State private var unavailable = false
+    @State private var sensitiveHidden = false
 
     private var tint: Color { isOutgoing ? .white : .primary }
     /// The attachment row is deleted once the recipient has opened it.
@@ -3655,7 +3723,15 @@ private struct ViewOnceOverlay: View {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFit()
+                    .blur(radius: sensitiveHidden ? 40 : 0)
                     .frame(maxWidth: 240)
+                    .overlay {
+                        if sensitiveHidden {
+                            SensitiveMediaCover(restricted: SensitiveContent.isRestricted) {
+                                sensitiveHidden = false
+                            }
+                        }
+                    }
                     .clipShape(.rect(cornerRadius: 12))
             } else if isOutgoing || alreadyOpened || unavailable {
                 // The sender can't open their own view-once photo (it would
@@ -3699,6 +3775,7 @@ private struct ViewOnceOverlay: View {
             unavailable = true
             return
         }
+        sensitiveHidden = await SensitiveContent.isSensitive(image: ui, cacheKey: attachment.id)
         image = ui
         viewed = true
         // Delete the ciphertext and attachment row right after display so it
