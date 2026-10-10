@@ -8,7 +8,15 @@
 // consecutive seconds below 70% of every threshold (hysteresis, so calls
 // don't bounce between providers).
 //
-// GET /status → {"overloaded":bool,"reason":"...","rxMbps":..,"rxPps":..,"cpu":..}
+// It also keeps this month's data total (saved in -state-dir, so it survives
+// restarts) and reports overloaded once it reaches -monthly-threshold of
+// -monthly-limit-gb, until the month rolls over — so calls move to the backup
+// TURN instead of running into the host's transfer allowance.
+//
+// GET /status → {"overloaded":bool,"reason":"...","rxMbps":..,"rxPps":..,"cpu":..,
+//
+//	"monthUsedGB":..,"monthLimitGB":..}
+//
 // Serve it only to the relay host (firewall), it's not sensitive but needn't
 // be public.
 package main
@@ -28,8 +36,8 @@ import (
 )
 
 type sample struct {
-	rxBytes, rxPackets uint64
-	cpuBusy, cpuTotal  uint64
+	rxBytes, rxPackets, txBytes uint64
+	cpuBusy, cpuTotal           uint64
 }
 
 type status struct {
@@ -38,6 +46,30 @@ type status struct {
 	RxMbps     float64 `json:"rxMbps"`
 	RxPps      float64 `json:"rxPps"`
 	CPU        float64 `json:"cpu"`
+	MonthUsed  float64 `json:"monthUsedGB"`
+	MonthLimit float64 `json:"monthLimitGB,omitempty"`
+}
+
+// monthUsage is this month's transfer total, persisted to disk.
+type monthUsage struct {
+	Month string `json:"month"` // "2026-10" in -month-tz
+	Bytes uint64 `json:"bytes"`
+}
+
+func loadUsage(path string) monthUsage {
+	var u monthUsage
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &u)
+	}
+	return u
+}
+
+func saveUsage(path string, u monthUsage) {
+	data, _ := json.Marshal(u)
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) == nil {
+		_ = os.Rename(tmp, path)
+	}
 }
 
 func main() {
@@ -48,7 +80,26 @@ func main() {
 	maxCPU := flag.Float64("max-cpu", 80, "CPU percent that counts as overloaded")
 	trip := flag.Int("trip", 3, "seconds above a threshold before reporting overloaded")
 	clear := flag.Int("clear", 60, "seconds comfortably below every threshold before clearing")
+	limitGB := flag.Float64("monthly-limit-gb", 0, "host's monthly transfer allowance in GB (0 = don't track)")
+	threshold := flag.Float64("monthly-threshold", 0.9, "fraction of the allowance at which to report overloaded")
+	count := flag.String("monthly-count", "both", "what the host counts: both, tx (upload) or rx (download)")
+	monthTZ := flag.String("month-tz", "Australia/Brisbane", "time zone the host's billing month follows")
+	stateDir := flag.String("state-dir", "/var/lib/turnload", "where the monthly total is kept")
+	seedGB := flag.Float64("seed-used-gb", 0, "usage so far this month, used only when there's no saved total for it")
 	flag.Parse()
+
+	loc, err := time.LoadLocation(*monthTZ)
+	if err != nil {
+		log.Fatalf("turnload: -month-tz: %v", err)
+	}
+	usagePath := *stateDir + "/usage.json"
+	thisMonth := func() string { return time.Now().In(loc).Format("2006-01") }
+	usage := loadUsage(usagePath)
+	if usage.Month != thisMonth() {
+		usage = monthUsage{Month: thisMonth(), Bytes: uint64(*seedGB * 1e9)}
+	}
+	lastSave := time.Now()
+	rateOverloaded, rateReason := false, ""
 
 	var mu sync.Mutex
 	cur := status{}
@@ -63,6 +114,28 @@ func main() {
 			if err != nil {
 				log.Printf("turnload: %v", err)
 				continue
+			}
+			// Monthly total (counters only grow while we run, so a plain delta).
+			if *limitGB > 0 {
+				var delta uint64
+				switch *count {
+				case "tx":
+					delta = next.txBytes - prev.txBytes
+				case "rx":
+					delta = next.rxBytes - prev.rxBytes
+				default:
+					delta = (next.rxBytes - prev.rxBytes) + (next.txBytes - prev.txBytes)
+				}
+				if m := thisMonth(); m != usage.Month {
+					log.Printf("turnload: new month %s (last month used %.1f GB)", m, float64(usage.Bytes)/1e9)
+					usage = monthUsage{Month: m}
+					saveUsage(usagePath, usage)
+				}
+				usage.Bytes += delta
+				if time.Since(lastSave) > 30*time.Second {
+					saveUsage(usagePath, usage)
+					lastSave = time.Now()
+				}
 			}
 			mbps := float64(next.rxBytes-prev.rxBytes) * 8 / 1e6
 			pps := float64(next.rxPackets - prev.rxPackets)
@@ -94,17 +167,34 @@ func main() {
 				}
 			}
 
-			mu.Lock()
-			cur.RxMbps, cur.RxPps, cur.CPU = round1(mbps), round1(pps), round1(cpu)
 			switch {
-			case !cur.Overloaded && above >= *trip:
-				cur.Overloaded, cur.Reason = true, reason
+			case !rateOverloaded && above >= *trip:
+				rateOverloaded, rateReason = true, reason
 				log.Printf("turnload: overloaded (%s)", reason)
-			case cur.Overloaded && below >= *clear:
-				cur.Overloaded, cur.Reason = false, ""
+			case rateOverloaded && below >= *clear:
+				rateOverloaded, rateReason = false, ""
 				log.Printf("turnload: back to normal")
-			case cur.Overloaded && reason != "":
-				cur.Reason = reason
+			case rateOverloaded && reason != "":
+				rateReason = reason
+			}
+			usedGB := float64(usage.Bytes) / 1e9
+			quotaHit := *limitGB > 0 && usedGB >= *threshold**limitGB
+
+			mu.Lock()
+			wasQuota := cur.Overloaded && strings.HasPrefix(cur.Reason, "monthly")
+			cur.RxMbps, cur.RxPps, cur.CPU = round1(mbps), round1(pps), round1(cpu)
+			cur.MonthUsed, cur.MonthLimit = round1(usedGB), *limitGB
+			switch {
+			case rateOverloaded:
+				cur.Overloaded, cur.Reason = true, rateReason
+			case quotaHit:
+				cur.Overloaded = true
+				cur.Reason = fmt.Sprintf("monthly data %.0f of %.0f GB used", usedGB, *limitGB)
+				if !wasQuota {
+					log.Printf("turnload: %s; reporting overloaded until next month", cur.Reason)
+				}
+			default:
+				cur.Overloaded, cur.Reason = false, ""
 			}
 			mu.Unlock()
 		}
@@ -143,6 +233,9 @@ func read(iface string) (sample, error) {
 		}
 		s.rxBytes, _ = strconv.ParseUint(fields[0], 10, 64)
 		s.rxPackets, _ = strconv.ParseUint(fields[1], 10, 64)
+		if len(fields) > 8 {
+			s.txBytes, _ = strconv.ParseUint(fields[8], 10, 64)
+		}
 		found = true
 	}
 	if !found {

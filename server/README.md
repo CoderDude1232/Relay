@@ -316,7 +316,10 @@ Request, and reads the TURN box's load agent (`cmd/turnload`, `GET /status` →
 `{overloaded, reason, rxMbps, rxPps, cpu}`). Two failed probes in a row (no STUN
 answer, or the agent reporting overload) switch new calls to Cloudflare; two good
 ones switch back. The agent itself only clears overload after 60 s comfortably
-below every threshold. Cloudflare is not contacted while coturn is healthy, and
+below every threshold. The agent also keeps the month's transfer total
+(`-monthly-limit-gb`, `-monthly-threshold`, `-monthly-count`, saved in its
+StateDirectory) and reports overload from 90% of the host's allowance until the
+month rolls over. Cloudflare is not contacted while coturn is healthy, and
 the credential request to Cloudflare carries nothing about the user.
 
 ### Real-time
