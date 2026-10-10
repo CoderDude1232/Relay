@@ -30,6 +30,13 @@ class IntentViewController: UIViewController, INUIHostedViewControlling {
             completion(false, parameters, .zero)
             return
         }
+        // Siri may ask once per parameter. The whole chat is drawn for the
+        // recipients (or a request with no parameters); other parameters are
+        // claimed with an empty view so the chat isn't shown twice.
+        if !parameters.isEmpty && !parameters.contains(where: { $0.parameterKeyPath.hasPrefix("recipients") }) {
+            completion(true, parameters, .zero)
+            return
+        }
         let recipient = intent.recipients?.first
         let conversationId = recipient?.customIdentifier ?? recipient?.personHandle?.value ?? ""
         let snapshot = ChatPreviewStore.load()
