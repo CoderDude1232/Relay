@@ -48,7 +48,7 @@ changed, and "Delete Account" resets them instead of deleting (see
 
 ## 3. App Store Connect: TestFlight external testing (Morgan)
 
-App Store Connect → Apps → **Relay Private Messenger** → **TestFlight**.
+App Store Connect → Apps → **Relay: Private Messenger** → **TestFlight**.
 
 **Test Information** (left sidebar):
 - Beta App Description: the "What is Relay" text below
