@@ -1849,8 +1849,19 @@ private struct MessageRow: View {
         )
     }
 
+    /// Plain text with nothing tappable inside, so VoiceOver can read it as
+    /// one element with reply/forward actions.
+    private var isPlainText: Bool {
+        message.attachments.isEmpty && !message.isDeleted && message.body.firstURL == nil
+            && !message.body.hasPrefix("__") && !message.body.hasPrefix("~once~")
+            && !message.body.hasPrefix("call:") && message.body != MessagingService.stickerMarker
+    }
+
     var body: some View {
         content
+            .accessibilityElement(children: isPlainText && !isSelectionMode ? .combine : .contain)
+            .accessibilityAction(named: "Reply") { onReply() }
+            .accessibilityAction(named: "Forward") { onForward() }
             .padding(.vertical, isSelected ? 2 : 0)
             .background {
                 if isSelected {
@@ -1880,6 +1891,8 @@ private struct MessageRow: View {
                 bubble
                     .contentShape(.rect)
                     .onTapGesture { onToggleSelection() }
+                    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityHint("Selects this message")
             }
         } else if message.isDeleted {
             bubble
@@ -2921,6 +2934,10 @@ private struct AttachmentImageView: View {
             }
         }
         .clipShape(.rect(cornerRadius: isSticker ? 0 : 16))
+        .accessibilityElement(children: coversSensitive ? .contain : .ignore)
+        .accessibilityLabel(accessibilityDescription)
+        .accessibilityAddTraits(coversSensitive ? [] : [.isButton, .isImage])
+        .accessibilityHint(coversSensitive ? "" : (requiresBiometric && !isUnlocked ? "Unlocks the photo" : "Opens the photo"))
         .task(id: attachment.id) { await load() }
         .fullScreenCover(item: $preview, onDismiss: cleanUpPreviewFile) { item in
             QuickLookPreview(url: item.url, title: senderName)
@@ -2954,6 +2971,13 @@ private struct AttachmentImageView: View {
         } else {
             failed = true
         }
+    }
+
+    private var accessibilityDescription: String {
+        let kind = isSticker ? "Sticker" : (isGIF ? "GIF" : "Photo")
+        if coversSensitive { return "\(kind) hidden because it may be sensitive" }
+        if failed { return "\(kind) failed to load. Double-tap to retry" }
+        return senderName.isEmpty ? kind : "\(kind) from \(senderName)"
     }
 
     private var coversSensitive: Bool {
@@ -3039,6 +3063,8 @@ private struct PendingAttachmentBar: View {
         .glassCompat(in: .rect(cornerRadius: 14))
         .contentShape(.rect(cornerRadius: 12))
         .onTapGesture { onPreview() }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Previews the attachment")
     }
 }
 
@@ -3177,6 +3203,7 @@ private struct TypingIndicatorView: View {
     let peerName: String
     var imageData: Data? = nil
     @State private var phase = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -3187,7 +3214,7 @@ private struct TypingIndicatorView: View {
                         .frame(width: 7, height: 7)
                         .foregroundStyle(.secondary)
                         .opacity(phase == index ? 1 : 0.35)
-                        .offset(y: phase == index ? -4 : 0)
+                        .offset(y: phase == index && !reduceMotion ? -4 : 0)
                         .animation(.spring(duration: 0.3, bounce: 0.5).delay(Double(index) * 0.05), value: phase)
                 }
             }
@@ -3196,6 +3223,8 @@ private struct TypingIndicatorView: View {
             .background(.fill.secondary, in: .rect(cornerRadius: DS.Radius.bubble))
             Spacer(minLength: 56)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(peerName) is typing")
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(400))

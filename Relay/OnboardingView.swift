@@ -245,6 +245,7 @@ struct OnboardingView: View {
 // MARK: - Animated background
 
 private struct BackgroundGradient: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase = false
 
     var body: some View {
@@ -267,6 +268,7 @@ private struct BackgroundGradient: View {
         }
         .ignoresSafeArea()
         .onAppear {
+            guard !reduceMotion else { return }
             withAnimation(.easeInOut(duration: 5).repeatForever(autoreverses: true)) {
                 phase = true
             }
@@ -291,7 +293,7 @@ private struct SignInButtonLabel<Icon: View>: View {
             icon().frame(width: 19, height: 19)
             Text(title)
         }
-        .font(.system(size: 17, weight: .semibold))
+        .font(.headline)
         .foregroundStyle(style == .light ? Color.black : Color.white)
         .frame(maxWidth: .infinity)
         .frame(height: 52)
@@ -593,7 +595,7 @@ private struct AuthView: View {
 
                 VStack(spacing: 6) {
                     Text("Check your email")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
                     Text("Enter the code we sent to \(email).")
                         .font(.subheadline)
@@ -670,7 +672,7 @@ private struct AuthView: View {
 
                 VStack(spacing: 6) {
                     Text("Create account")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
                     Text("Private messaging starts here.")
                         .font(.subheadline)
@@ -843,7 +845,7 @@ private struct EmailCodeView: View {
 
                 VStack(spacing: 6) {
                     Text(codeSent ? "Check your email" : "Sign in with a code")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
                     Text(codeSent
                          ? "Enter the code we sent to \(normalizedEmail)."
@@ -990,7 +992,7 @@ private struct RecoveryView: View {
 
                 VStack(spacing: 6) {
                     Text("Sign in")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
                     Text("Recover access with your email and password.")
                         .font(.subheadline)
@@ -1388,7 +1390,7 @@ private struct SetupView: View {
                         .padding(.bottom, 8)
                         .accessibilityHidden(true)
                     Text("Set up your profile")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
                     Text("Seen by the people you message.")
                         .font(.subheadline)
@@ -1420,7 +1422,7 @@ private struct SetupView: View {
 
                     HStack(spacing: 12) {
                         Text("@")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.5))
                             .frame(width: 24)
                         TextField("username", text: $username)

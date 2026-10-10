@@ -248,7 +248,7 @@ private struct PollOptionRow: View {
                                 .font(.caption.weight(.semibold).monospacedDigit())
                                 .foregroundStyle(isOutgoing ? .white.opacity(0.9) : .primary)
                             Text("\(voteCount)/\(totalVotes)")
-                                .font(.system(size: 9).monospacedDigit())
+                                .font(.caption2.monospacedDigit())
                                 .foregroundStyle(isOutgoing ? .white.opacity(0.5) : .secondary)
                         }
                     }

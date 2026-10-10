@@ -471,6 +471,7 @@ struct ConversationListView: View {
                 .tag(conversation.id as String?)
                 .selectionDisabled()
                 .onTapGesture { selectedConversationId = conversation.id }
+                .accessibilityAddTraits(.isButton)
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button {
                         service.setConversationPinned(conversation.id, pinned: !conversation.isPinned)
@@ -1260,6 +1261,7 @@ private struct UsernameSearchSheet: View {
 }
 
 private struct ConversationRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let conversation: Conversation
     let service: MessagingService
 
@@ -1372,8 +1374,11 @@ private struct ConversationRow: View {
             }
 
             VStack(alignment: .leading, spacing: 5) {
-                // Name row
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                // Name row; the date moves under the name at accessibility sizes.
+                let nameRowLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                    : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 0))
+                nameRowLayout {
                     HStack(spacing: 4) {
                         if conversation.isPinned {
                             Image(systemName: "pin.fill")
@@ -1395,11 +1400,12 @@ private struct ConversationRow: View {
                                 .accessibilityLabel("Official")
                         }
                     }
-                    Spacer(minLength: 6)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 6) }
                     HStack(spacing: 5) {
                         if isMuted {
                             Image(systemName: "bell.slash.fill")
-                                .font(.system(size: 11))
+                                .font(.caption2)
+                                .accessibilityLabel("Muted")
                                 .foregroundStyle(.tertiary)
                         }
                         if conversation.lastMessageIsOutgoing && !conversation.isGroup {
@@ -1409,6 +1415,8 @@ private struct ConversationRow: View {
                             Text(Self.relativeLabel(ts))
                                 .font(hasUnread ? .caption.weight(.semibold) : .caption)
                                 .foregroundStyle(hasUnread ? .primary : .secondary)
+                                .lineLimit(1)
+                                .fixedSize()
                         }
                     }
                     .animation(.spring(duration: 0.35), value: lastMessageStatusSymbol)

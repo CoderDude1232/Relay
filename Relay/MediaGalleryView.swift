@@ -139,6 +139,9 @@ private struct GalleryThumbnail: View {
             .clipShape(.rect)
             .contentShape(.rect)
             .onTapGesture { if let image { onTap(image) } }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Photo")
+            .accessibilityAddTraits([.isButton, .isImage])
             .task { await load() }
     }
 

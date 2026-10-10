@@ -177,7 +177,7 @@ struct CallView: View {
             AvatarView(name: peerName, size: 160, imageData: peerAvatar)
                 .shadow(color: .black.opacity(0.45), radius: 32, y: 12)
             Text(peerName)
-                .font(.system(size: 30, weight: .bold))
+                .font(.largeTitle.bold())
                 .foregroundStyle(.white)
             HStack(spacing: 6) {
                 Image(systemName: "phone.fill")
@@ -303,6 +303,9 @@ struct CallView: View {
                 withAnimation(.spring(duration: 0.24)) {
                     cameraOptionsExpanded.toggle()
                 }
+            }
+            .accessibilityAction(named: cameraOptionsExpanded ? "Hide camera options" : "Show camera options") {
+                cameraOptionsExpanded.toggle()
             }
 
             if cameraOptionsExpanded {

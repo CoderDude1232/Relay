@@ -100,7 +100,7 @@ struct GroupCallView: View {
             .padding(.bottom, 28)
 
             Text(callManager.groupCallDisplayName)
-                .font(.system(size: 30, weight: .bold))
+                .font(.largeTitle.bold())
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
@@ -262,7 +262,7 @@ struct GroupCallView: View {
                 AvatarView(name: peer.peerName, size: 160, imageData: avatar(peer))
                     .shadow(color: .black.opacity(0.4), radius: 30, y: 12)
                 Text(peer.peerName)
-                    .font(.system(size: 28, weight: .bold))
+                    .font(.title.bold())
                     .foregroundStyle(.white)
                 if !peer.isConnected {
                     Text("Connecting…")
@@ -454,6 +454,7 @@ private struct SelfPreview: View {
 
 private struct PulseRing: View {
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Circle()
@@ -461,9 +462,12 @@ private struct PulseRing: View {
             .frame(width: 150, height: 150)
             .scaleEffect(pulse ? 1.25 : 0.95)
             .opacity(pulse ? 0 : 1)
+            .opacity(reduceMotion ? 0 : 1)
             .onAppear {
+                guard !reduceMotion else { return }
                 withAnimation(.easeOut(duration: 1.8).repeatForever(autoreverses: false)) { pulse = true }
             }
+            .accessibilityHidden(true)
     }
 }
 
