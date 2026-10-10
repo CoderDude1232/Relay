@@ -64,10 +64,15 @@
 <main id="main" class="shell doc">
 
   <div class="doc-head">
-    <p class="lbl">Effective 13 September 2026 · Version 1.1</p>
+    <p class="lbl">Effective 10 October 2026 · Version 1.2 · <a href="/privacy-1.1">Previous version</a></p>
     <h1>Privacy Policy</h1>
     <p class="doc-lede">
       What Relay collects, what it doesn't, and what could be handed over if we were compelled.
+    </p>
+    <p class="doc-lede">
+      <b>What changed in 1.2:</b> we now spell out what Google sign-in shares, what happens to
+      messages you include in an abuse report, and exactly what a legal demand could produce.
+      Nothing new is collected.
     </p>
   </div>
 
@@ -75,9 +80,9 @@
     <h2>The short version</h2>
     <div>
       <ul class="doc-list">
-        <li>An account is a username and an email address. No real name, no phone number.</li>
+        <li>An account is a username and an email address. No phone number, and no real name unless you sign in with Google.</li>
         <li>Our servers never see your messages in readable form, and keep no record of who you exchanged them with.</li>
-        <li>Compelled to hand over everything we hold about a user, we could produce a username, an email address, and an undelivered message we can't read. Not a contact list, not a history, not a single readable word.</li>
+        <li>Compelled to hand over everything we hold about a user, we could produce their username and email address, when they signed up and signed in, how many devices they use, and any undelivered message as data we can't read. Not a contact list, not a history, not a single readable word of their chats — unless someone chose to include messages in an abuse report.</li>
         <li>The waitlist on this website is the one list we keep, and we delete it after launch.</li>
       </ul>
     </div>
@@ -163,11 +168,28 @@
   </section>
 
   <section class="doc-section">
+    <h2>Reporting abuse</h2>
+    <div>
+      <p>
+        If you report someone, you choose a reason and can add details. You can also choose to
+        include their most recent messages to you (up to the last ten in your one-to-one chat).
+        Those are decrypted on your phone and sent to us readable, so we can act on the report —
+        it's the one way message content ever reaches us, and only if you choose it. Nothing else
+        from the chat is shared, and the person you reported isn't told.
+      </p>
+      <p>
+        A report is linked to both accounts and kept for 180 days, then deleted. Reports you filed
+        are deleted sooner if you delete your account.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
     <h2>What we never receive</h2>
     <div>
       <ul class="doc-list">
         <li><b>Your address book.</b> Relay only looks at your contacts if you tap Find Contacts, and then only their email addresses, which are blinded on your device before the check — we never see them, and nothing from your address book is stored.</li>
-        <li><b>Your message content.</b> Encryption happens on your device, to keys we don't hold.</li>
+        <li><b>Your message content.</b> Encryption happens on your device, to keys we don't hold. The only exception is messages someone chooses to include in an abuse report.</li>
         <li><b>Who you talk to.</b> Messages are sealed so our servers can't see who sent them; a waiting message is held only against the recipient's device until it's delivered, and we keep no record of who messages whom.</li>
         <li><b>Your location.</b> The app asks for location only if you share your live location in a chat or turn on showing your device's region to your own devices. Both travel end-to-end encrypted; our servers never receive your location.</li>
         <li><b>Usage analytics.</b> No analytics SDK, no crash reporter, no attribution framework is bundled in the app.</li>
@@ -231,6 +253,18 @@
         hashed password if you created one, which sign-in method you use, and basic sign-in
         records such as the time and IP address of each sign-in. Relay's own servers keep only a
         one-way token derived from your email, not the address itself.
+      </p>
+      <p>
+        If you sign in with <b>Google</b>, Google also passes Supabase the name on your Google
+        account and a link to its profile photo, and Supabase stores them. Relay doesn't use them.
+        Sign in with Apple can share your name too, but that stays on your phone and is only used
+        to suggest a display name.
+      </p>
+      <p>
+        Your sign-in details and your Relay account are linked — that's what lets you sign back in
+        on a new phone. So together, Supabase and our servers can tell which Relay username belongs
+        to an email address, and when it signed in. Neither can tell anyone what you've said or who
+        you've talked to.
       </p>
       <p>
         Supabase may host this data outside Australia, and its handling is governed by
@@ -322,8 +356,10 @@
     <div>
       <p>
         We respond to valid legal process, and we can only produce what exists. For a Relay user
-        that's the email address on their account, and any undelivered message as encrypted data we
-        can't read. There's no message history or contact list to disclose.
+        that's their username and email address, their sign-in records (time and IP address) held
+        by Supabase, the day their account and each of their devices was created, abuse reports
+        they filed or were named in, and any undelivered message as encrypted data we can't read.
+        There's no message history or contact list to disclose.
       </p>
       <p>
         Where we're legally permitted to tell you your data was requested, we will.
