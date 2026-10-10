@@ -6,8 +6,9 @@ must agree on. The wire contract itself is `proto/` plus `server/README.md`.
 ## Cryptography
 
 - **PQXDH.** Sessions use libsignal's PQXDH, so every prekey bundle carries a
-  Kyber prekey. Each device publishes one last-resort Kyber prekey (replaced on
-  upload, marked used but never deleted); there is no one-time Kyber pool yet.
+  Kyber prekey. Each device keeps a pool of one-time Kyber prekeys (ids with bit
+  0x800000 set, deleted after use) and one last-resort Kyber prekey that bundles
+  fall back to when the pool is empty.
 - **libsignal is vendored.** Upstream has no root `Package.swift`, so it is
   checked out under `third_party/` by `scripts/setup-libsignal.sh`. The prebuilt
   Rust FFI is linked through per-SDK `LIBRARY_SEARCH_PATHS` on the app target;
@@ -23,6 +24,14 @@ must agree on. The wire contract itself is `proto/` plus `server/README.md`.
   wrapped blob is in the Keychain (`AfterFirstUnlockThisDeviceOnly`, App Group
   access group). The simulator falls back to a Keychain-only item.
 - The identity private key and registration id are stored only in the Keychain.
+
+## Groups
+
+- Groups are client-authoritative; the relay keeps no group state. A group
+  message is encrypted once with the sender's sender key and the same
+  ciphertext is sealed per member device, so the relay sees neither the sender
+  nor that the deliveries belong together. Members whose devices can't take that
+  path get a pairwise sealed send instead.
 
 ## Delivery
 
@@ -61,7 +70,5 @@ must agree on. The wire contract itself is `proto/` plus `server/README.md`.
   bundles, which can reset healthy sessions. Wasteful but correct.
 - A message that fails to decrypt is acked and dropped, so one bad envelope
   can't block the queue.
-- Group messages in sealed-sender mode are encrypted pairwise per member rather
-  than with sender keys.
 - `GET /v1/accounts/by-username` is a plaintext legacy lookup; current clients
   use blinded discovery.

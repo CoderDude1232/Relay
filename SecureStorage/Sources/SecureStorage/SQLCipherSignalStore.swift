@@ -313,9 +313,13 @@ extension SQLCipherSignalStore: KyberPreKeyStore {
         baseKey: PublicKey,
         context: StoreContext
     ) throws {
-        // Our Kyber prekeys are last-resort and reusable, so mark them used but
-        // keep them for delayed messages.
-        try db.run("UPDATE kyber_prekeys SET used = 1 WHERE id = ?", [.integer(Int64(id))])
+        // One-time keys (id flag 0x800000, see CryptoEngine.oneTimeKyberIdFlag)
+        // are deleted; the last-resort key is reusable, so it's only marked.
+        if id & 0x0080_0000 != 0 {
+            try db.run("DELETE FROM kyber_prekeys WHERE id = ?", [.integer(Int64(id))])
+        } else {
+            try db.run("UPDATE kyber_prekeys SET used = 1 WHERE id = ?", [.integer(Int64(id))])
+        }
     }
 }
 

@@ -107,6 +107,70 @@ struct CryptoEngineTests {
         #expect(result.senderDeviceId == 1)
     }
 
+    @Test func oneTimeKyberPreKeyHandshake() throws {
+        let (alice, bob, aliceAddress, bobAddress) = try makePeers()
+        let bobKeys = try bob.generatePreKeyPublication(
+            signedPreKeyId: 1, kyberPreKeyId: 2, oneTimePreKeyIds: 3..<5, oneTimeKyberPreKeyIds: 5..<8
+        )
+        #expect(bobKeys.oneTimeKyberPreKeys.count == 3)
+        #expect(bobKeys.oneTimeKyberPreKeys.allSatisfy { $0.id & CryptoEngine.oneTimeKyberIdFlag != 0 })
+        #expect(bobKeys.kyberPreKey.id & CryptoEngine.oneTimeKyberIdFlag == 0)
+
+        // The relay serves a one-time Kyber key in place of the last-resort one.
+        let bundle = PeerPreKeyBundle(
+            deviceId: 1, registrationId: bobKeys.registrationId, identityKey: bobKeys.identityKey,
+            signedPreKey: bobKeys.signedPreKey, kyberPreKey: bobKeys.oneTimeKyberPreKeys[0],
+            oneTimePreKey: bobKeys.oneTimePreKeys.first
+        )
+        try alice.processPeerBundle(bundle, from: bobAddress)
+        let hello = Data("pq hello".utf8)
+        let first = try alice.encrypt(hello, for: bobAddress)
+        #expect(first.kind == .preKey)
+        #expect(try bob.decrypt(first, from: aliceAddress) == hello)
+    }
+
+    @Test func sealedGroupEncryptOnceForManyRecipients() throws {
+        let ids = ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222",
+                   "33333333-3333-3333-3333-333333333333"]
+        let alice = try CryptoEngine.makeEphemeral(accountId: ids[0], deviceId: 1)
+        let members = try ids.dropFirst().map { try CryptoEngine.makeEphemeral(accountId: $0, deviceId: 1) }
+        for member in members {
+            let keys = try member.generatePreKeyPublication(signedPreKeyId: 1, kyberPreKeyId: 2, oneTimePreKeyIds: 3..<4)
+            try alice.processPeerBundle(fetchBundle(from: keys, deviceId: 1), from: member.localAddress)
+        }
+        let trustRoot = PrivateKey.generate()
+        let serverKey = PrivateKey.generate()
+        let serverCert = try ServerCertificate(keyId: 1, publicKey: serverKey.publicKey, trustRoot: trustRoot)
+        let aliceCert = try SenderCertificate(
+            sender: SealedSenderAddress(e164: nil, uuidString: ids[0], deviceId: 1),
+            publicKey: PublicKey(alice.identityKey()),
+            expiration: 2_000_000_000_000, signerCertificate: serverCert, signerKey: serverKey
+        )
+
+        // Members get Alice's sender key over their pairwise sessions first.
+        let distributionId = UUID()
+        let skdm = try alice.senderKeyDistributionMessage(distributionId: distributionId)
+        for member in members {
+            try member.processSenderKeyDistribution(skdm, from: alice.localAddress)
+        }
+
+        let message = Data("hello group".utf8)
+        let blobs = try alice.sealedGroupEncrypt(
+            message, distributionId: distributionId, senderCertificate: aliceCert.serialize(),
+            recipients: members.map(\.localAddress)
+        )
+        #expect(blobs.count == members.count)
+        for (member, blob) in zip(members, blobs) {
+            let result = try member.sealedDecrypt(blob, trustRoot: trustRoot.publicKey.serialize(), timestampMs: 1_700_000_000_000)
+            #expect(result.plaintext == message)
+            #expect(result.senderAccountId == ids[0])
+        }
+        // Each blob is sealed to its own recipient.
+        #expect(throws: (any Error).self) {
+            _ = try members[0].sealedDecrypt(blobs[1], trustRoot: trustRoot.publicKey.serialize(), timestampMs: 1_700_000_000_000)
+        }
+    }
+
     @Test func outOfOrderDelivery() throws {
         let (alice, bob, aliceAddress, bobAddress) = try makePeers()
         let bobKeys = try bob.generatePreKeyPublication(

@@ -737,11 +737,17 @@ public struct RelayAPIClient: Sendable {
     }
 
     public func oneTimePreKeyCount() async throws -> Int {
-        struct Response: Decodable { let count: Int }
+        try await preKeyCounts().ec
+    }
+
+    /// Remaining one-time EC and Kyber prekeys on the relay (Kyber is 0 on
+    /// relays without a Kyber pool).
+    public func preKeyCounts() async throws -> (ec: Int, kyber: Int) {
+        struct Response: Decodable { let count: Int; let kyberCount: Int? }
         let response: Response = try await request(
             "GET", "v1/keys/count", body: nil as [String: String]?
         )
-        return response.count
+        return (response.count, response.kyberCount ?? 0)
     }
 
     /// Bundles for every device of the account. Consumes one-time prekeys.
@@ -1093,6 +1099,7 @@ private struct PublicationDTO: Encodable {
     let signedPreKey: SignedPreKeyDTO
     let kyberPreKey: SignedPreKeyDTO
     let oneTimePreKeys: [OneTimePreKeyDTO]
+    let oneTimeKyberPreKeys: [SignedPreKeyDTO]
     let replaceOneTimePreKeys: Bool
 
     init(_ publication: PreKeyPublication, replaceOneTimePreKeys: Bool = false) {
@@ -1101,6 +1108,7 @@ private struct PublicationDTO: Encodable {
         signedPreKey = SignedPreKeyDTO(publication.signedPreKey)
         kyberPreKey = SignedPreKeyDTO(publication.kyberPreKey)
         oneTimePreKeys = publication.oneTimePreKeys.map(OneTimePreKeyDTO.init)
+        oneTimeKyberPreKeys = publication.oneTimeKyberPreKeys.map(SignedPreKeyDTO.init)
         self.replaceOneTimePreKeys = replaceOneTimePreKeys
     }
 }

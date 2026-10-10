@@ -75,10 +75,16 @@ public final class CryptoEngine {
 
     /// Generates and stores a signed prekey, a last-resort Kyber prekey and a
     /// batch of one-time prekeys, returning the public halves for upload.
+    /// Bit set on one-time Kyber prekey ids. Ordinary ids come from one
+    /// counter that never gets near it, so the store can tell a one-time key
+    /// (deleted after use) from the reusable last-resort one.
+    public static let oneTimeKyberIdFlag: UInt32 = 0x0080_0000
+
     public func generatePreKeyPublication(
         signedPreKeyId: UInt32,
         kyberPreKeyId: UInt32,
-        oneTimePreKeyIds: Range<UInt32>
+        oneTimePreKeyIds: Range<UInt32>,
+        oneTimeKyberPreKeyIds: Range<UInt32> = 0..<0
     ) throws -> PreKeyPublication {
         let identityKeyPair = try store.identityKeyPair(context: context)
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
@@ -123,6 +129,21 @@ public final class CryptoEngine {
             oneTimeKeys.append(PublicPreKey(id: id, publicKey: privateKey.publicKey.serialize()))
         }
 
+        var oneTimeKyberKeys: [SignedPublicPreKey] = []
+        oneTimeKyberKeys.reserveCapacity(oneTimeKyberPreKeyIds.count)
+        for base in oneTimeKyberPreKeyIds {
+            let id = base | Self.oneTimeKyberIdFlag
+            let pair = KEMKeyPair.generate()
+            let publicKey = pair.publicKey.serialize()
+            let signature = identityKeyPair.privateKey.generateSignature(message: publicKey)
+            try store.storeKyberPreKey(
+                KyberPreKeyRecord(id: id, timestamp: now, keyPair: pair, signature: signature),
+                id: id,
+                context: context
+            )
+            oneTimeKyberKeys.append(SignedPublicPreKey(id: id, publicKey: publicKey, signature: Data(signature)))
+        }
+
         return PreKeyPublication(
             registrationId: try registrationId(),
             identityKey: try identityKey(),
@@ -136,7 +157,8 @@ public final class CryptoEngine {
                 publicKey: kyberPublic,
                 signature: Data(kyberSignature)
             ),
-            oneTimePreKeys: oneTimeKeys
+            oneTimePreKeys: oneTimeKeys,
+            oneTimeKyberPreKeys: oneTimeKyberKeys
         )
     }
 
@@ -403,6 +425,34 @@ public final class CryptoEngine {
             context: context
         )
         return SecureMessage(kind: .senderKey, data: ciphertext.serialize())
+    }
+
+    /// Sealed-sender group send: encrypts `plaintext` once with our sender key,
+    /// then seals that single ciphertext to each recipient device. Returns one
+    /// sealed blob per address, in order. Recipients need our SKDM already.
+    public func sealedGroupEncrypt(
+        _ plaintext: Data,
+        distributionId: UUID,
+        senderCertificate: Data,
+        recipients: [ProtocolAddress]
+    ) throws -> [Data] {
+        let cert = try SenderCertificate(senderCertificate)
+        let ciphertext = try LibSignalClient.groupEncrypt(
+            plaintext,
+            from: localAddress,
+            distributionId: distributionId,
+            store: store,
+            context: context
+        )
+        let content = try UnidentifiedSenderMessageContent(
+            ciphertext,
+            from: cert,
+            contentHint: .default,
+            groupId: Data()
+        )
+        return try recipients.map { address in
+            try LibSignalClient.sealedSenderEncrypt(content, for: address, identityStore: store, context: context)
+        }
     }
 
     // MARK: - Safety numbers

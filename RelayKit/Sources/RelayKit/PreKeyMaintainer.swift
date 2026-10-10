@@ -18,10 +18,14 @@ public protocol PreKeyIdAllocating: AnyObject, Sendable {
 public struct PreKeyMaintainer: Sendable {
     public let threshold: Int
     public let batchSize: Int
+    public let kyberThreshold: Int
+    public let kyberBatchSize: Int
 
-    public init(threshold: Int = 20, batchSize: Int = 100) {
+    public init(threshold: Int = 20, batchSize: Int = 100, kyberThreshold: Int = 10, kyberBatchSize: Int = 40) {
         self.threshold = threshold
         self.batchSize = batchSize
+        self.kyberThreshold = kyberThreshold
+        self.kyberBatchSize = kyberBatchSize
     }
 
     /// Uploads the device's first key publication. The local store is fresh, so
@@ -72,8 +76,8 @@ public struct PreKeyMaintainer: Sendable {
         engine: CryptoEngine,
         allocator: any PreKeyIdAllocating
     ) async throws -> Bool {
-        let remaining = try await api.oneTimePreKeyCount()
-        guard remaining < threshold else { return false }
+        let remaining = try await api.preKeyCounts()
+        guard remaining.ec < threshold || remaining.kyber < kyberThreshold else { return false }
         try await upload(api: api, engine: engine, allocator: allocator)
         return true
     }
@@ -84,12 +88,15 @@ public struct PreKeyMaintainer: Sendable {
         allocator: any PreKeyIdAllocating,
         replaceOneTime: Bool = false
     ) async throws {
-        // One id each for the signed and Kyber prekeys, the rest for the pool.
-        let ids = try allocator.allocateIds(count: batchSize + 2)
+        // One id each for the signed and last-resort Kyber prekeys, then the
+        // EC pool, then the one-time Kyber pool.
+        let ids = try allocator.allocateIds(count: batchSize + kyberBatchSize + 2)
+        let ecEnd = ids.lowerBound + 2 + UInt32(batchSize)
         let publication = try engine.generatePreKeyPublication(
             signedPreKeyId: ids.lowerBound,
             kyberPreKeyId: ids.lowerBound + 1,
-            oneTimePreKeyIds: (ids.lowerBound + 2)..<ids.upperBound
+            oneTimePreKeyIds: (ids.lowerBound + 2)..<ecEnd,
+            oneTimeKyberPreKeyIds: ecEnd..<ids.upperBound
         )
         try await api.uploadKeys(publication, replaceOneTimePreKeys: replaceOneTime)
     }

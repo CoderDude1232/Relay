@@ -2262,10 +2262,7 @@ final class MessagingService {
     private func transmitToGroup(
         _ content: Relay_Content_Content, group: StoredGroup, messageId: String, timestamp: Int64
     ) async throws {
-        // Sealed groups send pairwise and don't use sender keys.
-        if !sealedSenderEnabled {
-            try await distributeSenderKeyIfNeeded(group: group)
-        }
+        try await distributeSenderKeyIfNeeded(group: group)
         await distributeProfileToGroupMembersIfNeeded(group: group)
 
         let deliveredKey = "groupsent:\(messageId)"
@@ -2273,10 +2270,18 @@ final class MessagingService {
         let targets = group.members.filter { $0 != credentials.accountId && !delivered.contains($0) }
         var firstError: Error?
         if sealedSenderEnabled {
-            // The relay learns neither the sender nor that these deliveries
-            // form one group send.
+            // Encrypt once with the sender key, then seal that ciphertext per
+            // device: the relay still learns neither the sender nor that these
+            // deliveries are one group send. A member we can't reach this way
+            // (no access key, missing identity, stale mailbox) gets the
+            // pairwise send instead.
             let payload = try content.serializedData()
+            let fastPath = try? await sealedGroupFanOut(payload, group: group, members: targets, timestamp: timestamp)
             for member in targets {
+                if fastPath?.contains(member) == true {
+                    delivered.insert(member)
+                    continue
+                }
                 do {
                     try await sendContent(payload, toPeer: member, clientTimestamp: timestamp)
                     delivered.insert(member)
@@ -2304,13 +2309,65 @@ final class MessagingService {
         try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(deliveredKey)])
     }
 
-    /// Sends our SKDM to members who lack it for the current distribution id.
-    /// Tracked in kv: once per epoch per member.
+    /// Sealed-sender group fan-out (see CryptoEngine.sealedGroupEncrypt).
+    /// Returns the members every device of whom accepted the message.
+    private func sealedGroupFanOut(
+        _ payload: Data, group: StoredGroup, members: [String], timestamp: Int64
+    ) async throws -> Set<String> {
+        guard let distributionId = UUID(uuidString: group.distributionId), !members.isEmpty else { return [] }
+        let certificate = try await senderCertificate()
+        var routes: [(member: String, mailbox: String, accessKey: Data, address: ProtocolAddress)] = []
+        var skipped = Set<String>()
+        for member in members {
+            do {
+                if knownAccessKey(member) == nil { try await refreshSessions(withPeer: member) }
+                guard let accessKey = knownAccessKey(member) else { skipped.insert(member); continue }
+                let devices = try await knownMailboxDevices(ofPeer: member)
+                guard !devices.isEmpty else { skipped.insert(member); continue }
+                for device in devices {
+                    guard let mailbox = device.mailboxId, !mailbox.isEmpty else { skipped.insert(member); continue }
+                    let address = try ProtocolAddress(name: member, deviceId: device.id)
+                    guard try engine.hasSession(with: address) else { skipped.insert(member); continue }
+                    routes.append((member, mailbox, accessKey, address))
+                }
+            } catch {
+                skipped.insert(member)
+            }
+        }
+        routes.removeAll { skipped.contains($0.member) }
+        guard !routes.isEmpty else { return [] }
+
+        let blobs = try engine.sealedGroupEncrypt(
+            try ContentPadding.pad(payload), distributionId: distributionId,
+            senderCertificate: certificate, recipients: routes.map(\.address)
+        )
+        var failed = skipped
+        for (route, blob) in zip(routes, blobs) where !failed.contains(route.member) {
+            do {
+                _ = try await api.sendSealed(
+                    mailboxId: route.mailbox, type: .message, content: blob,
+                    accessKey: route.accessKey, ephemeral: false, clientTimestamp: timestamp
+                )
+            } catch {
+                failed.insert(route.member)
+            }
+        }
+        // A member with a failed device falls back to the pairwise path, which
+        // re-sends to all of their devices; duplicates are dropped by id.
+        return Set(routes.map(\.member)).subtracting(failed)
+    }
+
+    /// Sends our SKDM to members who lack it for the current distribution id,
+    /// and again when a member's device list changes (a new device has no
+    /// sender key yet). Tracked in kv as "member:deviceIds" per epoch.
     private func distributeSenderKeyIfNeeded(group: StoredGroup) async throws {
         guard let distributionId = UUID(uuidString: group.distributionId) else { return }
         let key = "skdm:\(group.id):\(group.distributionId)"
+        let deviceKey: (String) -> String = { member in
+            member + ":" + self.knownDevices(ofPeer: member).map { String($0.id) }.sorted().joined(separator: ",")
+        }
         var sent = Set(loadStringArray(key))
-        let targets = group.members.filter { $0 != credentials.accountId && !sent.contains($0) }
+        let targets = group.members.filter { $0 != credentials.accountId && !sent.contains(deviceKey($0)) }
         guard !targets.isEmpty else { return }
 
         let skdm = try engine.senderKeyDistributionMessage(distributionId: distributionId)
@@ -2322,7 +2379,7 @@ final class MessagingService {
         for member in targets {
             do {
                 try await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
-                sent.insert(member)
+                sent.insert(deviceKey(member))
             } catch {
                 log.warning("SKDM send failed: \(PrivacyRedactor.error(error))")
             }

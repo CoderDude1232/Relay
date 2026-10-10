@@ -2040,6 +2040,9 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		SignedPreKey   jsonSignedPreKey    `json:"signedPreKey"`
 		KyberPreKey    jsonSignedPreKey    `json:"kyberPreKey"`
 		OneTimePreKeys []jsonOneTimePreKey `json:"oneTimePreKeys"`
+		// One-time Kyber prekeys, handed out instead of the last-resort key
+		// while the pool lasts.
+		OneTimeKyberPreKeys []jsonSignedPreKey `json:"oneTimeKyberPreKeys"`
 		// Deletes the device's one-time pool before storing this batch (fresh
 		// install, restore, or desync). Ordinary top-ups append.
 		ReplaceOneTimePreKeys bool `json:"replaceOneTimePreKeys"`
@@ -2057,6 +2060,18 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		httpError(w, http.StatusBadRequest, "too many one-time prekeys in a single upload")
 		return
 	}
+	if len(req.OneTimeKyberPreKeys) > maxOneTimeKyberPreKeysPerUpload {
+		httpError(w, http.StatusBadRequest, "too many one-time Kyber prekeys in a single upload")
+		return
+	}
+	kyberPool := make([]store.SignedPreKey, 0, len(req.OneTimeKyberPreKeys))
+	for _, k := range req.OneTimeKyberPreKeys {
+		if len(k.PublicKey) == 0 || len(k.Signature) == 0 {
+			httpError(w, http.StatusBadRequest, "one-time Kyber prekeys need publicKey and signature")
+			return
+		}
+		kyberPool = append(kyberPool, store.SignedPreKey{KeyID: k.KeyID, PublicKey: k.PublicKey, Signature: k.Signature})
+	}
 	spk := store.SignedPreKey{
 		KeyID:     req.SignedPreKey.KeyID,
 		PublicKey: req.SignedPreKey.PublicKey,
@@ -2071,8 +2086,8 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 	for _, k := range req.OneTimePreKeys {
 		otks = append(otks, store.OneTimePreKey{KeyID: k.KeyID, PublicKey: k.PublicKey})
 	}
-	if err := s.store.SetKeys(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks, req.ReplaceOneTimePreKeys); errors.Is(err, store.ErrPreKeyPoolFull) {
-		httpError(w, http.StatusConflict, fmt.Sprintf("one-time prekey pool full (max %d per device); upload fewer or set replaceOneTimePreKeys", store.MaxOneTimePreKeysPerDevice))
+	if err := s.store.SetKeysWithKyberPool(dev.AccountID, dev.DeviceID, req.RegistrationID, req.IdentityKey, spk, kyber, otks, kyberPool, req.ReplaceOneTimePreKeys); errors.Is(err, store.ErrPreKeyPoolFull) {
+		httpError(w, http.StatusConflict, fmt.Sprintf("one-time prekey pool full (max %d, Kyber %d per device); upload fewer or set replaceOneTimePreKeys", store.MaxOneTimePreKeysPerDevice, store.MaxOneTimeKyberPreKeysPerDevice))
 		return
 	} else if err != nil {
 		internalError(w, err)
@@ -2087,7 +2102,12 @@ func (s *Server) handleKeyCount(w http.ResponseWriter, r *http.Request, dev *sto
 		internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": n})
+	kn, err := s.store.OneTimeKyberPreKeyCount(dev.AccountID, dev.DeviceID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": n, "kyberCount": kn})
 }
 
 // handleGetKeys serves GET /v1/keys/{account}?device=N; without ?device it
@@ -2682,6 +2702,8 @@ const (
 	maxPasswordBytes = 1024
 	// maxOneTimePreKeysPerUpload caps one-time prekeys per upload.
 	maxOneTimePreKeysPerUpload = 200
+	// maxOneTimeKyberPreKeysPerUpload caps one-time Kyber prekeys per upload.
+	maxOneTimeKyberPreKeysPerUpload = 100
 )
 
 // 20 registrations per source IP per hour.

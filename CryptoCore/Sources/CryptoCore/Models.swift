@@ -62,19 +62,23 @@ public struct PreKeyPublication: Sendable, Equatable {
     /// Last-resort Kyber prekey; PQXDH requires one in every bundle.
     public let kyberPreKey: SignedPublicPreKey
     public let oneTimePreKeys: [PublicPreKey]
+    /// One-time Kyber prekeys, served instead of the last-resort key while they last.
+    public let oneTimeKyberPreKeys: [SignedPublicPreKey]
 
     public init(
         registrationId: UInt32,
         identityKey: Data,
         signedPreKey: SignedPublicPreKey,
         kyberPreKey: SignedPublicPreKey,
-        oneTimePreKeys: [PublicPreKey]
+        oneTimePreKeys: [PublicPreKey],
+        oneTimeKyberPreKeys: [SignedPublicPreKey] = []
     ) {
         self.registrationId = registrationId
         self.identityKey = identityKey
         self.signedPreKey = signedPreKey
         self.kyberPreKey = kyberPreKey
         self.oneTimePreKeys = oneTimePreKeys
+        self.oneTimeKyberPreKeys = oneTimeKyberPreKeys
     }
 }
 

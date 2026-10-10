@@ -53,6 +53,10 @@ var (
 // near it. An upload that would exceed it is rejected whole (ErrPreKeyPoolFull).
 const MaxOneTimePreKeysPerDevice = 2000
 
+// MaxOneTimeKyberPreKeysPerDevice caps a device's one-time Kyber pool (each
+// public key is ~1.5 KB).
+const MaxOneTimeKyberPreKeysPerDevice = 200
+
 // maxDevicesPerAccount caps the devices an account may have at once, bounding
 // the damage from a linking compromise.
 const maxDevicesPerAccount = 5
@@ -403,6 +407,16 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
 		// Review/test accounts, isolated from everyone else (store/demo.go).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE`,
+		// One-time Kyber prekeys; the last-resort key stays in kyber_prekeys.
+		`CREATE TABLE IF NOT EXISTS one_time_kyber_prekeys (
+    account_id TEXT NOT NULL,
+    device_id  INTEGER NOT NULL,
+    key_id     BIGINT NOT NULL,
+    public_key BYTEA NOT NULL,
+    signature  BYTEA NOT NULL,
+    PRIMARY KEY (account_id, device_id, key_id),
+    FOREIGN KEY (account_id, device_id) REFERENCES devices(account_id, device_id)
+)`,
 		// Client-encrypted chat/group list (store/account_storage.go).
 		`CREATE TABLE IF NOT EXISTS account_storage (
     account_id TEXT PRIMARY KEY REFERENCES accounts(id),
@@ -769,6 +783,7 @@ func replaceDevicesTx(ctx context.Context, tx pgx.Tx, accountID string) ([]uint3
 	}
 	for _, stmt := range []string{
 		`DELETE FROM one_time_prekeys WHERE account_id = $1`,
+		`DELETE FROM one_time_kyber_prekeys WHERE account_id = $1`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1`,
 		`DELETE FROM kyber_prekeys WHERE account_id = $1`,
 		`DELETE FROM message_queue WHERE account_id = $1`,
@@ -1541,6 +1556,7 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 		// either commits before the queue is cleared or then finds no device.
 		`SELECT device_id FROM devices WHERE account_id = $1 AND device_id = $2 FOR UPDATE`,
 		`DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
+		`DELETE FROM one_time_kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM message_queue WHERE account_id = $1 AND device_id = $2`,
@@ -1609,6 +1625,7 @@ func (s *Store) DeleteAccount(accountID string) error {
 		// queue is cleared.
 		`SELECT device_id FROM devices WHERE account_id = $1 FOR UPDATE`,
 		`DELETE FROM one_time_prekeys WHERE account_id = $1`,
+		`DELETE FROM one_time_kyber_prekeys WHERE account_id = $1`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1`,
 		`DELETE FROM kyber_prekeys WHERE account_id = $1`,
 		`DELETE FROM message_queue WHERE account_id = $1`,
@@ -2037,6 +2054,12 @@ type PreKeyBundle struct {
 // Prekey rows carry no upload time (created_at = 0) so the table isn't a
 // per-device last-active log.
 func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32, identityKey []byte, spk SignedPreKey, kyber SignedPreKey, oneTime []OneTimePreKey, replaceOneTime bool) error {
+	return s.SetKeysWithKyberPool(accountID, deviceID, registrationID, identityKey, spk, kyber, oneTime, nil, replaceOneTime)
+}
+
+// SetKeysWithKyberPool is SetKeys plus one-time Kyber prekeys, appended to (or,
+// with replaceOneTime, replacing) the device's one-time Kyber pool.
+func (s *Store) SetKeysWithKyberPool(accountID string, deviceID uint32, registrationID uint32, identityKey []byte, spk SignedPreKey, kyber SignedPreKey, oneTime []OneTimePreKey, oneTimeKyber []SignedPreKey, replaceOneTime bool) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -2077,6 +2100,29 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 			accountID, deviceID); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(ctx, `DELETE FROM one_time_kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
+			accountID, deviceID); err != nil {
+			return err
+		}
+	}
+	for _, k := range oneTimeKyber {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO one_time_kyber_prekeys (account_id, device_id, key_id, public_key, signature)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (account_id, device_id, key_id) DO UPDATE SET public_key = EXCLUDED.public_key, signature = EXCLUDED.signature`,
+			accountID, deviceID, int64(k.KeyID), k.PublicKey, k.Signature); err != nil {
+			return err
+		}
+	}
+	if len(oneTimeKyber) > 0 {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM one_time_kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
+			accountID, deviceID).Scan(&n); err != nil {
+			return err
+		}
+		if n > MaxOneTimeKyberPreKeysPerDevice {
+			return ErrPreKeyPoolFull
+		}
 	}
 	for _, k := range oneTime {
 		if _, err := tx.Exec(ctx, `
@@ -2100,6 +2146,15 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// OneTimeKyberPreKeyCount reports how many unconsumed one-time Kyber prekeys a device has.
+func (s *Store) OneTimeKyberPreKeyCount(accountID string, deviceID uint32) (int, error) {
+	var n int
+	err := s.db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM one_time_kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
+		accountID, deviceID).Scan(&n)
+	return n, err
 }
 
 // OneTimePreKeyCount reports how many unconsumed one-time prekeys a device has.
@@ -2173,6 +2228,16 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 			return nil, err
 		}
 
+		// One budget decision per device covers both one-time pools.
+		decided, allowed := false, false
+		mayUseOneTime := func() bool {
+			if !decided {
+				decided = true
+				allowed = allowOneTime == nil || allowOneTime(devID)
+			}
+			return allowed
+		}
+
 		var otk OneTimePreKey
 		err = tx.QueryRow(ctx, `
 			SELECT key_id, public_key FROM one_time_prekeys
@@ -2184,7 +2249,7 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 			// Pool exhausted; the bundle is still valid.
 		case err != nil:
 			return nil, err
-		case allowOneTime != nil && !allowOneTime(devID):
+		case !mayUseOneTime():
 			// Hand-out budget spent: serve the bundle without a one-time key.
 		default:
 			if _, err := tx.Exec(ctx, `DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2 AND key_id = $3`,
@@ -2192,6 +2257,28 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 				return nil, err
 			}
 			b.OneTime = &otk
+		}
+
+		// A one-time Kyber prekey replaces the last-resort one when available.
+		var kyberID int64
+		var kyberKey SignedPreKey
+		err = tx.QueryRow(ctx, `
+			SELECT key_id, public_key, signature FROM one_time_kyber_prekeys
+			WHERE account_id = $1 AND device_id = $2
+			ORDER BY key_id LIMIT 1`,
+			accountID, devID).Scan(&kyberID, &kyberKey.PublicKey, &kyberKey.Signature)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			return nil, err
+		case !mayUseOneTime():
+		default:
+			if _, err := tx.Exec(ctx, `DELETE FROM one_time_kyber_prekeys WHERE account_id = $1 AND device_id = $2 AND key_id = $3`,
+				accountID, devID, kyberID); err != nil {
+				return nil, err
+			}
+			kyberKey.KeyID = uint32(kyberID)
+			b.KyberPreKey = kyberKey
 		}
 		bundles = append(bundles, b)
 	}
