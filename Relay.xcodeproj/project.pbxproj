@@ -22,6 +22,8 @@
 		EC47B6793042CF4B009C986A /* RelayNotificationContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC47B66B3042CF4B009C986A /* RelayNotificationContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		EC47B6843042CF9F009C986A /* Intents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC47B6833042CF9F009C986A /* Intents.framework */; };
 		EC47B68B3042CF9F009C986A /* RelayIntentsExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		EC9C4AD7307A372800155291 /* IntentsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EC9C4AD6307A372800155291 /* IntentsUI.framework */; };
+		EC9C4AE1307A372800155291 /* RelaySiriUI.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = EC9C4AD5307A372700155291 /* RelaySiriUI.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		ECA1AD4B3018F09C001EF64A /* RelayCore in Frameworks */ = {isa = PBXBuildFile; productRef = ECA1AD4A3018F09C001EF64A /* RelayCore */; };
 		ECA1AD4E3018F0C0001EF64A /* RelayCore in Frameworks */ = {isa = PBXBuildFile; productRef = ECA1AD4D3018F0C0001EF64A /* RelayCore */; };
 		ECFD00A7302F3B6400F3E5E4 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = ECFD00A6302F3B6400F3E5E4 /* WebRTC */; };
@@ -65,6 +67,13 @@
 			remoteGlobalIDString = EC47B6813042CF9F009C986A;
 			remoteInfo = RelayIntents;
 		};
+		EC9C4ADF307A372800155291 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EC3C50E1300B766C00D20386 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EC9C4AD4307A372700155291;
+			remoteInfo = RelaySiriUI;
+		};
 		ECFD00C630302C0300F3E5E4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = EC3C50E1300B766C00D20386 /* Project object */;
@@ -84,6 +93,7 @@
 				EC3C5102300B81C300D20386 /* NotificationServiceExtension.appex in Embed Foundation Extensions */,
 				ECFD00C830302C0300F3E5E4 /* RelayBroadcastUpload.appex in Embed Foundation Extensions */,
 				EC47B68B3042CF9F009C986A /* RelayIntentsExtension.appex in Embed Foundation Extensions */,
+				EC9C4AE1307A372800155291 /* RelaySiriUI.appex in Embed Foundation Extensions */,
 				EC47B6623042CED1009C986A /* RelayWidgetExtension.appex in Embed Foundation Extensions */,
 				EC47B64130428F60009C986A /* RelayShareExtension.appex in Embed Foundation Extensions */,
 				EC47B6793042CF4B009C986A /* RelayNotificationContent.appex in Embed Foundation Extensions */,
@@ -106,6 +116,8 @@
 		EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelayIntentsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		EC47B6833042CF9F009C986A /* Intents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Intents.framework; path = System/Library/Frameworks/Intents.framework; sourceTree = SDKROOT; };
 		EC47B6923042D02A009C986A /* RelayIntentsExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RelayIntentsExtension.entitlements; sourceTree = "<group>"; };
+		EC9C4AD5307A372700155291 /* RelaySiriUI.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelaySiriUI.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EC9C4AD6307A372800155291 /* IntentsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = IntentsUI.framework; path = System/Library/Frameworks/IntentsUI.framework; sourceTree = SDKROOT; };
 		ECFD00B030302C0300F3E5E4 /* RelayBroadcastUpload.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RelayBroadcastUpload.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		ECFD00B130302C0300F3E5E4 /* ReplayKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ReplayKit.framework; path = System/Library/Frameworks/ReplayKit.framework; sourceTree = SDKROOT; };
 		ECFD00BD30302C0300F3E5E4 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
@@ -153,6 +165,13 @@
 				Info.plist,
 			);
 			target = EC47B6813042CF9F009C986A /* RelayIntentsExtension */;
+		};
+		EC9C4AE5307A372800155291 /* Exceptions for "RelaySiriUI" folder in "RelaySiriUI" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = EC9C4AD4307A372700155291 /* RelaySiriUI */;
 		};
 		ECFD00D030302C0300F3E5E4 /* Exceptions for "RelayBroadcastUpload" folder in "RelayBroadcastUpload" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -210,6 +229,14 @@
 				EC47B68F3042CF9F009C986A /* Exceptions for "RelayIntents" folder in "RelayIntentsExtension" target */,
 			);
 			path = RelayIntents;
+			sourceTree = "<group>";
+		};
+		EC9C4AD8307A372800155291 /* RelaySiriUI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EC9C4AE5307A372800155291 /* Exceptions for "RelaySiriUI" folder in "RelaySiriUI" target */,
+			);
+			path = RelaySiriUI;
 			sourceTree = "<group>";
 		};
 		ECFD00B330302C0300F3E5E4 /* RelayBroadcastUpload */ = {
@@ -278,6 +305,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EC9C4AD2307A372700155291 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EC9C4AD7307A372800155291 /* IntentsUI.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		ECFD00AD30302C0300F3E5E4 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -300,6 +335,7 @@
 				EC47B6543042CECE009C986A /* RelayWidgetExtension */,
 				EC47B6703042CF4B009C986A /* RelayNotificationContent */,
 				EC47B6853042CF9F009C986A /* RelayIntents */,
+				EC9C4AD8307A372800155291 /* RelaySiriUI */,
 				ECA1AD4C3018F0C0001EF64A /* Frameworks */,
 				EC3C50EA300B766C00D20386 /* Products */,
 			);
@@ -315,6 +351,7 @@
 				EC47B64F3042CECE009C986A /* RelayWidgetExtension.appex */,
 				EC47B66B3042CF4B009C986A /* RelayNotificationContent.appex */,
 				EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */,
+				EC9C4AD5307A372700155291 /* RelaySiriUI.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -329,6 +366,7 @@
 				EC47B66C3042CF4B009C986A /* UserNotifications.framework */,
 				EC47B66E3042CF4B009C986A /* UserNotificationsUI.framework */,
 				EC47B6833042CF9F009C986A /* Intents.framework */,
+				EC9C4AD6307A372800155291 /* IntentsUI.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -354,6 +392,7 @@
 				EC47B6613042CED1009C986A /* PBXTargetDependency */,
 				EC47B6783042CF4B009C986A /* PBXTargetDependency */,
 				EC47B68A3042CF9F009C986A /* PBXTargetDependency */,
+				EC9C4AE0307A372800155291 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				EC3C50EB300B766C00D20386 /* Relay */,
@@ -483,6 +522,28 @@
 			productReference = EC47B6823042CF9F009C986A /* RelayIntentsExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		EC9C4AD4307A372700155291 /* RelaySiriUI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EC9C4AE4307A372800155291 /* Build configuration list for PBXNativeTarget "RelaySiriUI" */;
+			buildPhases = (
+				EC9C4AD1307A372700155291 /* Sources */,
+				EC9C4AD2307A372700155291 /* Frameworks */,
+				EC9C4AD3307A372700155291 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				EC9C4AD8307A372800155291 /* RelaySiriUI */,
+			);
+			name = RelaySiriUI;
+			packageProductDependencies = (
+			);
+			productName = RelaySiriUI;
+			productReference = EC9C4AD5307A372700155291 /* RelaySiriUI.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		ECFD00AF30302C0300F3E5E4 /* RelayBroadcastUpload */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = ECFD00CD30302C0300F3E5E4 /* Build configuration list for PBXNativeTarget "RelayBroadcastUpload" */;
@@ -533,6 +594,9 @@
 					EC47B6813042CF9F009C986A = {
 						CreatedOnToolsVersion = 27.0;
 					};
+					EC9C4AD4307A372700155291 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 					ECFD00AF30302C0300F3E5E4 = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -568,6 +632,7 @@
 				EC47B64E3042CECE009C986A /* RelayWidgetExtension */,
 				EC47B66A3042CF4B009C986A /* RelayNotificationContent */,
 				EC47B6813042CF9F009C986A /* RelayIntentsExtension */,
+				EC9C4AD4307A372700155291 /* RelaySiriUI */,
 			);
 		};
 /* End PBXProject section */
@@ -609,6 +674,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		EC47B6803042CF9F009C986A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EC9C4AD3307A372700155291 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -667,6 +739,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EC9C4AD1307A372700155291 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		ECFD00AC30302C0300F3E5E4 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -701,6 +780,11 @@
 			isa = PBXTargetDependency;
 			target = EC47B6813042CF9F009C986A /* RelayIntentsExtension */;
 			targetProxy = EC47B6893042CF9F009C986A /* PBXContainerItemProxy */;
+		};
+		EC9C4AE0307A372800155291 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EC9C4AD4307A372700155291 /* RelaySiriUI */;
+			targetProxy = EC9C4ADF307A372800155291 /* PBXContainerItemProxy */;
 		};
 		ECFD00C730302C0300F3E5E4 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1233,6 +1317,68 @@
 			};
 			name = Release;
 		};
+		EC9C4AE2307A372800155291 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelaySiriUI/RelaySiriUI.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelaySiriUI/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelaySiriUI;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.relaymsg.RelaySiriUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		EC9C4AE3307A372800155291 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RelaySiriUI/RelaySiriUI.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HK396F3767;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = RelaySiriUI/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = RelaySiriUI;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.relaymsg.RelaySiriUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		ECFD00CE30302C0300F3E5E4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1355,6 +1501,15 @@
 			buildConfigurations = (
 				EC47B68D3042CF9F009C986A /* Debug */,
 				EC47B68E3042CF9F009C986A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EC9C4AE4307A372800155291 /* Build configuration list for PBXNativeTarget "RelaySiriUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EC9C4AE2307A372800155291 /* Debug */,
+				EC9C4AE3307A372800155291 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
