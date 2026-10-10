@@ -329,8 +329,8 @@ struct ConversationListView: View {
                         activeLabel = (activeLabel == label) ? nil : label
                     }
                 }
-                IconPill(systemImage: "folder.badge.gearshape") { showingFolderManager = true }
-                    .accessibilityLabel("Edit chat folders")
+                IconPill(systemImage: "plus") { showingFolderManager = true }
+                    .accessibilityLabel("Add chat folder")
             }
             .padding(.horizontal, DS.Spacing.lg)
             .padding(.vertical, DS.Spacing.sm)
@@ -416,12 +416,10 @@ struct ConversationListView: View {
                 get: { isEditing ? nil : selectedConversationId },
                 set: { if !isEditing { selectedConversationId = $0 } }
             )) {
-            if !usedLabels.isEmpty || activeLabel != nil {
-                labelChips
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
-            }
+            labelChips
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
 
             if visibleConversations.isEmpty {
                 ContentUnavailableView(
