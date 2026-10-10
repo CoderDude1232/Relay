@@ -43,7 +43,7 @@ public struct RecentChatsSnapshot: Codable, Sendable {
         self.bubble = bubble; self.wallpaper = wallpaper; self.conversations = conversations
     }
 
-    public static let messagesPerConversation = 4
+    public static let messagesPerConversation = 10
 
     /// Display text for a stored message body.
     public static func previewText(body: String, attachmentType: String?) -> String {

@@ -157,10 +157,13 @@ struct ChatPreviewView: View {
     let pending: Pending?
     let theme: ChatPreviewTheme
     var showsHeader = true
+    /// Fill the available height, with messages anchored to the bottom.
+    var fillsHeight = false
 
     var body: some View {
         VStack(spacing: 0) {
             if showsHeader { header }
+            if fillsHeight { Spacer(minLength: 0) }
             VStack(spacing: 6) {
                 ForEach(Array(history.enumerated()), id: \.offset) { _, message in
                     row(message)

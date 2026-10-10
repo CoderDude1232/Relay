@@ -57,16 +57,25 @@ class IntentViewController: UIViewController, INUIHostedViewControlling {
             pending = .outgoing(draft, status: status)
         }
 
-        let preview = ChatPreviewView(
-            name: name,
-            isGroup: conversation?.isGroup ?? false,
-            avatar: ChatPreviewStore.avatar(forConversationId: conversationId),
-            history: conversation?.messages ?? [],
-            pending: pending,
-            theme: ChatPreviewTheme(snapshot: snapshot)
-        )
         let maxSize = extensionContext?.hostedViewMaximumAllowedSize ?? CGSize(width: 320, height: 400)
-        let height = host.show(preview, in: self, width: maxSize.width)
-        completion(true, parameters, CGSize(width: maxSize.width, height: min(height, maxSize.height)))
+        let history = conversation?.messages ?? []
+        func preview(_ count: Int, fill: Bool) -> ChatPreviewView {
+            ChatPreviewView(
+                name: name,
+                isGroup: conversation?.isGroup ?? false,
+                avatar: ChatPreviewStore.avatar(forConversationId: conversationId),
+                history: Array(history.suffix(count)),
+                pending: pending,
+                theme: ChatPreviewTheme(snapshot: snapshot),
+                fillsHeight: fill
+            )
+        }
+        // As many recent messages as fit, newest at the bottom.
+        var count = history.count
+        while count > 0, host.show(preview(count, fill: false), in: self, width: maxSize.width) > maxSize.height {
+            count -= 1
+        }
+        _ = host.show(preview(count, fill: true), in: self, width: maxSize.width)
+        completion(true, parameters, maxSize)
     }
 }
