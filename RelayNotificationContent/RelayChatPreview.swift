@@ -14,7 +14,7 @@ import UIKit
 
 // MARK: - Snapshot
 
-/// Mirrors `SiriPreviewSnapshot` in the app target.
+/// Mirrors `RecentChatsSnapshot` in RelayCore.
 struct SiriPreviewSnapshot: Codable {
     struct Message: Codable {
         let outgoing: Bool
@@ -35,6 +35,7 @@ struct SiriPreviewSnapshot: Codable {
 enum ChatPreviewStore {
     static let appGroupId = "group.app.relaymsg"
     private static let fileName = "siri-preview.bin"
+    private static let wallpaperFileName = "siri-wallpaper.bin"
     private static let keychainService = "app.relaymsg.siri-preview"
     private static let avatarDirName = "relay-avatars"
 
@@ -43,13 +44,21 @@ enum ChatPreviewStore {
     }
 
     static func load() -> SiriPreviewSnapshot? {
-        guard let url = container?.appendingPathComponent(fileName),
+        guard let json = read(fileName) else { return nil }
+        return try? JSONDecoder().decode(SiriPreviewSnapshot.self, from: json)
+    }
+
+    static func wallpaperPhoto() -> UIImage? {
+        read(wallpaperFileName).flatMap(UIImage.init(data:))
+    }
+
+    private static func read(_ name: String) -> Data? {
+        guard let url = container?.appendingPathComponent(name),
               let sealed = try? Data(contentsOf: url),
               let key = readKey(),
-              let box = try? AES.GCM.SealedBox(combined: sealed),
-              let json = try? AES.GCM.open(box, using: SymmetricKey(data: key))
+              let box = try? AES.GCM.SealedBox(combined: sealed)
         else { return nil }
-        return try? JSONDecoder().decode(SiriPreviewSnapshot.self, from: json)
+        return try? AES.GCM.open(box, using: SymmetricKey(data: key))
     }
 
     static func avatar(forConversationId id: String) -> UIImage? {
@@ -89,6 +98,9 @@ struct ChatPreviewTheme {
     let bubble: LinearGradient
     let bubbleShadow: Color
     let wallpaper: LinearGradient?
+    let photo: UIImage?
+
+    var hasWallpaper: Bool { wallpaper != nil || photo != nil }
 
     init(snapshot: SiriPreviewSnapshot?) {
         let stops = (snapshot?.bubble ?? "").split(separator: "-").compactMap { Color(relayHex: String($0)) }
@@ -96,6 +108,7 @@ struct ChatPreviewTheme {
         let b = stops.count > 1 ? stops[1] : a
         bubble = LinearGradient(colors: [a, b], startPoint: .topLeading, endPoint: .bottomTrailing)
         bubbleShadow = a
+        photo = snapshot?.wallpaper == "photo" ? ChatPreviewStore.wallpaperPhoto() : nil
 
         let wallpaperStops: [String]? = switch snapshot?.wallpaper {
         case "sunset":   ["FF7E5F", "FEB47B"]
@@ -158,16 +171,21 @@ struct ChatPreviewView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background {
-            if let wallpaper = theme.wallpaper {
+            if let photo = theme.photo {
+                Image(uiImage: photo)
+                    .resizable()
+                    .scaledToFill()
+                    .clipped()
+            } else if let wallpaper = theme.wallpaper {
                 wallpaper
             } else {
-                Color(.systemGroupedBackground)
+                Color(.systemBackground)
             }
         }
     }
 
     private var captionStyle: AnyShapeStyle {
-        theme.wallpaper == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.white.opacity(0.85))
+        !theme.hasWallpaper ? AnyShapeStyle(.secondary) : AnyShapeStyle(.white.opacity(0.85))
     }
 
     private var header: some View {

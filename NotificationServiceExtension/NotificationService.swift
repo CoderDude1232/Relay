@@ -334,6 +334,17 @@ class NotificationService: UNNotificationServiceExtension {
                              : (globalPrivacy == "nameOnly" || convHidePreviews) ? "nameOnly"
                              : "full"
 
+        if !convHidePreviews {
+            let text = notification.body.hasPrefix(PendingControlStore.notepadPrefix)
+                ? previewBody
+                : RecentChatsSnapshot.previewText(body: notification.body, attachmentType: nil)
+            RecentChatsStore.appendIncoming(
+                conversationId: notification.conversationId,
+                text: text,
+                sender: callerDisplayName(for: notification.senderAccount, in: storage)
+            )
+        }
+
         switch effectivePrivacy {
         case "none":
             return .show(title: "New Message", body: "You have a new message",

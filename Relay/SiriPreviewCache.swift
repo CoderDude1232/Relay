@@ -2,64 +2,38 @@
 //  SiriPreviewCache.swift
 //  Relay
 //
-//  A small encrypted snapshot of recent chats (last few messages, names, chat
-//  theme) for the Siri UI extension, which can't open the message database.
-//  Written to the App Group container, AES-GCM under a key kept in the shared
-//  Keychain. Chats hidden by Panic Mode or with previews turned off are left out.
+//  Writes the encrypted recent-chats snapshot (RecentChatsStore) that the Siri
+//  UI and notification content extensions draw from. Chats hidden by Panic Mode
+//  are left out, and chats with previews off carry no message text.
 //
 
-import CryptoKit
 import Foundation
 import RelayCore
-import Security
 import SecureStorage
-
-struct SiriPreviewSnapshot: Codable {
-    struct Message: Codable {
-        let outgoing: Bool
-        let text: String
-        let sender: String?
-    }
-    struct Conversation: Codable {
-        let id: String
-        let name: String
-        let isGroup: Bool
-        let messages: [Message]
-    }
-    /// "RRGGBB-RRGGBB" outgoing bubble gradient, nil = accent colour.
-    let bubble: String?
-    let wallpaper: String
-    let conversations: [Conversation]
-}
+import UIKit
 
 enum SiriPreviewCache {
-    static let fileName = "siri-preview.bin"
-    static let keychainService = "app.relaymsg.siri-preview"
     private static let maxConversations = 15
-    private static let messagesPerConversation = 4
-
-    private static var fileURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: AppModel.appGroupId)?
-            .appendingPathComponent(fileName)
-    }
+    private static var wallpaperFingerprint: String?
 
     @MainActor
     static func write(service: MessagingService) {
-        guard let url = fileURL, let key = loadOrCreateKey() else { return }
         let defaults = UserDefaults.standard
         let panic = PanicModeManager.shared
-        var convs: [SiriPreviewSnapshot.Conversation] = []
+        var convs: [RecentChatsSnapshot.Conversation] = []
         for conv in service.conversations where !conv.archived && !panic.isHidden(conv.id) {
             guard convs.count < maxConversations else { break }
             let name = conv.groupId.map { service.displayName(forAccount: $0) }
                 ?? service.displayName(forAccount: conv.peerAccount)
-            var messages: [SiriPreviewSnapshot.Message] = []
+            var messages: [RecentChatsSnapshot.Message] = []
             if !conv.hidePreviews,
-               let stored = try? service.storage.messages.messages(in: conv.id, limit: messagesPerConversation) {
+               let stored = try? service.storage.messages.messages(
+                   in: conv.id, limit: RecentChatsSnapshot.messagesPerConversation
+               ) {
                 messages = stored.filter { !$0.isDeleted }.map { m in
-                    SiriPreviewSnapshot.Message(
+                    RecentChatsSnapshot.Message(
                         outgoing: m.isOutgoing,
-                        text: previewText(m),
+                        text: RecentChatsSnapshot.previewText(body: m.body, attachmentType: m.attachments.first?.contentType),
                         sender: conv.isGroup && !m.isOutgoing
                             ? m.senderAccount.map { service.displayName(forAccount: $0) } : nil
                     )
@@ -67,60 +41,40 @@ enum SiriPreviewCache {
             }
             convs.append(.init(id: conv.id, name: name, isGroup: conv.isGroup, messages: messages))
         }
-        let snapshot = SiriPreviewSnapshot(
+        let wallpaper = defaults.string(forKey: "chat.wallpaper") ?? "none"
+        RecentChatsStore.save(RecentChatsSnapshot(
             bubble: defaults.string(forKey: "chat.bubbleTint"),
-            wallpaper: defaults.string(forKey: "chat.wallpaper") ?? "none",
+            wallpaper: wallpaper,
             conversations: convs
-        )
-        guard let json = try? JSONEncoder().encode(snapshot),
-              let sealed = try? AES.GCM.seal(json, using: SymmetricKey(data: key)).combined
-        else { return }
-        try? sealed.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        ))
+        writeWallpaper(active: wallpaper == "photo")
     }
 
-    /// Sign-out: remove the snapshot and its key.
+    /// Keeps a small copy of the chat wallpaper photo for the extensions.
+    private static func writeWallpaper(active: Bool) {
+        let source = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("chat-wallpaper.jpg")
+        guard active,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: source.path),
+              let modified = attrs[.modificationDate] as? Date
+        else {
+            if wallpaperFingerprint != "" { RecentChatsStore.saveWallpaper(nil) }
+            wallpaperFingerprint = ""
+            return
+        }
+        let fingerprint = "\(modified.timeIntervalSince1970)-\(attrs[.size] ?? 0)"
+        if fingerprint == wallpaperFingerprint, RecentChatsStore.hasWallpaper { return }
+        guard let image = UIImage(contentsOfFile: source.path) else { return }
+        let scale = min(1, 700 / max(image.size.width, image.size.height))
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let small = UIGraphicsImageRenderer(size: size).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let jpeg = small.jpegData(compressionQuality: 0.7) else { return }
+        RecentChatsStore.saveWallpaper(jpeg)
+        wallpaperFingerprint = fingerprint
+    }
+
     static func wipe() {
-        if let url = fileURL { try? FileManager.default.removeItem(at: url) }
-        SecItemDelete(keyQuery() as CFDictionary)
-    }
-
-    private static func previewText(_ m: StoredMessage) -> String {
-        let body = m.body
-        if body == "__sticker__" { return "Sticker" }
-        if body.hasPrefix("__poll__:") {
-            let json = String(body.dropFirst("__poll__:".count))
-            return "Poll: " + (PollPayload.decode(json)?.question ?? "")
-        }
-        if body.hasPrefix("__relay_loc__") { return "Location" }
-        if body.hasPrefix("~once~") { return "View-once media" }
-        if body.isEmpty, let a = m.attachments.first {
-            return a.isImage ? "Photo" : a.isVideo ? "Video" : a.isAudio ? "Voice message" : "Attachment"
-        }
-        return String(body.prefix(240))
-    }
-
-    // MARK: Key
-
-    private static func keyQuery() -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: keychainService,
-         kSecAttrAccount as String: "key",
-         kSecAttrAccessGroup as String: AppModel.appGroupId]
-    }
-
-    private static func loadOrCreateKey() -> Data? {
-        var query = keyQuery()
-        query[kSecReturnData as String] = true
-        var out: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data, data.count == 32 {
-            return data
-        }
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, 32, &bytes) == errSecSuccess else { return nil }
-        var add = keyQuery()
-        add[kSecValueData as String] = Data(bytes)
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemDelete(keyQuery() as CFDictionary)
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess ? Data(bytes) : nil
+        RecentChatsStore.wipe()
+        wallpaperFingerprint = nil
     }
 }
