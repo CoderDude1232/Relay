@@ -232,6 +232,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     let callManager = CallManager()
     let pushKitDelegate = PushKitDelegate()
     weak var model: AppModel?
+
+    /// Siri / CarPlay "send a message": handled in the app (launched in the
+    /// background) so it sends now instead of waiting for the next launch.
+    func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
+        intent is INSendMessageIntent ? SiriSendHandler(appDelegate: self) : nil
+    }
     /// Buffer for notification taps that arrive before the model is wired (cold-start).
     var coldStartConversationId: String?
 
