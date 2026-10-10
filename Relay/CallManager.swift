@@ -224,6 +224,10 @@ final class CallManager: NSObject {
     private var wasIncomingCall = false   // true when we are the callee
     private var callTimeoutTask: Task<Void, Never>?
     private var iceRecoveryTask: Task<Void, Never>?
+    /// Mid-call reconnection (1:1): rebuilds ICE with fresh TURN servers.
+    private var iceRestartTask: Task<Void, Never>?
+    /// Mid-call reconnection (group): one task per peer.
+    private var groupReconnectTasks: [String: Task<Void, Never>] = [:]
     // Candidates that arrived before setRemoteDescription was called; drained immediately after.
     private var pendingRemoteCandidates: [RTCIceCandidate] = []
     private var hasRemoteDescription = false
@@ -759,6 +763,11 @@ final class CallManager: NSObject {
                 iceRecoveryTask = nil
                 storedCallKind = kind
                 updateCallKitVideoIfNeeded(kind: kind)
+                if storedCallConnectedAt != nil, let pc = peerConnection {
+                    // A reconnection offer: pick up the current TURN servers
+                    // first, in case ours went down.
+                    await refreshIceServers(on: pc)
+                }
                 await applyOffer(msg, from: account)
             } else if case .incoming(let existingId, _, _) = state, existingId == msg.callID {
                 // VoIP push (or an earlier copy of this OFFER) already registered
@@ -889,6 +898,66 @@ final class CallManager: NSObject {
         }
     }
 
+    /// Points an existing connection at the TURN servers the relay hands out
+    /// now (our own, or the backup when ours is down or overloaded).
+    private func refreshIceServers(on pc: RTCPeerConnection) async {
+        guard let config = await makeRTCConfiguration() else { return }
+        if !pc.setConfiguration(config) {
+            log.warning("couldn't update ICE servers on the live call")
+        }
+    }
+
+    /// 1:1 mid-call reconnection. The caller drives it (the callee answers the
+    /// restart OFFER, refreshing its own servers first), retrying for ~25 s:
+    /// the relay needs ~10 s to notice our TURN server is gone.
+    private func startIceRestart() {
+        guard iceRestartTask == nil, !wasIncomingCall else { return }
+        iceRestartTask = Task { @MainActor [weak self] in
+            defer { self?.iceRestartTask = nil }
+            for attempt in 0..<4 {
+                try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 7))
+                guard let self, !Task.isCancelled,
+                      let pc = self.peerConnection,
+                      let callId = self.storedCallId, let peer = self.storedCallPeer
+                else { return }
+                if pc.iceConnectionState == .connected || pc.iceConnectionState == .completed { return }
+                log.info("reconnecting call (attempt \(attempt + 1))")
+                await self.refreshIceServers(on: pc)
+                pc.restartIce()
+                guard let offer = try? await pc.offer(for: self.defaultConstraints(kind: self.storedCallKind)) else { continue }
+                do { try await pc.setLocalDescription(offer) } catch { continue }
+                var msg = Relay_Content_CallMessage()
+                msg.type = .offer
+                msg.callID = callId
+                msg.sdp = Self.sanitizeSDP(offer.sdp)
+                msg.ice = Self.metadataJSON(kind: self.storedCallKind)
+                _ = await self.onSendCallMessage?(msg, peer)
+            }
+        }
+    }
+
+    /// Group mid-call reconnection: for each pair, the side with the smaller
+    /// account id rebuilds the connection with a fresh offer (the other side
+    /// replaces its connection when that offer arrives), retrying for ~25 s.
+    private func scheduleGroupReconnect(_ account: String) {
+        guard groupReconnectTasks[account] == nil, let me = ownAccountId, me < account else { return }
+        groupReconnectTasks[account] = Task { @MainActor [weak self] in
+            defer { self?.groupReconnectTasks[account] = nil }
+            for attempt in 0..<4 {
+                try? await Task.sleep(for: .seconds(attempt == 0 ? 3 : 7))
+                guard let self, !Task.isCancelled, self.isInGroupCall,
+                      let callId = self.groupCallId, let peer = self.groupPeers[account]
+                else { return }
+                if peer.isConnected { return }
+                log.info("reconnecting group peer (attempt \(attempt + 1))")
+                self.closeGroupPeerConnection(forAccount: account)
+                self.groupPeers[account]?.hasRemoteDescription = false
+                self.groupPeers[account]?.pendingCandidates = []
+                await self.initiateGroupPeerOffer(toPeer: account, callId: callId)
+            }
+        }
+    }
+
     private func scheduleIceFailure(reason: String, delay: Duration) {
         guard iceRecoveryTask == nil else { return }
         log.warning("ICE reported trouble; waiting before ending call: \(PrivacyRedactor.redactedString(reason))")
@@ -981,6 +1050,8 @@ final class CallManager: NSObject {
         callTimeoutTask = nil
         iceRecoveryTask?.cancel()
         iceRecoveryTask = nil
+        iceRestartTask?.cancel()
+        iceRestartTask = nil
         if notifyPeer, let peer = storedCallPeer, let callId = storedCallId, !callId.isEmpty {
             Task {
                 var msg = Relay_Content_CallMessage()
@@ -1034,6 +1105,8 @@ final class CallManager: NSObject {
         callTimeoutTask = nil
         iceRecoveryTask?.cancel()
         iceRecoveryTask = nil
+        iceRestartTask?.cancel()
+        iceRestartTask = nil
 
         // Post a missed call notification when the caller hung up before we answered.
         if fromRemote && wasIncomingCall && !hasAnsweredCall, let name = storedPeerName {
@@ -2007,6 +2080,10 @@ final class CallManager: NSObject {
     }
 
     private func handleGroupPeerOffer(_ msg: Relay_Content_CallMessage, from account: String) async {
+        // A re-offer (reconnection) replaces the old connection.
+        closeGroupPeerConnection(forAccount: account)
+        groupPeers[account]?.hasRemoteDescription = false
+        groupPeers[account]?.pendingCandidates = []
         guard let pc = await makeGroupPeerConnection(forAccount: account) else { return }
         groupPeers[account]?.peerConnection = pc
         if let audioTrack = groupCallLocalAudioTrack { pc.add(audioTrack, streamIds: ["grp"]) }
@@ -2082,11 +2159,14 @@ final class CallManager: NSObject {
                 switch state {
                 case .connected, .completed:
                     self.groupPeers[account]?.isConnected = true
+                    self.groupReconnectTasks[account]?.cancel()
+                    self.groupReconnectTasks[account] = nil
                     // Re-assert enabled in case the audio session was briefly
                     // interrupted between join and first peer connect.
                     RTCAudioSession.sharedInstance().isAudioEnabled = true
                 case .failed, .disconnected:
                     self.groupPeers[account]?.isConnected = false
+                    self.scheduleGroupReconnect(account)
                 default:
                     break
                 }
@@ -2131,6 +2211,8 @@ final class CallManager: NSObject {
     }
 
     private func endGroupCallCleanup() {
+        for task in groupReconnectTasks.values { task.cancel() }
+        groupReconnectTasks.removeAll()
         for peer in groupPeers.values { peer.peerConnection?.close() }
         groupPeers.removeAll()
         groupPeerDelegates.removeAll()
@@ -2231,6 +2313,8 @@ extension CallManager: RTCPeerConnectionDelegate {
             case .connected, .completed:
                 iceRecoveryTask?.cancel()
                 iceRecoveryTask = nil
+                iceRestartTask?.cancel()
+                iceRestartTask = nil
                 // Media is connected now. Keep both caller and callee in
                 // .connecting until this point so the UI and CallKit do not
                 // claim the call is live while ICE is still negotiating.
@@ -2244,6 +2328,13 @@ extension CallManager: RTCPeerConnectionDelegate {
                 if !wasIncomingCall, hasCallKitReport, let uuid = activeCallUUID {
                     provider.reportOutgoingCall(with: uuid, connectedAt: startedAt)
                 }
+            case .failed where storedCallConnectedAt != nil,
+                 .disconnected where storedCallConnectedAt != nil:
+                // Was connected and lost it — e.g. our TURN server went down.
+                // Reconnect with fresh servers (the relay hands out the backup
+                // TURN once it notices); only give up if that fails too.
+                startIceRestart()
+                scheduleIceFailure(reason: "Call connection was lost.", delay: .seconds(40))
             case .failed:
                 scheduleIceFailure(reason: "Couldn’t connect audio.", delay: .seconds(3))
             case .disconnected:
