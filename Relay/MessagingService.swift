@@ -115,9 +115,10 @@ final class MessagingService {
     func scheduleSiriPreviewWrite() {
         siriPreviewTask?.cancel()
         siriPreviewTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(1.5))
             guard !Task.isCancelled, let self else { return }
             SiriPreviewCache.write(service: self)
+            WatchBridge.shared.push(service: self)
         }
     }
     private(set) var callHistory: [StoredCall] = []

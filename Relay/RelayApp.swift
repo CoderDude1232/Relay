@@ -261,6 +261,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
 
         pushKitDelegate.start(callManager: callManager)
+        WatchBridge.shared.activate(appDelegate: self)
         UNUserNotificationCenter.current().delegate = self
         // Both actions act on the account without opening the app, so require
         // an unlocked device; otherwise anyone holding a locked phone could reply.
