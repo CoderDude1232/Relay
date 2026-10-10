@@ -11,6 +11,7 @@ together — there is no external spec, the source of truth is this repo.
 |---|---|
 | `proto/` | **Source of truth for the wire protocol.** `relay.proto` (server-visible envelopes + WS frames) and `content.proto` (client-only plaintext, encrypted before it hits the wire). Every client and the server codegen from here. |
 | `server/` | The Go relay (`relayd`). Store-and-forward, prekeys, sealed sender, blinded discovery, groups, push. API contract in `server/README.md`. |
+| `web/` | The website (relaymsg.app): static pages, the invite and call-link landing pages, and `.well-known/apple-app-site-association`. Deployed by Cloudflare Pages. |
 | `android/` | **Android client** (Kotlin / Jetpack Compose), in progress. Must interoperate byte-for-byte with the contract in `proto/` + `server/`. |
 | iOS (repo root) | The iOS app + Swift packages, kept at the root because the Xcode project's file-system-synchronized group is rooted here. See below. |
 
