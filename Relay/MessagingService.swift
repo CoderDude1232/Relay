@@ -303,8 +303,8 @@ final class MessagingService {
     /// the end-to-end encrypted OFFER.
     func triggerCallPush(account: String, callId: String) async {
         do {
-            if peerAccessKeys[account] == nil { try await refreshSessions(withPeer: account) }
-            guard let accessKey = peerAccessKeys[account] else { return }
+            if knownAccessKey(account) == nil { try await refreshSessions(withPeer: account) }
+            guard let accessKey = knownAccessKey(account) else { return }
             for device in try await knownMailboxDevices(ofPeer: account) {
                 guard let mailbox = device.mailboxId, !mailbox.isEmpty else { continue }
                 do {
@@ -3099,9 +3099,9 @@ final class MessagingService {
     /// sealed-sender access key (published by new builds; returned in the prekey
     /// bundle when the relay supports it). Fetches the bundle once if needed.
     private func recipientSupportsSealed(_ account: String) async -> Bool {
-        if peerAccessKeys[account] != nil { return true }
+        if knownAccessKey(account) != nil { return true }
         try? await refreshSessions(withPeer: account)
-        return peerAccessKeys[account] != nil
+        return knownAccessKey(account) != nil
     }
 
     /// Sends `plaintext` to every known device of the peer as sealed-sender
@@ -3117,10 +3117,10 @@ final class MessagingService {
     ) async throws {
         let certificate = try await senderCertificate()
         // Ensure we have the peer's access key (and sessions) before addressing them.
-        if peerAccessKeys[account] == nil {
+        if knownAccessKey(account) == nil {
             try await refreshSessions(withPeer: account)
         }
-        guard peerAccessKeys[account] != nil else {
+        guard knownAccessKey(account) != nil else {
             // The peer hasn't published a sealed-sender access key; we can't
             // reach them privately. Surface as a send failure.
             throw RelayAPIError.http(status: 403, message: "recipient has not enabled sealed sender")
@@ -3160,7 +3160,7 @@ final class MessagingService {
         ephemeral: Bool
     ) async throws -> [PeerDevice] {
         // Read the access key fresh each pass so a refresh between passes takes effect.
-        guard let accessKey = peerAccessKeys[account] else { return devices }
+        guard let accessKey = knownAccessKey(account) else { return devices }
         var failed: [PeerDevice] = []
         for device in devices {
             guard let mailboxId = device.mailboxId, !mailboxId.isEmpty else { continue }
@@ -3207,15 +3207,55 @@ final class MessagingService {
         }
     }
 
+    /// The peer's sealed-sender access key, from memory or the encrypted DB.
+    private func knownAccessKey(_ account: String) -> Data? {
+        if let key = peerAccessKeys[account] { return key }
+        guard let data = (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text("ak:\(account)")]
+        ).first?.first?.data) ?? nil, data.count == 32 else { return nil }
+        peerAccessKeys[account] = data
+        return data
+    }
+
+    private func rememberAccessKey(_ key: Data?, for account: String) {
+        peerAccessKeys[account] = key
+        if let key {
+            try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                                      [.text("ak:\(account)"), .blob(key)])
+        } else {
+            try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text("ak:\(account)")])
+        }
+    }
+
+    /// Anonymous bundle fetch; nil (after forgetting the key) when the relay
+    /// rejects the access key, so the caller falls back to the signed fetch.
+    private func fetchBundlesAnonymously(_ account: String, accessKey: Data) async throws -> [PeerPreKeyBundle]? {
+        do {
+            return try await api.fetchPreKeyBundlesSealed(account: account, accessKey: accessKey)
+        } catch RelayAPIError.http(status: 403, _) {
+            rememberAccessKey(nil, for: account)
+            return nil
+        }
+    }
+
     /// Fetches fresh prekey bundles for the peer and (re)establishes
     /// sessions for every device, recording the device list.
     private func refreshSessions(withPeer account: String) async throws {
-        let fetched = try await api.fetchPreKeyBundlesWithAccessKey(account: account)
-        let bundles = fetched.bundles
-        // Cache the peer's sealed-sender access key so we can address them on the
-        // unauthenticated delivery path without another round-trip.
-        if let accessKey = fetched.accessKey {
-            peerAccessKeys[account] = accessKey
+        let bundles: [PeerPreKeyBundle]
+        // Once we know a peer's access key, fetch anonymously: the relay can't
+        // tell who is asking for whose keys. A 403 means the key was rotated;
+        // forget it and fall back to the signed fetch, which returns the new one.
+        if account != credentials.accountId, let known = knownAccessKey(account),
+           let anonymous = try await fetchBundlesAnonymously(account, accessKey: known) {
+            bundles = anonymous
+        } else {
+            let fetched = try await api.fetchPreKeyBundlesWithAccessKey(account: account)
+            bundles = fetched.bundles
+            // Remember the access key (in memory and in the encrypted DB) so
+            // later fetches can be anonymous and sealed sends need no lookup.
+            if let accessKey = fetched.accessKey {
+                rememberAccessKey(accessKey, for: account)
+            }
         }
         var devices: [PeerDevice] = []
         var firstSeenIdentity = false
@@ -3352,7 +3392,7 @@ final class MessagingService {
                 // first message is a single round-trip instead of chaining a cert
                 // fetch + bundle fetch + send (which is what makes the first send
                 // slow on bad networks).
-                if peerAccessKeys[peer] == nil { try? await refreshSessions(withPeer: peer) }
+                if knownAccessKey(peer) == nil { try? await refreshSessions(withPeer: peer) }
                 _ = try? await senderCertificate()
                 await sendMyProfileIfNeeded(toPeer: peer)
             }

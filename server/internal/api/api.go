@@ -301,6 +301,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/keys", s.auth(s.handleSetKeys))
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))
 	mux.HandleFunc("GET /v1/keys/{account}", s.auth(s.handleGetKeys))
+	mux.HandleFunc("GET /v1/keys/{account}/sealed", s.handleGetKeysSealed) // unauthenticated by design (access-key capability)
 	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/password-reset", s.handlePasswordReset) // unauthenticated; proof = fresh Supabase recovery session
@@ -2145,6 +2146,76 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		return
 	}
 
+	// Include the account's sealed-sender access key so a sender who establishes
+	// a session (fetches the bundle) can then send sealed to this account.
+	accessKey, _ := s.store.AccessKey(account)
+	writeKeyBundles(w, bundles, accessKey)
+}
+
+// handleGetKeysSealed serves prekey bundles to a caller that proves it may
+// reach `account` with the account's sealed-sender access key — without saying
+// who it is, so the relay can't record who fetches whose keys. Clients use it
+// whenever they already know the peer's access key (every fetch after the first
+// contact); the signed GET /v1/keys/{account} remains for first contact.
+// Unknown account and wrong key get the same 403. Abuse is bounded per source
+// IP and by the target's one-time-prekey budget.
+func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !sealedKeyFetchIPLimiter.allow(ip) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+		return
+	}
+	account := r.PathValue("account")
+	token, err := base64.StdEncoding.DecodeString(r.Header.Get("Relay-Access-Key"))
+	if err != nil || len(token) != 32 {
+		httpError(w, http.StatusForbidden, "not allowed")
+		return
+	}
+	stored, err := s.store.AccessKey(account)
+	if err != nil || len(stored) != 32 || subtle.ConstantTimeCompare(stored, token) != 1 {
+		httpError(w, http.StatusForbidden, "not allowed")
+		return
+	}
+	if !preKeyFetchLimiter.allow("sealed:" + ip + ":" + account) {
+		httpError(w, http.StatusTooManyRequests, "prekey fetch rate limit exceeded; try again later")
+		return
+	}
+	var deviceIDs []uint32
+	if q := r.URL.Query().Get("device"); q != "" {
+		id, err := strconv.ParseUint(q, 10, 32)
+		if err != nil {
+			httpError(w, http.StatusBadRequest, "bad device id")
+			return
+		}
+		deviceIDs = []uint32{uint32(id)}
+	}
+	// Same one-time prekey budgets as the signed path, with the source IP
+	// standing in for the (unknown) requester.
+	requester := "ip:" + ip
+	allowOneTime := func(deviceID uint32) bool {
+		if preKeyRequesterOTKLimiter.exhausted(requester) {
+			return false
+		}
+		if !preKeyTargetOTKLimiter.allow(account + "/" + strconv.FormatUint(uint64(deviceID), 10)) {
+			return false
+		}
+		return preKeyRequesterOTKLimiter.allow(requester)
+	}
+	bundles, err := s.store.TakePreKeyBundles(account, deviceIDs, allowOneTime)
+	if errors.Is(err, store.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "unknown device or keys not yet uploaded")
+		return
+	}
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	// The caller already holds the access key; don't echo it.
+	writeKeyBundles(w, bundles, nil)
+}
+
+// writeKeyBundles writes the GET /v1/keys response body.
+func writeKeyBundles(w http.ResponseWriter, bundles []store.PreKeyBundle, accessKey []byte) {
 	type jsonBundle struct {
 		DeviceID       uint32             `json:"deviceId"`
 		MailboxID      string             `json:"mailboxId,omitempty"`
@@ -2154,9 +2225,6 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		KyberPreKey    jsonSignedPreKey   `json:"kyberPreKey"`
 		OneTimePreKey  *jsonOneTimePreKey `json:"oneTimePreKey"`
 	}
-	// Include the account's sealed-sender access key so a sender who establishes
-	// a session (fetches the bundle) can then send sealed to this account.
-	accessKey, _ := s.store.AccessKey(account)
 	out := struct {
 		Devices   []jsonBundle `json:"devices"`
 		AccessKey b64          `json:"accessKey,omitempty"`
@@ -2657,6 +2725,9 @@ var usernameLookupLimiter = newSlidingWindowLimiter(120, time.Hour)
 // Sealed-sender delivery is unauthenticated, so rate-limit per source IP and per
 // destination mailbox to bound abuse on top of the access-key check.
 var sealedSendIPLimiter = newSlidingWindowLimiter(600, time.Minute)
+
+// sealedKeyFetchIPLimiter bounds anonymous key fetches per source IP.
+var sealedKeyFetchIPLimiter = newSlidingWindowLimiter(300, time.Hour)
 var sealedSendMailboxLimiter = newSlidingWindowLimiter(120, time.Minute)
 
 // directoryLimiter: blinded-discovery requests (OPRF eval + bucket fetch) per

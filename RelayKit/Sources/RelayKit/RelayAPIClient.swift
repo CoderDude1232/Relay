@@ -746,6 +746,17 @@ public struct RelayAPIClient: Sendable {
         return (bundles, accessKey)
     }
 
+    /// Anonymous variant: proves we may reach `account` with its sealed-sender
+    /// access key instead of signing as ourselves, so the relay can't record who
+    /// fetches whose keys. Sent with no credentials. 403 = wrong/rotated key.
+    public func fetchPreKeyBundlesSealed(account: String, accessKey: Data) async throws -> [PeerPreKeyBundle] {
+        struct Response: Decodable { let devices: [BundleDTO] }
+        var request = makeRequest("GET", "v1/keys/\(account)/sealed")
+        request.setValue(accessKey.base64EncodedString(), forHTTPHeaderField: "Relay-Access-Key")
+        let (data, _) = try await send(request, authenticated: false)
+        return try JSONDecoder().decode(Response.self, from: data).devices.map { try $0.model() }
+    }
+
     // MARK: - Group invites (relay stores only opaque encrypted blobs; groups
     // themselves are fully client-managed and E2E — no server roster/name/admins)
 
