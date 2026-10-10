@@ -587,10 +587,15 @@ public struct RelayAPIClient: Sendable {
     }
 
     /// Fetches time-limited TURN credentials (coturn REST API format).
-    /// Returns nil if TURN is not configured on the server.
-    public func fetchTurnCredentials() async throws -> TurnCredentials? {
+    /// Returns nil if TURN is not configured on the server. `afterFailure`:
+    /// the call's relay just failed — the relay checks its TURN server on the
+    /// spot and hands out the backup if it's down.
+    public func fetchTurnCredentials(afterFailure: Bool = false) async throws -> TurnCredentials? {
         do {
-            let creds: TurnCredentials = try await request("GET", "v1/turn-credentials", body: nil as String?)
+            var request = makeRequest("GET", "v1/turn-credentials")
+            if afterFailure { request.url?.append(queryItems: [URLQueryItem(name: "failed", value: "1")]) }
+            let (data, _) = try await send(request, authenticated: true)
+            let creds = try JSONDecoder().decode(TurnCredentials.self, from: data)
             return creds
         } catch RelayAPIError.http(status: 404, message: _) {
             return nil

@@ -2499,7 +2499,13 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request, _
 	// adding allocations to a box that needs the load taken off it), in both
 	// the list and the legacy top-level fields older clients read.
 	servers, legacy := []iceServer{own}, own
-	if s.cfTURN != nil && s.turnHealth != nil && !s.turnHealth.Healthy() {
+	// ?failed=1: the phone's call just lost its relay. Check our TURN now
+	// instead of waiting for the background prober (~15 s) to notice.
+	down := s.turnHealth != nil && !s.turnHealth.Healthy()
+	if !down && s.cfTURN != nil && s.turnHealth != nil && r.URL.Query().Get("failed") == "1" {
+		down = !s.turnHealth.CheckNow()
+	}
+	if s.cfTURN != nil && down {
 		if cf, err := s.cfTURN.generate(r.Context(), turnTTL); err == nil {
 			servers, legacy = []iceServer{cf}, cf
 		} else {

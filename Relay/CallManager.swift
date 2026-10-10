@@ -147,7 +147,11 @@ final class CallManager: NSObject {
     /// Persists call records after the call reaches a terminal state.
     var onRecordCall: ((StoredCall) -> Void)?
     /// Returns fresh TURN credentials from the server; nil if TURN not configured.
-    var onFetchTurnCredentials: (() async throws -> TurnCredentials?)?
+    /// `afterFailure`: asked while reconnecting a call whose relay failed.
+    var onFetchTurnCredentials: ((_ afterFailure: Bool) async throws -> TurnCredentials?)?
+    /// While set (and in the future), TURN fetches say the call's relay failed,
+    /// so the relay checks its own TURN at once instead of waiting ~15 s.
+    private var reconnectingUntil: Date?
 
     nonisolated static let privateCallModeKey = "relay.privateCallMode"
     nonisolated static let callsInRecentsKey = "relay.callsInRecents"
@@ -766,6 +770,7 @@ final class CallManager: NSObject {
                 if storedCallConnectedAt != nil, let pc = peerConnection {
                     // A reconnection offer: pick up the current TURN servers
                     // first, in case ours went down.
+                    markReconnecting()
                     await refreshIceServers(on: pc)
                 }
                 await applyOffer(msg, from: account)
@@ -910,12 +915,17 @@ final class CallManager: NSObject {
     /// 1:1 mid-call reconnection. The caller drives it (the callee answers the
     /// restart OFFER, refreshing its own servers first), retrying for ~25 s:
     /// the relay needs ~10 s to notice our TURN server is gone.
+    private func markReconnecting() { reconnectingUntil = Date().addingTimeInterval(60) }
+
     private func startIceRestart() {
         guard iceRestartTask == nil, !wasIncomingCall else { return }
+        markReconnecting()
         iceRestartTask = Task { @MainActor [weak self] in
             defer { self?.iceRestartTask = nil }
             for attempt in 0..<4 {
-                try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 7))
+                // First try right away: the relay now checks its TURN on the
+                // spot, so a dead server is swapped for the backup immediately.
+                try? await Task.sleep(for: .seconds(attempt == 0 ? 1 : 6))
                 guard let self, !Task.isCancelled,
                       let pc = self.peerConnection,
                       let callId = self.storedCallId, let peer = self.storedCallPeer
@@ -940,11 +950,12 @@ final class CallManager: NSObject {
     /// account id rebuilds the connection with a fresh offer (the other side
     /// replaces its connection when that offer arrives), retrying for ~25 s.
     private func scheduleGroupReconnect(_ account: String) {
+        markReconnecting()
         guard groupReconnectTasks[account] == nil, let me = ownAccountId, me < account else { return }
         groupReconnectTasks[account] = Task { @MainActor [weak self] in
             defer { self?.groupReconnectTasks[account] = nil }
             for attempt in 0..<4 {
-                try? await Task.sleep(for: .seconds(attempt == 0 ? 3 : 7))
+                try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 6))
                 guard let self, !Task.isCancelled, self.isInGroupCall,
                       let callId = self.groupCallId, let peer = self.groupPeers[account]
                 else { return }
@@ -1052,6 +1063,7 @@ final class CallManager: NSObject {
         iceRecoveryTask = nil
         iceRestartTask?.cancel()
         iceRestartTask = nil
+        reconnectingUntil = nil
         if notifyPeer, let peer = storedCallPeer, let callId = storedCallId, !callId.isEmpty {
             Task {
                 var msg = Relay_Content_CallMessage()
@@ -1107,6 +1119,7 @@ final class CallManager: NSObject {
         iceRecoveryTask = nil
         iceRestartTask?.cancel()
         iceRestartTask = nil
+        reconnectingUntil = nil
 
         // Post a missed call notification when the caller hung up before we answered.
         if fromRemote && wasIncomingCall && !hasAnsweredCall, let name = storedPeerName {
@@ -1346,7 +1359,8 @@ final class CallManager: NSObject {
         // for when the relay can't be reached.
         if let fetch = onFetchTurnCredentials {
             do {
-                if let creds = try await fetch() {
+                let afterFailure = reconnectingUntil.map { $0 > Date() } ?? false
+                if let creds = try await fetch(afterFailure) {
                     let ttl = TimeInterval(max(creds.ttl, 60))
                     cachedTurnCredentials = (creds, Date().addingTimeInterval(ttl))
                     return iceServers(from: creds)
@@ -2081,6 +2095,7 @@ final class CallManager: NSObject {
 
     private func handleGroupPeerOffer(_ msg: Relay_Content_CallMessage, from account: String) async {
         // A re-offer (reconnection) replaces the old connection.
+        if groupPeers[account]?.peerConnection != nil { markReconnecting() }
         closeGroupPeerConnection(forAccount: account)
         groupPeers[account]?.hasRemoteDescription = false
         groupPeers[account]?.pendingCandidates = []
@@ -2213,6 +2228,7 @@ final class CallManager: NSObject {
     private func endGroupCallCleanup() {
         for task in groupReconnectTasks.values { task.cancel() }
         groupReconnectTasks.removeAll()
+        reconnectingUntil = nil
         for peer in groupPeers.values { peer.peerConnection?.close() }
         groupPeers.removeAll()
         groupPeerDelegates.removeAll()

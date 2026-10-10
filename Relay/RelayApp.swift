@@ -207,8 +207,8 @@ struct RelayApp: App {
         service.onRemovedFromAccount = {
             await MainActor.run { appModel.signOut(removeFromServer: false) }
         }
-        callManager.onFetchTurnCredentials = {
-            try await service.apiClient.fetchTurnCredentials()
+        callManager.onFetchTurnCredentials = { afterFailure in
+            try await service.apiClient.fetchTurnCredentials(afterFailure: afterFailure)
         }
         Task { await replayPendingCallOffersDuringWake(service) }
         appDelegate.pushKitDelegate.wire(apiClient: service.apiClient)

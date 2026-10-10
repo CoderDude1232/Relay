@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -39,14 +40,24 @@ type TURNHealth struct {
 	statusURL string // turnload agent; empty = liveness only
 	client    *http.Client
 	unhealthy atomic.Bool
+
+	// On-demand checks (a phone reporting its call's relay failed) are
+	// coalesced: one probe at a time, its result reused for a few seconds.
+	checkMu     sync.Mutex
+	lastCheckAt time.Time
+	lastCheckOK bool
 }
 
 const (
 	turnProbeInterval = 5 * time.Second
 	turnProbeTimeout  = 3 * time.Second
-	// Consecutive results needed to flip state, so one lost packet doesn't
-	// send every new call to Cloudflare.
-	turnProbeFlipAfter = 2
+	// Consecutive results needed to flip state. Failing over takes 3 misses
+	// in a row (ordinary packet loss produced 2-miss blips); coming back takes
+	// 2 good checks. Calls that actually drop don't wait for this: they ask
+	// for an immediate check (CheckNow).
+	turnProbeFailAfter    = 3
+	turnProbeRecoverAfter = 2
+	checkNowReuse         = 5 * time.Second
 )
 
 // NewTURNHealth probes addr (host:port, UDP) and, if statusURL is set, the
@@ -93,9 +104,13 @@ func (h *TURNHealth) Run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		ok, why := h.check()
+		need := turnProbeFailAfter
+		if ok {
+			need = turnProbeRecoverAfter
+		}
 		if ok == h.Healthy() {
 			streak = 0
-		} else if streak++; streak >= turnProbeFlipAfter {
+		} else if streak++; streak >= need {
 			streak = 0
 			h.unhealthy.Store(!ok)
 			if ok {
@@ -110,6 +125,26 @@ func (h *TURNHealth) Run(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// CheckNow probes coturn right away (or reuses a probe from the last few
+// seconds) and returns whether it's usable. A failed check also marks it
+// unhealthy at once, so other calls stop being sent to it; the background
+// prober brings it back after two good checks.
+func (h *TURNHealth) CheckNow() bool {
+	h.checkMu.Lock()
+	defer h.checkMu.Unlock()
+	if time.Since(h.lastCheckAt) < checkNowReuse {
+		return h.lastCheckOK
+	}
+	ok, why := h.check()
+	h.lastCheckAt, h.lastCheckOK = time.Now(), ok
+	if !ok && h.Healthy() {
+		h.unhealthy.Store(true)
+		slog.Warn("turn: a call reported its relay failed and our TURN isn't answering; failing over now",
+			"addr", h.addr, "why", why)
+	}
+	return ok
 }
 
 // stunProbe sends a STUN Binding Request (RFC 5389) and waits for the

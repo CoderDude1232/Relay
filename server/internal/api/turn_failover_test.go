@@ -136,3 +136,44 @@ func TestTurnCredentialsFailover(t *testing.T) {
 		t.Fatalf("cloudflare down: should fall back to own TURN: %+v", r)
 	}
 }
+
+func TestCheckNowFailsOverImmediately(t *testing.T) {
+	cf := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"iceServers":[{"urls":["turns:turn.cloudflare.com:443?transport=tcp"],"username":"cfu","credential":"cfc"}]}`))
+	}))
+	defer cf.Close()
+
+	// Our TURN "answers": a failed=1 report must NOT hand out Cloudflare.
+	live := NewTURNHealth(stunStub(t), "")
+	s := &Server{turnURLs: []string{"turn:turn.example:3478"}, turnSecret: "secret"}
+	s.SetTURNFailover(live, &CloudflareTURN{KeyID: "kid", APIToken: "tok", Endpoint: cf.URL})
+	get := func(q string) string {
+		w := httptest.NewRecorder()
+		s.handleTurnCredentials(w, httptest.NewRequest("GET", "/v1/turn-credentials"+q, nil), nil)
+		var r struct{ Username string `json:"username"` }
+		json.Unmarshal(w.Body.Bytes(), &r)
+		return r.Username
+	}
+	if u := get("?failed=1"); u == "cfu" {
+		t.Fatal("handed out Cloudflare although our TURN answers")
+	}
+
+	// Our TURN silent: failed=1 hands out Cloudflare at once and marks it unhealthy.
+	dead, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	deadAddr := dead.LocalAddr().String()
+	dead.Close()
+	down := NewTURNHealth(deadAddr, "")
+	s.SetTURNFailover(down, &CloudflareTURN{KeyID: "kid", APIToken: "tok", Endpoint: cf.URL})
+	if u := get(""); u == "cfu" {
+		t.Fatal("plain request should still get our TURN until the prober notices")
+	}
+	if u := get("?failed=1"); u != "cfu" {
+		t.Fatalf("failed=1 with our TURN down should give Cloudflare, got %q", u)
+	}
+	if down.Healthy() {
+		t.Fatal("failed check should mark our TURN unhealthy")
+	}
+	if u := get(""); u != "cfu" {
+		t.Fatal("after the failed check, every call should get Cloudflare")
+	}
+}
