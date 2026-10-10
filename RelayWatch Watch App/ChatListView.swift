@@ -4,19 +4,21 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ChatListView: View {
     @Environment(WatchSession.self) private var session
 
     var body: some View {
-        NavigationStack {
+        @Bindable var session = session
+        NavigationStack(path: $session.path) {
             Group {
                 if session.snapshot.chats.isEmpty {
                     emptyState
                 } else {
                     List(session.snapshot.chats) { chat in
                         NavigationLink(value: chat.id) {
-                            ChatRow(chat: chat)
+                            ChatRow(chat: chat, avatar: session.avatar(for: chat.id))
                         }
                     }
                 }
@@ -46,10 +48,11 @@ struct ChatListView: View {
 
 private struct ChatRow: View {
     let chat: WatchSnapshot.Chat
+    let avatar: UIImage?
 
     var body: some View {
         HStack(spacing: 8) {
-            WatchAvatar(name: chat.name, isGroup: chat.isGroup, size: 32)
+            WatchAvatar(name: chat.name, isGroup: chat.isGroup, image: avatar, size: 32)
             VStack(alignment: .leading, spacing: 1) {
                 Text(chat.name)
                     .font(.headline)
@@ -76,12 +79,18 @@ private struct ChatRow: View {
 struct WatchAvatar: View {
     let name: String
     let isGroup: Bool
+    var image: UIImage?
     let size: CGFloat
 
     var body: some View {
         ZStack {
             Circle().fill(Color.accentColor.opacity(0.25))
-            if isGroup {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .clipShape(.circle)
+            } else if isGroup {
                 Image(systemName: "person.3.fill")
                     .font(.system(size: size * 0.32, weight: .semibold))
             } else {

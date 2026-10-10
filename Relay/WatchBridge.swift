@@ -8,6 +8,7 @@
 //  previews off carry no message text.
 //
 
+import CryptoKit
 import Foundation
 import RelayCore
 import SecureStorage
@@ -44,11 +45,51 @@ final class WatchBridge: NSObject, WCSessionDelegate {
             try WCSession.default.updateApplicationContext([WatchProtocol.snapshotKey: data])
             lastSent = data
         } catch {}
+        syncAvatars(service: service)
+    }
+
+    // MARK: Avatars
+
+    private static let avatarHashesKey = "watch.avatarHashes"
+    private static let avatarSize: CGFloat = 96
+
+    /// Sends small copies of chat photos that changed since they were last sent.
+    private func syncAvatars(service: MessagingService) {
+        guard canSend else { return }
+        let panic = PanicModeManager.shared
+        var sentHashes = UserDefaults.standard.dictionary(forKey: Self.avatarHashesKey) as? [String: String] ?? [:]
+        let chatIds = service.conversations.lazy
+            .filter { !$0.archived && !panic.isHidden($0.id) }
+            .prefix(Self.maxChats).map(\.id)
+        for id in chatIds {
+            guard let data = ShareBridge.readAvatar(forConversationId: id) else { continue }
+            let hash = SHA256.hash(data: data).prefix(8).map { String(format: "%02x", $0) }.joined()
+            guard sentHashes[id] != hash, let thumbnail = Self.thumbnail(data) else { continue }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("watch-avatar-\(UUID().uuidString).jpg")
+            guard (try? thumbnail.write(to: url, options: .completeFileProtection)) != nil else { continue }
+            WCSession.default.transferFile(url, metadata: [WatchProtocol.avatarKey: id])
+            sentHashes[id] = hash
+        }
+        UserDefaults.standard.set(sentHashes, forKey: Self.avatarHashesKey)
+    }
+
+    private static func thumbnail(_ data: Data) -> Data? {
+        guard let image = UIImage(data: data) else { return nil }
+        let side = avatarSize
+        let scale = max(side / image.size.width, side / image.size.height)
+        let drawn = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let small = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: format).image { _ in
+            image.draw(in: CGRect(x: (side - drawn.width) / 2, y: (side - drawn.height) / 2, width: drawn.width, height: drawn.height))
+        }
+        return small.jpegData(compressionQuality: 0.75)
     }
 
     /// Sign-out: leave nothing on the watch.
     func clear() {
         lastSent = nil
+        UserDefaults.standard.removeObject(forKey: Self.avatarHashesKey)
         guard canSend, let data = try? JSONEncoder().encode(WatchSnapshot.empty) else { return }
         try? WCSession.default.updateApplicationContext([WatchProtocol.snapshotKey: data])
     }
@@ -148,17 +189,32 @@ final class WatchBridge: NSObject, WCSessionDelegate {
 
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
 
+    nonisolated func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        try? FileManager.default.removeItem(at: fileTransfer.file.fileURL)
+        guard error != nil, let id = fileTransfer.file.metadata?[WatchProtocol.avatarKey] as? String else { return }
+        // Resend next time.
+        Task { @MainActor in
+            var hashes = UserDefaults.standard.dictionary(forKey: Self.avatarHashesKey) as? [String: String] ?? [:]
+            hashes[id] = nil
+            UserDefaults.standard.set(hashes, forKey: Self.avatarHashesKey)
+        }
+    }
+
     nonisolated func sessionDidDeactivate(_ session: WCSession) {
         // Switched to another watch.
         Task { @MainActor in
             self.lastSent = nil
+            UserDefaults.standard.removeObject(forKey: Self.avatarHashesKey)
             WCSession.default.activate()
         }
     }
 
     nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
+        let installed = session.isWatchAppInstalled
         Task { @MainActor in
             self.lastSent = nil
+            // A reinstalled watch app starts with no photos.
+            if !installed { UserDefaults.standard.removeObject(forKey: Self.avatarHashesKey) }
             if let model = self.appDelegate?.model, case .ready(let service) = model.phase {
                 self.push(service: service)
             }

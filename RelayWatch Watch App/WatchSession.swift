@@ -8,6 +8,7 @@
 
 import Foundation
 import Observation
+import UIKit
 import WatchConnectivity
 
 @Observable
@@ -17,6 +18,16 @@ final class WatchSession: NSObject, WCSessionDelegate {
     private(set) var isReachable = false
     /// Sent from the watch but not yet in a snapshot from the iPhone.
     private(set) var pending: [String: [WatchSnapshot.Message]] = [:]
+    /// Navigation path of chat ids; a notification tap pushes onto it.
+    var path: [String] = []
+    /// Bumped when a chat photo arrives, so avatars redraw.
+    private(set) var avatarVersion = 0
+    private var avatarCache: [String: UIImage] = [:]
+
+    private static var avatarDir: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("avatars", isDirectory: true)
+    }
 
     private static var cacheURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -33,6 +44,40 @@ final class WatchSession: NSObject, WCSessionDelegate {
         guard WCSession.isSupported() else { return }
         WCSession.default.delegate = self
         WCSession.default.activate()
+    }
+
+    func open(chatId: String) {
+        path = [chatId]
+    }
+
+    func avatar(for chatId: String) -> UIImage? {
+        _ = avatarVersion
+        if let cached = avatarCache[chatId] { return cached }
+        let url = Self.avatarDir.appendingPathComponent(chatId + ".jpg")
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        avatarCache[chatId] = image
+        return image
+    }
+
+    private func storeAvatar(from file: URL, chatId: String) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: Self.avatarDir, withIntermediateDirectories: true)
+        let dest = Self.avatarDir.appendingPathComponent(chatId + ".jpg")
+        try? fm.removeItem(at: dest)
+        guard (try? fm.moveItem(at: file, to: dest)) != nil else { return }
+        try? fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: dest.path)
+        avatarCache[chatId] = nil
+        avatarVersion += 1
+    }
+
+    /// Deletes photos of chats no longer in the snapshot.
+    private func pruneAvatars(keeping ids: Set<String>) {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: Self.avatarDir, includingPropertiesForKeys: nil) else { return }
+        for file in files where !ids.contains(file.deletingPathExtension().lastPathComponent) {
+            try? fm.removeItem(at: file)
+            avatarCache[file.deletingPathExtension().lastPathComponent] = nil
+        }
     }
 
     func chat(id: String) -> WatchSnapshot.Chat? {
@@ -112,8 +157,10 @@ final class WatchSession: NSObject, WCSessionDelegate {
             let confirmed = Set((next.chats.first { $0.id == chatId }?.messages ?? []).filter(\.outgoing).map(\.text))
             pending[chatId] = sent.filter { !confirmed.contains($0.text) }
         }
+        pruneAvatars(keeping: Set(next.chats.map(\.id)))
         if next.chats.isEmpty {
             pending = [:]
+            path = []
             try? FileManager.default.removeItem(at: Self.cacheURL)
         } else {
             try? FileManager.default.createDirectory(
@@ -138,6 +185,16 @@ final class WatchSession: NSObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         nonisolated(unsafe) let context = applicationContext
         Task { @MainActor in self.apply(context) }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        guard let chatId = file.metadata?[WatchProtocol.avatarKey] as? String,
+              !chatId.contains("/"), !chatId.contains("..")
+        else { return }
+        // The system deletes the file when this returns, so move it first.
+        let staged = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        guard (try? FileManager.default.moveItem(at: file.fileURL, to: staged)) != nil else { return }
+        Task { @MainActor in self.storeAvatar(from: staged, chatId: chatId) }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {

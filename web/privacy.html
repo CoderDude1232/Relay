@@ -251,7 +251,8 @@
         Signing in — with an email and password, Apple, or Google — is handled by
         <b>Supabase</b>, our authentication provider. It stores your email address, a securely
         hashed password if you created one, which sign-in method you use, and basic sign-in
-        records such as the time and IP address of each sign-in. Relay's own servers keep only a
+        records such as the time and IP address of each sign-in. The detailed sign-in log is
+        deleted after 24 hours; Supabase keeps only the time you last signed in. Relay's own servers keep only a
         one-way token derived from your email, not the address itself.
       </p>
       <p>
@@ -356,8 +357,9 @@
     <div>
       <p>
         We respond to valid legal process, and we can only produce what exists. For a Relay user
-        that's their username and email address, their sign-in records (time and IP address) held
-        by Supabase, the day their account and each of their devices was created, abuse reports
+        that's their username and email address, their sign-in records held by Supabase (the
+        time of their last sign-in, and the time and IP address of any sign-in in the past 24
+        hours), the day their account and each of their devices was created, abuse reports
         they filed or were named in, and any undelivered message as encrypted data we can't read.
         There's no message history or contact list to disclose.
       </p>

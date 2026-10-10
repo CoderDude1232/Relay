@@ -20,6 +20,10 @@ struct ChatDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 6) {
+                    if let chat {
+                        WatchAvatar(name: chat.name, isGroup: chat.isGroup, image: session.avatar(for: chatId), size: 40)
+                            .padding(.bottom, 4)
+                    }
                     let messages = session.messages(in: chatId)
                     if messages.isEmpty {
                         Text(chat?.messages.isEmpty == false ? "" : "No recent messages")

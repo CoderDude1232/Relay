@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct WatchSnapshot: Codable, Sendable {
+nonisolated struct WatchSnapshot: Codable, Sendable {
     struct Message: Codable, Sendable, Identifiable, Hashable {
         let id: String
         let outgoing: Bool
@@ -35,12 +35,13 @@ struct WatchSnapshot: Codable, Sendable {
 }
 
 /// Message keys shared by both sides.
-enum WatchProtocol {
+nonisolated enum WatchProtocol {
     static let snapshotKey = "snapshot"
     static let actionKey = "action"
     static let conversationKey = "conversationId"
     static let textKey = "text"
     static let videoKey = "video"
+    static let avatarKey = "avatarFor"
     static let okKey = "ok"
     static let errorKey = "error"
 
