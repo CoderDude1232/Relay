@@ -190,7 +190,14 @@ struct CallView: View {
                 Image(systemName: "phone.fill")
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.60))
-                Text(statusLabel)
+                HStack(spacing: 6) {
+                    if callManager.isReconnecting {
+                        Image(systemName: "wifi.slash")
+                            .symbolEffect(.pulse)
+                            .accessibilityLabel("Reconnecting")
+                    }
+                    Text(statusLabel)
+                }
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.65))
             }
@@ -218,7 +225,14 @@ struct CallView: View {
                 Text(peerName)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.white)
-                Text(statusLabel)
+                HStack(spacing: 6) {
+                    if callManager.isReconnecting {
+                        Image(systemName: "wifi.slash")
+                            .symbolEffect(.pulse)
+                            .accessibilityLabel("Reconnecting")
+                    }
+                    Text(statusLabel)
+                }
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.75))
             }

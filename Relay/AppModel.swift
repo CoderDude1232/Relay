@@ -391,6 +391,12 @@ final class AppModel {
             phase = .ready(service)
             if let accountPassword, !accountPassword.isEmpty {
                 UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
+                // Keep the chat list with the account; on an existing account
+                // this also brings it back.
+                Task {
+                    await service.setAccountStorageKey(password: accountPassword)
+                    if !created { await service.restoreAccountStorage() }
+                }
             }
             if created {
                 service.noteAccountCreated(username: resolvedUsername)
@@ -515,6 +521,7 @@ final class AppModel {
         service.noteAccountCreated(username: username)
         if let accountPassword, !accountPassword.isEmpty {
             UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
+            Task { await service.setAccountStorageKey(password: accountPassword) }
         }
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
@@ -579,6 +586,11 @@ final class AppModel {
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
         Task { try? await service.publishInitialKeys() }
+        // Bring back the chat list kept with the account (no messages).
+        Task {
+            await service.setAccountStorageKey(password: accountPassword)
+            await service.restoreAccountStorage()
+        }
     }
 
     /// App Review: signs in to a demo account with the review code.
@@ -681,6 +693,12 @@ final class AppModel {
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
         Task { try? await service.publishInitialKeys() }
+        // The chat list kept under the old password can't be opened any more;
+        // keep a new one under this password from now on.
+        Task {
+            await service.setAccountStorageKey(password: newPassword)
+            await service.restoreAccountStorage()
+        }
     }
 
     /// The email address this account signed up or recovered with, if known.

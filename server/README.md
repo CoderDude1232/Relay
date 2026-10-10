@@ -470,3 +470,15 @@ gets the other demo account — and answers like `/v1/accounts/recover`.
 `GET /v1/accounts/me/demo` (sig) → `{demo, peers[]}` (peers = the other demo
 accounts' usernames); the app uses it to hide what's switched off and to put the
 other demo accounts in the chat list.
+
+## Account storage (encrypted chat list)
+
+`GET /v1/accounts/me/storage` (sig) → `{blob, version}` | `404`.
+`PUT /v1/accounts/me/storage` (sig) `{blob, baseVersion}` → `{version}`; `409` if
+`baseVersion` isn't current (another device wrote first — re-read, merge, retry);
+≤512 KiB; 120 writes/account/hour. The blob is opaque to the relay: the client
+stores its chat and group list (no messages) as `"RAS1" | AES-GCM(len | JSON |
+zero padding to 4 KiB)` under a key from Argon2id(account password, salt =
+SHA-256("relay-account-storage-v1|" + accountId)[0..16]), and restores it after
+signing in with the account password. Deleted with the account; a demo reset
+clears it.

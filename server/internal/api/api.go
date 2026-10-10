@@ -278,6 +278,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/accounts/recover", s.handleRecoverAccount)
 	mux.HandleFunc("POST /v1/accounts/demo-signin", s.handleDemoSignIn) // unauthenticated; review code
 	mux.HandleFunc("GET /v1/accounts/me/demo", s.auth(s.handleDemoStatus))
+	mux.HandleFunc("GET /v1/accounts/me/storage", s.auth(s.handleGetAccountStorage))
+	mux.HandleFunc("PUT /v1/accounts/me/storage", s.auth(s.handlePutAccountStorage))
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))
@@ -2770,6 +2772,9 @@ var usernameLookupLimiter = newSlidingWindowLimiter(120, time.Hour)
 // Sealed-sender delivery is unauthenticated, so rate-limit per source IP and per
 // destination mailbox to bound abuse on top of the access-key check.
 var sealedSendIPLimiter = newSlidingWindowLimiter(600, time.Minute)
+
+// accountStorageLimiter bounds encrypted chat-list writes per account.
+var accountStorageLimiter = newSlidingWindowLimiter(120, time.Hour)
 
 // sealedKeyFetchIPLimiter bounds anonymous key fetches per source IP.
 var sealedKeyFetchIPLimiter = newSlidingWindowLimiter(300, time.Hour)

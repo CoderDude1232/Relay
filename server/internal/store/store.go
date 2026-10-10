@@ -430,6 +430,13 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
 		// Review/test accounts, isolated from everyone else (store/demo.go).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Client-encrypted chat/group list (store/account_storage.go).
+		`CREATE TABLE IF NOT EXISTS account_storage (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    blob       BYTEA NOT NULL,
+    version    BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL
+)`,
 		// Username reuse cooldown: a released name (rename or account deletion)
 		// can't be claimed by another account for UsernameReuseCooldown. Only
 		// keyed hashes are stored — never the name — plus the release time;
@@ -1674,6 +1681,7 @@ func (s *Store) DeleteAccount(accountID string) error {
 		`DELETE FROM directory WHERE account_id = $1`,
 		`DELETE FROM nuke_commands WHERE account_id = $1`,
 		`DELETE FROM reports WHERE reporter_account = $1`,
+		`DELETE FROM account_storage WHERE account_id = $1`,
 		`DELETE FROM accounts WHERE id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, stmt, accountID); err != nil {

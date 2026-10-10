@@ -174,6 +174,12 @@ struct GroupCallView: View {
                         Label("\(peers.count + 1)", systemImage: "person.2.fill")
                             .labelStyle(.titleAndIcon)
                     }
+                    if connectedAt != nil, peers.contains(where: { !$0.isConnected }) {
+                        // Someone's connection dropped and is being rebuilt.
+                        Image(systemName: "wifi.slash")
+                            .symbolEffect(.pulse)
+                            .accessibilityLabel("Reconnecting")
+                    }
                     Text(statusText).monospacedDigit()
                 }
                 .font(.subheadline)

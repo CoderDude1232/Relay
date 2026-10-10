@@ -145,6 +145,30 @@ public struct RelayAPIClient: Sendable {
                                  password: response.devicePassword), response.username)
     }
 
+    /// The account's encrypted chat-list blob and its version; nil if none.
+    public func accountStorage() async throws -> (blob: Data, version: Int64)? {
+        struct Response: Decodable { let blob: String; let version: Int64 }
+        do {
+            let r: Response = try await request("GET", "v1/accounts/me/storage", body: nil as String?)
+            guard let blob = Data(base64Encoded: r.blob) else { throw RelayAPIError.malformedResponse }
+            return (blob, r.version)
+        } catch RelayAPIError.http(status: 404, _) {
+            return nil
+        }
+    }
+
+    /// Replaces the blob if `baseVersion` is current (0 = none yet); returns the
+    /// new version. 409 = another device wrote first.
+    public func putAccountStorage(_ blob: Data, baseVersion: Int64) async throws -> Int64 {
+        struct Body: Encodable { let blob: String; let baseVersion: Int64 }
+        struct Response: Decodable { let version: Int64 }
+        let r: Response = try await request(
+            "PUT", "v1/accounts/me/storage",
+            body: Body(blob: blob.base64EncodedString(), baseVersion: baseVersion)
+        )
+        return r.version
+    }
+
     /// Whether this account is a demo account, and the other demo accounts.
     public func demoStatus() async throws -> (demo: Bool, peers: [String]) {
         struct Response: Decodable { let demo: Bool; let peers: [String] }

@@ -27,6 +27,10 @@ extension MessagingService {
     func setAccountPassword(_ password: String) async throws {
         try await apiClient.setAccountPassword(password)
         UserDefaults.standard.set(true, forKey: Self.hasAccountPasswordKey)
+        // The chat list is kept with the account under this password from now on.
+        await setAccountStorageKey(password: password)
+        if let stored = try? await apiClient.accountStorage() { accountStorageVersionReset(to: stored.version) }
+        await uploadAccountStorage()
         postRelayNotice("Your account password was changed. Signing in on a new device now requires it.")
     }
 

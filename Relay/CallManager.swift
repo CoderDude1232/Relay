@@ -230,6 +230,9 @@ final class CallManager: NSObject {
     private var iceRecoveryTask: Task<Void, Never>?
     /// Mid-call reconnection (1:1): rebuilds ICE with fresh TURN servers.
     private var iceRestartTask: Task<Void, Never>?
+    /// A connected 1:1 call lost its connection and is reconnecting (the UI
+    /// shows a no-signal symbol by the timer so it doesn't look frozen).
+    private(set) var isReconnecting = false
     /// Mid-call reconnection (group): one task per peer.
     private var groupReconnectTasks: [String: Task<Void, Never>] = [:]
     // Candidates that arrived before setRemoteDescription was called; drained immediately after.
@@ -1064,6 +1067,7 @@ final class CallManager: NSObject {
         iceRestartTask?.cancel()
         iceRestartTask = nil
         reconnectingUntil = nil
+        isReconnecting = false
         if notifyPeer, let peer = storedCallPeer, let callId = storedCallId, !callId.isEmpty {
             Task {
                 var msg = Relay_Content_CallMessage()
@@ -1120,6 +1124,7 @@ final class CallManager: NSObject {
         iceRestartTask?.cancel()
         iceRestartTask = nil
         reconnectingUntil = nil
+        isReconnecting = false
 
         // Post a missed call notification when the caller hung up before we answered.
         if fromRemote && wasIncomingCall && !hasAnsweredCall, let name = storedPeerName {
@@ -2331,6 +2336,7 @@ extension CallManager: RTCPeerConnectionDelegate {
                 iceRecoveryTask = nil
                 iceRestartTask?.cancel()
                 iceRestartTask = nil
+                isReconnecting = false
                 // Media is connected now. Keep both caller and callee in
                 // .connecting until this point so the UI and CallKit do not
                 // claim the call is live while ICE is still negotiating.
@@ -2349,6 +2355,7 @@ extension CallManager: RTCPeerConnectionDelegate {
                 // Was connected and lost it — e.g. our TURN server went down.
                 // Reconnect with fresh servers (the relay hands out the backup
                 // TURN once it notices); only give up if that fails too.
+                isReconnecting = true
                 startIceRestart()
                 scheduleIceFailure(reason: "Call connection was lost.", delay: .seconds(40))
             case .failed:

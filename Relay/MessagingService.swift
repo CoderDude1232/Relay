@@ -109,6 +109,9 @@ final class MessagingService {
     private let session: URLSession
 
     private(set) var conversations: [Conversation] = []
+    /// Encrypted chat-list sync (AccountStorage.swift).
+    @ObservationIgnored var accountStorageUploadTask: Task<Void, Never>?
+    @ObservationIgnored var lastChatListFingerprint: String?
     private(set) var callHistory: [StoredCall] = []
     private(set) var activeMessages: [StoredMessage] = []
     private(set) var activeConversationId: String?
@@ -4568,6 +4571,7 @@ final class MessagingService {
                 guard case .success(let convs) = result else { return [] }
                 self.conversations = convs
                 self.updateShareConversationList()
+                self.scheduleAccountStorageUploadIfChanged()
                 return convs.map { conv in
                     let account = conv.groupId ?? conv.peerAccount
                     let name = conv.groupId.map { self.displayName(forAccount: $0) }

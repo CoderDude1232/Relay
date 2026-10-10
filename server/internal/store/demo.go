@@ -86,6 +86,9 @@ func (s *Store) ResetDemoAccount(accountID string) ([]uint32, error) {
 	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = device_list_version + 1 WHERE id = $1`, accountID); err != nil {
 		return nil, err
 	}
+	if _, err := tx.Exec(ctx, `DELETE FROM account_storage WHERE account_id = $1`, accountID); err != nil {
+		return nil, err
+	}
 	return removed, tx.Commit(ctx)
 }
 
