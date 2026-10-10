@@ -2,12 +2,11 @@
 //  Stickers.swift
 //  Relay
 //
-//  Stickers are ordinary end-to-end encrypted image attachments whose message
-//  body is `MessagingService.stickerMarker`; receivers draw them without a
-//  bubble. Older app versions just see a photo. Two sources:
-//   • a built-in emoji pack, rendered on the fly (no bundled art), and
-//   • "My Stickers" — cut out of the user's own photos with Vision's subject
-//     lifting, kept on this device only (file protection: complete).
+//  Stickers are ordinary E2E-encrypted image attachments whose body is
+//  `MessagingService.stickerMarker`; receivers draw them without a bubble, and
+//  older app versions see a photo. Sources: a built-in emoji pack rendered on
+//  the fly, and "My Stickers" cut from the user's photos with Vision subject
+//  lifting, kept on this device only (complete file protection).
 //
 
 import CoreImage
@@ -120,7 +119,6 @@ final class MyStickerStore {
 }
 
 struct StickerPickerSheet: View {
-    /// Called with a PNG to send.
     let onSend: (Data) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var tab = 0

@@ -11,16 +11,16 @@ import (
 	"strings"
 )
 
-// Bucketed directory entries — the address-book-hiding half of blinded
+// Bucketed directory entries, the address-book-hiding half of blinded
 // discovery. After the oblivious OPRF evaluation the client holds token t for
-// each identifier, but it NEVER sends t. It sends only bucket(t), a 16-bit
+// each identifier, but it never sends t. It sends only bucket(t), a 16-bit
 // prefix shared by many identifiers (registered or not). For each requested
 // bucket the relay returns every entry it holds as {tag, box}; the client
 // recomputes tag(t) locally, finds its match (if any), and opens the box with
 // a key only a holder of t can derive. The relay learns at most which buckets
-// were asked about — never which identifier, and never whether it matched.
+// were asked about, not which identifier or whether it matched.
 //
-// All derivations are keyed on the 32-byte token t (clients MUST match these
+// All derivations are keyed on the 32-byte token t (clients must match these
 // byte-for-byte; see RelayKit/Sources/RelayKit/DirectoryBuckets.swift):
 //
 //	bucket(t) = big-endian uint16 of SHA-256("relay-bucket" ‖ t)[0:2]

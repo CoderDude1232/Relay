@@ -36,7 +36,7 @@ func TestDeleteAccount(t *testing.T) {
 		t.Fatalf("websocket was not closed: %v", err)
 	}
 
-	// Credentials no longer authenticate.
+	// Its credentials stop authenticating.
 	env.doJSON("GET", "/v1/keys/count", alice.authUser(), alice.password, nil, http.StatusUnauthorized, nil)
 	env.doJSON("DELETE", "/v1/accounts/me", alice.authUser(), alice.password, nil, http.StatusUnauthorized, nil)
 
@@ -56,9 +56,9 @@ func TestDeleteAccount(t *testing.T) {
 }
 
 // TestUsernameReuseCooldown: with the cooldown enabled (OPRF configured), a
-// released username can't be taken by another account — neither after a
-// rename nor after account deletion — while the renaming account may take its
-// own old name back. (Expiry is covered by the store test.)
+// released username can't be taken by another account, neither after a
+// rename nor after account deletion, while the renaming account may take its
+// own old name back. Expiry is covered by the store test.
 func TestUsernameReuseCooldown(t *testing.T) {
 	env := newTestEnv(t)
 	key, err := oprf.Generate()

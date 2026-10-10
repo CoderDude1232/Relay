@@ -2,8 +2,7 @@
 //  GroupViews.swift
 //  Relay
 //
-//  Group creation + management UI. The relay holds the roster; these views
-//  drive MessagingService, which handles sender-key setup and rotation.
+//  Group creation and management UI, driving MessagingService.
 //
 
 import PhotosUI
@@ -11,8 +10,7 @@ import RelayKit
 import SecureStorage
 import SwiftUI
 
-/// Name a new group and pick members — from existing 1:1 chats and/or by
-/// typing usernames. Creates it client-side (see MessagingService.createGroup).
+/// Name a new group and pick members from existing 1:1 chats or by username.
 struct NewGroupView: View {
     let service: MessagingService
     let onCreated: (String) -> Void
@@ -26,8 +24,7 @@ struct NewGroupView: View {
     @State private var error: String?
 
     /// 1:1 chats whose peer has a known username (createGroup resolves members
-    /// by username), excluding Note to Self, the official Relay chat and
-    /// blocked contacts.
+    /// by username), excluding Note to Self, the Relay chat and blocked contacts.
     private struct ChatCandidate: Identifiable {
         let account: String
         let username: String
@@ -150,8 +147,7 @@ struct NewGroupView: View {
         error = nil
         Task {
             defer { creating = false }
-            // Resolve typed usernames individually first so a typo can be
-            // named instead of failing the whole group with a generic error.
+            // Resolve typed usernames one by one so a typo can be reported by name.
             var missing: [String] = []
             for username in typed {
                 do {
@@ -186,7 +182,6 @@ struct NewGroupView: View {
     }
 }
 
-/// Shows a group's info: avatar, description, name, members, invite link.
 struct GroupInfoView: View {
     let service: MessagingService
     let conversationId: String
@@ -206,7 +201,7 @@ struct GroupInfoView: View {
     @State private var addMemberError: String?
     @State private var descriptionExpanded = false
     @State private var confirmLeave = false
-    /// Member being reported (abuse reporting for group content, App Review 1.2).
+    /// Member being reported.
     @State private var reportTarget: ReportTarget?
 
     private struct ReportTarget: Identifiable {
@@ -217,8 +212,8 @@ struct GroupInfoView: View {
 
     private var group: StoredGroup? { service.group(for: conversationId) }
 
-    /// Mirrors MessagingService.requireGroupAdmin: legacy groups with no
-    /// recorded admins are open to every member.
+    /// Matches MessagingService.requireGroupAdmin: groups with no recorded
+    /// admins are open to every member.
     private var isAdmin: Bool {
         guard let group else { return false }
         return MessagingService.isGroupAdmin(ownAccountId, in: group)
@@ -232,7 +227,6 @@ struct GroupInfoView: View {
         NavigationStack {
             List {
                 if let group {
-                    // Avatar + name header
                     Section {
                         HStack(spacing: 16) {
                             if isAdmin {
@@ -279,7 +273,6 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    // Description
                     Section("Description") {
                         if group.description.isEmpty {
                             if isAdmin {
@@ -322,7 +315,7 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    // Invite link (admin-only; not on demo accounts)
+                    // Admin-only; hidden on demo accounts.
                     if isAdmin && !service.isDemoAccount {
                         Section("Invite") {
                             Button {
@@ -339,7 +332,6 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    // Per-chat settings: mute, disappearing messages, Face ID lock…
                     Section("Chat") {
                         Toggle(isOn: Binding(
                             get: { service.isConversationMuted(conversationId) },
@@ -356,7 +348,6 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    // Announce-only (admin-only setting)
                     if group.admins.contains(ownAccountId) || group.isAnnounceOnly {
                         Section("Permissions") {
                             Toggle("Announce Only", isOn: Binding(
@@ -367,7 +358,6 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    // Members
                     Section("Members (\(group.members.count))") {
                         ForEach(group.members, id: \.self) { member in
                             let memberIsAdmin = group.admins.contains(member)
@@ -393,7 +383,6 @@ struct GroupInfoView: View {
                                     }
                                 }
                                 Spacer()
-                                // Gated on the VIEWER being an admin.
                                 if isAdmin && member != ownAccountId {
                                     Button(role: .destructive) {
                                         memberToRemove = member
@@ -464,8 +453,8 @@ struct GroupInfoView: View {
                     } // end admin-only add member
 
                     Section {
-                        // Reports the group's admins (who run it); individual
-                        // members can be reported from their row's menu.
+                        // Reports the group's admins; individual members are
+                        // reported from their row's menu.
                         if let admin = group.admins.first(where: { $0 != ownAccountId }) {
                             Button("Report Group", role: .destructive) {
                                 reportTarget = ReportTarget(account: admin)
@@ -497,7 +486,6 @@ struct GroupInfoView: View {
                 }
             }
             .overlay { if working { ProgressView() } }
-            // Rename alert
             .alert("Rename Group", isPresented: $editingName) {
                 TextField("Name", text: $draftName).incognitoKeyboard()
                 Button("Save") {
@@ -508,7 +496,6 @@ struct GroupInfoView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
-            // Description alert
             .alert("Group Description", isPresented: $editingDescription) {
                 TextField("Description", text: $draftDescription).incognitoKeyboard()
                 Button("Save") {
@@ -517,7 +504,6 @@ struct GroupInfoView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
-            // Avatar picker
             .sheet(item: $reportTarget) { target in
                 ReportContactSheet(
                     service: service, account: target.account,
@@ -529,19 +515,16 @@ struct GroupInfoView: View {
                     GroupAvatarPickerSheet(service: service, groupId: group.id)
                 }
             }
-            // Share sheet for invite link
             .sheet(isPresented: $showingShareSheet) {
                 if let url = inviteURL {
                     ShareSheet(items: [url])
                 }
             }
-            // Leave group confirmation
             .confirmationDialog("Leave this group?", isPresented: $confirmLeave, titleVisibility: .visible) {
                 Button("Leave Group", role: .destructive) {
                     run(dismissAfter: true) { try await service.leaveGroup(group?.id ?? "") }
                 }
             }
-            // Remove member confirmation
             .confirmationDialog(
                 "Remove \(memberToRemove.flatMap { service.displayName(forAccount: $0) }.map { "\($0) from the group?" } ?? "member from the group?")",
                 isPresented: Binding(get: { memberToRemove != nil }, set: { if !$0 { memberToRemove = nil } }),
@@ -582,8 +565,7 @@ struct GroupInfoView: View {
                 errorMessage = error.localizedDescription
             }
             working = false
-            // Only dismiss when the action actually succeeded — on failure the
-            // error stays visible in the sheet.
+            // On failure, stay open so the error is visible.
             if dismissAfter && errorMessage == nil { dismiss() }
         }
     }

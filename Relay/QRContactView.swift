@@ -2,10 +2,8 @@
 //  QRContactView.swift
 //  Relay
 //
-//  QR codes for contact exchange.
-//  QR payload:  relay://add/<username>  (opens Relay directly)
-//  Share link:  https://relaymsg.app/add/<username>
-//  Scanning:    DataScannerViewController (VisionKit, iOS 16+)
+//  QR codes for contact exchange. The code encodes
+//  https://relaymsg.app/add/<username>; scanning uses DataScannerViewController.
 //
 
 import CoreImage.CIFilterBuiltins
@@ -18,10 +16,10 @@ import VisionKit
 
 private struct QRPreset: Identifiable, Equatable, Sendable {
     let id: String
-    // Card gradient (top-left → bottom-right)
+    // Card gradient, top-left to bottom-right.
     let tR, tG, tB: Double
     let bR, bG, bB: Double
-    // QR module colour (dark variant of the hue, on white QR background)
+    // QR module colour: a dark variant of the hue, on a white background.
     let mR, mG, mB: Double
 
     var topColor: Color { Color(red: tR, green: tG, blue: tB) }
@@ -45,7 +43,6 @@ struct MyQRCodeView: View {
     var createInviteLink: (() async throws -> URL)? = nil
 
     @Environment(\.dismiss) private var dismiss
-    // Fixed card style — the colour picker was removed to keep this view uncluttered.
     private let preset = QRPreset.all[0]
     @State private var qrImage: UIImage?
     @State private var shareCard: UIImage?
@@ -58,14 +55,12 @@ struct MyQRCodeView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                // The shareable card, near the top of the screen.
                 cardView
                     .frame(maxWidth: 340)
                     .padding(.top, 24)
 
-                // Controls pinned to the bottom. The one-time-link button is
-                // hosted in a secure canvas so it is omitted from screenshots —
-                // a screenshot captures only the card.
+                // The controls are hidden from screenshots so only the card is
+                // captured.
                 VStack(spacing: 14) {
                     Spacer()
 
@@ -120,8 +115,7 @@ struct MyQRCodeView: View {
         }
     }
 
-    // The gradient card (QR + username) — the only thing meant to survive a
-    // screenshot.
+    // The gradient card (QR and username), the only part visible in screenshots.
     private var cardView: some View {
         VStack(spacing: 18) {
             Group {
@@ -218,8 +212,7 @@ nonisolated private func makeQRImage(
     let scale  = size / output.extent.width
     let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
 
-    // Colour the modules to match the card; background stays white so the
-    // QR is scannable against both light and dark module colours.
+    // The background stays white so the code scans with any module colour.
     let colorFilter = CIFilter.falseColor()
     colorFilter.inputImage = scaled
     colorFilter.color0     = CIColor(red: modR, green: modG, blue: modB)  // modules
@@ -234,8 +227,7 @@ nonisolated private func makeQRImage(
 
 // MARK: - Share card rendering
 
-// Produces a standalone card image suitable for sharing via the system sheet.
-// Mirrors the in-app card: gradient background, white rounded QR area, name below.
+// Renders the in-app card as a standalone image for the share sheet.
 nonisolated private func renderShareCard(
     username: String, qrImage: UIImage?,
     topR: Double, topG: Double, topB: Double,
@@ -256,7 +248,6 @@ nonisolated private func renderShareCard(
         let fullRect = CGRect(x: 0, y: 0, width: cardW, height: cardH)
         let cgCtx    = ctx.cgContext
 
-        // Gradient background
         let colors = [
             UIColor(red: topR, green: topG, blue: topB, alpha: 1).cgColor,
             UIColor(red: botR, green: botG, blue: botB, alpha: 1).cgColor,
@@ -267,16 +258,13 @@ nonisolated private func renderShareCard(
         cgCtx.drawLinearGradient(grad, start: .zero,
                                  end: CGPoint(x: cardW, y: cardH), options: [])
 
-        // White rounded QR background
         let qrBgRect = CGRect(x: inset, y: inset, width: qrBgSize, height: qrBgSize)
         UIColor.white.setFill()
         UIBezierPath(roundedRect: qrBgRect, cornerRadius: 20).fill()
 
-        // QR image inside white area
         let qrRect = qrBgRect.insetBy(dx: qrBg, dy: qrBg)
         qrImage?.draw(in: qrRect)
 
-        // @username below the white area
         let nameAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 38, weight: .bold),
             .foregroundColor: UIColor.white,
@@ -287,7 +275,6 @@ nonisolated private func renderShareCard(
         nameStr.draw(at: CGPoint(x: (cardW - nameSize.width) / 2, y: nameY),
                      withAttributes: nameAttrs)
 
-        // Link at the bottom
         let linkAttrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 24, weight: .regular),
             .foregroundColor: UIColor.white.withAlphaComponent(0.55),
@@ -300,27 +287,20 @@ nonisolated private func renderShareCard(
     }
 }
 
-// MARK: - UIActivityViewController wrapper
-
 // MARK: - Screenshot-hidden container
 
 extension View {
-    /// Hosts the view inside a UITextField's secure-entry canvas: it renders
-    /// normally on screen and stays interactive, but iOS omits that layer from
-    /// screenshots and screen recordings. Used to keep editing chrome out of a
-    /// shared screenshot of the QR card.
+    /// Hosts the view inside a UITextField's secure-entry canvas, which iOS
+    /// omits from screenshots and screen recordings.
     ///
-    /// The content is re-hosted in its own UIHostingController, so it does NOT
-    /// inherit custom environment values or `@Environment` objects — callers
-    /// must re-inject what the content reads. Pass `fillsProposal` for content
-    /// that should take the space offered (e.g. a ScrollView) rather than its
-    /// ideal height.
+    /// The content is re-hosted in its own UIHostingController and does not
+    /// inherit environment values or objects; callers must re-inject them.
+    /// Pass `fillsProposal` for content that should take the offered space
+    /// (e.g. a ScrollView) rather than its ideal height.
     @ViewBuilder
     func hiddenInScreenshots(_ active: Bool = true, fillsProposal: Bool = false) -> some View {
         if active {
-            // Reparents content into a secure UITextField canvas (omitted from
-            // screenshots). Only apply when actually protecting — otherwise the
-            // reparenting itself clips/letterboxes the content.
+            // Only wrap when active: the reparenting can clip the content.
             ScreenshotHiddenContainer(active: true, fillsProposal: fillsProposal) { self }
         } else {
             self
@@ -341,9 +321,7 @@ private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         let coord = Coordinator(rootView: content)
-        // The outer SwiftUI layout already placed this view inside the safe
-        // area (and above the keyboard); letting the inner host apply them
-        // again would double the insets.
+        // The outer layout already applied safe-area and keyboard insets.
         if fillsProposal { coord.hosting.safeAreaRegions = [] }
         return coord
     }
@@ -361,9 +339,8 @@ private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
         host.backgroundColor = .clear
         host.translatesAutoresizingMaskIntoConstraints = false
 
-        // The secure canvas is the text field's first subview; reparent it into
-        // our wrapper and host the SwiftUI content inside it. If the private view
-        // isn't available, fall back to showing the content normally.
+        // The secure canvas is the text field's first (private) subview. If it
+        // isn't there, show the content normally.
         let container: UIView = field.subviews.first ?? wrapper
         if container !== wrapper {
             container.subviews.forEach { $0.removeFromSuperview() }
@@ -389,9 +366,8 @@ private struct ScreenshotHiddenContainer<Content: View>: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.hosting.rootView = content
-        // Toggle screenshot omission live. The field is always created secure so
-        // the secure canvas subview exists to host content; this just controls
-        // whether that layer is captured by screenshots/recordings.
+        // The field is created secure so the canvas exists; this only toggles
+        // whether it is captured.
         context.coordinator.secureField.isSecureTextEntry = active
     }
 
@@ -537,7 +513,7 @@ enum RelayQRPayload: Equatable {
                 }
             }
         }
-        // legacy relay:<username>
+        // Legacy relay:<username>
         if payload.hasPrefix("relay:"), !payload.hasPrefix("relay://") {
             let name = String(payload.dropFirst("relay:".count))
             if !name.isEmpty { self = .username(name); return }
@@ -574,7 +550,7 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
         let onScan: (String) -> Void
         init(onScan: @escaping (String) -> Void) { self.onScan = onScan }
 
-        // Accept a code as soon as it's recognised — nobody knows to tap it.
+        // Accept a code as soon as it's recognised rather than waiting for a tap.
         func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
             for item in addedItems { deliver(item) }
         }

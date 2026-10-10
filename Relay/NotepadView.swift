@@ -2,13 +2,9 @@
 //  NotepadView.swift
 //  Relay
 //
-//  Encrypted shared notepad per conversation. The current content is
-//  synced by sending special encrypted messages with a recognised prefix.
-//  The server sees only ciphertext; the notepad data is never stored
-//  unencrypted anywhere outside the app.
-//
-//  Encoding: message body = "__relay_notepad__<content>"
-//  The receiving client strips the prefix and updates its local KV entry.
+//  Shared notepad per conversation, synced as ordinary encrypted messages whose
+//  body is "__relay_notepad__<content>". The receiver strips the prefix and
+//  stores the content in its local KV store.
 //
 
 import SecureStorage

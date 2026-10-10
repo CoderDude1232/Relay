@@ -14,7 +14,7 @@ import (
 
 // TestDeleteAccountRevokesSignInWithApple: DELETE /v1/accounts/me with an
 // appleAuthorizationCode exchanges and revokes it at (a fake) Apple; Apple
-// failing never fails the deletion; no code → Apple isn't called.
+// failing never fails the deletion; without a code Apple isn't called.
 func TestDeleteAccountRevokesSignInWithApple(t *testing.T) {
 	env := newTestEnv(t)
 	var mu sync.Mutex

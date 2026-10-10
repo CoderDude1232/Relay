@@ -3,8 +3,8 @@
 //  Relay
 //
 //  Matches address book emails against Relay accounts with blinded discovery.
-//  Runs ONLY when the user taps "Find contacts on Relay" (with a one-time
-//  explanation + consent that is remembered) — never automatically.
+//  Runs only when the user taps "Find contacts on Relay", after a one-time
+//  consent prompt.
 //
 
 import Contacts
@@ -135,7 +135,6 @@ struct ContactSyncView: View {
         }
         .navigationTitle("Contact Syncing")
         .navigationBarTitleDisplayMode(.inline)
-        // Never runs on its own — only from the "Find contacts" button.
         .alert("Find Contacts on Relay?", isPresented: $showingConsent) {
             Button("Find Contacts") {
                 ContactDiscoveryConsent.grant()
@@ -173,8 +172,7 @@ struct ContactSyncView: View {
         }
     }
 
-    /// Explicit user action only; the first time asks for informed consent,
-    /// which is remembered for later taps.
+    /// Asks for consent the first time; the answer is remembered.
     private func requestSync() {
         if ContactDiscoveryConsent.isGranted {
             Task { await sync() }
@@ -203,16 +201,14 @@ struct ContactSyncView: View {
             denied = true; status = .done; return
         }
 
-        // Collect all (name, email, avatar) tuples from the address book —
-        // off the main thread, since enumeration is synchronous and slow.
+        // Enumeration is synchronous and slow, so do it off the main thread.
         let entries = await Task.detached(priority: .userInitiated) { Self.readAddressBook() }.value
 
         // Deduplicate emails (keep first contact name seen for a given email).
         var seen = Set<String>()
         let deduped = entries.filter { seen.insert($0.email).inserted }
 
-        // Privately match the whole address book against the directory in one
-        // blinded pass: the relay never sees the plaintext emails, and contacts
+        // One blinded pass: the relay never sees plaintext emails, and contacts
         // who aren't on Relay reveal nothing.
         let existingAccountIds = Set(service.conversations.map { $0.peerAccount })
         var found: [ContactMatch] = []
@@ -222,8 +218,7 @@ struct ContactSyncView: View {
         do {
             discovered = try await service.discoverContacts(emails: deduped.map { $0.email })
         } catch {
-            // A 503 / network failure is not "none of your contacts are on
-            // Relay" — say so and offer a retry instead of an empty result.
+            // A 503 or network failure is not an empty result; offer a retry.
             matches = []
             status = .failed(FriendlyError.message(for: error))
             return
@@ -239,7 +234,7 @@ struct ContactSyncView: View {
             ))
         }
 
-        // Sort: existing conversations first, then alphabetically.
+        // Existing conversations first, then alphabetical.
         found.sort {
             if $0.hasConversation != $1.hasConversation { return $0.hasConversation }
             return $0.contactName < $1.contactName

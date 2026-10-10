@@ -2,10 +2,9 @@
 //  CryptoEngineTests.swift
 //  CryptoCoreTests
 //
-//  Validates the full protocol lifecycle against libsignal's real
-//  implementation (in-memory stores, prebuilt Rust core): PQXDH handshake,
+//  Protocol lifecycle against libsignal with in-memory stores: PQXDH,
 //  Double Ratchet round-trips, out-of-order delivery, degraded bundles,
-//  tampered-signature rejection, and safety numbers.
+//  bad signatures, and safety numbers.
 //
 
 import Foundation
@@ -14,8 +13,8 @@ import Testing
 
 @testable import CryptoCore
 
-/// Simulates the relay: turns a device's uploaded publication into the
-/// bundle a peer would fetch, optionally consuming a one-time prekey.
+/// Stands in for the relay: turns an uploaded publication into the bundle a
+/// peer would fetch, optionally consuming a one-time prekey.
 private func fetchBundle(
     from publication: PreKeyPublication,
     deviceId: UInt32,
@@ -55,13 +54,12 @@ struct CryptoEngineTests {
         #expect(first.kind == .preKey)
         #expect(try bob.decrypt(first, from: aliceAddress) == hello)
 
-        // Bob's session is now established; his reply is a ratchet message.
+        // Bob now has a session, so his reply is a ratchet message.
         let reply = Data("hello alice".utf8)
         let second = try bob.encrypt(reply, for: aliceAddress)
         #expect(second.kind == .message)
         #expect(try alice.decrypt(second, from: bobAddress) == reply)
 
-        // Keep ratcheting in both directions.
         for i in 0..<20 {
             let (sender, receiver, to, from) = i.isMultiple(of: 2)
                 ? (alice, bob, bobAddress, aliceAddress)
@@ -80,13 +78,12 @@ struct CryptoEngineTests {
         let bob = try CryptoEngine.makeEphemeral(accountId: bobId, deviceId: 1)
         let bobAddress = bob.localAddress
 
-        // Alice establishes a session to Bob.
         let bobKeys = try bob.generatePreKeyPublication(
             signedPreKeyId: 1, kyberPreKeyId: 1, oneTimePreKeyIds: 1..<11
         )
         try alice.processPeerBundle(fetchBundle(from: bobKeys, deviceId: 1), from: bobAddress)
 
-        // Mint Alice's sealed-sender certificate (what the relay does server-side).
+        // Mint Alice's sealed-sender certificate, as the relay would.
         let trustRoot = PrivateKey.generate()
         let serverKey = PrivateKey.generate()
         let serverCert = try ServerCertificate(keyId: 1, publicKey: serverKey.publicKey, trustRoot: trustRoot)
@@ -98,8 +95,8 @@ struct CryptoEngineTests {
             signerKey: serverKey
         )
 
-        // Alice sends sealed; Bob unwraps, validates against the trust root, and
-        // recovers the sender from the certificate.
+        // Bob unwraps, validates against the trust root, and reads the sender
+        // from the certificate.
         let secret = Data("sealed hello".utf8)
         let sealed = try alice.sealedEncrypt(secret, for: bobAddress, senderCertificate: aliceCert.serialize())
         let result = try bob.sealedDecrypt(
@@ -122,7 +119,7 @@ struct CryptoEngineTests {
         let messages = (0..<5).map { Data("out of order \($0)".utf8) }
         let sealed = try messages.map { try alice.encrypt($0, for: bobAddress) }
 
-        // Deliver 0 first (establishes the session), then the rest shuffled.
+        // Message 0 first to establish the session, then the rest shuffled.
         #expect(try bob.decrypt(sealed[0], from: aliceAddress) == messages[0])
         for index in [3, 1, 4, 2] {
             #expect(try bob.decrypt(sealed[index], from: aliceAddress) == messages[index])
@@ -176,9 +173,8 @@ struct CryptoEngineTests {
     }
 
     @Test func oneTimePreKeyIsConsumedOnUse() throws {
-        // Two senders must not be able to reuse the same one-time prekey:
-        // after the first prekey message consumes it from Bob's store, a
-        // second handshake referencing the same key id must fail to decrypt.
+        // A one-time prekey must not be usable twice: once the first prekey
+        // message consumes it, a second handshake with the same id must fail.
         let (alice, bob, aliceAddress, bobAddress) = try makePeers()
         let carol = try CryptoEngine.makeEphemeral(accountId: "carol-account-id", deviceId: 1)
         let bobKeys = try bob.generatePreKeyPublication(
@@ -220,7 +216,7 @@ struct CryptoEngineTests {
         #expect(aliceView.numeric == bobView.numeric)
         #expect(aliceView.numeric.count == 60)
 
-        // A different identity key (e.g. Bob re-registered) must change it.
+        // A different identity key, e.g. after Bob re-registers, changes it.
         let impostor = try CryptoEngine.makeEphemeral(accountId: "bob-account-id", deviceId: 1)
         let impostorView = try CryptoEngine.safetyNumber(
             localIdentifier: "alice-account-id",
@@ -232,8 +228,8 @@ struct CryptoEngineTests {
     }
 
     @Test func groupSenderKeyRoundTripAndRotation() throws {
-        // Three members in a group. Alice distributes her sender key to Bob
-        // and Carol, then encrypts once; both decrypt the same ciphertext.
+        // Alice distributes her sender key to Bob and Carol, encrypts once, and
+        // both decrypt the same ciphertext.
         let alice = try CryptoEngine.makeEphemeral(accountId: "alice", deviceId: 1)
         let bob = try CryptoEngine.makeEphemeral(accountId: "bob", deviceId: 1)
         let carol = try CryptoEngine.makeEphemeral(accountId: "carol", deviceId: 1)
@@ -249,14 +245,12 @@ struct CryptoEngineTests {
         #expect(try bob.decrypt(sealed, from: alice.localAddress) == message)
         #expect(try carol.decrypt(sealed, from: alice.localAddress) == message)
 
-        // A second message keeps ratcheting.
         let message2 = Data("second".utf8)
         let sealed2 = try alice.groupEncrypt(message2, distributionId: distributionId)
         #expect(try bob.decrypt(sealed2, from: alice.localAddress) == message2)
 
-        // Rotation: a new distribution id is a fresh sender key. Carol (who
-        // does NOT get the new SKDM — simulating a removed member) cannot
-        // decrypt; Bob (re-distributed) can.
+        // A new distribution id is a fresh sender key. Carol stands in for a
+        // removed member and doesn't get the new SKDM, so she can't decrypt.
         let newDistributionId = UUID()
         let rotated = try alice.senderKeyDistributionMessage(distributionId: newDistributionId)
         try bob.processSenderKeyDistribution(rotated, from: alice.localAddress)
@@ -274,7 +268,6 @@ struct CryptoEngineTests {
         #expect(sealed.digest.count == 32)
         #expect(sealed.ciphertext != plaintext)
 
-        // Correct key + digest round-trips.
         #expect(try AttachmentCipher.open(sealed.ciphertext, key: sealed.key, digest: sealed.digest) == plaintext)
 
         // Tampered ciphertext fails the digest check before decryption.
@@ -284,7 +277,6 @@ struct CryptoEngineTests {
             _ = try AttachmentCipher.open(tampered, key: sealed.key, digest: sealed.digest)
         }
 
-        // Wrong key fails authentication.
         #expect(throws: (any Error).self) {
             _ = try AttachmentCipher.open(sealed.ciphertext, key: Data(count: 32), digest: sealed.digest)
         }
@@ -295,7 +287,6 @@ struct CryptoEngineTests {
         let bobKeys = try bob.generatePreKeyPublication(
             signedPreKeyId: 1, kyberPreKeyId: 1, oneTimePreKeyIds: 1..<11
         )
-        // Alice establishes a session, so she now stores Bob's identity.
         try alice.processPeerBundle(fetchBundle(from: bobKeys, deviceId: 1), from: bobAddress)
         // Reverse direction so Bob stores Alice's identity too.
         let hello = try alice.encrypt(Data("hi".utf8), for: bobAddress)
@@ -306,11 +297,11 @@ struct CryptoEngineTests {
         #expect(aliceView.numeric.count == 60)
         #expect(aliceView.numeric == bobView.numeric)
 
-        // Scanning the peer's QR verifies — the encoding is order-independent.
+        // Scanning the peer's QR verifies; the encoding is order-independent.
         #expect(try alice.verifyScannedSafetyNumber(bobView.scannable, withPeer: "bob-account-id"))
         #expect(try bob.verifyScannedSafetyNumber(aliceView.scannable, withPeer: "alice-account-id"))
 
-        // Unknown peer: no session yet, so nil / false rather than throwing.
+        // No session with this peer yet: nil and false, not a throw.
         #expect(try alice.safetyNumber(withPeer: "carol-account-id") == nil)
         #expect(try alice.verifyScannedSafetyNumber(bobView.scannable, withPeer: "carol-account-id") == false)
     }

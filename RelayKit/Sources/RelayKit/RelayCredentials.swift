@@ -2,10 +2,9 @@
 //  RelayCredentials.swift
 //  RelayKit
 //
-//  Device credentials for the relay. The password is a bootstrap secret: it
-//  is sent (HTTP Basic, username "<accountId>.<deviceId>") only to register the
-//  device's first auth key; every other request is Relay-Sig signed (see
-//  RelaySigning.swift and server/README.md).
+//  Device credentials for the relay. The password is a bootstrap secret, sent
+//  over HTTP Basic ("<accountId>.<deviceId>") only to register the device's
+//  first auth key. Everything else is Relay-Sig signed; see RelaySigning.swift.
 //
 
 import Foundation

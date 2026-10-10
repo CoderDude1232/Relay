@@ -2,12 +2,11 @@
 //  DeviceLabel.swift
 //  Relay
 //
-//  The human-readable label for this device ("iPhone 17 Pro · Queensland,
-//  Australia") shown in Linked Devices. It is shared ONLY with the account's
-//  own other devices, sealed end-to-end (Content.device_info); the relay never
-//  sees a model name or a location. The region comes from an approximate
-//  (reduced-accuracy) location, reverse-geocoded on-device by Apple's geocoder,
-//  and only when the user has granted location access.
+//  Human-readable label for this device ("iPhone 17 Pro · Queensland,
+//  Australia") shown in Linked Devices. It is shared only with the account's
+//  own devices, sealed end-to-end (Content.device_info); the relay never sees
+//  it. The region comes from a reduced-accuracy location reverse-geocoded on
+//  device, and only with location permission.
 //
 
 import CoreLocation
@@ -79,7 +78,7 @@ enum DeviceModel {
 }
 
 /// Resolves "State, Country" from an approximate location. Never prompts on
-/// its own — `requestAccess()` is called from Linked Devices, where the user
+/// its own; `requestAccess()` is called from Linked Devices, where the user
 /// sees why.
 @MainActor
 final class DeviceRegion: NSObject, CLLocationManagerDelegate {

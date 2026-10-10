@@ -2,10 +2,9 @@
 //  SecureStorageTests.swift
 //  SecureStorageTests
 //
-//  Validates the encrypted-at-rest guarantee, persistence of session/
-//  ratchet state across database reopen, and message history behavior.
-//  Keychain/Secure Enclave paths aren't exercisable in an unhosted test
-//  bundle; those are wired and verified in-app.
+//  Encryption at rest, session state surviving a reopen, and message history.
+//  The Keychain and Secure Enclave paths can't run in an unhosted test bundle
+//  and are verified in the app.
 //
 
 import CryptoCore
@@ -37,15 +36,15 @@ struct DatabaseTests {
             try storage.database.run("INSERT INTO kv (key, value) VALUES ('probe', x'AABB')")
         } // close via deinit
 
-        // Wrong key must fail…
+        // Wrong key fails...
         #expect(throws: StorageError.wrongKey) {
             _ = try Database(path: path, key: .random())
         }
-        // …the right key must work…
+        // ...the right key works...
         let reopened = try Database(path: path, key: key)
         #expect(try reopened.query("SELECT value FROM kv WHERE key = 'probe'").count == 1)
 
-        // …and the raw file must not start with the plaintext SQLite magic.
+        // ...and the file doesn't start with the plaintext SQLite magic.
         let header = try Data(contentsOf: URL(fileURLWithPath: path)).prefix(16)
         #expect(!header.starts(with: Data("SQLite format 3".utf8)))
     }
@@ -82,7 +81,7 @@ struct DatabaseTests {
             #expect(try alice.decrypt(reply, from: bob.localAddress) == Data("reply".utf8))
         } // storage closed
 
-        // Reopen the database: the ratchet must continue where it left off.
+        // After reopening, the ratchet continues where it left off.
         let storage = try SecureStore(path: alicePath, key: aliceKey, credentials: aliceCredentials)
         let alice = try storage.makeCryptoEngine(accountId: "alice", deviceId: 1)
         #expect(try alice.hasSession(with: bob.localAddress))
@@ -109,11 +108,9 @@ struct DatabaseTests {
         #expect(try store.saveIdentity(firstIdentity, for: peer, context: context) == .newOrUnchanged)
         try store.setVerified(true, address: "peer")
 
-        // A different key is untrusted until re-saved, and saving it both
-        // reports the replacement and resets verification.
-        // A changed contact key is untrusted for SENDING (the user must
-        // acknowledge it) but accepted when receiving, so messages sent after
-        // a reinstall aren't dropped.
+        // A changed contact key is untrusted for sending until the user accepts
+        // it, but accepted when receiving so messages sent after a reinstall
+        // aren't dropped. Saving it reports the replacement and resets verification.
         #expect(try !store.isTrustedIdentity(secondIdentity, for: peer, direction: .sending, context: context))
         #expect(try store.isTrustedIdentity(secondIdentity, for: peer, direction: .receiving, context: context))
         #expect(try store.saveIdentity(secondIdentity, for: peer, context: context) == .replacedExisting)
@@ -129,24 +126,22 @@ struct DatabaseTests {
         let first = IdentityKeyPair.generate().identityKey
         let second = IdentityKeyPair.generate().identityKey
 
-        // Newly seen identity: unverified.
         #expect(try store.saveIdentity(first, for: peer, context: context) == .newOrUnchanged)
         #expect(try store.verificationState(address: "peer") == .unverified)
 
-        // Marked verified.
         try store.setVerified(true, address: "peer")
         #expect(try store.verificationState(address: "peer") == .verified)
 
-        // Key change on a verified peer surfaces as .changed, not .unverified.
+        // A key change on a verified peer reports .changed, not .unverified.
         #expect(try store.saveIdentity(second, for: peer, context: context) == .replacedExisting)
         #expect(try store.verificationState(address: "peer") == .changed)
         #expect(try !store.isVerified(address: "peer"))
 
-        // Clearing verification dismisses the warning back to unverified.
+        // Clearing verification returns to unverified.
         try store.setVerified(false, address: "peer")
         #expect(try store.verificationState(address: "peer") == .unverified)
 
-        // Re-verify the new key; re-seeing that same key keeps it verified.
+        // Re-verify the new key; seeing the same key again keeps it verified.
         try store.setVerified(true, address: "peer")
         #expect(try store.saveIdentity(second, for: peer, context: context) == .newOrUnchanged)
         #expect(try store.verificationState(address: "peer") == .verified)
@@ -165,7 +160,7 @@ struct DatabaseTests {
             _ = try store.loadPreKey(id: 7, context: context)
         }
 
-        // Last-resort kyber prekeys are marked used but never deleted.
+        // Last-resort Kyber prekeys are marked used but never deleted.
         let identity = try storage.signalStore.identityKeyPair(context: context)
         let kyberPair = KEMKeyPair.generate()
         let record = try KyberPreKeyRecord(
@@ -186,7 +181,6 @@ struct MessageStoreTests {
         let store = storage.messages
 
         let conversation = try store.conversation(withPeer: "bob-account", username: "bob")
-        // Same peer resolves to the same conversation.
         #expect(try store.conversation(withPeer: "bob-account") == conversation)
 
         #expect(try store.insertMessage(
@@ -197,7 +191,7 @@ struct MessageStoreTests {
             id: "env-abc", conversationId: conversation, isOutgoing: false,
             body: "hey alice", timestamp: 2000, status: .received
         ))
-        // Replayed envelope (at-least-once delivery) must be a no-op.
+        // A redelivered envelope is a no-op.
         #expect(try !store.insertMessage(
             id: "env-abc", conversationId: conversation, isOutgoing: false,
             body: "hey alice", timestamp: 2000, status: .received
@@ -228,7 +222,6 @@ struct MessageStoreTests {
             replyTo: QuotedMessage(targetTimestamp: 1000, author: "bob-account", text: "hi")
         )
 
-        // Reply snapshot round-trips.
         #expect(try store.messages(in: convo)[1].replyTo
             == QuotedMessage(targetTimestamp: 1000, author: "bob-account", text: "hi"))
 
@@ -241,12 +234,12 @@ struct MessageStoreTests {
         #expect(reacted.reactions.contains(MessageReaction(emoji: "❤️", author: "bob-account", isOutgoing: false)))
         #expect(reacted.reactions.contains(MessageReaction(emoji: "😂", author: "me", isOutgoing: true)))
 
-        // Retract the local user's reaction.
+        // Retract our own reaction.
         try store.setReaction(conversationId: convo, targetTimestamp: 1000, author: "me", isOutgoing: true, emoji: "", remove: true)
         #expect(try store.messages(in: convo)[0].reactions.map(\.author) == ["bob-account"])
 
-        // Unsend leaves a tombstone: row stays in place, but body/quote/
-        // reactions are cleared and it's flagged deleted.
+        // Unsend leaves a tombstone: the row stays, body, quote and reactions
+        // are cleared, and it's flagged deleted.
         try store.setReaction(conversationId: convo, targetTimestamp: 2000, author: "bob-account", isOutgoing: false, emoji: "👍", remove: false)
         #expect(try store.markDeleted(conversationId: convo, targetTimestamp: 2000))
         let afterUnsend = try store.messages(in: convo)[1]
@@ -254,7 +247,7 @@ struct MessageStoreTests {
         #expect(afterUnsend.body.isEmpty)
         #expect(afterUnsend.replyTo == nil)
         #expect(afterUnsend.reactions.isEmpty)
-        // Unsending a message we don't have (e.g. already gone) is a no-op.
+        // Unsending a message we don't have is a no-op.
         #expect(try !store.markDeleted(conversationId: convo, targetTimestamp: 999999))
 
         // Delete-for-me removes the message and any reactions on it.
@@ -293,11 +286,10 @@ struct MessageStoreTests {
         let storage = try SecureStore(path: tempDBPath(), key: .random(), credentials: TestCredentials())
         let store = storage.messages
         #expect(try !store.isEnvelopeProcessed(id: "env-1"))
-        // First claim wins; second (e.g. the NSE, or a redelivery) loses.
+        // First claim wins; a second one (the NSE, or a redelivery) loses.
         #expect(try store.claimEnvelope(id: "env-1"))
         #expect(try !store.claimEnvelope(id: "env-1"))
         #expect(try store.isEnvelopeProcessed(id: "env-1"))
-        // Distinct envelopes are independent.
         #expect(try store.claimEnvelope(id: "env-2"))
     }
 
@@ -311,17 +303,16 @@ struct MessageStoreTests {
         #expect(g.name == "Trip" && g.distributionId == "dist-1" && g.revision == 1)
         #expect(g.members == ["bob", "carol", "me"]) // ordered by account_id
 
-        // A group conversation exists and is flagged as a group.
         let convoId = try #require(try store.groupConversationId(groupId: "grp-1"))
         let convo = try #require(try store.conversations().first { $0.id == convoId })
         #expect(convo.isGroup && convo.groupId == "grp-1" && convo.peerUsername == "Trip")
 
-        // A group message records its sender for attribution.
+        // Group messages record the sender for attribution.
         try store.insertMessage(id: "gm1", conversationId: convoId, isOutgoing: false,
                                 body: "hi all", timestamp: 1000, status: .received, senderAccount: "bob")
         #expect(try store.messages(in: convoId)[0].senderAccount == "bob")
 
-        // Upsert with new roster + distribution id (a rotation) replaces state.
+        // Upserting a new roster and distribution id (a rotation) replaces state.
         try store.upsertGroup(id: "grp-1", name: "Trip", distributionId: "dist-2", revision: 3,
                               members: ["me", "bob"])
         let rotated = try #require(try store.group(id: "grp-1"))
@@ -340,7 +331,7 @@ struct MessageStoreTests {
         try store.applyReceipt(conversationId: conversation, timestamps: [1000], status: .read)
         #expect(try store.messages(in: conversation)[0].status == .read)
 
-        // A late delivery receipt must not downgrade read → delivered.
+        // A late delivery receipt must not downgrade read to delivered.
         try store.applyReceipt(conversationId: conversation, timestamps: [1000], status: .delivered)
         #expect(try store.messages(in: conversation)[0].status == .read)
     }

@@ -11,7 +11,7 @@ together — there is no external spec, the source of truth is this repo.
 |---|---|
 | `proto/` | **Source of truth for the wire protocol.** `relay.proto` (server-visible envelopes + WS frames) and `content.proto` (client-only plaintext, encrypted before it hits the wire). Every client and the server codegen from here. |
 | `server/` | The Go relay (`relayd`). Store-and-forward, prekeys, sealed sender, blinded discovery, groups, push. API contract in `server/README.md`. |
-| `android/` | **Android client** (Kotlin / Jetpack Compose). New — see `android/CLAUDE.md`. Must interoperate byte-for-byte with the contract in `proto/` + `server/`. |
+| `android/` | **Android client** (Kotlin / Jetpack Compose), in progress. Must interoperate byte-for-byte with the contract in `proto/` + `server/`. |
 | iOS (repo root) | The iOS app + Swift packages, kept at the root because the Xcode project's file-system-synchronized group is rooted here. See below. |
 
 ### iOS layout (at the repo root)
@@ -30,10 +30,8 @@ top level, and moving them would break the project. Its pieces:
 
 - **Protocol is authoritative.** Any client change that affects the wire must be
   reflected in `proto/` and `server/README.md`, and both clients must match.
-- **Per-client context lives in that client's `CLAUDE.md`** (root `CLAUDE.md` =
-  iOS + protocol + server; `android/CLAUDE.md` = Android). Shared decisions
-  (crypto choices, delivery semantics, auth) are documented in the root
-  `CLAUDE.md` "Non-negotiable protocol/security decisions" section.
+- **Shared design decisions** (crypto choices, delivery semantics, auth, calls)
+  are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Ongoing work:** `TODO.md`, on-device verification checklist: `TESTING.md`.
 
 ## License

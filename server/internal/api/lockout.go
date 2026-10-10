@@ -11,7 +11,7 @@ import (
 // per account for recovery, keyed on the email token so it applies identically
 // to registered and unregistered emails). The first lockoutFreeFailures
 // failures are free; each one after that locks the key for
-// lockoutBase·2^(n-free-1), capped at lockoutMax. A success clears the key;
+// lockoutBase*2^(n-free-1), capped at lockoutMax. A success clears the key;
 // keys with no failure for lockoutForget are dropped.
 type failureLockout struct {
 	mu      sync.Mutex
@@ -102,8 +102,8 @@ var recoveryLockout = newFailureLockout()
 
 // registrationLockKey is the recoveryLockout key for an account's sign-in
 // registration lock: a salted hash (limitkey), never the raw account id. The
-// salt rotates daily, which also forgets the backoff — bounded anyway by
-// lockoutMax (24 h).
+// salt rotates daily, which also forgets the backoff; that is bounded anyway
+// by lockoutMax (24h).
 func registrationLockKey(accountID string) string {
 	return "reglock:" + limitkey.Hash("reglock", accountID)
 }

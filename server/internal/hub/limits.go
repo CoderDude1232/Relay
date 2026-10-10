@@ -11,9 +11,9 @@ import (
 var ErrSenderQuota = errors.New("hub: sender's share of the destination queue is full")
 
 // maxQueuedPerSender caps how many still-queued (unacked) envelopes a single
-// sender — an authenticated account, or a source-IP bucket for sealed sends —
-// may hold in ONE destination device's offline queue. The device queue itself
-// holds at most 500 envelopes / 50 MB (store), so without this one hostile
+// sender (an authenticated account, or a source-IP bucket for sealed sends)
+// may hold in one destination device's offline queue. The device queue itself
+// holds at most 500 envelopes / 50 MB, so without this one hostile
 // sender could fill a victim's queue and make everyone else's messages bounce.
 const maxQueuedPerSender = 200
 
@@ -26,8 +26,8 @@ const maxQueuedPerSender = 200
 type queueShares struct {
 	mu      sync.Mutex
 	limit   int
-	counts  map[string]int        // share key -> envelopes currently queued
-	entries map[string]shareEntry // envelope id -> its share
+	counts  map[string]int        // envelopes currently queued, by share key
+	entries map[string]shareEntry // by envelope id
 }
 
 type shareEntry struct {

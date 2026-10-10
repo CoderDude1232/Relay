@@ -43,9 +43,8 @@ func runBlobGC(blobs *blob.Store, ttl time.Duration) {
 
 // runRetentionSweeper deletes expired rows from every table with a retention
 // window (queue, invites, provisioning sessions, link tokens, reports, nuke
-// commands) once at startup and then hourly, and prunes the hub's in-memory
-// bookkeeping. Without it expired data would linger until some request
-// happened to touch its table.
+// commands) at startup and then hourly, and prunes the hub's in-memory
+// bookkeeping.
 func runRetentionSweeper(st *store.Store, h *hub.Hub) {
 	sweep := func() {
 		if err := st.PurgeExpired(); err != nil {
@@ -89,7 +88,7 @@ func runRateLimiterGC(h *api.Server) {
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	// Secrets can come from the environment (e.g. a root-only systemd
-	// EnvironmentFile) so they never appear in the unit file or in `ps`.
+	// EnvironmentFile) so they never appear in the unit file or in ps.
 	// No built-in default: a guessable relay:relay DSN must never be what a
 	// misconfigured deployment silently falls back to.
 	dsn := flag.String("dsn", envOr("RELAY_DSN", ""), "PostgreSQL DSN (required; default $RELAY_DSN)")
@@ -269,10 +268,8 @@ func main() {
 	apiHandler := apiServer.Handler()
 	go runRateLimiterGC(apiServer)
 
-	// When TLS is enabled, run HTTP/3 (QUIC) on UDP alongside HTTP/2 on TCP.
-	// iOS URLSession with assumesHTTP3Capable=true will try QUIC first and fall
-	// back to TCP automatically — giving 0-RTT reconnects and no head-of-line
-	// blocking in congested networks.
+	// With TLS, serve HTTP/3 (QUIC) on UDP alongside HTTP/2 on TCP. Clients
+	// with assumesHTTP3Capable try QUIC first and fall back to TCP.
 	var h3srv *http3.Server
 	servedHandler := apiHandler
 
@@ -306,9 +303,9 @@ func main() {
 		// (30 s read / 60 s write; 10 min for attachment transfers).
 		IdleTimeout:    120 * time.Second,
 		MaxHeaderBytes: 16 << 10,
-		// Discard stdlib HTTP error logs — they include client IP addresses
-		// (e.g. TLS handshake failures from port scanners) which would persist
-		// in the systemd journal and be recoverable under a warrant.
+		// Discard stdlib HTTP error logs: they include client IP addresses
+		// (e.g. TLS handshake failures from scanners), which would otherwise
+		// persist in the systemd journal.
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
 

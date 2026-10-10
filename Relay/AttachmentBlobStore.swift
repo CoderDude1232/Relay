@@ -2,10 +2,9 @@
 //  AttachmentBlobStore.swift
 //  Relay
 //
-//  On-disk cache of attachment *ciphertext* in the App Group container. We
-//  only ever persist the encrypted blob (and even that with complete file
-//  protection); plaintext media is decrypted to memory on demand and never
-//  written to disk, matching the SQLCipher-at-rest guarantee.
+//  On-disk cache of attachment ciphertext in the App Group container, with
+//  complete file protection. Plaintext media is decrypted to memory on demand
+//  and never written to disk.
 //
 
 import Foundation
@@ -21,9 +20,8 @@ struct AttachmentBlobStore {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    /// Attachment ids arrive inside messages from other people, so they are
-    /// never trusted as file names: anything but a plain token (no "/", no
-    /// "..") is rejected, or an id like "../relay.db" could read or delete
+    /// Attachment ids come from other people's messages, so anything but a plain
+    /// token (no "/", no "..") is rejected; otherwise "../relay.db" could reach
     /// files outside the cache.
     static func isSafeId(_ id: String) -> Bool {
         (1...128).contains(id.count) && id.allSatisfy { char in

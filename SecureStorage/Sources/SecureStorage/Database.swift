@@ -2,12 +2,11 @@
 //  Database.swift
 //  SecureStorage
 //
-//  A thin wrapper over the SQLCipher C API: keyed open, prepared
-//  statements, and transactions. One connection, serialized by an internal
-//  recursive lock — session/ratchet state must never race. The lock is held
-//  for the WHOLE of a `transaction` body (BEGIN…COMMIT), and every
-//  `query`/`run` takes it too, so a transaction excludes all other threads
-//  while the owning thread can still run statements inside it.
+//  Thin wrapper over the SQLCipher C API: keyed open, prepared statements,
+//  transactions. One connection behind a recursive lock so session and
+//  ratchet state never race. A `transaction` holds the lock from BEGIN to
+//  COMMIT and every `query`/`run` takes it, so a transaction excludes other
+//  threads while its own thread can still run statements inside it.
 //
 
 import Foundation
@@ -20,8 +19,8 @@ public enum StorageError: Error, Equatable {
     case recordNotFound(String)
     case keychain(status: Int32)
     case secureEnclave(String)
-    /// The write would turn one kind of record into another (e.g. a 1:1
-    /// conversation into a group) — refused.
+    /// The write would turn one kind of record into another, e.g. a 1:1
+    /// conversation into a group.
     case conflict(String)
 }
 
@@ -63,20 +62,18 @@ public enum SQLValue: Sendable, Equatable {
 
 public final class Database: @unchecked Sendable {
     private var handle: OpaquePointer?
-    /// Recursive so the thread that owns an open transaction can keep
-    /// issuing statements (and nested transactions) inside it.
+    /// Recursive so the thread owning a transaction can keep issuing statements
+    /// and nested transactions inside it.
     private let lock = NSRecursiveLock()
-    /// Nesting depth of `transaction` calls on the lock-owning thread. Only
-    /// read/written while `lock` is held.
+    /// Nesting depth of `transaction` on the owning thread. Guarded by `lock`.
     private var transactionDepth = 0
 
-    /// Milliseconds a contended writer (the other process — app vs NSE —
-    /// holding the file lock) waits before failing with SQLITE_BUSY.
+    /// How long a writer waits on the other process's file lock (app vs NSE)
+    /// before failing with SQLITE_BUSY.
     public static let busyTimeoutMilliseconds: Int32 = 5000
 
-    /// Opens (creating if needed) an encrypted database at `path`. Throws
-    /// `StorageError.wrongKey` when the file exists but the key can't
-    /// decrypt it.
+    /// Opens or creates an encrypted database at `path`. Throws
+    /// `StorageError.wrongKey` if the file exists but the key doesn't decrypt it.
     public init(path: String, key: DatabaseKey) throws {
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(path, &handle, flags, nil) == SQLITE_OK, handle != nil else {
@@ -84,16 +81,15 @@ public final class Database: @unchecked Sendable {
             sqlite3_close(handle)
             throw StorageError.openFailed(message)
         }
-        // App and NSE open the same file; make a contended reader/writer wait
-        // rather than fail immediately with SQLITE_BUSY. Set before anything
-        // touches the file so even the key-check read below waits.
+        // The app and the NSE share this file, so wait on contention instead of
+        // failing with SQLITE_BUSY. Set before the key check below touches the file.
         sqlite3_busy_timeout(handle, Self.busyTimeoutMilliseconds)
         do {
             // Keying must happen before any other statement touches the file.
             try run("PRAGMA key = \"x'\(key.hex)'\";")
-            // First real read fails with NOTADB if the key is wrong. A busy/
-            // locked failure (other process mid-write past the timeout) is
-            // NOT a wrong key — surface it as-is so callers can retry.
+            // The first real read fails with NOTADB on a wrong key. A busy or locked
+            // error (the other process writing past the timeout) is not a wrong key;
+            // rethrow it so callers can retry.
             do {
                 _ = try query("SELECT count(*) FROM sqlite_master;")
             } catch StorageError.sqlite(let code, let message)
@@ -133,7 +129,7 @@ public final class Database: @unchecked Sendable {
         }
         defer { sqlite3_finalize(statement) }
 
-        // SQLITE_TRANSIENT: have SQLite copy bound buffers immediately.
+        // SQLITE_TRANSIENT: SQLite copies bound buffers immediately.
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (index, value) in bindings.enumerated() {
             let slot = Int32(index + 1)
@@ -185,14 +181,12 @@ public final class Database: @unchecked Sendable {
         }
     }
 
-    /// Runs `body` inside a transaction, rolling back on error.
+    /// Runs `body` in a transaction, rolling back on error.
     ///
-    /// The connection lock is held for the entire body, so statements from
-    /// other threads can neither interleave with nor be rolled back by this
-    /// transaction; they simply wait. Calls made from inside `body` on the
-    /// same thread (including nested `transaction` calls) proceed normally.
-    /// A nested call becomes a SAVEPOINT: its failure rolls back only its
-    /// own work and rethrows; the outer transaction decides the rest.
+    /// The connection lock is held for the whole body, so other threads' statements
+    /// wait rather than interleave with it or get rolled back by it. Same-thread
+    /// calls from `body` proceed. A nested call becomes a SAVEPOINT: its failure
+    /// rolls back only its own work and rethrows.
     public func transaction<T>(_ body: () throws -> T) throws -> T {
         lock.lock()
         defer { lock.unlock() }

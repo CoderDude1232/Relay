@@ -2,10 +2,9 @@
 //  ChatFolders.swift
 //  Relay
 //
-//  User-defined chat folders. A folder is just a name: each conversation's
-//  `label` (stored in the local encrypted database) says which folder it's in.
-//  The folder list itself lives in this device's preferences — nothing about
-//  folders ever leaves the phone.
+//  User-defined chat folders. A folder is just a name; each conversation's
+//  `label` in the local database says which folder it's in. The folder list
+//  lives in this device's preferences and never leaves the phone.
 //
 
 import Observation
@@ -79,7 +78,7 @@ final class ChatFolderStore {
     }
 }
 
-/// Settings → Chats → Chat Folders: create, rename, reorder and delete.
+/// Create, rename, reorder and delete chat folders.
 struct ChatFoldersView: View {
     let service: MessagingService
     @State private var store = ChatFolderStore.shared

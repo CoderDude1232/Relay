@@ -1,8 +1,8 @@
 // testpush sends a single APNs notification to a device token, for
 // diagnosing the push path end-to-end without going through the relay's
 // offline detection. The payload carries junk in place of an envelope, so
-// the NSE fails to decode and shows the generic "New message" banner —
-// which is exactly what we want to confirm delivery + on-device display.
+// the NSE fails to decode and shows the generic "New message" banner, which
+// is enough to confirm delivery and on-device display.
 package main
 
 import (

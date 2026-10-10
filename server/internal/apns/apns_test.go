@@ -56,7 +56,7 @@ func TestAuthTokenIsValidES256(t *testing.T) {
 		t.Fatalf("expected 3 JWT segments, got %d", len(parts))
 	}
 
-	// Header carries alg + kid.
+	// Header carries alg and kid.
 	header, _ := base64.RawURLEncoding.DecodeString(parts[0])
 	if !strings.Contains(string(header), `"ES256"`) || !strings.Contains(string(header), "KEY123ABCD") {
 		t.Fatalf("unexpected header: %s", header)

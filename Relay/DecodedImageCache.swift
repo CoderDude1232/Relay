@@ -11,8 +11,7 @@ import ImageIO
 import UIKit
 
 enum DecodedImageCache {
-    /// Longest edge, in pixels, of cached images — enough for a 260pt card at
-    /// 3x, far smaller than a full-resolution camera photo.
+    /// Longest edge of cached images in pixels: enough for a 260pt card at 3x.
     private static let maxPixelSize = 800
 
     private static let cache: NSCache<NSData, UIImage> = {
@@ -21,8 +20,7 @@ enum DecodedImageCache {
         return c
     }()
 
-    /// A decoded (and, for large images, downsampled) image for `data`, from
-    /// cache when this exact data was seen before. Nil when it isn't an image.
+    /// Decoded, downsampled image for `data`, cached by content. Nil if not an image.
     static func image(for data: Data) -> UIImage? {
         let key = data as NSData
         if let hit = cache.object(forKey: key) { return hit }

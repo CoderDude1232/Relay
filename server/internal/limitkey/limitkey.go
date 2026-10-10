@@ -67,8 +67,8 @@ func Hash(parts ...string) string {
 
 // HashCurrentAndPrevious returns Hash(parts...) under the current salt and
 // under the salt it replaced ("" before the first rotation). A short-lived
-// cache whose correctness depends on recognising an entry — the Relay-Sig
-// replay cache — checks both, so a rotation can't make a just-stored entry
+// cache whose correctness depends on recognising an entry (the Relay-Sig
+// replay cache) checks both, so a rotation can't make a just-stored entry
 // unrecognisable.
 func HashCurrentAndPrevious(parts ...string) (cur, prev string) {
 	c, p := salts()

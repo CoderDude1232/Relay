@@ -2,16 +2,13 @@
 //  EmojiPicker.swift
 //  Relay
 //
-//  A lightweight emoji grid used both by the composer (insert into the
-//  draft) and by the message reaction tray (pick a reaction). iOS has no
-//  system emoji-picker view we can present directly, so this is a curated
-//  set grouped into categories — broad enough to feel real without shipping
-//  the full Unicode table.
+//  Emoji grid for the composer and the reaction tray. iOS has no presentable
+//  system emoji picker, so this is a curated, categorized set.
 //
 
 import SwiftUI
 
-/// The quick reactions shown first in the reaction tray, mirroring Signal.
+/// Quick reactions shown first in the reaction tray.
 let quickReactions = ["❤️", "👍", "👎", "😂", "😮", "😢"]
 
 struct EmojiPicker: View {
@@ -106,8 +103,7 @@ enum EmojiCatalog {
 }
 
 extension String {
-    /// True for short all-emoji messages, which render "jumbomoji"-style
-    /// (large, no bubble) like Signal and iMessage.
+    /// True for short all-emoji messages, which render large without a bubble.
     var isJumbomojiCandidate: Bool {
         let characters = Array(trimmingCharacters(in: .whitespacesAndNewlines))
         guard !characters.isEmpty, characters.count <= 3 else { return false }

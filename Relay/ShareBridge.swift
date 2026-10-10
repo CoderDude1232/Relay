@@ -4,17 +4,14 @@
 //
 //  App Group bridge between the app and its extensions (Share, Siri intents,
 //  widget, notification content). Each extension compiles its own mirror of the
-//  shared part of this file — keep the storage format in sync with them.
+//  shared part of this file; keep the storage format in sync.
 //
-//  Privacy rules for everything written here (the App Group container is
-//  outside the encrypted database):
-//  • Conversations are identified only by the opaque local conversation id —
-//    never by a peer's Relay account id.
-//  • Hidden (panic-mode) conversations are never written.
-//  • Files carry explicit Data Protection and the directories are excluded
-//    from iCloud/iTunes backups.
-//  • A pending share (text/image/file content) is a protected file, never
-//    UserDefaults, and is deleted as soon as it is read.
+//  The App Group container is outside the encrypted database, so:
+//  - conversations are identified only by the opaque local id, never a peer's
+//    account id;
+//  - hidden (panic-mode) conversations are never written;
+//  - files carry explicit Data Protection and are excluded from backups;
+//  - a pending share is a protected file (not UserDefaults), deleted once read.
 //
 
 import Foundation
@@ -42,8 +39,8 @@ struct ShareConversationSummary: Codable, Identifiable {
     }
 }
 
-/// Content + target chosen in the Share Extension / Siri / quick reply;
-/// processed (and deleted) by the main app.
+/// Content and target chosen in the Share Extension, Siri or quick reply;
+/// processed and deleted by the main app.
 struct PendingShare: Codable {
     let conversationId: String
     let text: String?
@@ -55,7 +52,7 @@ struct PendingShare: Codable {
 
 nonisolated enum ShareBridge {
     private static let unreadCountKey = "relay.share.unreadCount"
-    // Legacy UserDefaults keys (pre-file storage) — removed on sight.
+    // Legacy UserDefaults keys from before file storage; removed on sight.
     private static let legacyConversationsKey = "relay.share.conversations"
     private static let legacyPendingKey = "relay.share.pending"
 
@@ -121,7 +118,7 @@ nonisolated enum ShareBridge {
 
     /// Returns the share and deletes it so it is processed exactly once.
     static func readAndClearPendingShare() -> PendingShare? {
-        // One-time migration from the old UserDefaults location.
+        // Migrate from the legacy UserDefaults location.
         if let legacy = defaults?.data(forKey: legacyPendingKey) {
             defaults?.removeObject(forKey: legacyPendingKey)
             if let share = try? JSONDecoder().decode(PendingShare.self, from: legacy) { return share }
@@ -176,10 +173,8 @@ nonisolated enum ShareBridge {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    /// Removes EVERYTHING Relay keeps in the App Group container outside the
-    /// encrypted database: conversation snapshot, pending share, unread count,
-    /// avatars, legacy UserDefaults keys and any leftover broadcast frame.
-    /// Call on sign-out, remote wipe and panic wipe.
+    /// Removes everything Relay keeps in the App Group container outside the
+    /// encrypted database. Call on sign-out, remote wipe and panic wipe.
     static func clearAll() {
         defaults?.removeObject(forKey: legacyConversationsKey)
         defaults?.removeObject(forKey: legacyPendingKey)

@@ -2,8 +2,7 @@
 //  WireMapping.swift
 //  RelayKit
 //
-//  Bridges CryptoCore's transport-agnostic types to the relay's protobuf
-//  wire enums. Kept in one place so a schema change breaks exactly here.
+//  Maps CryptoCore's transport-agnostic types to the relay's protobuf enums.
 //
 
 import CryptoCore
@@ -28,7 +27,7 @@ extension MessageKind {
     }
 }
 
-/// One decrypted-ready ciphertext received from the relay.
+/// One ciphertext received from the relay.
 public struct IncomingEnvelope: Sendable, Equatable {
     public let id: String
     public let senderAccount: String
@@ -38,9 +37,8 @@ public struct IncomingEnvelope: Sendable, Equatable {
     public let serverTimestamp: Int64
     public let ephemeral: Bool
 
-    /// Builds an envelope from the serialized `relay.v1.Envelope` bytes — used
-    /// by the Notification Service Extension, which receives the envelope in
-    /// the APNs payload rather than over the WebSocket.
+    /// Builds an envelope from serialized `relay.v1.Envelope` bytes, as delivered
+    /// to the NSE in the APNs payload.
     public init?(serializedEnvelope data: Data) {
         guard let proto = try? Relay_V1_Envelope(serializedBytes: data) else { return nil }
         self.init(proto)
@@ -58,8 +56,7 @@ public struct IncomingEnvelope: Sendable, Equatable {
     }
 }
 
-/// A ciphertext addressed to one specific device of the destination
-/// account (the per-device fan-out unit).
+/// A ciphertext for one device of the destination account.
 public struct DeviceMessagePayload: Sendable, Equatable {
     public let deviceId: UInt32
     /// Recipient's registration id as known to our session; 0 skips the
@@ -86,8 +83,8 @@ public struct DeviceMessagePayload: Sendable, Equatable {
 /// The relay's verdict on a send.
 public enum SendOutcome: Sendable, Equatable {
     case ok(serverTimestamp: Int64)
-    /// The fan-out didn't cover the account's devices; re-fetch bundles,
-    /// re-encrypt for the listed devices and retry.
+    /// The fan-out didn't match the account's devices. Re-fetch bundles,
+    /// re-encrypt for the listed devices, and retry.
     case mismatchedDevices(missing: [UInt32], extra: [UInt32], stale: [UInt32])
     case unknownAccount
     case rateLimited
@@ -113,14 +110,13 @@ public enum SendOutcome: Sendable, Equatable {
     }
 }
 
-/// A signed remote-wipe command received from the relay.
-/// The receiver must verify the signature before wiping local storage.
+/// A signed remote-wipe command. Verify the signature before wiping.
 public struct NukeEvent: Sendable, Equatable {
     public let accountId: String
     public let commandId: String
     public let creationTimeMs: Int64
     public let initiatingDeviceId: UInt32
-    /// ECDSA-P256 ASN.1/DER signature over the canonical nuke payload.
+    /// ECDSA P-256 DER signature over the canonical nuke payload.
     public let signature: Data
 
     init(_ proto: Relay_V1_NukeCommand) {

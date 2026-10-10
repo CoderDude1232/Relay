@@ -1,12 +1,11 @@
 #!/bin/sh
 # Vendors libsignal for the iOS client. Run once after a fresh checkout.
 #
-# signalapp/libsignal has no root Package.swift, so it cannot be consumed
-# as a remote SPM dependency. This mirrors what Signal's own CocoaPods
-# integration does instead: check out the repo (the local Swift package
-# lives at swift/) and download the prebuilt Rust static library
-# (libsignal_ffi.a) from Signal's artifact server. The Xcode project links
-# the .a via per-SDK LIBRARY_SEARCH_PATHS.
+# libsignal has no root Package.swift, so it can't be a remote SPM
+# dependency. As Signal's CocoaPods integration does, this checks out the
+# repo (the Swift package is in swift/) and downloads the prebuilt
+# libsignal_ffi.a from Signal's artifact server. The Xcode project links it
+# via per-SDK LIBRARY_SEARCH_PATHS.
 set -eu
 
 LIBSIGNAL_VERSION="v0.97.4"

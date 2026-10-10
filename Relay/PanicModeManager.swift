@@ -2,17 +2,13 @@
 //  PanicModeManager.swift
 //  Relay
 //
-//  Panic mode: lets the user hide marked conversations behind a secondary PIN.
+//  Panic mode: hides marked conversations behind a secondary PIN.
 //
-//  • The PIN is verified with Argon2id (libsodium crypto_pwhash, memory-hard)
-//    over a random salt. PINs stored by older builds as iterated SHA-256 are
-//    verified once with the legacy scheme and re-derived with Argon2id on that
-//    first successful entry.
-//  • Wrong PINs are rate-limited with exponential backoff that survives app
-//    restarts (attempt counter + lockout deadline live in the Keychain).
-//  • Everything — salt, hash, KDF version, attempt state AND the hidden
-//    conversation ids — lives in the Keychain as ThisDeviceOnly items, so it is
-//    never in plaintext UserDefaults and never leaves the device in a backup.
+//  The PIN is verified with Argon2id (libsodium crypto_pwhash) over a random
+//  salt; legacy iterated-SHA-256 hashes are verified once and re-derived.
+//  Wrong PINs get exponential backoff that survives restarts. All state,
+//  including the hidden conversation ids, lives in ThisDeviceOnly Keychain
+//  items, so none of it is in UserDefaults or backups.
 //
 
 import Clibsodium
@@ -48,7 +44,6 @@ final class PanicModeManager {
     /// Legacy plaintext location of the hidden ids (migrated to the Keychain).
     private static let legacyHiddenKey = "panicMode.hiddenIds"
 
-    // Keychain item identifiers.
     nonisolated private static let kcService    = "com.relayapp.relay.panicmode"
     nonisolated private static let kcSaltAcct   = "pinSalt"
     nonisolated private static let kcHashAcct   = "pinHash"
@@ -59,7 +54,7 @@ final class PanicModeManager {
 
     nonisolated private static let argonVersion = "argon2id"
 
-    // Legacy UserDefaults keys — only read for one-time migration.
+    // Legacy UserDefaults keys, read only for migration.
     private static let legacySaltKey = "panicMode.pinSalt"
     private static let legacyHashKey = "panicMode.pinHash"
 
@@ -75,7 +70,7 @@ final class PanicModeManager {
         let ud = UserDefaults.standard
         isEnabled = ud.bool(forKey: Self.enabledKey)
 
-        // One-time migration: hidden ids from plaintext UserDefaults → Keychain.
+        // Migrate hidden ids from UserDefaults to the Keychain.
         if let legacy = ud.stringArray(forKey: Self.legacyHiddenKey) {
             var merged = Self.loadHiddenIds()
             merged.formUnion(legacy)
@@ -84,7 +79,7 @@ final class PanicModeManager {
         }
         hiddenIds = Self.loadHiddenIds()
 
-        // One-time migration: legacy UserDefaults PIN material → Keychain.
+        // Migrate legacy UserDefaults PIN material to the Keychain.
         if isEnabled {
             if Self.loadKC(Self.kcSaltAcct) == nil,
                let saltB64 = ud.string(forKey: Self.legacySaltKey),
@@ -185,8 +180,7 @@ final class PanicModeManager {
         Self.resetAttempts()
         lockedOutUntil = nil
         if !isArgon {
-            // Migrate the legacy iterated-SHA-256 hash to Argon2id now that we
-            // know the PIN.
+            // Re-derive the legacy hash with Argon2id now that the PIN is known.
             await enableAsync(pin: pin)
         }
         isActive = true
@@ -202,10 +196,9 @@ final class PanicModeManager {
     func hide(_ conversationId: String) {
         hiddenIds.insert(conversationId)
         Self.saveHiddenIds(hiddenIds)
-        // Siri / share-sheet suggestions live outside the encrypted store; drop
-        // Relay's donations so the hidden chat stops being suggested (older
-        // donations carry no per-chat group id, so clear them all — they refill
-        // as the user sends).
+        // Siri/share-sheet suggestions live outside the encrypted store. Older
+        // donations carry no per-chat group id, so clear all of Relay's; they refill
+        // as the user sends.
         INInteraction.deleteAll { _ in }
     }
 
@@ -268,9 +261,8 @@ final class PanicModeManager {
         return Data(salt)
     }
 
-    /// Argon2id (libsodium, interactive limits) → hex. The PIN is short, so
-    /// the cost per guess is what matters; the online path is additionally
-    /// rate-limited above.
+    /// Argon2id (libsodium, interactive limits), hex-encoded. The PIN is short,
+    /// so per-guess cost is what matters; online attempts are also rate-limited.
     nonisolated private static func argon2id(_ pin: String, salt: Data) -> String? {
         _ = sodium_init()
         guard salt.count == Int(crypto_pwhash_SALTBYTES) else { return nil }
@@ -291,8 +283,8 @@ final class PanicModeManager {
         return out.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Legacy scheme (50 000 rounds of SHA-256) — used only to verify a PIN set
-    /// by an older build, once, before migrating it to Argon2id.
+    /// Legacy scheme (50,000 rounds of SHA-256), used only to verify a PIN from
+    /// an older build once before migrating it.
     nonisolated private static func legacyStretch(_ pin: String, salt: Data) -> String {
         var state = Data(pin.utf8)
         state.append(salt)

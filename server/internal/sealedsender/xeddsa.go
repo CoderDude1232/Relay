@@ -4,7 +4,7 @@
 // exactly as libsignal expects, so the vendored client validates them natively.
 //
 // The signature scheme is XEd25519 over Curve25519 keys, matching
-// libsignal's `PrivateKey::calculate_signature`
+// libsignal's PrivateKey::calculate_signature
 // (third_party/libsignal/rust/core/src/curve/curve25519.rs): SHA-512, a 32-byte
 // domain-separation prefix, and the public key's sign bit carried in the top bit
 // of the signature's final byte for libsignal-protocol-java compatibility.

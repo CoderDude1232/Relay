@@ -2,10 +2,8 @@
 //  SealedSenderInteropTests.swift
 //  CryptoCoreTests
 //
-//  Cross-language proof gate for the sealed-sender "A1" approach: a certificate
-//  chain minted by the pure-Go relay (server/internal/sealedsender) must
-//  validate natively in libsignal. If this passes, Go-minted sender certificates
-//  are byte-and-signature compatible with the vendored client.
+//  Checks that a certificate chain minted by the Go relay
+//  (server/internal/sealedsender) validates in libsignal.
 //
 //  Regenerate the vector with:
 //    PRINT_INTEROP_VECTOR=1 go test ./internal/sealedsender/ \
@@ -29,9 +27,8 @@ struct SealedSenderInteropTests {
         let trustRoot = try PublicKey(Data(base64Encoded: Self.trustRootPub)!)
         let cert = try SenderCertificate(Data(base64Encoded: Self.senderCert)!)
 
-        // The signature chain (sender cert ← server cert ← trust root) verifies.
+        // Sender cert <- server cert <- trust root.
         #expect(cert.validate(trustRoot: trustRoot, time: 1_800_000_000_000))
-        // Expiry is enforced.
         #expect(!cert.validate(trustRoot: trustRoot, time: Self.expiresMs + 1))
         // A different trust root must reject it.
         let otherRoot = PrivateKey.generate().publicKey

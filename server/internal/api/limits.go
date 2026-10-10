@@ -26,8 +26,8 @@ var trustedProxies []netip.Prefix
 // sourceAddr is the address limits should key on. Behind a trusted proxy every
 // connection comes from the proxy, so per-IP limits (and the failed-auth
 // lockout) would lump all users together; the proxy's CF-Connecting-IP header
-// carries the real client. The header is honoured ONLY when the TCP peer is a
-// trusted proxy — anyone else could set it to dodge or poison rate limits.
+// carries the real client. The header is honoured only when the TCP peer is a
+// trusted proxy; anyone else could set it to dodge or poison rate limits.
 func sourceAddr(r *http.Request) string {
 	if len(trustedProxies) == 0 {
 		return r.RemoteAddr
@@ -55,7 +55,7 @@ func sourceAddr(r *http.Request) string {
 }
 
 // cloudflareRanges are Cloudflare's published edge ranges
-// (https://www.cloudflare.com/ips/, checked 2026-10-09).
+// (https://www.cloudflare.com/ips/).
 var cloudflareRanges = []string{
 	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
 	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
@@ -106,8 +106,8 @@ type tokenBucket struct {
 	last   time.Time
 }
 
-// newTokenBucketLimiter allows `burst` events at once, refilled at
-// `burst` per `per` (so the long-run rate equals the burst over that period).
+// newTokenBucketLimiter allows burst events at once, refilled at burst per
+// per.
 func newTokenBucketLimiter(burst float64, per time.Duration) *tokenBucketLimiter {
 	l := &tokenBucketLimiter{
 		buckets: make(map[string]*tokenBucket),
@@ -195,10 +195,6 @@ func (l *tokenBucketLimiter) prune() {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Limits added by the hardening pass. Each comment states the budget.
-// ---------------------------------------------------------------------------
-
 // Failed authentications (bcrypt is deliberately slow, so unbounded guessing is
 // both a credential-guessing and a CPU-exhaustion vector). Only failures spend
 // tokens; once a bucket is empty further attempts get 429 before any password
@@ -209,7 +205,7 @@ func (l *tokenBucketLimiter) prune() {
 var authFailIPLimiter = newTokenBucketLimiter(50, 10*time.Minute)
 
 // Per target device: 20 failed HTTP Basic attempts per 10 minutes. Applied to
-// the Basic (password) path only — Relay-Sig has nothing guessable and must not
+// the Basic (password) path only. Relay-Sig has nothing guessable and must not
 // be lockable by a third party who knows a device's account id.
 var authFailDeviceLimiter = newTokenBucketLimiter(20, 10*time.Minute)
 
@@ -219,8 +215,8 @@ var wsSendLimiter = newTokenBucketLimiter(1000, 50*time.Second)
 
 // One-time prekey hand-outs. Draining a target's OTK pool degrades its future
 // sessions to signed-prekey-only PQXDH, so OTKs are budgeted separately from
-// bundle fetches: once a budget is spent the bundle is still served — signed
-// prekey + last-resort Kyber prekey, `oneTimePreKey: null` — so honest session
+// bundle fetches: once a budget is spent the bundle is still served without an
+// OTK (signed prekey and last-resort Kyber prekey only), so honest session
 // setup keeps working while the pool is protected.
 //
 // Per target device (across all requesters): 60 OTKs per hour.
@@ -230,7 +226,7 @@ var preKeyTargetOTKLimiter = newTokenBucketLimiter(60, time.Hour)
 var preKeyRequesterOTKLimiter = newTokenBucketLimiter(300, time.Hour)
 
 // Unauthenticated provisioning-session polls (GET /v1/provisioning-sessions/{id})
-// per source IP bucket: bursts of 120, refilled at 1/s — comfortably above a
+// per source IP bucket: bursts of 120, refilled at 1/s. Comfortably above a
 // new device polling once a second for the session's 10-minute life, far
 // below what enumerating session ids would need.
 var provisioningPollIPLimiter = newTokenBucketLimiter(120, 2*time.Minute)
@@ -249,7 +245,7 @@ var contactInviteLimiter = newTokenBucketLimiter(50, 24*time.Hour)
 var usernameChangeLimiter = newTokenBucketLimiter(5, 24*time.Hour)
 
 // Default per-account attachment upload quotas (overridable with
-// SetAttachmentQuota / the -attachment-daily-* flags).
+// SetAttachmentQuota or the -attachment-daily-* flags).
 const (
 	defaultAttachmentDailyBytes = 2 << 30 // 2 GiB
 	defaultAttachmentDailyCount = 1000
@@ -258,13 +254,13 @@ const (
 // attachmentQuota tracks per-account upload budgets. Allocation (POST
 // /v1/attachments) spends one unit of the count budget and remembers which
 // (hashed) account owns the id, so the byte budget can be charged when the
-// ciphertext is uploaded — even on an upload path that carries no credentials.
+// ciphertext is uploaded, even on an upload path that carries no credentials.
 type attachmentQuota struct {
 	count *tokenBucketLimiter
 	bytes *tokenBucketLimiter
 
 	mu     sync.Mutex
-	owners map[string]attachmentOwner // blob id -> owner
+	owners map[string]attachmentOwner // by blob id
 }
 
 type attachmentOwner struct {
@@ -340,7 +336,6 @@ func (q *attachmentQuota) prune() {
 	q.mu.Unlock()
 }
 
-// pruneTokenBuckets is called from PruneStaleLimiterKeys.
 func (s *Server) pruneTokenBuckets() {
 	for _, l := range []*tokenBucketLimiter{
 		authFailIPLimiter,

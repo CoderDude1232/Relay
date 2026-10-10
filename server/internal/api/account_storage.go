@@ -8,7 +8,7 @@ import (
 	"github.com/relayapp/relay-server/internal/store"
 )
 
-// GET /v1/accounts/me/storage → {blob, version} | 404.
+// GET /v1/accounts/me/storage: {blob, version}, or 404.
 func (s *Server) handleGetAccountStorage(w http.ResponseWriter, _ *http.Request, dev *store.Device) {
 	blob, version, err := s.store.AccountStorage(dev.AccountID)
 	if errors.Is(err, store.ErrNotFound) {
@@ -22,7 +22,7 @@ func (s *Server) handleGetAccountStorage(w http.ResponseWriter, _ *http.Request,
 	writeJSON(w, http.StatusOK, map[string]any{"blob": b64(blob), "version": version})
 }
 
-// PUT /v1/accounts/me/storage {blob, baseVersion} → {version} | 409 (stale base).
+// PUT /v1/accounts/me/storage {blob, baseVersion}: {version}, or 409 on a stale base.
 func (s *Server) handlePutAccountStorage(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if !accountStorageLimiter.allow(dev.AccountID) {
 		httpError(w, http.StatusTooManyRequests, "too many updates; try again later")

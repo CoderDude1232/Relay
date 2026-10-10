@@ -1,12 +1,11 @@
-// content.proto — the CLIENT-ONLY plaintext structure of a message.
+// Client-only plaintext structure of a message.
 //
 // A serialized Content message is what gets encrypted with the Double
 // Ratchet (or a sender key, for groups). The relay server never parses
-// this; it only ever sees the resulting ciphertext bytes inside
-// relay.v1.Envelope.content / DeviceMessage.content.
+// this; it only sees the resulting ciphertext in Envelope.content and
+// DeviceMessage.content.
 //
-// Both the iOS client and future clients (Windows, Android) must codegen
-// from this exact file — wire compatibility depends on it.
+// Every client must generate its code from this file.
 
 syntax = "proto3";
 
@@ -33,7 +32,7 @@ message Content {
     DeviceInfo device_info = 21;
   }
   // Set when this content belongs to a group; empty for 1:1. Group messages
-  // are encrypted with the sender's sender key (senderKey ciphertext);
+  // are encrypted with the sender's sender key;
   // control content (SKDM, group updates) is sent over pairwise sessions.
   string group_id = 8;
   // Random bytes added before E2EE encryption so the relay observes fewer exact
@@ -41,13 +40,13 @@ message Content {
   bytes padding = 12;
   // Sealed sender: sender's own account id and device id, encrypted inside the
   // Content so the relay's stored envelope can omit them without breaking decryption.
-  // Clients MUST set these on every outgoing message. Recipients prefer these over
-  // the Envelope's (server-stamped) sender fields.
+  // Clients set these on every outgoing message, and recipients prefer them over
+  // the server-stamped sender fields on the Envelope.
   string sender_account_id = 13;
   uint32 sender_device_id = 14;
   // Disappearing-messages timer the sender had set for this conversation when the
-  // message was composed, in milliseconds. 0 means no timer / no change. Recipients
-  // sync their local timer to this value so both sides stay in lockstep.
+  // message was composed, in milliseconds. 0 means no timer. Recipients set their
+  // local timer to this value.
   int64 expires_after_ms = 15;
   // Set only on sync copies sent to the sender's own other devices. Contains the
   // peer account id of the original recipient so the linked device can store the
@@ -63,9 +62,8 @@ message SenderKeyDistribution {
   string distribution_id = 2; // UUID identifying the sender-key epoch
 }
 
-// Notifies members that a group's roster/metadata changed; recipients
-// re-sync the authoritative roster from the relay. `revision` lets clients
-// drop stale updates; the rest drives a human-readable system line.
+// Notifies members that a group's roster or metadata changed. revision lets
+// clients drop stale updates; the rest drives a human-readable system line.
 message GroupUpdate {
   enum Action {
     ACTION_UNSPECIFIED = 0;
@@ -97,15 +95,13 @@ message GroupUpdate {
   bool announce_only = 10;
   // New group screenshot-hide state (SET_SCREEN_SECURITY action, admin-set).
   bool screen_security = 13;
-  // The group's current sender-key epoch. Carried E2E (was server-managed) so
-  // clients agree on it without a server round-trip. On member REMOVE the actor
-  // rotates this to a fresh id, forcing new sender keys the removed member can't
-  // read. Empty on metadata-only actions (recipients keep their current id).
+  // The group's current sender-key epoch. On REMOVE the actor rotates it to a
+  // fresh id, forcing new sender keys the removed member can't read. Empty on
+  // metadata-only actions; recipients keep their current id.
   string distribution_id = 11;
-  // Group invite capability. Carried on normal updates so every member stores
-  // it, and echoed by a link-joiner in their self-add so members can verify the
-  // joiner actually held a valid invite link (they never learn the joiner is an
-  // admin). Rotating it revokes outstanding links. Empty when the group has no
+  // Group invite capability. Every member stores it, and a link-joiner echoes
+  // it in their self-add so members can check the joiner held a valid invite
+  // link. Rotating it revokes outstanding links. Empty when the group has no
   // active invite link.
   bytes invite_key = 12;
 }
@@ -115,14 +111,14 @@ message TextMessage {
   // Sender's clock, milliseconds since epoch. Doubles as the message id
   // that receipts refer back to (Signal's convention).
   int64 timestamp = 2;
-  // Optional: set when this message is a reply to an earlier one.
+  // Set when this message is a reply to an earlier one.
   Quote quote = 3;
   // Optional media; a message may carry text and/or attachments.
   repeated AttachmentPointer attachments = 4;
 }
 
 // Points at an encrypted blob on the relay. The relay stores only the
-// opaque ciphertext (AES-256-GCM: nonce‖ciphertext‖tag); the key and digest
+// opaque ciphertext (AES-256-GCM, nonce || ciphertext || tag); the key and digest
 // travel end-to-end inside the encrypted Content, never to the server.
 message AttachmentPointer {
   string id = 1;            // relay blob id
@@ -135,11 +131,9 @@ message AttachmentPointer {
   uint32 height = 8;        // pixels (images)
 }
 
-// A sender's self-set profile (display name + optional avatar). Sent over a
-// pairwise session to a peer so it stays end-to-end encrypted — the relay
-// only ever sees the ciphertext and the (already-encrypted) avatar blob. The
-// avatar reuses the AttachmentPointer/AES-256-GCM blob pipeline. Recipients
-// keep the newest by `timestamp`.
+// A sender's profile: display name and optional avatar. Sent over a pairwise
+// session, so the relay sees only ciphertext and the encrypted avatar blob,
+// which is an ordinary attachment. Recipients keep the newest by timestamp.
 message ProfileUpdate {
   string display_name = 1;
   AttachmentPointer avatar = 2; // optional; unset means no photo
@@ -150,17 +144,16 @@ message ProfileUpdate {
 }
 
 // A single labelled link on a profile (e.g. label "Website", url
-// "https://example.com"). Distributed inside ProfileUpdate, so E2E.
+// "https://example.com"). Distributed inside ProfileUpdate.
 message ProfileLink {
   string label = 1;
   string url = 2;
 }
 
-// A snapshot of the message being replied to. Self-contained (carries the
-// quoted text) so the reply renders without a lookup and survives the
-// original being deleted, following Signal's model.
+// A snapshot of the message being replied to. It carries the quoted text so
+// the reply renders without a lookup and survives the original being deleted.
 message Quote {
-  // Sender clock (== message id) of the quoted message.
+  // Sender clock (the message id) of the quoted message.
   int64 target_timestamp = 1;
   // Account id of the quoted message's author.
   string author = 2;
@@ -168,27 +161,24 @@ message Quote {
   string text = 3;
 }
 
-// "Unsend" / delete-for-everyone: instructs the recipient to remove a
-// message the sender previously sent. Delivered like any message (queued
-// when offline) so it applies even if the peer wasn't online. Only the
-// original author may delete their own message; the recipient locates it by
-// (conversation with the sender, target_timestamp). The client leaves a
-// "message was deleted" tombstone rather than erasing the row.
+// Delete for everyone. Queued like any message, so it applies even if the
+// peer was offline. Only the original author may delete a message; the
+// recipient finds it by conversation and target_timestamp and leaves a
+// tombstone in its place.
 message DeleteMessage {
-  // Sender clock (== message id) of the message to delete.
+  // Sender clock (the message id) of the message to delete.
   int64 target_timestamp = 1;
   // Account id of the message's author (always the sender of this delete).
   string target_author = 2;
 }
 
-// An emoji reaction attached to an earlier message. Delivered like any
-// message (queued when offline) rather than ephemerally, so reactions
-// aren't lost. One reaction per author per message; a new one replaces the
-// previous, and remove = true retracts it.
+// An emoji reaction to an earlier message. Queued rather than ephemeral so
+// reactions aren't lost. One reaction per author per message; a new one
+// replaces the previous, and remove retracts it.
 message ReactionMessage {
   // The emoji applied. Ignored when remove = true.
   string emoji = 1;
-  // Identifies the reacted-to message: its author + sender clock.
+  // The reacted-to message: its author and sender clock.
   string target_author = 2;
   int64 target_timestamp = 3;
   // Retract this author's reaction on the target message.
@@ -211,8 +201,7 @@ message ReceiptMessage {
   repeated int64 message_timestamps = 2;
 }
 
-// Call signalling — all types use the same message; the type field selects
-// the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
+// Call signalling. The type field selects the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
 // offline devices. ANSWER, ICE, RINGING, and BUSY are sent ephemeral.
 // GROUP_RING is non-ephemeral (must wake offline devices). GROUP_JOIN and
 // GROUP_LEAVE are ephemeral.
@@ -224,27 +213,27 @@ message CallMessage {
     HANGUP     = 3;
     BUSY       = 4;
     RINGING    = 5;
-    GROUP_RING  = 6;  // initiator → all members: "join this group call"
-    GROUP_JOIN  = 7;  // member → all: "I joined; initiate mesh SDP with me"
-    GROUP_LEAVE = 8;  // member → all: "I left the call"
+    GROUP_RING  = 6;  // initiator to all members: join this group call
+    GROUP_JOIN  = 7;  // member to all: joined; start mesh SDP with me
+    GROUP_LEAVE = 8;  // member to all: left the call
     // Call links (group_id = "link:<call_id>"). The link's creator is the host;
     // no server state is involved.
-    LINK_JOIN_REQUEST = 9;   // joiner → host: sdp = the link's secret
-    LINK_ADMIT        = 10;  // host → admitted joiner: participants = others in the call
-    LINK_ROSTER       = 11;  // host → members: participants = everyone now in the call
-    LINK_DENY         = 12;  // host → joiner: not admitted (or the link was revoked)
+    LINK_JOIN_REQUEST = 9;   // joiner to host; sdp holds the link's secret
+    LINK_ADMIT        = 10;  // host to admitted joiner; participants are the others in the call
+    LINK_ROSTER       = 11;  // host to members; participants is everyone in the call
+    LINK_DENY         = 12;  // host to joiner; not admitted or the link was revoked
   }
   Type   type    = 1;
   string call_id = 2;  // stable UUID for the entire call session
   string sdp     = 3;  // SDP blob for OFFER / ANSWER
   string ice     = 4;  // JSON-encoded RTCIceCandidate for ICE
-  // Group call fields — empty for 1:1 calls.
+  // Group call fields, empty for 1:1 calls.
   string group_id       = 5;  // conversation group ID for group calls
   string target_account = 6;  // mesh OFFER/ANSWER/ICE: which peer this is for
   repeated string participants = 7;  // GROUP_RING: full participant list
 }
 
-// Edits a previously sent message in-place. Only the original author may edit;
+// Edits a previously sent message in place. Only the original author may edit;
 // the recipient locates the target by (conversation, target_timestamp) and
 // replaces its body. Attachments are not editable.
 message EditMessage {
@@ -274,16 +263,16 @@ message PollVote {
   int64 timestamp = 4;            // sender's clock for ordering
 }
 
-// Sent (always, regardless of the hide setting) when the sender takes a
-// screenshot while a conversation is open. `group_id` (Content field 8) routes
-// group vs 1:1. Recipients show an in-chat notice; non-ephemeral so it queues.
+// Sent whenever the sender takes a screenshot while a conversation is open,
+// regardless of the hide setting. Content.group_id routes group vs 1:1.
+// Non-ephemeral, so it queues.
 message ScreenshotAlert {
   int64 timestamp = 1; // sender clock
 }
 
-// Syncs the sender's per-CHAT screenshot-hide preference to a 1:1 peer. The
-// effective hide state on each device is the OR of both sides' preferences, so
-// content stays hidden unless BOTH disable it. Groups instead use the
+// Syncs the sender's per-chat screenshot-hide preference to a 1:1 peer. The
+// effective state is the OR of both sides' preferences, so content stays
+// hidden unless both disable it. Groups instead use the
 // admin-controlled GroupUpdate.SET_SCREEN_SECURITY flag.
 message ScreenSecurityUpdate {
   bool enabled = 1;
@@ -301,10 +290,9 @@ message TypingMessage {
   int64 timestamp = 2;
 }
 
-// A device's human-readable label, shared ONLY with the sender's own other
-// devices (sealed, end-to-end) so Linked Devices can say "iPhone 17 Pro ·
-// Queensland, Australia". The relay never sees model or location: it stores
-// no device names at all. Recipients accept it only from their own account.
+// A device's human-readable label, shared only with the sender's own other
+// devices for the Linked Devices list. The relay never sees model or
+// location. Recipients accept it only from their own account.
 message DeviceInfo {
   string model = 1;      // marketing name, e.g. "iPhone 17 Pro"
   string region = 2;     // coarse place, e.g. "Queensland, Australia"; empty if unknown

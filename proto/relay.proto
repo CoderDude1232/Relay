@@ -1,13 +1,13 @@
-// relay.proto — server-visible wire format for the Relay messenger.
+// Server-visible wire format for the Relay messenger.
 //
 // Everything in this file is metadata the relay is allowed to see for
-// routing and delivery. Message plaintext NEVER appears here: the
-// `content` bytes of an Envelope/DeviceMessage are always libsignal
+// routing and delivery. Message plaintext never appears here: the
+// content bytes of an Envelope or DeviceMessage are always libsignal
 // ciphertext whose decrypted form is a relay.content.Content message
 // (see content.proto), which only clients can parse.
 //
 // Transport framing: each WebSocket binary message is exactly one
-// serialized ClientFrame (client -> server) or ServerFrame (server -> client).
+// serialized ClientFrame (from the client) or ServerFrame (from the server).
 
 syntax = "proto3";
 
@@ -19,11 +19,11 @@ option go_package = "github.com/relayapp/relay-server/gen/relaypb";
 // so the receiving client knows how to decrypt without trial-and-error.
 enum CiphertextType {
   CIPHERTEXT_TYPE_UNSPECIFIED = 0;
-  // PreKeySignalMessage: first message of a session, carries X3DH material.
+  // PreKeySignalMessage: first message of a session, carries PQXDH material.
   CIPHERTEXT_TYPE_PREKEY_MESSAGE = 1;
   // SignalMessage: normal Double Ratchet message in an established session.
   CIPHERTEXT_TYPE_MESSAGE = 2;
-  // SenderKeyMessage: group message encrypted with a sender key (Phase: groups).
+  // SenderKeyMessage: group message encrypted with a sender key.
   CIPHERTEXT_TYPE_SENDER_KEY_MESSAGE = 3;
 }
 
@@ -41,13 +41,12 @@ message ClientFrame {
   }
 }
 
-// Mailbox send: new clients place one opaque destination mailbox id in the
-// legacy destination_account field and send exactly one DeviceMessage for that
-// mailbox. The sender still encrypts separately for every recipient device, but
-// sends those envelopes as separate mailbox-addressed frames.
+// A send to one mailbox: destination_account holds an opaque mailbox id and
+// messages holds exactly one DeviceMessage. A sender encrypts separately for
+// each recipient device and sends one frame per mailbox.
 message SendRequest {
-  // Legacy field name retained for wire compatibility. New clients put a
-  // random opaque mailbox id here, not an account id.
+  // A random opaque mailbox id, not an account id. The field name is kept
+  // for wire compatibility.
   string destination_account = 1;
   repeated DeviceMessage messages = 2;
   // Sender's clock, milliseconds since epoch. Used by clients as the
@@ -92,7 +91,8 @@ message ServerFrame {
     // signature before deleting local storage. Stored for offline devices.
     NukeCommand nuke = 4;
     // Tells connected devices that the account's device list changed so they
-    // can refresh without polling. No E2EE needed — the account owns all devices.
+    // can refresh without polling. Not end-to-end encrypted: the account owns
+    // all of its devices.
     DeviceListChanged device_list_changed = 5;
   }
 }
@@ -103,7 +103,7 @@ message ServerFrame {
 // The server cannot forge a valid command; it only validates shape and relays.
 message NukeCommand {
   string account_id          = 1;
-  string command_id          = 2;  // UUID; replay prevention — server rejects duplicates
+  string command_id          = 2;  // UUID; the server rejects duplicates
   int64  creation_time_ms    = 3;  // sender clock; server rejects if >5 minutes old
   uint32 initiating_device_id = 4;
   bytes  signature           = 5;  // ECDSA-P256 ASN.1/DER over the canonical payload

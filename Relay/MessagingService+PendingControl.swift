@@ -2,11 +2,10 @@
 //  MessagingService+PendingControl.swift
 //  Relay
 //
-//  Applies control payloads the Notification Service Extension decrypted while
-//  the app was backgrounded (see RelayCore/PendingControl.swift). The NSE has
-//  already claimed those envelopes and advanced the ratchet, so the app would
-//  otherwise treat them as duplicates and silently lose group changes,
-//  profiles, delivery receipts and in-chat notices.
+//  Applies control payloads the NSE decrypted in the background (see
+//  RelayCore/PendingControl.swift). The NSE has already claimed those envelopes
+//  and advanced the ratchet, so without this the app would drop them as
+//  duplicates.
 //
 
 import Foundation
@@ -15,17 +14,15 @@ import RelayKit
 import SecureStorage
 
 extension MessagingService {
-    /// Guards against overlapping drains (the connection loop and the queue
-    /// drain can both trigger one across await points).
+    /// The connection loop and the queue drain can both start a drain across
+    /// await points.
     private static var isDrainingPendingControl = false
 
-    /// Replays NSE-persisted control payloads through the same handlers
-    /// `handleEnvelope` uses, oldest first. Each row is removed before it is
-    /// applied, so a payload is applied at most once.
+    /// Replays NSE-persisted payloads through `handleEnvelope`'s handlers,
+    /// oldest first. Rows are removed before being applied (at most once).
     ///
-    /// - Parameter sendReceipts: delivery receipts need a live socket; pass
-    ///   `false` before the WebSocket is up and they stay queued for the next
-    ///   drain (everything else is applied immediately).
+    /// - Parameter sendReceipts: pass `false` before the WebSocket is up;
+    ///   delivery receipts then stay queued for the next drain.
     func drainPendingControlMessages(sendReceipts: Bool = true) async {
         guard !Self.isDrainingPendingControl else { return }
         Self.isDrainingPendingControl = true
@@ -49,7 +46,7 @@ extension MessagingService {
                 if receipts[target] == nil { receiptOrder.append(target) }
                 receipts[target, default: []].append(timestamp)
             case .backfillUsername:
-                break // legacy item; usernames now arrive in the sender certificate
+                break // usernames arrive in the sender certificate
             case .notepad(let conversationId, let content):
                 setNotepadContent(content, for: conversationId)
             case .groupUpdate(let info, let sender):

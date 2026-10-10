@@ -2,10 +2,9 @@
 //  RelayKitTests.swift
 //  RelayKitTests
 //
-//  Unit tests for wire mapping, plus a live end-to-end test against a
-//  running relayd (two real accounts doing PQXDH + Double Ratchet through
-//  the actual server). The live test runs only when RELAY_SERVER_URL is
-//  set (xcodebuild: TEST_RUNNER_RELAY_SERVER_URL=http://127.0.0.1:8089).
+//  Wire-mapping unit tests, plus a live end-to-end test against a running
+//  relayd. The live test runs only when RELAY_SERVER_URL is set
+//  (xcodebuild: TEST_RUNNER_RELAY_SERVER_URL=http://127.0.0.1:8089).
 //
 
 import CryptoCore
@@ -87,7 +86,6 @@ struct LiveRelayTests {
         let maintainer = PreKeyMaintainer(threshold: 20, batchSize: 5)
         let suffix = UUID().uuidString.prefix(8)
 
-        // Register + publish keys for both parties.
         let aliceCreds = try await unauthenticated.register(username: "alice-\(suffix)", password: "password-a")
         let bobCreds = try await unauthenticated.register(username: "bob-\(suffix)", password: "password-b")
         let aliceAPI = RelayAPIClient(baseURL: baseURL, credentials: aliceCreds)
@@ -99,15 +97,14 @@ struct LiveRelayTests {
         let bobAllocator = CountingAllocator()
         try await maintainer.publishInitialKeys(api: bobAPI, engine: bob, allocator: bobAllocator)
 
-        // Alice fetches Bob's bundle (consumes a one-time prekey) and
-        // establishes the session.
+        // Alice fetches Bob's bundle, consuming a one-time prekey.
         let bundles = try await aliceAPI.fetchPreKeyBundles(account: bobCreds.accountId)
         let bobBundle = try #require(bundles.first)
         #expect(bobBundle.oneTimePreKey != nil)
         let bobAddress = try ProtocolAddress(name: bobCreds.accountId, deviceId: 1)
         try alice.processPeerBundle(bobBundle, from: bobAddress)
 
-        // Both connect; drain (empty) offline queues.
+        // Both connect and drain their empty offline queues.
         let bobSocket = RelayWebSocket(baseURL: baseURL, credentials: bobCreds)
         var bobEvents = await bobSocket.connect().makeAsyncIterator()
         guard case .queueDrained = await bobEvents.next() else {
@@ -121,7 +118,6 @@ struct LiveRelayTests {
             return
         }
 
-        // Alice → Bob through the relay.
         let plaintext = Data("hello through the relay".utf8)
         let sealed = try alice.encrypt(plaintext, for: bobAddress)
         #expect(sealed.kind == .preKey)
@@ -149,7 +145,7 @@ struct LiveRelayTests {
         #expect(try bob.decrypt(envelope.message, from: aliceAddress) == plaintext)
         try await bobSocket.ack(envelopeId: envelope.id)
 
-        // Bob's pool dropped below the threshold → replenishment uploads.
+        // Bob's pool is below the threshold, so replenishment uploads.
         let before = try await bobAPI.oneTimePreKeyCount()
         #expect(before == 4)
         #expect(try await maintainer.replenishIfNeeded(api: bobAPI, engine: bob, allocator: bobAllocator))

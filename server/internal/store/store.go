@@ -50,11 +50,11 @@ var (
 
 // MaxOneTimePreKeysPerDevice caps the one-time prekeys stored for one device.
 // Clients replenish below ~20 in batches of 100, so an honest pool never gets
-// near it; an upload that would exceed it is rejected whole (ErrPreKeyPoolFull).
+// near it. An upload that would exceed it is rejected whole (ErrPreKeyPoolFull).
 const MaxOneTimePreKeysPerDevice = 2000
 
-// maxDevicesPerAccount caps how many devices (primary + linked) an account may
-// have at once, bounding the blast radius of a linking compromise.
+// maxDevicesPerAccount caps the devices an account may have at once, bounding
+// the damage from a linking compromise.
 const maxDevicesPerAccount = 5
 
 const maxGroupMembers = 256
@@ -67,14 +67,13 @@ const (
 	queueTTLMillis         = int64(QueueTTL / time.Millisecond)
 	maxQueuedEnvelopeBytes = 512 * 1024
 	maxQueuedPerDevice     = 500
-	// maxQueuedBytesPerDevice caps a device's total queued ciphertext, so the
-	// count cap can't be turned into 500 × 512 KiB of storage per device.
+	// maxQueuedBytesPerDevice caps a device's total queued ciphertext so the
+	// count cap can't be turned into 500 max-size envelopes per device.
 	maxQueuedBytesPerDevice = 50 << 20
 	// Abuse reports are kept for 180 days.
 	reportTTLMillis = int64((180 * 24 * time.Hour) / time.Millisecond)
-	// Stored nuke commands are only ever delivered inside the client's 5-minute
-	// freshness window (and replays are rejected by that timestamp check), so
-	// rows older than an hour serve no purpose and are purged.
+	// Clients reject nuke commands older than 5 minutes, so stored rows older
+	// than an hour are useless and get purged.
 	nukeRetentionMillis = int64(time.Hour / time.Millisecond)
 )
 
@@ -95,7 +94,7 @@ type Store struct {
 }
 
 // Open connects to PostgreSQL at dsn, pings it, and runs schema migrations.
-// dsn format: postgres://user:password@host:5432/dbname?sslmode=require
+// The dsn has the form postgres://user:password@host:5432/dbname?sslmode=require.
 func Open(dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -152,8 +151,8 @@ func Open(dsn string) (*Store, error) {
 
 func (s *Store) Close() error { s.db.Close(); return nil }
 
-// isLocalDBHost reports whether a PostgreSQL host is this machine: loopback or
-// a unix-socket directory (an absolute path).
+// isLocalDBHost reports whether a PostgreSQL host is loopback or a unix-socket
+// directory (an absolute path).
 func isLocalDBHost(host string) bool {
 	if host == "" || strings.HasPrefix(host, "/") || host == "localhost" {
 		return true
@@ -267,7 +266,7 @@ CREATE TABLE IF NOT EXISTS group_invites (
 	if err != nil {
 		return err
 	}
-	// Additive migrations: safe to run on existing databases.
+	// Idempotent migrations, safe to rerun on existing databases.
 	for _, stmt := range []string{
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS mailbox_id TEXT`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS auth_public_key BYTEA`,
@@ -275,30 +274,26 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_mailbox_id ON devices (mailbox_id) WHERE mailbox_id IS NOT NULL`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS avatar_id   TEXT NOT NULL DEFAULT ''`,
-		// Privacy: last_seen is now in-memory only — drop the persisted presence table.
+		// Presence is kept in memory only.
 		`DROP TABLE IF EXISTS presence`,
-		// Privacy: drop metadata columns from group_invites that reveal who created
-		// invite links and when. Only the token→group mapping is needed for routing.
+		// Don't record who created an invite link or when.
 		`ALTER TABLE group_invites DROP COLUMN IF EXISTS creator`,
 		`ALTER TABLE group_invites DROP COLUMN IF EXISTS created_at`,
 		// Admin roles and announce-only mode.
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS admins TEXT[] NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS announce_only BOOLEAN NOT NULL DEFAULT FALSE`,
-		// Invite expiry: tokens older than 7 days are no longer valid.
+		// Group invite tokens expire after 7 days.
 		`ALTER TABLE group_invites ADD COLUMN IF NOT EXISTS expires_at BIGINT NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS idx_group_invites_expires_at ON group_invites (expires_at)`,
-		// Contact discovery: store email on the account row.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email TEXT`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email ON accounts (email) WHERE email IS NOT NULL AND email <> ''`,
-		// Account recovery: store a user-chosen password hash separate from per-device passwords.
+		// Account-level recovery password, separate from per-device passwords.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_password_hash BYTEA`,
-		// Social login: tie an account to its Supabase user id so a returning
-		// OAuth user (who has no password) can be signed back in via a verified
-		// Supabase token instead of a fresh, colliding registration.
+		// Links an account to its Supabase user so a returning OAuth user can
+		// sign back in with a verified Supabase token.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS supabase_user_id TEXT`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_supabase_user_id ON accounts (supabase_user_id) WHERE supabase_user_id IS NOT NULL AND supabase_user_id <> ''`,
-		// One-time contact invite links: a token that resolves to the creator's
-		// account exactly once, then can't be reused.
+		// Single-use contact invite tokens.
 		`CREATE TABLE IF NOT EXISTS contact_invites (
     token       TEXT PRIMARY KEY,
     account_id  TEXT NOT NULL,
@@ -306,14 +301,13 @@ CREATE TABLE IF NOT EXISTS group_invites (
     used_at     BIGINT NOT NULL DEFAULT 0
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_contact_invites_expires ON contact_invites (expires_at)`,
-		// Sealed sender: per-account access key. Senders present it on the
-		// unauthenticated delivery path; the server verifies it matches the
-		// destination account without learning who sent the message.
+		// Sealed-sender access key, checked on the unauthenticated delivery path
+		// without learning who sent the message.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS access_key BYTEA`,
-		// Blinded discovery: OPRF token → account index. `token` is
-		// H2(x, H1(x)^k) for a normalized username/email x; the server can build
-		// it from its own users but a client can only match (not enumerate) via
-		// the oblivious protocol. kind: 0 = username, 1 = email.
+		// Blinded discovery index. token is H2(x, H1(x)^k) for a normalized
+		// username or email x. The server can compute it for its own users; a
+		// client can only match, not enumerate, via the OPRF. kind is 0 for
+		// username, 1 for email.
 		`CREATE TABLE IF NOT EXISTS directory (
     token      BYTEA NOT NULL,
     account_id TEXT NOT NULL,
@@ -321,69 +315,54 @@ CREATE TABLE IF NOT EXISTS group_invites (
     PRIMARY KEY (token)
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_directory_account ON directory (account_id)`,
-		// Bucketed discovery: the client sends only a 16-bit bucket per lookup
-		// and matches locally. Each row carries its bucket, an 8-byte match tag
-		// and an AES-GCM box of (accountId, username) under a token-derived key —
-		// all computed at index time (rebuilt from scratch at every startup).
+		// Bucketed lookups: the client sends only a 16-bit bucket and matches
+		// locally. Each row has its bucket, an 8-byte match tag and an AES-GCM
+		// box of (accountId, username) under a token-derived key. The index is
+		// rebuilt at every startup.
 		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS bucket INTEGER`,
 		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS tag BYTEA`,
 		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS box BYTEA`,
-		// The account's sealed-sender access key, sealed under the same
-		// token-derived key as box — so whoever can find an account by username
-		// can fetch its keys anonymously from the first contact.
+		// The account's sealed-sender access key under the same token-derived
+		// key as box, so anyone who can find an account can also send to it
+		// anonymously from the first message.
 		`ALTER TABLE directory ADD COLUMN IF NOT EXISTS access_box BYTEA`,
 		`CREATE INDEX IF NOT EXISTS idx_directory_bucket ON directory (bucket)`,
-		// Encrypted group invites: the relay stores an opaque ciphertext blob
-		// keyed by a token; the decrypt key travels in the invite URL fragment,
-		// so the server never learns the group id, name, or roster. Replaces the
-		// plaintext group_invites/groups tables for client-authoritative groups.
+		// Group invites are opaque blobs keyed by token. The decryption key is in
+		// the invite URL fragment, so the server never learns the group id, name
+		// or roster.
 		`CREATE TABLE IF NOT EXISTS encrypted_group_invites (
     token      TEXT PRIMARY KEY,
     blob       BYTEA NOT NULL,
     expires_at BIGINT NOT NULL
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_encrypted_group_invites_expires ON encrypted_group_invites (expires_at)`,
-		// Stage 3: groups are now fully client-managed and E2E-encrypted. Drop the
-		// server's plaintext group state entirely (roster, name, admins, invites).
-		// Order matters: dependents (FK to groups) first.
+		// Groups are client-managed; drop all server-side group state.
+		// Tables with foreign keys to groups go first.
 		`DROP TABLE IF EXISTS group_invites`,
 		`DROP TABLE IF EXISTS group_members`,
 		`DROP TABLE IF EXISTS groups`,
-		// Push privacy: default is a content-free wake (the NSE fetches the
-		// encrypted envelope from the relay). A device may opt in to having the
-		// ciphertext included directly in the APNs payload (faster, slightly less
-		// private — Apple's servers carry the encrypted blob). Off by default.
+		// Opt-in ciphertext in the APNs payload. The default is a content-free
+		// wake, so Apple's servers never carry the encrypted envelope.
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_include_content BOOLEAN NOT NULL DEFAULT FALSE`,
-		// Cross-platform push: Android wakes via FCM, iOS via APNs. `push_kind`
-		// records which transport this device registered ('apns' | 'fcm'); the
-		// matching token lives in apns_token or fcm_token. Defaults to 'apns' so
-		// existing iOS devices are unaffected.
+		// push_kind is 'apns' or 'fcm' and selects apns_token or fcm_token.
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_kind TEXT NOT NULL DEFAULT 'apns'`,
-		// A short, non-PII device label (e.g. "iPhone", "iPad") the new device
-		// supplies at link time, shown in the owner's Linked Devices list.
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_name TEXT`,
-		// Device names now travel only between the account's own devices,
-		// end-to-end encrypted; drop any the relay stored before.
+		// Device names travel end-to-end encrypted between the account's own
+		// devices; the relay keeps none.
 		`UPDATE devices SET device_name = NULL WHERE device_name IS NOT NULL`,
-		// Email privacy: never store the email in plaintext. We keep only the
-		// OPRF-keyed token (the same keyed hash used for blinded discovery), which
-		// is a one-way, non-enumerable-without-the-key value. All email lookups
-		// (recovery, OAuth adoption, by-email) match on this token instead. The
-		// email→account link therefore exists only in keyed form, at rest.
+		// Emails are stored only as their OPRF-keyed token (the same one used for
+		// blinded discovery), never in plaintext. All email lookups match on it.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_token BYTEA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email_token ON accounts (email_token) WHERE email_token IS NOT NULL`,
-		// Backfill from the directory (already holds oprf.Token(email) per account)
-		// so existing accounts keep working, then drop the plaintext column.
+		// Backfill from the directory, which holds oprf.Token(email) per account,
+		// then drop the plaintext column.
 		`UPDATE accounts a SET email_token = d.token FROM directory d WHERE d.account_id = a.id AND d.kind = 1 AND a.email_token IS NULL`,
 		`DROP INDEX IF EXISTS idx_accounts_email`,
 		`ALTER TABLE accounts DROP COLUMN IF EXISTS email`,
-		// Reversed device linking: the new (secondary) device creates a session
-		// and shows a QR carrying its ephemeral key; the primary scans it,
-		// encrypts the provisioning payload (shared identity key + credentials)
-		// under an ECDH-derived key, and PUTs the ciphertext here. The relay is a
-		// blind mailbox — it stores only the opaque blob keyed by session id and
-		// never sees the ephemeral key (which travels in the QR) or the plaintext.
+		// Reversed device linking. The new device shows its ephemeral key in a
+		// QR code; the primary encrypts the provisioning payload to it and
+		// stores the ciphertext here. The relay never sees the key or plaintext.
 		`CREATE TABLE IF NOT EXISTS provisioning_sessions (
     session_id TEXT PRIMARY KEY,
     blob       BYTEA,
@@ -391,12 +370,10 @@ CREATE TABLE IF NOT EXISTS group_invites (
     created_at BIGINT NOT NULL
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_provisioning_sessions_expires ON provisioning_sessions (expires_at)`,
-		// Abuse reports (moderation records). Deliberately NO foreign keys to
-		// accounts: a report against an account survives that account's
-		// deletion. Reports an account FILED are its own data and are removed
-		// by DeleteAccount. `messages` is a JSON array of plaintext messages the
-		// reporter explicitly chose to forward (the relay never sees plaintext
-		// otherwise).
+		// Abuse reports. No foreign keys to accounts, so a report survives the
+		// reported account's deletion; reports an account filed are removed by
+		// DeleteAccount. messages is a JSON array of plaintext messages the
+		// reporter chose to forward.
 		`CREATE TABLE IF NOT EXISTS reports (
     id                TEXT PRIMARY KEY,
     reporter_account  TEXT NOT NULL,
@@ -408,25 +385,21 @@ CREATE TABLE IF NOT EXISTS group_invites (
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_account, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports (reported_account, created_at)`,
-		// Monotonic per-account device-id counter: a removed device's id is
-		// never handed out again (peers may still hold sessions/receipts keyed
-		// by it). 0 = not yet initialised; allocation takes the max of this and
-		// the live MAX(device_id).
+		// Monotonic per-account device-id counter, so a removed device's id is
+		// never reused (peers may still hold sessions keyed by it). 0 means
+		// unset; allocation takes the max of this and MAX(device_id).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS next_device_id BIGINT NOT NULL DEFAULT 0`,
-		// Legacy link tokens no longer hold the new device's password (it is
-		// generated at claim time); scrub any that were stored in plaintext.
+		// The device password is generated at claim time, not stored with the
+		// link token.
 		`UPDATE device_link_tokens SET password = '' WHERE password <> ''`,
-		// Prekey rows no longer carry an upload time (it acted as a
-		// last-active signal); account/device creation times are kept only
-		// at day granularity.
+		// Prekey upload times would act as a last-active signal, so they aren't
+		// kept; account and device creation times are rounded to the day.
 		`UPDATE signed_prekeys SET created_at = 0 WHERE created_at <> 0`,
 		`UPDATE kyber_prekeys SET created_at = 0 WHERE created_at <> 0`,
 		`UPDATE accounts SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
 		`UPDATE devices SET created_at = created_at - created_at % 86400000 WHERE created_at % 86400000 <> 0`,
-		// Email discovery is opt-in: an account's verified email gets a
-		// blinded-directory entry only once its owner turns this on. Existing
-		// accounts default to FALSE (their email entries disappear at the next
-		// directory rebuild, i.e. startup).
+		// Email discovery is opt-in: a verified email gets a directory entry
+		// only once the owner enables it.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
 		// Review/test accounts, isolated from everyone else (store/demo.go).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE`,
@@ -437,10 +410,8 @@ CREATE TABLE IF NOT EXISTS group_invites (
     version    BIGINT NOT NULL,
     updated_at BIGINT NOT NULL
 )`,
-		// Username reuse cooldown: a released name (rename or account deletion)
-		// can't be claimed by another account for UsernameReuseCooldown. Only
-		// keyed hashes are stored — never the name — plus the release time;
-		// rows are purged by the hourly retention sweep once the cooldown ends.
+		// Username reuse cooldown (see UsernameReuseCooldown). Only keyed hashes
+		// and the release time are stored, never the name.
 		`CREATE TABLE IF NOT EXISTS released_usernames (
     name_hash   BYTEA PRIMARY KEY,
     owner_hash  BYTEA,
@@ -458,10 +429,10 @@ CREATE TABLE IF NOT EXISTS group_invites (
 
 // ensureUsernameCaseIndex adds a unique index on lower(username) so "Bob" and
 // "bob" can't coexist (they'd also share one blinded-directory token, since
-// discovery normalizes case). If legacy case-variant duplicates already exist
-// the index can't be built; we log and carry on — registration and rename still
-// enforce case-insensitive uniqueness in code, and the directory never
-// reassigns a token from its first owner — instead of refusing to start.
+// discovery normalizes case). If case-variant duplicates already exist the
+// index can't be built, so it logs and continues rather than refusing to start:
+// registration and rename still enforce case-insensitive uniqueness, and the
+// directory never reassigns a token from its first owner.
 func (s *Store) ensureUsernameCaseIndex(ctx context.Context) {
 	var dupGroups int
 	if err := s.db.QueryRow(ctx, `
@@ -549,11 +520,9 @@ type DeviceLinkClaim struct {
 }
 
 // CreateAccount registers a new account and its primary device (device 1).
-// emailToken (the OPRF-keyed hash of a VERIFIED email — the API layer only
-// passes one after Supabase confirmed the address), supabaseUserID and
-// accountPassword are optional; pass nil/"" to omit. The plaintext email is
-// never stored. accountPassword, if set, is stored as a bcrypt hash for
-// account recovery.
+// emailToken (the OPRF-keyed hash of a verified email), supabaseUserID and
+// accountPassword are optional; pass nil or "" to omit. accountPassword is
+// stored as a bcrypt hash for account recovery.
 //
 // Usernames are unique case-insensitively. Returns ErrUsernameTaken when the
 // username is in use, ErrIdentityInUse when the email token or Supabase user id
@@ -604,10 +573,9 @@ func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID
 	return accountID, 1, tx.Commit(ctx)
 }
 
-// accountInsertError maps a unique violation on the accounts table to the
-// right sentinel: the email-token or Supabase-user index → ErrIdentityInUse
-// (callers must not echo which); anything else (the username indexes) →
-// ErrUsernameTaken.
+// accountInsertError maps a unique violation on the accounts table to a
+// sentinel: ErrIdentityInUse for the email-token or Supabase-user index
+// (callers must not say which), ErrUsernameTaken otherwise.
 func accountInsertError(err error) error {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
@@ -641,9 +609,9 @@ type rowQuerier interface {
 }
 
 // usernameUnavailableTx reports whether username can't be taken by
-// exceptAccountID ("" = a new account): another account holds it (compared
-// case-insensitively), or it was released less than UsernameReuseCooldown ago
-// by an account other than exceptAccountID (see releaseUsernameTx).
+// exceptAccountID ("" for a new account): another account holds it, compared
+// case-insensitively, or another account released it less than
+// UsernameReuseCooldown ago.
 func (s *Store) usernameUnavailableTx(ctx context.Context, q rowQuerier, username, exceptAccountID string) (bool, error) {
 	var taken bool
 	if err := q.QueryRow(ctx,
@@ -674,22 +642,19 @@ func (s *Store) UsernameTaken(username string) (bool, error) {
 // Username reuse cooldown
 // ---------------------------------------------------------------------------
 
-// UsernameReuseCooldown is how long a released username (renamed away from, or
-// freed by account deletion) stays unclaimable by any other account. Sealed-
-// sender certificates carry the sender's username for up to 7 days, so a name
-// re-registered sooner could be shown as the author of messages its previous
-// holder's still-valid certificates vouch for. The releasing account itself
-// may take its old name back during the cooldown (same account, same
-// certificates — no confusion possible); a deleted account's name is blocked
-// for everyone.
+// UsernameReuseCooldown is how long a released username stays unclaimable by
+// other accounts. Sealed-sender certificates carry the sender's username for
+// up to 7 days, so a name re-registered sooner could appear as the author of
+// messages vouched for by its previous holder's certificates. The releasing
+// account may reclaim the name during the cooldown; a deleted account's name
+// is blocked for everyone.
 const UsernameReuseCooldown = 7 * 24 * time.Hour
 
 // SetUsernameReleaseKey sets the secret that keys released-username hashes.
-// released_usernames stores only HMAC(key, lower(name)) and HMAC(key, owner
-// account id) plus the release time — never the name itself — so a database
-// dump doesn't list recently abandoned names. Until a key is set the cooldown
-// is disabled (nothing is recorded or checked); relayd derives it from the
-// OPRF key, so it is stable across restarts.
+// released_usernames stores only HMAC(key, lower(name)), HMAC(key, owner
+// account id) and the release time, so a database dump doesn't list recently
+// abandoned names. Without a key the cooldown is disabled. relayd derives the
+// key from the OPRF key, so it is stable across restarts.
 func (s *Store) SetUsernameReleaseKey(key []byte) {
 	s.releaseKey = append([]byte(nil), key...)
 }
@@ -712,8 +677,8 @@ func (s *Store) releasedNameHash(username string) []byte {
 	return s.releaseHMAC("relay-released-username-v1", strings.ToLower(username))
 }
 
-// releasedOwnerHash is the keyed hash of the releasing account id ("" — a new
-// account — hashes to a value no real account id produces).
+// releasedOwnerHash is the keyed hash of the releasing account id. "" (a new
+// account) hashes to a value no real account id produces.
 func (s *Store) releasedOwnerHash(accountID string) []byte {
 	return s.releaseHMAC("relay-released-username-owner-v1", accountID)
 }
@@ -738,7 +703,7 @@ func (s *Store) releaseUsernameTx(ctx context.Context, tx pgx.Tx, username, owne
 }
 
 // clearReleasedUsernameTx drops the cooldown row for a name that has just been
-// (re)claimed — legitimately, since usernameUnavailableTx passed.
+// claimed after usernameUnavailableTx allowed it.
 func (s *Store) clearReleasedUsernameTx(ctx context.Context, tx pgx.Tx, username string) error {
 	nameHash := s.releasedNameHash(username)
 	if nameHash == nil {
@@ -748,9 +713,9 @@ func (s *Store) clearReleasedUsernameTx(ctx context.Context, tx pgx.Tx, username
 	return err
 }
 
-// dummyRecoveryHash is compared against when an account (or its recovery
-// password) doesn't exist, so a recovery attempt costs one bcrypt either way
-// and response timing can't reveal whether an email is registered.
+// dummyRecoveryHash is compared against when an account or its recovery
+// password doesn't exist, so every attempt costs one bcrypt and timing can't
+// reveal whether an email is registered.
 var (
 	dummyRecoveryHashOnce sync.Once
 	dummyRecoveryHash     []byte
@@ -773,17 +738,15 @@ type AddedDevice struct {
 	MailboxID         string
 	DeviceListVersion int64
 	// ReplacedDevices are the account's previous devices, removed because a
-	// fresh sign-in (or recovery) starts a new identity rather than joining it.
+	// fresh sign-in or recovery starts a new identity.
 	ReplacedDevices []uint32
 }
 
 // replaceDevicesTx removes every device of accountID (with its prekeys and
 // queued envelopes) inside tx, returning their ids. A sign-in or recovery on a
-// fresh install has no copy of the account's identity key, so it can't join the
-// existing devices: like re-registering in Signal, it replaces them. Devices
-// that should coexist are added through device linking, which shares the key.
-// Before this, every re-sign-in left the old device behind as a ghost with a
-// different identity key (and could eventually hit the device cap).
+// fresh install has no copy of the account's identity key, so it replaces the
+// existing devices rather than joining them. Devices that should coexist are
+// added through device linking, which shares the key.
 func replaceDevicesTx(ctx context.Context, tx pgx.Tx, accountID string) ([]uint32, error) {
 	// Locking the device rows (see Enqueue) means no envelope can land in a
 	// queue after it is cleared below.
@@ -820,8 +783,7 @@ func replaceDevicesTx(ctx context.Context, tx pgx.Tx, accountID string) ([]uint3
 
 // addDeviceTx provisions a new device on accountID inside tx: it locks the
 // account row, enforces maxDevicesPerAccount, inserts the device and bumps
-// device_list_version (so signed device-list views are invalidated and the API
-// can broadcast DeviceListChanged).
+// device_list_version so signed device lists are invalidated.
 func addDeviceTx(ctx context.Context, tx pgx.Tx, accountID string, deviceHash []byte) (deviceID uint32, mailboxID string, version int64, err error) {
 	if err = tx.QueryRow(ctx, `SELECT device_list_version FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&version); errors.Is(err, pgx.ErrNoRows) {
 		return 0, "", 0, ErrNotFound
@@ -850,12 +812,11 @@ func addDeviceTx(ctx context.Context, tx pgx.Tx, accountID string, deviceHash []
 }
 
 // RecoverAccount verifies an account-level password by (verified) email token
-// and provisions a new device with a fresh random password. Every failure —
-// unknown email, no recovery password set, wrong password — returns
-// ErrAuthFailed after the same single bcrypt comparison, so neither the result
-// nor its timing reveals whether the email is registered. Enforces the device
-// cap (ErrDeviceLimit, only reachable with the right password) and bumps
-// device_list_version.
+// and provisions a new device with a fresh random password. Every failure
+// (unknown email, no recovery password, wrong password) returns ErrAuthFailed
+// after one bcrypt comparison, so neither the result nor its timing reveals
+// whether the email is registered. ErrDeviceLimit is only reachable with the
+// right password.
 func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev AddedDevice, devicePassword string, err error) {
 	ctx := context.Background()
 
@@ -920,11 +881,10 @@ func (s *Store) SetAccountPassword(accountID, accountPassword string) error {
 	return nil
 }
 
-// ResetAccountPassword handles "forgot password": the caller has proven, via a
-// fresh Supabase password-recovery sign-in, that it controls the account's
-// verified email. It finds the account (by Supabase user id, then by email
-// token), sets the new account password, and — like any fresh sign-in on a new
-// device — replaces the account's devices with one new device.
+// ResetAccountPassword handles a forgotten password. The caller has proven
+// control of the account's verified email through a Supabase recovery sign-in.
+// It finds the account by Supabase user id, then by email token, sets the new
+// password and replaces the account's devices with one new device. Returns
 // ErrAccountNotFound if no account matches.
 func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, accountPassword, devicePassword string) (dev AddedDevice, err error) {
 	ctx := context.Background()
@@ -976,8 +936,8 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 }
 
 // SetAccountEmailToken records the keyed token of an account's newly verified
-// email (after an email change). ErrIdentityInUse if another account already
-// uses that email; ErrAccountNotFound if the account is gone.
+// email. Returns ErrIdentityInUse if another account uses that email, or
+// ErrAccountNotFound if the account is gone.
 func (s *Store) SetAccountEmailToken(accountID string, emailToken []byte) error {
 	tag, err := s.db.Exec(context.Background(),
 		`UPDATE accounts SET email_token = $1 WHERE id = $2`, emailToken, accountID)
@@ -992,30 +952,25 @@ func (s *Store) SetAccountEmailToken(accountID string, emailToken []byte) error 
 
 // ProvisionOAuthAccount signs a Supabase-authenticated user into their relay
 // account, creating it on first use, and provisions a fresh device. The caller
-// MUST have already verified the Supabase access token, so supabaseUserID is
-// authoritative; emailToken must be non-nil ONLY when Supabase reports the
-// email as confirmed.
+// must have verified the Supabase access token, and must pass a non-nil
+// emailToken only when Supabase reports the email as confirmed.
 //
-// Resolution order: match by supabase_user_id, then by email token
-// (back-filling the supabase_user_id so future logins match directly). Email
-// adoption is safe because the relay only ever stores tokens of verified
-// emails; an existing link to a different Supabase user is never overwritten.
-// If no account exists yet, one is created — requestedUsername
-// must be non-empty in that case, otherwise ErrUsernameRequired is returned.
-// accountPassword, if non-empty, is stored as a recovery hash on creation.
+// The account is matched by supabase_user_id, then by email token, back-filling
+// supabase_user_id. Matching by email is safe because only verified emails are
+// stored; an existing link to a different Supabase user is never overwritten.
+// If no account exists one is created, which requires requestedUsername
+// (ErrUsernameRequired otherwise).
 //
-// Registration lock: signing in to an EXISTING account replaces all of its
-// devices, so when that account has an account password set, accountPassword
-// must match it. Missing → ErrAccountPasswordRequired, wrong →
-// ErrAccountPasswordIncorrect; nothing is changed either way. lockPermit (may
-// be nil) is consulted with the resolved account id before any comparison;
-// false → ErrAccountPasswordLocked. On these three errors dev.AccountID is set
-// so the caller can key its lockout. A supplied accountPassword always costs
-// one bcrypt comparison (against a dummy hash when the account has no lock),
-// so timing doesn't reveal whether a lock is set.
+// Registration lock: signing in to an existing account replaces all of its
+// devices, so if the account has a password, accountPassword must match it:
+// ErrAccountPasswordRequired if missing, ErrAccountPasswordIncorrect if wrong.
+// lockPermit, if non-nil, is consulted before any comparison and a false
+// result gives ErrAccountPasswordLocked. On these errors dev.AccountID is set
+// so the caller can key its lockout, and nothing is changed. A supplied
+// accountPassword always costs one bcrypt comparison, so timing doesn't reveal
+// whether a lock is set.
 //
-// Adding a device to an existing account enforces the device cap and bumps
-// device_list_version. created reports whether a new account was made.
+// created reports whether a new account was made.
 func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string, lockPermit func(accountID string) bool) (dev AddedDevice, created bool, err error) {
 	ctx := context.Background()
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
@@ -1028,7 +983,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Find an existing account by Supabase user id, then by verified email.
+	// Find an existing account by Supabase user id, then by verified email.
 	var lockHash []byte
 	adoptedByEmail := false
 	err = tx.QueryRow(ctx,
@@ -1042,7 +997,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 	}
 
 	if err == nil {
-		// 2. Registration lock, checked before anything is written.
+		// Registration lock, checked before anything is written.
 		if len(lockHash) > 0 {
 			locked := AddedDevice{AccountID: dev.AccountID}
 			if lockPermit != nil && !lockPermit(dev.AccountID) {
@@ -1059,8 +1014,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		}
 		if adoptedByEmail {
 			// Back-fill only an empty link; never overwrite another Supabase
-			// user's link (a second identity with the same confirmed email can
-			// sign in, but the original link is kept).
+			// user's link.
 			if _, e := tx.Exec(ctx,
 				`UPDATE accounts SET supabase_user_id = $1 WHERE id = $2 AND (supabase_user_id IS NULL OR supabase_user_id = '')`,
 				supabaseUserID, dev.AccountID); e != nil {
@@ -1071,8 +1025,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 
 	switch {
 	case err == nil:
-		// Existing account — this sign-in replaces its devices (see
-		// replaceDevicesTx), then provisions the new one (versioned).
+		// Existing account: replace its devices, then add the new one.
 		if dev.ReplacedDevices, err = replaceDevicesTx(ctx, tx, dev.AccountID); err != nil {
 			return AddedDevice{}, false, err
 		}
@@ -1081,7 +1034,7 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 			return AddedDevice{}, false, err
 		}
 	case errors.Is(err, pgx.ErrNoRows):
-		// 2. No account yet — create one. A username is required.
+		// No account yet, so create one. A username is required.
 		if requestedUsername == "" {
 			return AddedDevice{}, false, ErrUsernameRequired
 		}
@@ -1147,8 +1100,8 @@ func (s *Store) CreateContactInvite(accountID string) (token string, expiresAt i
 }
 
 // ClaimContactInvite consumes a contact invite token, returning the inviter's
-// account id and username. Deletes the row in the same transaction, so the
-// token can never be redeemed twice and no redemption record is kept. Returns
+// account id and username. The row is deleted in the same transaction, so the
+// token can't be redeemed twice and no redemption record is kept. Returns
 // ErrContactInviteInvalid if the token is unknown, expired, or already used.
 func (s *Store) ClaimContactInvite(token string) (accountID, username string, err error) {
 	ctx := context.Background()
@@ -1169,7 +1122,7 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 		return "", "", err
 	}
 	if usedAt != 0 || time.Now().UnixMilli() > expiresAt {
-		// Expired/legacy-used: the row is gone either way once we commit.
+		// Expired or already used; the row is deleted either way.
 		if err = tx.Commit(ctx); err != nil {
 			return "", "", err
 		}
@@ -1186,10 +1139,9 @@ func (s *Store) ClaimContactInvite(token string) (accountID, username string, er
 
 // allocateDeviceID reserves the next device id for an account inside tx. Ids
 // are monotonic per account: accounts.next_device_id records the highest id
-// ever handed out, so a removed device's id is never reused (MAX(device_id)+1
-// would recycle it after the highest device is removed). Accounts created
-// before the counter existed start from their current MAX(device_id). Returns
-// ErrNotFound when the account doesn't exist.
+// ever handed out, so a removed device's id is never reused. An unset counter
+// starts from MAX(device_id). Returns ErrNotFound when the account doesn't
+// exist.
 func allocateDeviceID(ctx context.Context, tx pgx.Tx, accountID string) (uint32, error) {
 	var next int64
 	err := tx.QueryRow(ctx, `
@@ -1264,10 +1216,9 @@ func (s *Store) AddDevice(accountID, password string, expectedVersion int64) (ui
 	return next, newVersion, tx.Commit(ctx)
 }
 
-// CreateDeviceLinkToken mints a legacy (forward-QR) link token. No device
-// password is stored with it: ClaimDeviceLinkToken generates the new device's
-// password at claim time and returns it once, so a database read never yields
-// a working credential.
+// CreateDeviceLinkToken mints a forward-QR link token. No device password is
+// stored with it: ClaimDeviceLinkToken generates the password and returns it
+// once, so a database read never yields a working credential.
 func (s *Store) CreateDeviceLinkToken(accountID string, expectedVersion int64) (token string, code string, expiresAt int64, err error) {
 	token, err = newSecureToken(32)
 	if err != nil {
@@ -1281,10 +1232,8 @@ func (s *Store) CreateDeviceLinkToken(accountID string, expectedVersion int64) (
 	expiresAt = now + int64((10*time.Minute)/time.Millisecond)
 	ctx := context.Background()
 
-	// Use a transaction with FOR UPDATE so the version check and token insert
-	// are atomic. Without this, two concurrent calls could both pass the version
-	// check and store tokens with the same expectedVersion, leading to
-	// ClaimDeviceLinkToken seeing an unexpected version and rejecting the claim.
+	// FOR UPDATE makes the version check and token insert atomic, so two
+	// concurrent calls can't both store tokens for the same expectedVersion.
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return "", "", 0, err
@@ -1379,10 +1328,10 @@ func (s *Store) ClaimDeviceLinkToken(token string, code string) (*DeviceLinkClai
 }
 
 // CreateProvisioningSession mints a blind mailbox for reversed device linking.
-// The new (secondary) device creates it, shows its id + ephemeral key in a QR,
-// and later polls FetchProvisioningBlob; the primary stores the ciphertext via
-// StoreProvisioningBlob. Unauthenticated by design — the session grants no
-// authority until a primary chooses to provision into it.
+// The new device creates it, shows its id and ephemeral key in a QR code, and
+// polls FetchProvisioningBlob; the primary stores the ciphertext via
+// StoreProvisioningBlob. It is unauthenticated: the session grants no
+// authority until a primary provisions into it.
 func (s *Store) CreateProvisioningSession() (sessionID string, expiresAt int64, err error) {
 	sessionID, err = newSecureToken(32)
 	if err != nil {
@@ -1402,10 +1351,9 @@ func (s *Store) CreateProvisioningSession() (sessionID string, expiresAt int64, 
 }
 
 // StoreProvisioningBlob attaches the primary's encrypted payload to a session.
-// Write-once: the `blob IS NULL` guard means a session can only be provisioned
-// a single time, so a second writer can't overwrite (substitute) the primary's
-// payload before the new device fetches it. Returns ErrNotFound if the session
-// is unknown, expired, or already provisioned.
+// It is write-once, so a second writer can't substitute the primary's payload
+// before the new device fetches it. Returns ErrNotFound if the session is
+// unknown, expired, or already provisioned.
 func (s *Store) StoreProvisioningBlob(sessionID string, blob []byte) error {
 	now := time.Now().UnixMilli()
 	ctx := context.Background()
@@ -1421,9 +1369,8 @@ func (s *Store) StoreProvisioningBlob(sessionID string, blob []byte) error {
 }
 
 // FetchProvisioningBlob returns the encrypted payload once the primary has
-// stored it, deleting the session on success (single-use). Returns (nil, nil)
-// when the session exists but no blob is present yet (caller replies 204), and
-// ErrNotFound when the session is unknown or expired.
+// stored it, deleting the session. Returns (nil, nil) when no blob is present
+// yet, and ErrNotFound when the session is unknown or expired.
 func (s *Store) FetchProvisioningBlob(sessionID string) ([]byte, error) {
 	now := time.Now().UnixMilli()
 	ctx := context.Background()
@@ -1455,8 +1402,8 @@ func (s *Store) FetchProvisioningBlob(sessionID string) ([]byte, error) {
 // AllocateLinkedDevice creates a new device row for an existing account using a
 // primary-supplied password, guarded by the device-list version to serialize
 // against concurrent link/unlink. Returns the assigned device id. This is the
-// reversed-flow counterpart to ClaimDeviceLinkToken: the primary (already
-// authenticated) drives device creation directly after scanning the QR.
+// reversed-flow counterpart to ClaimDeviceLinkToken, driven by the
+// authenticated primary after scanning the QR code.
 func (s *Store) AllocateLinkedDevice(accountID, password string, expectedVersion int64) (deviceID uint32, err error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -1489,7 +1436,7 @@ func (s *Store) AllocateLinkedDevice(accountID, password string, expectedVersion
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at, device_name) VALUES ($1, $2, $3, $4, $5, $6)`,
-		accountID, deviceID, mailboxID, hash, now, nil); err != nil { // names are E2E (DeviceInfo), never stored
+		accountID, deviceID, mailboxID, hash, now, nil); err != nil { // device names are never stored
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, currentVersion+1, accountID); err != nil {
@@ -1519,9 +1466,8 @@ func (s *Store) Authenticate(accountID string, deviceID uint32, password string)
 	return &Device{AccountID: accountID, DeviceID: deviceID, MailboxID: mailboxID, RegistrationID: regID, AuthPublicKey: authPublicKey}, nil
 }
 
-// DeviceByID returns the device row without checking a password. Used by
-// signature-based request auth, which proves possession of the device's auth
-// private key instead of presenting a reusable secret.
+// DeviceByID returns the device row without checking a password, for
+// signature-based request auth.
 func (s *Store) DeviceByID(accountID string, deviceID uint32) (*Device, error) {
 	ctx := context.Background()
 	var regID uint32
@@ -1568,11 +1514,10 @@ func (s *Store) ListDevices(accountID string) ([]Device, error) {
 	return devices, rows.Err()
 }
 
-// RemoveDevice deletes a device from an account. Device 1 (primary) cannot be removed.
+// RemoveDevice deletes a device from an account.
 func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion int64) (int64, error) {
-	// Any device may be removed, device 1 included: "primary" was only a label
-	// (device 1 has no special protocol role), and a sign-out must be able to
-	// remove itself.
+	// Device 1 has no special protocol role and may be removed too, so a
+	// sign-out can always remove itself.
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -1590,9 +1535,7 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 		return 0, ErrDeviceListVersionMismatch
 	}
 
-	// FK dependents and per-device data first, in the same transaction: its
-	// prekeys (signed/Kyber/one-time) and its queued envelopes. Its push
-	// tokens, auth key and mailbox id live on the device row itself.
+	// Delete the device's prekeys and queued envelopes before the row.
 	for _, stmt := range []string{
 		// Lock the device row first so an in-flight Enqueue (which locks it)
 		// either commits before the queue is cleared or then finds no device.
@@ -1632,21 +1575,16 @@ func (s *Store) SupabaseUserID(accountID string) (string, error) {
 	return id, err
 }
 
-// DeleteAccount permanently removes an account and everything keyed to it, in
-// one transaction: prekeys (signed, Kyber, one-time), queued envelopes for its
-// devices, its devices (incl. mailbox ids, auth keys, APNs/FCM/VoIP tokens),
-// pending device-link tokens, contact invites it minted, its blinded-directory
-// rows, stored nuke commands, reports it filed, and finally the account row
-// itself (username, email token, Supabase user id, access key, recovery hash).
-// The username enters the reuse cooldown (claimable by nobody for
-// UsernameReuseCooldown; only its keyed hash is kept). Reports filed AGAINST
-// the account are kept (moderation records). Returns ErrNotFound if the
-// account does not exist.
+// DeleteAccount removes an account and everything keyed to it in one
+// transaction: prekeys, queued envelopes, devices, link tokens, contact
+// invites, directory rows, nuke commands, reports it filed, and the account
+// row. The username enters the reuse cooldown for everyone. Reports filed
+// against the account are kept. Returns ErrNotFound if the account does not
+// exist.
 //
-// Not cleaned (no account linkage is stored): provisioning_sessions and
-// encrypted_group_invites (anonymous, TTL-reaped), attachment blobs (ownership
-// is not tracked; reaped by blob GC), and envelopes the account sent that sit
-// in other accounts' queues (those belong to the recipients).
+// Data with no stored account linkage is left to expire on its own:
+// provisioning sessions, group invites, attachment blobs, and envelopes the
+// account sent to others.
 func (s *Store) DeleteAccount(accountID string) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -1655,8 +1593,8 @@ func (s *Store) DeleteAccount(accountID string) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Lock the account row so concurrent device-list mutations (which also
-	// take FOR UPDATE on it) serialize behind the delete.
+	// Lock the account row so concurrent device-list changes serialize behind
+	// the delete.
 	var username string
 	if err := tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&username); errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -1670,7 +1608,6 @@ func (s *Store) DeleteAccount(accountID string) error {
 		// Lock the device rows (see Enqueue) so no envelope lands after the
 		// queue is cleared.
 		`SELECT device_id FROM devices WHERE account_id = $1 FOR UPDATE`,
-		// FK dependents of devices first.
 		`DELETE FROM one_time_prekeys WHERE account_id = $1`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1`,
 		`DELETE FROM kyber_prekeys WHERE account_id = $1`,
@@ -1757,12 +1694,9 @@ func (s *Store) LookupAccountID(username string) (string, error) {
 }
 
 // UpdateUsername changes the username of an account. Returns ErrUsernameTaken
-// if the new username is already in use by a different account, or is in
-// another account's reuse cooldown. Comparison is case-insensitive: "Bob"
-// can't be taken while "bob" exists (a holder may still change the case of
-// their own name). The old name, when it actually changes, enters the reuse
-// cooldown (reclaimable by this account only). Returns ErrNotFound for an
-// unknown account.
+// if another account holds the name, compared case-insensitively, or it is in
+// another account's reuse cooldown. The old name enters the reuse cooldown.
+// Returns ErrNotFound for an unknown account.
 func (s *Store) UpdateUsername(accountID, newUsername string) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -1849,11 +1783,10 @@ func (s *Store) DeviceByMailbox(mailboxID string) (*Device, error) {
 	return &d, nil
 }
 
-// SealedTargetByMailbox resolves a mailbox id to its device AND the owning
-// account's sealed-sender access key in one query, so the unauthenticated
-// sealed path does the same database work whether or not the mailbox exists
-// (two dependent queries would make a known mailbox measurably slower).
-// accessKey is nil when the account has none set.
+// SealedTargetByMailbox resolves a mailbox id to its device and the owning
+// account's sealed-sender access key in one query, so the unauthenticated path
+// does the same database work whether or not the mailbox exists. accessKey is
+// nil when the account has none set.
 func (s *Store) SealedTargetByMailbox(mailboxID string) (*Device, []byte, error) {
 	var d Device
 	var accessKey []byte
@@ -1873,12 +1806,9 @@ func (s *Store) SealedTargetByMailbox(mailboxID string) (*Device, []byte, error)
 }
 
 // RotateMailbox assigns a fresh opaque mailbox id to the device and returns it.
-// Only ever called on an explicit client request — mailbox ids are otherwise
-// stable (the relay knows mailbox → device anyway, so scheduled rotation bought
-// nothing but stale-mailbox failures). Peers pick up the new id on their next
-// prekey-bundle fetch; sealed sends to the old id fail (the sender re-fetches
-// and retries). The message queue is keyed by (account, device), not mailbox,
-// so queued deliveries are unaffected.
+// Mailbox ids change only on explicit client request. Peers pick up the new id
+// on their next bundle fetch; sealed sends to the old id fail and are retried.
+// The queue is keyed by (account, device), so queued deliveries are unaffected.
 func (s *Store) RotateMailbox(accountID string, deviceID uint32) (string, error) {
 	mailboxID, err := newMailboxID()
 	if err != nil {
@@ -1920,10 +1850,8 @@ const (
 )
 
 // ClearPushToken forgets a device's push token of the given kind after the
-// provider reported it permanently invalid (APNs 410 Unregistered /
-// BadDeviceToken in both environments, FCM UNREGISTERED). It only clears the
-// token if it still equals `token`, so a fresh token the device registered in
-// the meantime is never wiped.
+// provider reported it permanently invalid. It only clears the token if it
+// still equals token, so a newer registration is never wiped.
 func (s *Store) ClearPushToken(accountID string, deviceID uint32, kind, token string) error {
 	var column string
 	switch kind {
@@ -1942,8 +1870,8 @@ func (s *Store) ClearPushToken(accountID string, deviceID uint32, kind, token st
 	return err
 }
 
-// PushTarget returns how to wake a device: its push kind ('apns'|'fcm') and the
-// matching token. token is "" when the device has registered none.
+// PushTarget returns a device's push kind ("apns" or "fcm") and matching
+// token. token is "" when the device has registered none.
 func (s *Store) PushTarget(accountID string, deviceID uint32) (kind, token string, err error) {
 	ctx := context.Background()
 	var apnsTok, fcmTok *string
@@ -1999,8 +1927,7 @@ func (s *Store) SetVoIPToken(accountID string, deviceID uint32, token string) er
 }
 
 // SetPushIncludeContent records whether this device wants the encrypted
-// envelope carried directly in its APNs payload (true) or a content-free wake
-// (false, the private default).
+// envelope in its APNs payload instead of a content-free wake.
 func (s *Store) SetPushIncludeContent(accountID string, deviceID uint32, include bool) error {
 	ctx := context.Background()
 	_, err := s.db.Exec(ctx, `UPDATE devices SET push_include_content = $1 WHERE account_id = $2 AND device_id = $3`,
@@ -2008,8 +1935,8 @@ func (s *Store) SetPushIncludeContent(accountID string, deviceID uint32, include
 	return err
 }
 
-// PushIncludeContent reports whether this device opted in to ciphertext-in-push.
-// Defaults to false (content-free wake) for unknown/unset devices.
+// PushIncludeContent reports whether this device opted in to ciphertext in
+// push. It is false for unknown devices.
 func (s *Store) PushIncludeContent(accountID string, deviceID uint32) (bool, error) {
 	ctx := context.Background()
 	var include bool
@@ -2024,8 +1951,7 @@ func (s *Store) PushIncludeContent(accountID string, deviceID uint32) (bool, err
 }
 
 // SetDeviceAuthKey stores the public half of a device's platform-backed
-// authorization key. It is used by later stages to authorize device-list
-// changes without relying on the server alone.
+// authorization key.
 func (s *Store) SetDeviceAuthKey(accountID string, deviceID uint32, publicKey []byte) error {
 	ctx := context.Background()
 	tag, err := s.db.Exec(ctx, `UPDATE devices SET auth_public_key = $1 WHERE account_id = $2 AND device_id = $3`,
@@ -2108,8 +2034,8 @@ type PreKeyBundle struct {
 
 // SetKeys replaces the device's identity key, registration id, signed prekey
 // and last-resort Kyber prekey, and appends one-time prekeys to its pool.
-// Prekey rows carry no upload time (created_at = 0): rewriting it on every
-// upload made the table a per-device "last active" log.
+// Prekey rows carry no upload time (created_at = 0) so the table isn't a
+// per-device last-active log.
 func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32, identityKey []byte, spk SignedPreKey, kyber SignedPreKey, oneTime []OneTimePreKey, replaceOneTime bool) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -2144,11 +2070,8 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 		accountID, deviceID, kyber.KeyID, kyber.PublicKey, kyber.Signature); err != nil {
 		return err
 	}
-	// A client that knows its local key store is fresh (first launch after
-	// install/restore) or has detected a desync replaces the whole pool, so the
-	// relay never advertises a stale high-id key the device no longer holds the
-	// private for (which decrypts to recordNotFound and is silently dropped).
-	// Scoped to this device only; sibling devices' pools are untouched.
+	// A client with a fresh or desynced key store replaces its whole pool so
+	// the relay never hands out a key whose private half is gone.
 	if replaceOneTime {
 		if _, err := tx.Exec(ctx, `DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
 			accountID, deviceID); err != nil {
@@ -2164,9 +2087,8 @@ func (s *Store) SetKeys(accountID string, deviceID uint32, registrationID uint32
 			return err
 		}
 	}
-	// Cap the stored pool. Counted after the upserts (re-uploaded key ids
-	// don't double count); the UPDATE above holds the device row lock, so
-	// concurrent uploads for one device serialize and can't jointly overshoot.
+	// Counted after the upserts so re-uploaded ids don't count twice. The
+	// UPDATE above holds the device row lock, so concurrent uploads serialize.
 	if len(oneTime) > 0 {
 		var n int
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
@@ -2190,10 +2112,9 @@ func (s *Store) OneTimePreKeyCount(accountID string, deviceID uint32) (int, erro
 }
 
 // TakePreKeyBundles returns a bundle for each requested device, consuming one
-// one-time prekey per bundle when available. allowOneTime (nil = always) is
-// asked only when the device actually has a one-time prekey to hand out; if it
-// returns false the bundle is served without one (signed + last-resort Kyber
-// prekey only) and the pool is left untouched.
+// one-time prekey per bundle when available. allowOneTime, if non-nil, is
+// asked only when the device has a one-time prekey to hand out; if it returns
+// false the bundle is served without one and the pool is left untouched.
 func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOneTime func(deviceID uint32) bool) ([]PreKeyBundle, error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -2202,9 +2123,8 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 	}
 	defer tx.Rollback(ctx)
 
-	// Fetching every device: skip ones that never published keys (e.g. a link
-	// that didn't finish) instead of failing the whole account — one such
-	// device used to make the account unreachable for everyone.
+	// When fetching every device, skip ones that never published keys (such as
+	// an unfinished link) instead of failing the whole account.
 	allDevices := deviceIDs == nil
 	if allDevices {
 		rows, err := tx.Query(ctx, `SELECT device_id FROM devices WHERE account_id = $1 ORDER BY device_id`, accountID)
@@ -2261,7 +2181,7 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 			accountID, devID).Scan(&otk.KeyID, &otk.PublicKey)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			// Pool exhausted: degraded but valid.
+			// Pool exhausted; the bundle is still valid.
 		case err != nil:
 			return nil, err
 		case allowOneTime != nil && !allowOneTime(devID):
@@ -2288,13 +2208,11 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 // Enqueue stores a serialized envelope for a device until it is acked. A device
 // may hold at most maxQueuedPerDevice envelopes and maxQueuedBytesPerDevice
 // bytes of queued ciphertext; beyond either, ErrQueueFull. Expired rows are
-// reaped by PurgeExpired (hourly), not on this hot path.
+// reaped by PurgeExpired.
 //
-// The cap is enforced atomically: the device row is locked (FOR UPDATE) for
-// the count-then-insert, so concurrent senders to one device serialize and
-// can't each pass the check and overshoot it together. A device that no
-// longer exists (removed or its account deleted, possibly while we waited on
-// the lock) gets ErrNotFound and nothing is queued for it.
+// The device row is locked for the count-then-insert, so concurrent senders
+// to one device can't jointly overshoot the cap. A device that no longer
+// exists, possibly removed while waiting on the lock, gets ErrNotFound.
 func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope []byte) error {
 	ctx := context.Background()
 	if len(envelope) > maxQueuedEnvelopeBytes {
@@ -2340,9 +2258,8 @@ type QueuedEnvelope struct {
 	Envelope  []byte // serialized relay.v1.Envelope
 }
 
-// QueueCursor positions a queue read strictly after a given envelope (the
-// queue is ordered by (created_at, envelope_id)). The zero value starts at the
-// oldest envelope.
+// QueueCursor positions a queue read strictly after a given envelope, in
+// (created_at, envelope_id) order. The zero value starts at the oldest.
 type QueueCursor struct {
 	CreatedAt  int64
 	EnvelopeID string
@@ -2350,10 +2267,9 @@ type QueueCursor struct {
 
 // QueuedEnvelopesPage returns up to limit of a device's pending envelopes after
 // cursor, oldest first, stopping early once the page holds maxBytes of
-// ciphertext (a page always carries at least one envelope when any remain).
-// more reports whether further envelopes exist past the returned page; resume
-// with the cursor of its last element. Unexpired rows only. Rows are streamed
-// from the database, so memory is bounded by the page, not the queue.
+// ciphertext; a page always has at least one envelope when any remain. more
+// reports whether further envelopes exist; resume with the cursor of the last
+// element. Rows are streamed, so memory is bounded by the page size.
 func (s *Store) QueuedEnvelopesPage(accountID string, deviceID uint32, after QueueCursor, limit, maxBytes int) (page []QueuedEnvelope, more bool, err error) {
 	if limit <= 0 {
 		limit = 1
@@ -2378,7 +2294,7 @@ func (s *Store) QueuedEnvelopesPage(accountID string, deviceID uint32, after Que
 			return nil, false, err
 		}
 		if len(page) == limit || (len(page) > 0 && total+len(q.Envelope) > maxBytes) {
-			return page, true, nil // rows.Close (deferred) discards the rest
+			return page, true, nil // deferred rows.Close discards the rest
 		}
 		page = append(page, q)
 		total += len(q.Envelope)
@@ -2394,9 +2310,8 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 	return err
 }
 
-// PurgeExpired deletes every row that has outlived its retention window. Run
-// hourly by relayd so expired data doesn't linger until some request happens
-// to touch the table:
+// PurgeExpired deletes every row that has outlived its retention window.
+// relayd runs it hourly:
 //
 //   - message_queue: envelopes older than 14 days
 //   - encrypted_group_invites, provisioning_sessions, device_link_tokens: expired
@@ -2430,8 +2345,8 @@ func (s *Store) PurgeExpired() error {
 const groupInviteTTL = 7 * 24 * time.Hour
 
 // CreateEncryptedGroupInvite stores an opaque encrypted invite blob under a
-// fresh token (7-day expiry) and returns both. The relay never learns what the
-// blob decrypts to — the group id, name, and roster stay client-side.
+// fresh token with a 7-day expiry and returns both. The relay never learns
+// what the blob decrypts to.
 func (s *Store) CreateEncryptedGroupInvite(blob []byte) (token string, expiresAt int64, err error) {
 	token = newUUID()
 	expiresAt = time.Now().Add(groupInviteTTL).UnixMilli()
@@ -2441,8 +2356,8 @@ func (s *Store) CreateEncryptedGroupInvite(blob []byte) (token string, expiresAt
 	return token, expiresAt, err
 }
 
-// ClaimEncryptedGroupInvite returns the invite blob for a (non-expired) token.
-// Multi-use until expiry; the relay can't tell who redeemed it or for what.
+// ClaimEncryptedGroupInvite returns the invite blob for an unexpired token.
+// Tokens are reusable until they expire.
 func (s *Store) ClaimEncryptedGroupInvite(token string) ([]byte, error) {
 	var blob []byte
 	err := s.db.QueryRow(context.Background(),
@@ -2506,8 +2421,8 @@ func isUniqueViolation(err error) bool {
 // Nuke (remote wipe)
 // ---------------------------------------------------------------------------
 
-// NukeRecord carries the fields of a signed remote-wipe command without
-// importing the relaypb package (which sits above the store layer).
+// NukeRecord holds the fields of a signed remote-wipe command, so the store
+// doesn't import relaypb.
 type NukeRecord struct {
 	AccountID          string
 	CommandID          string
@@ -2516,9 +2431,9 @@ type NukeRecord struct {
 	Signature          []byte
 }
 
-// StoreNuke persists a signed nuke command and atomically deletes all queued
-// envelopes for the account. Returns ErrDuplicateNukeCommand if the command_id
-// has already been executed (replay protection).
+// StoreNuke persists a signed nuke command and deletes all queued envelopes
+// for the account in the same transaction. Returns ErrDuplicateNukeCommand if
+// the command id was already used.
 func (s *Store) StoreNuke(rec NukeRecord) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -2538,8 +2453,6 @@ func (s *Store) StoreNuke(rec NukeRecord) error {
 		}
 		return err
 	}
-	// Delete all queued envelopes for every device of this account so nothing
-	// lingers after the wipe.
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM message_queue WHERE account_id = $1`, rec.AccountID,
 	); err != nil {
@@ -2549,8 +2462,8 @@ func (s *Store) StoreNuke(rec NukeRecord) error {
 }
 
 // PendingNukeForAccount returns the most recent stored nuke for an account, or
-// nil if none exists. Used to deliver the nuke to a device that was offline when
-// it was issued.
+// nil if none exists, for delivery to a device that was offline when it was
+// issued.
 func (s *Store) PendingNukeForAccount(accountID string) (*NukeRecord, error) {
 	ctx := context.Background()
 	var rec NukeRecord
@@ -2570,8 +2483,8 @@ func (s *Store) PendingNukeForAccount(accountID string) (*NukeRecord, error) {
 }
 
 // SetAccessKey stores an account's sealed-sender access key (32 bytes). Senders
-// present this key on the unauthenticated delivery path; the server checks it
-// matches without learning the sender. Rotating it revokes anyone holding the old key.
+// present it on the unauthenticated delivery path. Rotating it revokes anyone
+// holding the old key.
 func (s *Store) SetAccessKey(accountID string, key []byte) error {
 	_, err := s.db.Exec(context.Background(),
 		`UPDATE accounts SET access_key = $1 WHERE id = $2`, key, accountID)
@@ -2596,9 +2509,8 @@ const (
 	DirectoryKindEmail    int16 = 1
 )
 
-// DirectoryEntry is one OPRF token → account row for the blinded directory
-// index, with its precomputed bucket, match tag and sealed (accountId,
-// username) box.
+// DirectoryEntry is one row of the blinded directory: an OPRF token, its
+// account, and the precomputed bucket, match tag and sealed boxes.
 type DirectoryEntry struct {
 	Token     []byte
 	AccountID string
@@ -2617,9 +2529,8 @@ type BucketEntry struct {
 	AccessBox []byte
 }
 
-// AccountDirInfo is the identifier material the API layer needs to (re)build an
-// account's directory tokens. The email is stored only as its keyed token, so we
-// surface that directly rather than a plaintext address.
+// AccountDirInfo is the identifier material needed to build an account's
+// directory tokens. The email is available only as its keyed token.
 type AccountDirInfo struct {
 	AccountID  string
 	Username   string
@@ -2629,8 +2540,8 @@ type AccountDirInfo struct {
 	AccessKey         []byte
 }
 
-// AllAccountsForDirectory returns every account's username + email token so the
-// API can (re)build the full directory index at startup.
+// AllAccountsForDirectory returns every account's directory material for the
+// startup rebuild.
 func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	rows, err := s.db.Query(context.Background(),
 		`SELECT id, COALESCE(username, ''), email_token, email_discoverable, access_key FROM accounts ORDER BY created_at, id`)
@@ -2676,7 +2587,7 @@ func (s *Store) SetEmailDiscoverable(accountID string, discoverable bool) error 
 	return nil
 }
 
-// ReplaceDirectory rebuilds the entire directory index from scratch (startup).
+// ReplaceDirectory rebuilds the entire directory index.
 func (s *Store) ReplaceDirectory(entries []DirectoryEntry) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -2695,10 +2606,9 @@ func (s *Store) ReplaceDirectory(entries []DirectoryEntry) error {
 	return tx.Commit(ctx)
 }
 
-// upsertDirectoryEntry inserts one directory row. A token already owned by a
-// DIFFERENT account is never reassigned (first owner keeps it; the collision is
-// logged) — otherwise registering a case-variant or otherwise colliding
-// identifier could hijack another user's discovery entry.
+// upsertDirectoryEntry inserts one directory row. A token owned by a different
+// account is never reassigned (the collision is logged); otherwise a colliding
+// identifier such as a case variant could hijack another user's entry.
 func upsertDirectoryEntry(ctx context.Context, tx pgx.Tx, e DirectoryEntry) error {
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO directory (token, account_id, kind, bucket, tag, box, access_box) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -2714,8 +2624,7 @@ func upsertDirectoryEntry(ctx context.Context, tx pgx.Tx, e DirectoryEntry) erro
 	return nil
 }
 
-// SetDirectoryForAccount replaces one account's directory rows (live reindex on
-// account creation or username change).
+// SetDirectoryForAccount replaces one account's directory rows.
 func (s *Store) SetDirectoryForAccount(accountID string, entries []DirectoryEntry) error {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
@@ -2734,8 +2643,8 @@ func (s *Store) SetDirectoryForAccount(accountID string, entries []DirectoryEntr
 	return tx.Commit(ctx)
 }
 
-// DirectoryBuckets returns every directory row in the requested buckets (tag +
-// sealed box only — never the token or account id).
+// DirectoryBuckets returns the tag and sealed boxes of every directory row in
+// the requested buckets, never the token or account id.
 func (s *Store) DirectoryBuckets(buckets []uint16) ([]BucketEntry, error) {
 	if len(buckets) == 0 {
 		return nil, nil
@@ -2764,9 +2673,9 @@ func (s *Store) DirectoryBuckets(buckets []uint16) ([]BucketEntry, error) {
 	return out, rows.Err()
 }
 
-// IdentityKey returns a device's stored identity public key (libsignal-serialized,
-// 33 bytes), or ErrNotFound if the device/key doesn't exist. Used to mint
-// sealed-sender certificates binding the account to its identity key.
+// IdentityKey returns a device's identity public key (libsignal-serialized, 33
+// bytes), or ErrNotFound if there is none. Sealed-sender certificates bind the
+// account to it.
 func (s *Store) IdentityKey(accountID string, deviceID uint32) ([]byte, error) {
 	var key []byte
 	err := s.db.QueryRow(context.Background(),
@@ -2779,10 +2688,9 @@ func (s *Store) IdentityKey(accountID string, deviceID uint32) ([]byte, error) {
 	return key, err
 }
 
-// DeleteNukesForAccount removes all pending nuke commands for an account. Used to
-// clear a stale nuke that is older than the delivery window (it would be rejected
-// by the client and otherwise re-delivers on every reconnect, wedging the account
-// offline).
+// DeleteNukesForAccount removes all pending nuke commands for an account. A
+// nuke past the delivery window would be rejected by the client and otherwise
+// redelivered on every reconnect.
 func (s *Store) DeleteNukesForAccount(accountID string) error {
 	_, err := s.db.Exec(context.Background(),
 		`DELETE FROM nuke_commands WHERE account_id = $1`, accountID)

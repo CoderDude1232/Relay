@@ -2,30 +2,25 @@
 //  SQLCipherSignalStore.swift
 //  SecureStorage
 //
-//  libsignal state stores backed by the SQLCipher database, replacing the
-//  in-memory stores from the crypto-core stage. Conforms to CryptoCore's
-//  `SignalStores`, so a `CryptoEngine` can run directly on top.
+//  libsignal stores backed by the SQLCipher database. Conforms to
+//  CryptoCore's `SignalStores` so a `CryptoEngine` runs directly on it.
 //
-//  Identity policy is trust-on-first-use: an unknown peer identity is
-//  trusted and recorded; a *changed* identity is untrusted (and resets
-//  verification) until explicitly re-saved, which is what drives the
-//  "safety number changed" warning in the UI later.
+//  Identity policy is trust-on-first-use. An unknown identity is trusted and
+//  recorded; a changed one is untrusted and resets verification until it is
+//  saved again, which drives the safety-number-changed warning.
 //
-//  Identities are keyed by (account, device id). All devices of one account
-//  share the account identity key (linked devices receive it via
-//  provisioning), so TOFU applies per ACCOUNT, not per device: a device id
-//  we have never seen for an already-known account is trusted only if it
-//  presents one of the identity keys already stored for that account.
-//  Anything else is treated exactly like a changed key.
+//  Identities are keyed by (account, device id), but all devices of an
+//  account share its identity key, so TOFU applies per account. A new device
+//  id for a known account is trusted only if it presents a key already stored
+//  for that account; anything else is treated as a changed key.
 //
 
 import CryptoCore
 import Foundation
 import LibSignalClient
 
-/// The device's own long-lived credentials. Production wires the
-/// Keychain-backed implementation; tests use an in-memory one. The private
-/// identity key deliberately never enters the SQLCipher database.
+/// The device's long-lived credentials: Keychain-backed in production,
+/// in-memory in tests. The private identity key never enters the database.
 public protocol IdentityCredentialProviding: AnyObject {
     func identityKeyPair() throws -> IdentityKeyPair
     func registrationId() throws -> UInt32
@@ -34,11 +29,10 @@ public protocol IdentityCredentialProviding: AnyObject {
 public final class SQLCipherSignalStore {
     private let db: Database
     private let credentials: any IdentityCredentialProviding
-    /// Our own account id. Every device of our own account shares our identity
-    /// key (linked devices receive it at provisioning), so a device of this
-    /// account presenting any other key is never trusted — no trust-on-first-use
-    /// for ourselves, or the relay could add a hidden device that receives a
-    /// sync copy of everything we send. Set once at startup, before any use.
+    /// Our own account id. All our devices share our identity key, so a device
+    /// of this account presenting any other key is never trusted. TOFU for
+    /// ourselves would let the relay add a hidden device that receives sync
+    /// copies of everything we send. Set once at startup.
     public var localAccountName: String?
 
     public init(database: Database, credentials: any IdentityCredentialProviding) {
@@ -72,8 +66,8 @@ extension SQLCipherSignalStore: IdentityKeyStore {
             }
             let serialized = identity.serialize()
             if existing != nil {
-                // A changed key resets any prior verification (for this device);
-                // verified_key is kept so the state surfaces as `.changed`.
+                // A changed key resets verification for this device. verified_key is kept
+                // so the state reads as `.changed`.
                 try db.run(
                     "UPDATE remote_identities SET identity_key = ?, verified = 0 WHERE address = ? AND device_id = ?",
                     [.blob(serialized), .text(address.name), .integer(Int64(address.deviceId))]
@@ -81,14 +75,14 @@ extension SQLCipherSignalStore: IdentityKeyStore {
                 return .replacedExisting
             }
 
-            // A device id never seen before. Compare against the account's
-            // other devices' keys (shared account identity).
+            // A device id not seen before: compare with the keys of the account's
+            // other devices.
             let siblings = try db.query(
                 "SELECT identity_key, verified, verified_key FROM remote_identities WHERE address = ?",
                 [.text(address.name)]
             )
             if siblings.isEmpty {
-                // Brand-new account: trust on first use.
+                // Unknown account: trust on first use.
                 try insertIdentity(serialized, for: address, verified: false, verifiedKey: nil)
                 return .newOrUnchanged
             }
@@ -96,9 +90,8 @@ extension SQLCipherSignalStore: IdentityKeyStore {
             // The key the user last verified for this account, if any.
             let priorVerifiedKey = siblings.lazy.compactMap { $0[2].data }.first
             if matchesKnownKey {
-                // Another device of the same identity. Verification is a
-                // judgement about the key, so a device presenting the very key
-                // the user verified inherits it.
+                // Verification is a judgement about the key, so a device presenting
+                // the key the user verified inherits it.
                 let inheritsVerification = siblings.contains {
                     $0[0].data == serialized && $0[1].int64 == 1 && $0[2].data == serialized
                 }
@@ -110,9 +103,8 @@ extension SQLCipherSignalStore: IdentityKeyStore {
                 )
                 return .newOrUnchanged
             }
-            // A new device with a key the account never had: equivalent to a
-            // key change. Unverified; if the account had been verified, record
-            // the previously verified key so the aggregate state is `.changed`.
+            // A key the account never had: treat as a key change. If the account
+            // was verified, record the old verified key so the state is `.changed`.
             try insertIdentity(serialized, for: address, verified: false, verifiedKey: priorVerifiedKey)
             return .replacedExisting
         }
@@ -140,15 +132,12 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         )
     }
 
-    /// Trust policy (sending; receiving from contacts always trusts, see below):
-    /// - a device of our own account is trusted iff it presents our own
-    ///   identity key;
-    /// - a device we already have a key for is trusted iff the key is unchanged;
-    /// - a device id never seen for an account that has OTHER known devices is
-    ///   trusted iff it presents one of the identity keys already stored for
-    ///   that account (all devices share the account identity) — otherwise it
-    ///   is untrusted, exactly like a changed key;
-    /// - a completely unknown account is trusted on first use.
+    /// Trust policy for sending (receiving from contacts always trusts, below):
+    /// - a device of our own account is trusted iff it presents our identity key;
+    /// - a known device is trusted iff its key is unchanged;
+    /// - a new device id on an account with other known devices is trusted iff it
+    ///   presents a key already stored for that account;
+    /// - an unknown account is trusted on first use.
     public func isTrustedIdentity(
         _ identity: IdentityKey,
         for address: ProtocolAddress,
@@ -158,10 +147,10 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         if let localAccountName, address.name == localAccountName {
             return identity == (try credentials.identityKeyPair().identityKey)
         }
-        // Receiving from a contact: accept a changed key (as Signal does) so
-        // their messages after a reinstall aren't silently dropped. libsignal
-        // then saves it — which resets `verified` — and sending stays blocked
-        // until the user acknowledges the new safety number.
+        // Receiving from a contact: accept a changed key, as Signal does, so
+        // messages sent after a reinstall aren't dropped. libsignal then saves it,
+        // resetting `verified`, and sending stays blocked until the user accepts
+        // the new safety number.
         if direction == .receiving {
             return true
         }
@@ -170,7 +159,7 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         }
         let accountKeys = try identityKeys(address: address.name)
         if accountKeys.isEmpty {
-            return true // trust on first use
+            return true
         }
         return accountKeys.contains(identity.serialize())
     }
@@ -184,10 +173,8 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         return try IdentityKey(bytes: blob)
     }
 
-    /// The distinct serialized identity keys stored for any device of the
-    /// account `name`, ordered by lowest device id first. Normally one key
-    /// (shared account identity); more than one means some device presented
-    /// a different key (safety number changed for that account).
+    /// Distinct identity keys stored for any device of account `name`, lowest
+    /// device id first. More than one means a device presented a different key.
     public func identityKeys(address name: String) throws -> [Data] {
         let rows = try db.query(
             "SELECT identity_key FROM remote_identities WHERE address = ? ORDER BY device_id",
@@ -201,16 +188,15 @@ extension SQLCipherSignalStore: IdentityKeyStore {
     }
 }
 
-// MARK: - Verification state (drives the safety-number UI)
+// MARK: - Verification state
 
 /// The out-of-band verification status of a peer's identity.
 public enum VerificationState: Sendable, Equatable {
-    /// Never verified (or verification was explicitly cleared).
+    /// Never verified, or verification was cleared.
     case unverified
-    /// Verified, and the identity key is unchanged since verification.
+    /// Verified, and the key is unchanged since.
     case verified
-    /// Was verified, but the peer's identity key has since changed — the
-    /// user should re-verify. Drives the safety-number-changed warning.
+    /// Was verified, but the key has changed since. The user should re-verify.
     case changed
 }
 
@@ -219,10 +205,9 @@ extension SQLCipherSignalStore {
         try verificationState(address: name) == .verified
     }
 
-    /// Marks every known device of a peer verified (recording each device's
-    /// current identity key) or clears verification across all of them (also
-    /// dismissing a pending "changed" warning). Verification is an account-level
-    /// judgement, so it aggregates over the peer's devices.
+    /// Marks every known device of a peer verified, recording each current key,
+    /// or clears verification on all of them, which also dismisses a "changed"
+    /// warning. Verification is per account.
     public func setVerified(_ verified: Bool, address name: String) throws {
         if verified {
             try db.run(
@@ -237,11 +222,10 @@ extension SQLCipherSignalStore {
         }
     }
 
-    /// Resolves the aggregate verification state over all of a peer's known
-    /// devices. `saveIdentity` resets a device's `verified` to 0 on a key change
-    /// but leaves its `verified_key` intact, so a mismatch surfaces as `.changed`.
-    /// - `.changed` if ANY known device's key changed since it was verified,
-    /// - `.verified` only if EVERY known device is currently verified,
+    /// Aggregate verification state over a peer's known devices. `saveIdentity`
+    /// resets `verified` on a key change but keeps `verified_key`, so:
+    /// - `.changed` if any device's key changed since it was verified,
+    /// - `.verified` if every device is verified,
     /// - `.unverified` otherwise.
     public func verificationState(address name: String) throws -> VerificationState {
         let rows = try db.query(
@@ -253,8 +237,7 @@ extension SQLCipherSignalStore {
         for row in rows {
             let isVerified = row[0].int64 == 1
             if !isVerified { allVerified = false }
-            // A device that was verified (has a verified_key) but whose current
-            // key differs is a safety-number change — surfaces immediately.
+            // Verified once, but the current key differs.
             if let verifiedKey = row[2].data, let currentKey = row[1].data,
                verifiedKey != currentKey {
                 return .changed
@@ -330,8 +313,8 @@ extension SQLCipherSignalStore: KyberPreKeyStore {
         baseKey: PublicKey,
         context: StoreContext
     ) throws {
-        // Our Kyber prekeys are last-resort keys (reusable by design), so
-        // usage is recorded but the record is kept for delayed messages.
+        // Our Kyber prekeys are last-resort and reusable, so mark them used but
+        // keep them for delayed messages.
         try db.run("UPDATE kyber_prekeys SET used = 1 WHERE id = ?", [.integer(Int64(id))])
     }
 }

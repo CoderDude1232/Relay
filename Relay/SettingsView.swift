@@ -36,7 +36,7 @@ struct SettingsView: View {
         NavigationStack {
             List {
 
-                // MARK: Profile hero
+                // MARK: Profile
                 Section {
                     Button { showingEditProfile = true } label: {
                         HStack(spacing: 14) {
@@ -68,11 +68,9 @@ struct SettingsView: View {
                     .tint(.primary)
                 }
 
-                // MARK: Primary categories
-                // A tidy single-column list of important categories, each
-                // opening a sub-page. Niche tools (Scheduled Messages, Blocked)
-                // now live inside "Chats"; storage/backup/sync inside "Data &
-                // Storage" — keeping this top level focused.
+                // MARK: Categories
+                // Niche tools (Scheduled Messages, Blocked) live inside Chats, and
+                // storage/backup/sync inside Data & Storage, to keep this level short.
                 Section {
                     if service.username != nil {
                         NavigationLink(destination: AccountSettingsView(service: service)) {
@@ -99,7 +97,7 @@ struct SettingsView: View {
                     }
                 }
 
-                // MARK: Invite (not on demo accounts: they can't reach real users)
+                // MARK: Invite (hidden on demo accounts, which can't reach real users)
                 if !service.isDemoAccount {
                 Section {
                     Button {
@@ -119,7 +117,7 @@ struct SettingsView: View {
                 }
 
                 // MARK: Support
-                // (Privacy Policy, Terms and Acknowledgements live under Privacy.)
+                // Privacy Policy, Terms and Acknowledgements live under Privacy.
                 Section {
                     Link(destination: LegalLinks.feedbackMail) {
                         SettingsExternalRow(systemName: "envelope.fill", title: "Send Feedback")
@@ -149,8 +147,8 @@ struct SettingsView: View {
                         titleVisibility: .visible
                     ) {
                         Button("Wipe All Devices", role: .destructive) {
-                            // Wiping every device must prove the owner is present:
-                            // refuse (with an explanation) when no passcode is set.
+                            // Wiping every device must prove the owner is present, so
+                            // refuse when no passcode is set.
                             guard BiometricGate.isPasscodeSet else {
                                 nukeError = BiometricGate.passcodeRequiredMessage
                                 return
@@ -392,7 +390,7 @@ private struct AccountSettingsView: View {
             } footer: {
                 Text(discoverabilityError ?? "Off by default. When on, people who have your email address can find your username. Lookups are blinded, so Relay never sees the addresses searched.")
             }
-            } // not a demo account
+            }
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
@@ -531,7 +529,7 @@ struct PrivacySettingsView: View {
                                   info: "Adds your chat names to iPhone Search (Spotlight). The search index is stored by iOS outside Relay's encryption. Hidden chats are never added.",
                                   isOn: Binding(get: { spotlightIndexing }, set: { enabled in
                                       spotlightIndexing = enabled
-                                      if enabled { service.refreshConversations() } // re-index now
+                                      if enabled { service.refreshConversations() }  // re-index now
                                       else { SpotlightIndexer.deindexAll() }
                                   }))
             } header: {
@@ -622,7 +620,7 @@ struct PrivacySettingsView: View {
     }
 }
 
-// MARK: - Data & Retention Policy (Stage 8)
+// MARK: - Data & Retention Policy
 
 private struct DataRetentionView: View {
     var body: some View {
@@ -806,10 +804,9 @@ private struct StorageSettingsView: View {
         return total
     }
 
-    /// Delegates to MessagingService so only re-downloadable blobs are removed
-    /// and their attachment rows are reset to "not downloaded" (deleting the
-    /// directory directly would destroy local-only Note to Self media and
-    /// leave isDownloaded=true, so images could never re-download).
+    /// Goes through MessagingService so only re-downloadable blobs are removed
+    /// and their rows reset to "not downloaded". Deleting the directory directly
+    /// would destroy local-only Note to Self media and leave isDownloaded=true.
     private func clearCache() {
         isClearing = true
         Task {
@@ -1060,19 +1057,18 @@ private struct EditProfileSheet: View {
 
     private func saveAndDismiss() {
         service.setMyDisplayName(displayNameDraft)
-        // Only commit the avatar (which distributes to peers) if it actually
-        // changed in this editing session — nothing leaves the sheet until Save.
+        // The avatar is distributed to peers, so only commit it if it changed.
         if avatarChanged {
             service.setMyAvatarData(avatarData)
         }
-        // Distributes to peers over the E2EE profile channel (bumps revision only
-        // if changed). Nothing left the sheet until this Save.
+        // Sent to peers over the E2EE profile channel; the revision only bumps if
+        // something changed.
         service.setMyProfileText(status: statusDraft, bio: bioDraft, links: linkDrafts)
         onDone()
         dismiss()
     }
 
-    // Holds the new avatar locally only; it isn't distributed until Save.
+    // Held locally until Save.
     private func setAvatar(_ data: Data?) {
         avatarData = data
         avatarChanged = true
@@ -1091,13 +1087,13 @@ private struct EditProfileSheet: View {
     }
 }
 
-// MARK: - Settings icon (colored square, iOS Settings style)
+// MARK: - Settings icon
 
 struct SettingsIcon: View {
     let systemName: String
     let color: Color
-    /// Opt-in: use the provided `color` instead of the default neutral gray.
-    /// Reserved for rows that need to signal danger (e.g. Emergency Wipe).
+    /// Use `color` instead of neutral gray. Reserved for rows that signal danger
+    /// (e.g. Emergency Wipe).
     var useColor: Bool = false
 
     var body: some View {
@@ -1105,8 +1101,6 @@ struct SettingsIcon: View {
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: 28, height: 28)
-            // Unified to a neutral gray for a consistent, non-rainbow settings
-            // look; `useColor` opts a row back into its explicit `color`.
             .background((useColor ? color : Color(.systemGray)).gradient, in: .rect(cornerRadius: 7))
     }
 }
@@ -1124,10 +1118,8 @@ struct SettingsNavRow: View {
     }
 }
 
-/// A small white ⓘ button that surfaces a one-shot explanation in a native
-/// alert. Self-contained (owns its own presentation) so any settings row can
-/// drop one in without plumbing shared state. Use only where a title isn't
-/// self-explanatory.
+/// Small ⓘ button that shows an explanation in an alert. Owns its own
+/// presentation so any settings row can add one without shared state.
 struct SettingsInfoButton: View {
     let title: String
     let message: String
@@ -1149,9 +1141,8 @@ struct SettingsInfoButton: View {
     }
 }
 
-/// The standard settings toggle row: gray icon, self-explanatory title, an
-/// optional ⓘ for detail, and a trailing switch. One implementation shared by
-/// every settings page so rows look and behave identically.
+/// Standard settings toggle row: gray icon, title, optional ⓘ, trailing
+/// switch.
 struct SettingsToggleRow: View {
     let systemName: String
     let title: String
@@ -1213,7 +1204,7 @@ struct AvatarView: View {
     }
 }
 
-// MARK: - PanicModeSheet (accessed via Security settings or 5-tap on version)
+// MARK: - PanicModeSheet
 
 struct PanicModeSheet: View {
     let manager: PanicModeManager
@@ -1584,8 +1575,8 @@ struct AcknowledgementsView: View {
 
 // MARK: - Delete account
 
-/// Permanent account deletion (App Store Guideline 5.1.1(v)). Requires typing
-/// DELETE, deletes the account on the relay, then wipes this device.
+/// Permanent account deletion (App Review 5.1.1(v)). Requires typing DELETE,
+/// deletes the account on the relay, then wipes this device.
 private struct DeleteAccountSheet: View {
     let service: MessagingService
     let onDeleted: () -> Void
@@ -1688,8 +1679,8 @@ private struct DeleteAccountSheet: View {
         errorMessage = nil
         Task {
             do {
-                // Sign in with Apple accounts: get a fresh code so the relay can
-                // revoke the Apple token (Apple requirement). Cancelling still deletes.
+                // Sign in with Apple accounts need a fresh code so the relay can revoke
+                // the Apple token. Cancelling still deletes.
                 let appleCode = AppleSignInRecord.used ? await AppleReauthorization.authorizationCode() : nil
                 try await service.deleteAccount(appleAuthorizationCode: appleCode)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -1703,9 +1694,8 @@ private struct DeleteAccountSheet: View {
     }
 }
 
-/// Sets or changes the account password (recovery + new-device sign-in lock).
-/// Changes the account's email: Supabase emails a code to the new address,
-/// then the relay re-keys its email lookup (recovery + find-by-email).
+/// Supabase emails a code to the new address, then the relay re-keys its
+/// email lookup (recovery and find-by-email).
 private struct ChangeEmailSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss

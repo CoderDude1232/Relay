@@ -2,14 +2,8 @@
 //  DesignSystem.swift
 //  Relay
 //
-//  The single source of truth for spacing, radii, sizing, motion, and the
-//  shared building-block components used across the app. Screens should reach
-//  for these tokens instead of hard-coding magic numbers so the UI stays
-//  cohesive. Purely presentational — no state, no dependencies beyond SwiftUI.
-//
-//  Glass lives in GlassCompat.swift; chat wallpaper/bubble theming lives in
-//  ChatAppearance.swift. This file is the neutral chrome vocabulary shared by
-//  every screen (lists, settings, sheets, rows, badges).
+//  Spacing, radius, sizing and motion tokens plus small shared components.
+//  Glass is in GlassCompat.swift; chat theming is in ChatAppearance.swift.
 //
 
 import SwiftUI
@@ -19,7 +13,7 @@ enum DS {
 
     // MARK: Spacing
 
-    /// A consistent 4-point spacing scale. Prefer these over literals.
+    /// 4-point spacing scale.
     enum Spacing {
         static let xxs: CGFloat = 2
         static let xs: CGFloat = 4
@@ -33,8 +27,6 @@ enum DS {
 
     // MARK: Corner radius
 
-    /// Corner radii keyed by the surface they belong to, so the same kind of
-    /// element always uses the same curvature.
     enum Radius {
         static let control: CGFloat = 10   // small buttons, chips-as-rects
         static let field: CGFloat = 12     // text fields, small tiles
@@ -45,7 +37,6 @@ enum DS {
 
     // MARK: Avatar sizes
 
-    /// Standard avatar diameters. Rows should pick one of these, not a literal.
     enum Avatar {
         static let xs: CGFloat = 28   // inline contact rows
         static let sm: CGFloat = 36   // compact lists
@@ -65,7 +56,6 @@ enum DS {
 
     // MARK: Motion
 
-    /// Shared animation presets so transitions feel like one app.
     enum Motion {
         /// Snappy spring for selection, toggles, badge count changes.
         static let snappy: Animation = .spring(duration: 0.22)
@@ -96,9 +86,7 @@ extension ShapeStyle where Self == Color {
 
 // MARK: - Shared components
 
-/// A rounded count pill (unread messages, archived count, etc.). One badge for
-/// the whole app so counts always look the same. `tint` fills the pill; text is
-/// always high-contrast white for legibility on colored fills.
+/// A rounded count pill (unread, archived, etc.). Text is always white.
 struct CountBadge: View {
     let count: Int
     var tint: Color = .accentColor
@@ -117,8 +105,7 @@ struct CountBadge: View {
     }
 }
 
-/// A selectable capsule chip (filters, quick toggles). Consolidates the
-/// previously ad-hoc chip styling into one look.
+/// A selectable capsule chip (filters, quick toggles).
 struct Pill: View {
     let title: String
     var isSelected: Bool = false
@@ -141,8 +128,7 @@ struct Pill: View {
     }
 }
 
-/// The branded avatar for the official, read-only "Relay" system chat — an
-/// accent-gradient disc with the relay glyph. Distinct from user avatars.
+/// Avatar for the official, read-only "Relay" system chat.
 struct RelayOfficialAvatar: View {
     var size: CGFloat = 54
 
@@ -159,8 +145,7 @@ struct RelayOfficialAvatar: View {
     }
 }
 
-/// A compact inline error chip (icon + message on a soft red fill). Shared so
-/// error states read the same wherever they surface.
+/// A compact inline error chip (icon and message on a soft red fill).
 struct InlineErrorBanner: View {
     let message: String
     init(_ message: String) { self.message = message }
@@ -176,8 +161,7 @@ struct InlineErrorBanner: View {
     }
 }
 
-/// The small circular "edit" affordance overlaid on the bottom-trailing corner
-/// of an editable avatar. One look everywhere an avatar can be changed.
+/// Small circular edit badge for the bottom-trailing corner of an avatar.
 struct AvatarEditBadge: View {
     var systemImage: String = "camera.fill"
     var diameter: CGFloat = 24
@@ -193,7 +177,7 @@ struct AvatarEditBadge: View {
     }
 }
 
-/// A grouped-list section header with consistent typography and casing.
+/// A grouped-list section header.
 struct DSSectionHeader: View {
     let title: String
     var body: some View {
@@ -207,8 +191,7 @@ struct DSSectionHeader: View {
 // MARK: - Card row modifier
 
 extension View {
-    /// Wraps a row's content in the standard rounded card surface used for
-    /// grouped/floating rows, so every "card" shares one radius and fill.
+    /// Wraps a row's content in the standard rounded card surface.
     func dsCard(_ fill: some ShapeStyle = AnyShapeStyle(.dsCard),
                 cornerRadius: CGFloat = DS.Radius.card) -> some View {
         background(fill, in: .rect(cornerRadius: cornerRadius, style: .continuous))

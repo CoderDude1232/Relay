@@ -20,8 +20,7 @@ struct CallsView: View {
     @State private var showingCallLinks = false
     @AppStorage(CallsView.missedCallsSeenAtKey) private var missedCallsSeenAt: Double = 0
 
-    /// Call history grouped into day sections (most recent first), so the log
-    /// reads like a timeline instead of one flat run of rows.
+    /// Call history grouped into day sections, most recent first.
     private var sections: [(id: Int, title: String, calls: [StoredCall])] {
         let cal = Calendar.current
         var result: [(id: Int, title: String, calls: [StoredCall])] = []
@@ -58,8 +57,8 @@ struct CallsView: View {
         }
     }
 
-    /// Row tap: open the chat with that person (reusing the notification-tap
-    /// path, which switches to Chats); with no chat yet, call them back.
+    /// Opens the chat with that person via the notification-tap path (which
+    /// switches to Chats); with no chat yet, calls them back.
     private func handleTap(_ call: StoredCall) {
         if let id = conversationId(for: call) {
             model.pendingNotificationConversationId = id
@@ -245,7 +244,6 @@ private struct CallHistoryRow: View {
         }
     }
 
-    /// Missed and failed calls read in red for at-a-glance scanning.
     private var isNegative: Bool {
         call.outcome == .missed || call.outcome == .failed
     }

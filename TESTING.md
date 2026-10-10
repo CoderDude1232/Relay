@@ -2,7 +2,7 @@
 
 On-device verification for the batch of built-but-unverified changes. Simulators
 can't do APNs or CloudKit, so the push/backup items need two **physical** iPhones
-(the pair in CLAUDE.md) plus a redeployed server.
+plus a redeployed server.
 
 Simulator results, 2026-10-06 (test1/test2 on the iPhone 17 / 17 Pro sims,
 against the redeployed api.relaymsg.app): 1:1 send/reply/receipts, blinded

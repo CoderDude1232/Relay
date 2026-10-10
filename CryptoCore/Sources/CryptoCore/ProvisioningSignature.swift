@@ -2,17 +2,15 @@
 //  ProvisioningSignature.swift
 //  CryptoCore
 //
-//  Authenticates the device-linking payload. The provisioning box
-//  (ProvisioningCipher) is confidential + integrity-protected, but it's an
-//  anonymous sealed box: on its own the new device can't prove the payload was
-//  produced by a device that actually holds the account's identity key.
+//  Authenticates the device-linking payload. ProvisioningCipher is an
+//  anonymous sealed box, so on its own it can't prove the payload came from a
+//  device holding the account identity key.
 //
-//  Here the primary signs a transcript binding {this session, the new device's
-//  ephemeral key, the identity being granted, and the issued credentials} with
-//  the account identity private key. The new device rebuilds the same transcript
-//  and verifies it against the identity public key carried in the payload before
-//  adopting the identity — so a replayed or substituted-but-well-formed blob is
-//  rejected. Byte-in / bool-out so app code needn't touch libsignal.
+//  The primary signs a transcript binding the session, the new device's
+//  ephemeral key, the granted identity, and the issued credentials with the
+//  identity private key. The new device rebuilds the transcript and verifies it
+//  against the identity public key in the payload before adopting the identity,
+//  so a replayed or substituted blob is rejected.
 //
 
 import Foundation
@@ -21,8 +19,8 @@ import LibSignalClient
 public enum ProvisioningSignature {
     private static let label = Data("Relay Device Provisioning Signature v1".utf8)
 
-    /// Deterministic transcript over the security-critical fields. Built from
-    /// explicit fields (not JSON) so both sides agree on the exact bytes.
+    /// Built from explicit fields rather than JSON so both sides agree on the
+    /// exact bytes.
     private static func transcript(
         sessionId: String,
         recipientEphemeralPublicKey: Data,
@@ -42,7 +40,7 @@ public enum ProvisioningSignature {
         return t
     }
 
-    /// Primary side: sign with the account identity private key.
+    /// Primary side: signs with the account identity private key.
     public static func sign(
         sessionId: String,
         recipientEphemeralPublicKey: Data,
@@ -61,7 +59,7 @@ public enum ProvisioningSignature {
         return Data(pair.privateKey.generateSignature(message: t))
     }
 
-    /// New-device side: verify against the identity public key in the payload.
+    /// New-device side: verifies against the identity public key in the payload.
     public static func verify(
         _ signature: Data,
         sessionId: String,

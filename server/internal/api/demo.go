@@ -85,9 +85,9 @@ func (s *Server) SetDemoCode(code string) {
 	s.demoCodeHash = h[:]
 }
 
-// handleDemoSignIn: the App Review shortcut. A short code (from the review
-// notes) signs this device in to a demo account without email or password.
-// The code only ever unlocks the isolated demo accounts.
+// handleDemoSignIn is the App Review sign-in: a short code signs this device
+// in to a demo account without email or password. The code only ever unlocks
+// the isolated demo accounts.
 func (s *Server) handleDemoSignIn(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow("demo:" + ip) {

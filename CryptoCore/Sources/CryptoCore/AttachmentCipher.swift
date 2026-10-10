@@ -2,20 +2,17 @@
 //  AttachmentCipher.swift
 //  CryptoCore
 //
-//  Symmetric encryption for attachment blobs. Each attachment uses a fresh
-//  random AES-256-GCM key; the sealed box (nonce‖ciphertext‖tag) is what
-//  gets uploaded to the relay. The key + a SHA-256 digest of the ciphertext
-//  travel end-to-end inside the encrypted message, so the relay only ever
-//  stores opaque, undecryptable bytes. We own this format — there is no
-//  external spec to match.
+//  Attachment blob encryption. Each attachment gets a fresh AES-256-GCM key;
+//  the sealed box (nonce || ciphertext || tag) is uploaded. The key and a
+//  SHA-256 digest of the ciphertext travel inside the encrypted message, so
+//  the relay only stores opaque bytes.
 //
 
 import CryptoKit
 import Foundation
 
 public enum AttachmentCipherError: Error, Equatable {
-    /// The downloaded blob's digest didn't match the pointer (tampering or
-    /// corruption) — fail closed before attempting to decrypt.
+    /// The blob's digest didn't match the pointer. Checked before decrypting.
     case digestMismatch
     case malformedCiphertext
 }
@@ -23,11 +20,11 @@ public enum AttachmentCipherError: Error, Equatable {
 public enum AttachmentCipher {
     /// The encrypted form of an attachment, ready to upload.
     public struct Sealed: Sendable, Equatable {
-        /// Upload this to the relay (nonce‖ciphertext‖tag).
+        /// nonce || ciphertext || tag, uploaded to the relay.
         public let ciphertext: Data
-        /// 32-byte AES-256-GCM key — goes in the AttachmentPointer.
+        /// 32-byte AES-256-GCM key, carried in the AttachmentPointer.
         public let key: Data
-        /// SHA-256 of `ciphertext` — goes in the AttachmentPointer.
+        /// SHA-256 of `ciphertext`, carried in the AttachmentPointer.
         public let digest: Data
     }
 

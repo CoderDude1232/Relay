@@ -2,15 +2,12 @@
 //  LocationShareManager.swift
 //  Relay
 //
-//  Manages live location sharing within a single conversation. Coordinates
-//  are sent as encrypted messages with the body prefix "__relay_loc__"
-//  followed by a compact JSON payload. The server never sees plaintext
-//  coordinates.
-//
-//  JSON schema: {"lat":0.0,"lng":0.0,"exp":1234567890,"stop":false}
-//    lat/lng – WGS84 decimal degrees
-//    exp     – Unix timestamp (ms) when sharing expires
-//    stop    – true to signal the peer that sharing has ended
+//  Live location sharing within one conversation. Coordinates go out as
+//  encrypted messages: the body prefix "__relay_loc__" followed by JSON,
+//  {"lat":0.0,"lng":0.0,"exp":1234567890,"stop":false}
+//    lat/lng: WGS84 decimal degrees
+//    exp:     Unix time (ms) when sharing expires
+//    stop:    true when the sender has stopped sharing
 //
 
 import CoreLocation
@@ -54,7 +51,7 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
     private(set) var expiresAt: Date?
     private(set) var latestLocation: CLLocation?
 
-    // Latest known location per conversation (for rendering bubbles)
+    // Latest known location per conversation, for rendering bubbles.
     private(set) var peerLocations: [String: LocationPayload] = [:]
 
     private let clManager = CLLocationManager()

@@ -26,11 +26,11 @@ struct OnboardingView: View {
 
     @State private var step: Step = .welcome
     @State private var supabaseSession: SupabaseSession?
-    // Registration lock: the account password prompt for new-device sign-ins.
+    // Registration lock: account password prompt for new-device sign-ins.
     @State private var showingLockPrompt = false
     @State private var lockPassword = ""
     @State private var lockPasswordIncorrect = false
-    @State private var supabasePassword = ""  // threaded from AuthView for account recovery setup
+    @State private var supabasePassword = ""  // for account recovery setup
     @State private var displayName = ""
     @State private var username = ""
     @State private var registrationError: String?
@@ -99,8 +99,8 @@ struct OnboardingView: View {
                         try await finish(session: session, password: supabasePassword)
                     },
                     onBack: {
-                        // Abandon setup: forget the half-finished sign-up so the
-                        // user can pick a different sign-in method.
+                        // Forget the half-finished sign-up so the user can pick another sign-in
+                        // method.
                         supabaseSession = nil
                         supabasePassword = ""
                         withAnimation(.spring(duration: 0.5)) { step = .welcome }
@@ -112,7 +112,7 @@ struct OnboardingView: View {
                 ))
             case .recovery:
                 RecoveryView(onComplete: {
-                    // recoverAccount sets phase = .ready; onboarding auto-dismisses.
+                    // recoverAccount sets phase = .ready, which dismisses onboarding.
                 }, onBack: {
                     withAnimation(.spring(duration: 0.5)) { step = .welcome }
                 }, onUseCode: {
@@ -126,35 +126,32 @@ struct OnboardingView: View {
             } // end else isAutoRestoring
         }
         .animation(.spring(duration: 0.5), value: step)
-        // Onboarding draws white text over .ultraThinMaterial on a near-black
-        // background; force dark so the material stays dark in Light Mode.
+        // White text over .ultraThinMaterial on near-black; force dark so the
+        // material stays dark in Light Mode.
         .preferredColorScheme(.dark)
         .task {
-            // If a Supabase session is already stored (e.g. after a relay-only
-            // sign-out due to server reset), try to re-use it without prompting
-            // for OAuth again. If the session has expired, the refresh will fail
-            // and we fall back to the normal onboarding flow.
+            // Reuse a stored Supabase session (e.g. after a relay-only sign-out) instead
+            // of prompting for OAuth again. If it has expired the refresh fails and the
+            // normal flow takes over.
             let stored = await SupabaseAuth.shared.session
             guard let stored else { return }
-            // Existing relay credentials → boot already handled this; skip.
+            // Existing relay credentials: boot already handled this.
             guard !model.hasExistingRelayAccount(forUserId: stored.userId) else { return }
             isAutoRestoring = true
             do {
-                // Try to refresh in case the access token expired.
                 let session: SupabaseSession
                 do {
                     session = try await SupabaseAuth.shared.refresh()
                 } catch {
-                    // Refresh failed (e.g. revoked token) — use stored session as-is.
-                    // If the access token is still valid the registration will succeed;
-                    // if not, the error surfaces as a registrationError below.
+                    // Refresh failed (e.g. revoked token); use the stored session as-is. If
+                    // the access token is still valid registration succeeds, otherwise the
+                    // error surfaces as registrationError.
                     session = stored
                 }
                 supabaseSession = session
                 try await finish(session: session, password: "")
             } catch is AppModel.NeedsUsernameError {
-                // Session is valid but there's no relay account yet — send the
-                // user to pick a username.
+                // Valid session but no relay account yet: pick a username.
                 isAutoRestoring = false
                 withAnimation(.spring(duration: 0.5)) { step = .setup }
             } catch {
@@ -193,18 +190,18 @@ struct OnboardingView: View {
         supabaseSession = session
         Task {
             do {
-                // Try to sign straight in. Returning users — even on a brand-new
-                // device with no local credentials — are recovered by the relay
-                // via their verified Supabase token, so no username is needed.
+                // Returning users, even on a new device with no local credentials, are
+                // recovered by the relay via their verified Supabase token, so no
+                // username is needed.
                 try await finish(session: session, password: accountPassword)
             } catch let lock as AppModel.AccountPasswordRequiredError {
-                // Registration lock: this sign-in would replace the account's
-                // devices, so the account password is required.
+                // This sign-in would replace the account's devices, so the account
+                // password is required.
                 lockPasswordIncorrect = lock.incorrect
                 lockPassword = ""
                 showingLockPrompt = true
             } catch is AppModel.NeedsUsernameError {
-                // Brand-new user — prefill a display name and prompt for a username.
+                // New user: prefill a display name and ask for a username.
                 if displayName.isEmpty {
                     displayName = Self.suggestedDisplayName(provided: suggestedName, email: session.email)
                 }
@@ -215,9 +212,8 @@ struct OnboardingView: View {
         }
     }
 
-    /// A starting display name: the provider's name if it gave one, else the
-    /// email's local part — except for Apple's hidden relay addresses, whose
-    /// local part is random characters (then the field starts empty).
+    /// The provider's name if it gave one, else the email's local part. Apple's
+    /// hidden relay addresses have a random local part, so those start empty.
     static func suggestedDisplayName(provided: String?, email: String) -> String {
         if let provided = provided?.trimmingCharacters(in: .whitespaces), !provided.isEmpty {
             return provided
@@ -253,8 +249,7 @@ private struct BackgroundGradient: View {
 
     var body: some View {
         ZStack {
-            // Near-black base with a soft magenta glow that matches the logo /
-            // accent, gently breathing.
+            // Near-black base with a slowly breathing magenta glow matching the accent.
             Color(red: 0.03, green: 0.03, blue: 0.05)
 
             RadialGradient(
@@ -281,8 +276,8 @@ private struct BackgroundGradient: View {
 
 // MARK: - Welcome
 
-/// One look for every sign-in button: same height, font, icon box and spacing,
-/// with the icon + title centred as a unit.
+/// Shared look for every sign-in button: same height, font, icon box and
+/// spacing, with icon and title centred as a unit.
 private struct SignInButtonLabel<Icon: View>: View {
     enum Style { case light, outlined }
     let title: String
@@ -329,7 +324,6 @@ private struct WelcomeView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 24)
 
-            // Brand
             VStack(spacing: 18) {
                 Image("RelayLogo")
                     .resizable()
@@ -345,7 +339,6 @@ private struct WelcomeView: View {
 
             Spacer(minLength: 24)
 
-            // Actions
             VStack(spacing: 12) {
                 if oauthLoading {
                     ProgressView()
@@ -480,8 +473,8 @@ private struct WelcomeView: View {
             }
             Task { await handleGoogleCallback(callbackURL) }
         }
-        // Ephemeral: no shared Safari cookies in or out, so Relay sign-in never
-        // links to (or leaves traces in) the user's browser session.
+        // Ephemeral: no shared Safari cookies, so Relay sign-in never links to or
+        // leaves traces in the user's browser session.
         ws.prefersEphemeralWebBrowserSession = true
         ws.presentationContextProvider = OAuthWindowContext.shared
         ws.start()
@@ -554,7 +547,7 @@ private struct AuthView: View {
     @State private var confirmPassword = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
-    // Email confirmation: Supabase sent a code (6–10 digits) to `email`.
+    // Email confirmation: Supabase sent a code (6-10 digits) to `email`.
     @State private var awaitingCode = false
     @State private var code = ""
     @State private var resendNote: String?
@@ -562,8 +555,8 @@ private struct AuthView: View {
 
     enum Field: Hashable { case email, password, confirm, code }
 
-    /// Supabase's email code length is a project setting (6–10 digits); accept
-    /// any of them rather than assuming the default.
+    /// Supabase's email code length is a project setting (6-10 digits), so accept
+    /// any of them.
     static let validCodeLength = 6...10
 
     private var canSubmit: Bool {
@@ -801,11 +794,11 @@ private struct AuthView: View {
     }
 }
 
-// MARK: - One-time code sign-in (passwordless)
+// MARK: - One-time code sign-in
 
-/// Email → emailed one-time code → Supabase session, which then takes the same
-/// path as Apple/Google: new emails pick a username; existing accounts sign in
-/// (asking for the account password if the account has one).
+/// Email, then an emailed one-time code, then a Supabase session that follows
+/// the Apple/Google path: new emails pick a username; existing accounts sign
+/// in, asking for the account password if set.
 private struct EmailCodeView: View {
     let onSession: (SupabaseSession) -> Void
     let onBack: () -> Void
@@ -954,7 +947,7 @@ private struct EmailCodeView: View {
     }
 }
 
-// MARK: - Recovery screen (sign in by email + account password)
+// MARK: - Recovery (email + account password)
 
 private struct RecoveryView: View {
     let onComplete: () -> Void
@@ -974,7 +967,7 @@ private struct RecoveryView: View {
     enum RecoveryField: Hashable { case email, password }
 
     private var canSubmit: Bool {
-        // Same minimum as sign-up (AuthView): recovery passwords are 8+ chars.
+        // Same 8-character minimum as sign-up.
         !isLoading && !email.isEmpty && password.count >= 8
     }
 
@@ -1183,8 +1176,8 @@ private struct ReviewCodeSheet: View {
     }
 }
 
-/// "Forgot password": email → emailed code + new password. Resetting signs this
-/// device in and signs out the account's other devices.
+/// "Forgot password": emailed code plus new password. Resetting signs this
+/// device in and the account's other devices out.
 private struct ForgotPasswordSheet: View {
     let initialEmail: String
     let onComplete: () -> Void
@@ -1341,7 +1334,7 @@ private struct AuthField: View {
     }
 }
 
-// MARK: - Setup (display name + username, sign-up only)
+// MARK: - Setup (display name + username)
 
 private struct SetupView: View {
     @Binding var displayName: String
@@ -1369,8 +1362,8 @@ private struct SetupView: View {
     }
 
     var body: some View {
-        // A ScrollView (not Spacers) so the keyboard can never cover the
-        // "Start messaging" button on small phones.
+        // ScrollView rather than Spacers so the keyboard never covers the "Start
+        // messaging" button on small phones.
         ScrollView {
             VStack(spacing: 0) {
                 HStack {
@@ -1405,7 +1398,6 @@ private struct SetupView: View {
                 .padding(.bottom, 36)
 
                 VStack(spacing: 0) {
-                    // Display name row
                     HStack(spacing: 12) {
                         Image(systemName: "person")
                             .font(.system(size: 15, weight: .medium))
@@ -1426,7 +1418,6 @@ private struct SetupView: View {
 
                     Divider().background(.white.opacity(0.12))
 
-                    // Username row
                     HStack(spacing: 12) {
                         Text("@")
                             .font(.system(size: 15, weight: .semibold))
@@ -1539,7 +1530,6 @@ private struct SetupView: View {
     }
 
     private func scheduleCheck(_ raw: String) {
-        // Auto-lowercase
         let lower = raw.lowercased()
         if lower != raw { username = lower; return }
 
@@ -1569,7 +1559,7 @@ private struct SetupView: View {
 /// Shown on every onboarding screen that creates or signs into an account.
 struct LegalFooter: View {
     var body: some View {
-        // Literal URLs (not interpolated) so SwiftUI parses the Markdown links.
+        // Literal URLs, not interpolated, so SwiftUI parses the Markdown links.
         Text("By continuing you agree to our [Terms](https://relaymsg.app/terms) and [Privacy Policy](https://relaymsg.app/privacy).")
             .font(.caption)
             .foregroundStyle(.white.opacity(0.45))
@@ -1590,7 +1580,7 @@ enum LegalLinks {
 // MARK: - Username rules
 
 /// Client-side username validation shared by onboarding and Change Username.
-/// Usernames are ASCII only: a–z, 0–9 and underscore, 3–20 characters.
+/// ASCII only: a-z, 0-9 and underscore, 3-20 characters.
 enum UsernameRules {
     static let hint = "Lowercase letters (a–z), digits and underscores. 3–20 characters."
 
@@ -1607,8 +1597,8 @@ enum UsernameRules {
 
 // MARK: - Friendly errors
 
-/// Maps raw network/server/auth errors to short, human messages for
-/// onboarding and settings. Falls back to the error's own description.
+/// Maps raw network/server/auth errors to short messages for onboarding and
+/// settings, falling back to the error's own description.
 enum FriendlyError {
     static func message(for error: Error) -> String {
         if let setup = error as? AppModel.SetupError {
@@ -1643,9 +1633,8 @@ enum FriendlyError {
                 case 429: return tooMany
                 case 500...599: return "Relay is having trouble right now. Please try again shortly."
                 default:
-                    // The relay's error strings are short, lower-case phrases
-                    // ("device list changed; refresh and try again") — present
-                    // them as a sentence instead of "Server error (HTTP n)".
+                    // The relay's errors are short lower-case phrases; present them as a
+                    // sentence instead of "Server error (HTTP n)".
                     if !serverMessage.isEmpty { return sentence(serverMessage) }
                     return "Something went wrong talking to Relay. Please try again."
                 }
@@ -1683,9 +1672,9 @@ enum FriendlyError {
         if let described = (error as? LocalizedError)?.errorDescription, !described.isEmpty {
             return described
         }
-        // Swift errors without a description bridge to Foundation's generic
-        // "The operation couldn't be completed. (Module.Type error 1.)" —
-        // never show type names to people.
+        // Swift errors without a description bridge to Foundation's generic "The
+        // operation couldn't be completed. (Module.Type error 1.)"; never show
+        // type names to people.
         let text = error.localizedDescription
         if text.contains("couldn’t be completed") || text.contains("couldn't be completed") {
             return generic
@@ -1693,7 +1682,7 @@ enum FriendlyError {
         return text
     }
 
-    /// "device list changed; refresh and try again" → "Device list changed; refresh and try again."
+    /// "device list changed; retry" becomes "Device list changed; retry."
     private static func sentence(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let first = trimmed.first else { return generic }

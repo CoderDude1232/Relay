@@ -2,9 +2,8 @@
 //  AIAssistant.swift
 //  Relay
 //
-//  On-device AI powered by FoundationModels (Apple Intelligence) and
-//  SFSpeechRecognizer. Nothing leaves the device: no cloud calls, no
-//  telemetry. Works only when Apple Intelligence is available on the device.
+//  On-device summaries, smart replies and transcription (FoundationModels and
+//  SFSpeechRecognizer). Nothing leaves the device.
 //
 
 import Foundation
@@ -14,9 +13,7 @@ import Speech
 
 // MARK: - Assistant
 
-/// Stateless helper that wraps FoundationModels for summarization and
-/// smart-reply generation, and SFSpeechRecognizer for voice transcription.
-/// Requires iOS 26+ (FoundationModels / Apple Intelligence).
+/// Stateless wrapper around FoundationModels and SFSpeechRecognizer.
 @available(iOS 26.0, *)
 actor AIAssistant {
 
@@ -65,19 +62,15 @@ actor AIAssistant {
 
     // MARK: Voice transcription
 
-    /// True only when the current locale's recognizer can transcribe fully
-    /// on-device. Callers should hide the "Transcribe" affordance when false:
-    /// we never fall back to Apple's server-based recognition, so audio never
-    /// leaves the device.
+    /// True only when the current locale's recognizer can run fully on-device.
+    /// Hide "Transcribe" when false; we never fall back to server recognition.
     nonisolated static var isOnDeviceTranscriptionAvailable: Bool {
         guard let recognizer = SFSpeechRecognizer() else { return false }
         return recognizer.supportsOnDeviceRecognition && recognizer.isAvailable
     }
 
-    /// Transcribes on-device audio data (m4a/AAC) to text. Requires Speech
-    /// recognition permission. On-device only: throws
-    /// `AIError.transcriptionUnavailable` when the recognizer can't run
-    /// locally, rather than sending audio to Apple's servers.
+    /// Transcribes m4a/AAC audio on-device. Throws
+    /// `AIError.transcriptionUnavailable` rather than sending audio to Apple.
     func transcribe(audioData: Data, contentType: String) async throws -> String {
         let ext = contentType.contains("m4a") ? "m4a" : "aac"
         let tmp = FileManager.default.temporaryDirectory

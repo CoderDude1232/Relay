@@ -2,28 +2,26 @@
 //  CryptoEngine.swift
 //  CryptoCore
 //
-//  The single entry point for all Signal-protocol operations: identity and
-//  prekey generation, PQXDH session establishment, and Double Ratchet
-//  encrypt/decrypt. Wraps libsignal-client; nothing above this layer
-//  touches libsignal types directly.
+//  Entry point for all Signal-protocol operations: identity and prekey
+//  generation, PQXDH session setup, and Double Ratchet encrypt/decrypt.
+//  Nothing above this layer touches libsignal types directly.
 //
 
 import Foundation
 import LibSignalClient
 
-/// All libsignal state stores the engine needs. Stage 2 uses libsignal's
-/// in-memory implementation; the secure-storage stage replaces it with
-/// SQLCipher-backed stores conforming to the same protocols.
+/// The libsignal stores the engine needs: in-memory in tests, SQLCipher-backed
+/// in the app.
 public typealias SignalStores = IdentityKeyStore & PreKeyStore & SignedPreKeyStore
     & KyberPreKeyStore & SessionStore & SenderKeyStore
 
 public enum CryptoEngineError: Error, Equatable {
-    /// The incoming payload declared a kind the engine can't decrypt (yet).
+    /// The payload declared a kind the engine can't decrypt.
     case unsupportedMessageKind
 }
 
 public final class CryptoEngine {
-    /// Signal's production parameters for safety-number generation.
+    /// Signal's production iteration count for safety numbers.
     private static let fingerprintIterations = 5200
     private static let fingerprintVersion = 2
 
@@ -36,8 +34,8 @@ public final class CryptoEngine {
         self.localAddress = localAddress
     }
 
-    /// A fresh engine with a newly generated identity, backed by in-memory
-    /// stores. State is lost on deinit — for tests and pre-storage stages.
+    /// An engine with a new identity on in-memory stores, for tests. State is
+    /// lost on deinit.
     public static func makeEphemeral(accountId: String, deviceId: UInt32) throws -> CryptoEngine {
         let store = InMemorySignalProtocolStore(
             identity: .generate(),
@@ -55,9 +53,9 @@ public final class CryptoEngine {
         try store.localRegistrationId(context: context)
     }
 
-    /// Signs `message` with this account's identity private key. Every device
-    /// of the account holds that key (provisioned at link time) and the relay
-    /// never does, so such a signature proves "one of my own devices".
+    /// Signs `message` with the account identity key. Every device of the
+    /// account holds that key and the relay never does, so a valid signature
+    /// proves it came from one of our own devices.
     public func signWithIdentity(_ message: Data) throws -> Data {
         Data(try store.identityKeyPair(context: context).privateKey.generateSignature(message: message))
     }
@@ -68,17 +66,15 @@ public final class CryptoEngine {
         return (try? pair.identityKey.publicKey.verifySignature(message: message, signature: signature)) == true
     }
 
-    /// The serialized public identity key (what peers see and what safety
-    /// numbers are computed from). The private half never leaves the store.
+    /// The serialized public identity key. The private half never leaves the store.
     public func identityKey() throws -> Data {
         try store.identityKeyPair(context: context).identityKey.serialize()
     }
 
     // MARK: - Prekeys
 
-    /// Generates and stores a signed prekey, a last-resort Kyber prekey and
-    /// a batch of one-time prekeys, returning the public halves for upload
-    /// to the relay.
+    /// Generates and stores a signed prekey, a last-resort Kyber prekey and a
+    /// batch of one-time prekeys, returning the public halves for upload.
     public func generatePreKeyPublication(
         signedPreKeyId: UInt32,
         kyberPreKeyId: UInt32,
@@ -146,9 +142,8 @@ public final class CryptoEngine {
 
     // MARK: - Sessions
 
-    /// Runs PQXDH against a fetched peer bundle, establishing an outbound
-    /// session with that device. The next `encrypt` for this address yields
-    /// a `.preKey` message carrying the handshake.
+    /// Runs PQXDH against a peer bundle. The next `encrypt` for this address
+    /// yields a `.preKey` message carrying the handshake.
     public func processPeerBundle(_ bundle: PeerPreKeyBundle, from address: ProtocolAddress) throws {
         let identity = try IdentityKey(bytes: bundle.identityKey)
         let signedPreKey = try PublicKey(bundle.signedPreKey.publicKey)
@@ -170,7 +165,7 @@ public final class CryptoEngine {
                 kyberPrekeySignature: bundle.kyberPreKey.signature
             )
         } else {
-            // Peer's one-time pool is exhausted: degraded but valid.
+            // The peer's one-time pool is exhausted; the signed prekey alone is valid.
             libsignalBundle = try PreKeyBundle(
                 registrationId: bundle.registrationId,
                 deviceId: bundle.deviceId,
@@ -242,9 +237,8 @@ public final class CryptoEngine {
                 context: context
             )
         case .senderKey:
-            // Group message: decrypt with the sender's distributed sender key
-            // (libsignal finds it from the distribution id embedded in the
-            // ciphertext). The SKDM must have been processed beforehand.
+            // libsignal finds the sender key from the distribution id in the
+            // ciphertext. The SKDM must already have been processed.
             return try LibSignalClient.groupDecrypt(
                 message.data,
                 from: address,
@@ -256,30 +250,29 @@ public final class CryptoEngine {
 
     // MARK: - Sealed sender
 
-    /// The result of decrypting a sealed-sender message: the recovered sender
-    /// identity (from the validated certificate) and the inner plaintext.
+    /// A decrypted sealed-sender message: the sender from the validated
+    /// certificate and the inner plaintext.
     public struct SealedSenderDecryptResult: Sendable {
         public let senderAccountId: String
         public let senderDeviceId: UInt32
-        /// The sender's username as attested by the relay in the validated
-        /// certificate (carried in libsignal's sender_e164 field), if present.
+        /// The sender's username as attested in the certificate (libsignal's
+        /// sender_e164 field), if present.
         public let senderUsername: String?
         public let plaintext: Data
     }
 
     public enum SealedSenderError: Error, Equatable {
-        /// The sender certificate failed validation against the trust root or is expired.
+        /// The sender certificate is expired or doesn't chain to the trust root.
         case invalidCertificate
         /// The wrapped message used a ciphertext type the engine can't decrypt.
         case unsupportedMessageType
     }
 
-    /// Encrypts `plaintext` for `address` as a sealed-sender message: the normal
-    /// Double Ratchet (or sender-key) ciphertext wrapped in an outer layer
-    /// encrypted to the recipient's identity key, carrying `senderCertificate`.
-    /// The relay sees only an opaque blob addressed to the recipient — not the
-    /// sender. `senderCertificate` is the serialized cert from the relay's
-    /// GET /v1/certificate/delivery; `groupId` is empty for 1:1.
+    /// Encrypts `plaintext` as a sealed-sender message: the ratchet or sender-key
+    /// ciphertext wrapped in an outer layer encrypted to the recipient's identity
+    /// key and carrying `senderCertificate`, so the relay never sees the sender.
+    /// `senderCertificate` comes from GET /v1/certificate/delivery; `groupId` is
+    /// empty for 1:1.
     public func sealedEncrypt(
         _ plaintext: Data,
         for address: ProtocolAddress,
@@ -309,11 +302,10 @@ public final class CryptoEngine {
         )
     }
 
-    /// Decrypts a sealed-sender blob: unwraps the outer layer with our identity
-    /// key, validates the sender certificate against `trustRoot` (33-byte
-    /// serialized public key) at `timestampMs`, then decrypts the inner message
-    /// from the recovered sender. Throws `SealedSenderError.invalidCertificate`
-    /// if the certificate doesn't validate.
+    /// Unwraps a sealed-sender blob with our identity key, validates the sender
+    /// certificate against `trustRoot` (33-byte serialized key) at `timestampMs`,
+    /// then decrypts the inner message. Throws `.invalidCertificate` if validation
+    /// fails.
     public func sealedDecrypt(
         _ sealed: Data,
         trustRoot: Data,
@@ -375,11 +367,10 @@ public final class CryptoEngine {
 
     // MARK: - Groups (sender keys)
 
-    /// Creates (or loads) this device's sender key for `distributionId` and
-    /// returns the Sender Key Distribution Message to hand to each group
-    /// member over their pairwise session, so they can decrypt our group
-    /// messages. A fresh `distributionId` yields a fresh sender key (used to
-    /// rotate when a member is removed).
+    /// Creates or loads our sender key for `distributionId` and returns the
+    /// distribution message to send each member over their pairwise session.
+    /// A new `distributionId` gives a new sender key, used to rotate when a
+    /// member is removed.
     public func senderKeyDistributionMessage(distributionId: UUID) throws -> Data {
         let skdm = try SenderKeyDistributionMessage(
             from: localAddress,
@@ -401,8 +392,8 @@ public final class CryptoEngine {
         )
     }
 
-    /// Encrypts a group message once with our sender key; the same ciphertext
-    /// is fanned out to every member device.
+    /// Encrypts once with our sender key; the same ciphertext goes to every
+    /// member device.
     public func groupEncrypt(_ plaintext: Data, distributionId: UUID) throws -> SecureMessage {
         let ciphertext = try LibSignalClient.groupEncrypt(
             plaintext,
@@ -416,9 +407,8 @@ public final class CryptoEngine {
 
     // MARK: - Safety numbers
 
-    /// Computes the safety number between two identities. Both parties must
-    /// pass the same stable identifiers (account ids) for their halves to
-    /// produce the same 60-digit string.
+    /// The safety number between two identities. Both sides must pass the same
+    /// stable identifiers (account ids) to get the same 60-digit string.
     public static func safetyNumber(
         localIdentifier: String,
         localIdentityKey: Data,
@@ -438,10 +428,8 @@ public final class CryptoEngine {
         )
     }
 
-    /// Computes the safety number for a peer using their currently stored
-    /// identity key. Returns `nil` when no identity has been recorded yet
-    /// (no session established). Account ids are the stable identifiers, so
-    /// both parties derive the same 60-digit number.
+    /// The safety number with a peer from their stored identity key, or nil if
+    /// none is recorded yet.
     public func safetyNumber(withPeer remoteAccount: String) throws -> SafetyNumber? {
         guard let fingerprint = try makeFingerprint(withPeer: remoteAccount) else { return nil }
         return SafetyNumber(
@@ -450,11 +438,9 @@ public final class CryptoEngine {
         )
     }
 
-    /// Compares a scannable fingerprint encoding read from the peer's QR code
-    /// against the locally computed one. Returns `false` if we have no
-    /// identity for the peer yet; throws if the encoding is malformed or uses
-    /// an incompatible version. The comparison is order-independent: the
-    /// peer's encoding lists their identity first, ours lists it second.
+    /// Checks a scanned QR fingerprint against ours. Returns false if the peer's
+    /// identity is unknown; throws on a malformed or incompatible encoding. The
+    /// comparison is order-independent.
     public func verifyScannedSafetyNumber(
         _ scannedEncoding: Data,
         withPeer remoteAccount: String
@@ -463,12 +449,11 @@ public final class CryptoEngine {
         return try fingerprint.scannable.compare(againstEncoding: scannedEncoding)
     }
 
-    /// Builds the libsignal fingerprint between us and `remoteAccount` from
-    /// the stored identities, or `nil` if the peer's identity is unknown.
+    /// The fingerprint with `remoteAccount` from stored identities, or nil if
+    /// the peer's identity is unknown.
     private func makeFingerprint(withPeer remoteAccount: String) throws -> Fingerprint? {
-        // The identity key belongs to the account and is shared across the
-        // peer's devices, so device 1 (the primary) holds the canonical key
-        // the safety number is computed from.
+        // The identity key is per account and shared by all of the peer's
+        // devices, so device 1 holds the canonical copy.
         let address = try ProtocolAddress(name: remoteAccount, deviceId: 1)
         guard let remoteIdentity = try store.identity(for: address, context: context) else { return nil }
         let localIdentity = try store.identityKeyPair(context: context).identityKey

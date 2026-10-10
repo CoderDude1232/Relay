@@ -217,11 +217,9 @@ private struct PollOptionRow: View {
     var body: some View {
         Button(action: onTap) {
             ZStack(alignment: .leading) {
-                // Background bar
                 RoundedRectangle(cornerRadius: 8)
                     .fill(isOutgoing ? Color.white.opacity(0.15) : Color.primary.opacity(0.08))
 
-                // Fill bar
                 GeometryReader { geo in
                     RoundedRectangle(cornerRadius: 8)
                         .fill(isSelected

@@ -4,15 +4,12 @@
 //
 //  Registers for PushKit VoIP pushes and reports incoming calls to CallKit.
 //
-//  Critical rules (iOS 13+):
-//  1. provider.reportNewIncomingCall must be called before didReceiveIncomingPushWith returns.
-//  2. The PushKit completion() must be called INSIDE reportNewIncomingCall's callback,
-//     not before it — Apple's own sample code shows this pattern. Calling completion()
-//     before CallKit has acknowledged the call causes iOS to consider the push unhandled,
-//     and eventually blacklists the app from receiving future VoIP pushes.
-//  3. PKPushRegistry(queue: .main) fires on the main queue = MainActor's executor, so
-//     MainActor.assumeIsolated{} lets us call @MainActor code synchronously with no
-//     Task dispatch, satisfying rule 1.
+//  iOS stops delivering VoIP pushes to apps that break these rules:
+//  1. reportNewIncomingCall must be called before didReceiveIncomingPushWith returns.
+//  2. The PushKit completion must be called from reportNewIncomingCall's callback,
+//     after CallKit has acknowledged the call.
+//  The registry runs on the main queue, so MainActor.assumeIsolated can call
+//  main-actor code synchronously, which keeps rule 1 intact.
 //
 
 import CallKit
@@ -76,11 +73,11 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
                     log.warning("voip token upload failed: \(PrivacyRedactor.error(error))")
                 }
             }
-            // else: wire() will upload it once the service is ready
+            // Otherwise wire() uploads it once the service is ready.
         }
     }
 
-    /// Legacy method — still called on iOS 17 and earlier.
+    /// Called on iOS 17 and earlier.
     nonisolated func pushRegistry(
         _ registry: PKPushRegistry,
         didReceiveIncomingPushWith payload: PKPushPayload,
@@ -106,29 +103,23 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
 
     // MARK: - Shared handler
 
-    /// The VoIP push carries ONLY an opaque `call_id`. Any caller name, account
-    /// or call kind in the payload is ignored: the push travels via Apple and
-    /// the relay, so nothing in it is trusted. CallManager reports a generic
-    /// "Relay" call immediately and learns the real caller from the end-to-end
-    /// encrypted OFFER with the same call id (or ends the call if none arrives).
+    /// The VoIP push carries only an opaque `call_id`; anything else in the
+    /// payload is untrusted and ignored. CallManager reports a generic "Relay"
+    /// call and learns the caller from the encrypted OFFER with the same id,
+    /// or ends the call if none arrives.
     nonisolated private func handleVoIPPayload(_ dict: [AnyHashable: Any], completion: @escaping () -> Void) {
         let rawCallId = (dict["call_id"] as? String) ?? ""
-        // Accept only a sane, bounded id; anything else still has to be reported
-        // to CallKit (PushKit contract) but is ended immediately.
+        // A malformed id must still be reported to CallKit, but is ended at once.
         let callId = Self.isPlausibleCallId(rawCallId) ? rawCallId : ""
 
-        // Running on the main queue. MainActor.assumeIsolated does NOT dispatch;
-        // it asserts we are already on the main actor and runs synchronously,
-        // satisfying Apple's requirement that reportNewIncomingCall is called
-        // before this function returns.
+        // assumeIsolated runs synchronously (no dispatch), so the call is
+        // reported before this function returns.
         MainActor.assumeIsolated {
             if let cm = callManager {
-                // Pass completion through — CallManager calls it inside
-                // reportNewIncomingCall's callback (the correct place per Apple docs).
+                // CallManager calls completion from reportNewIncomingCall's callback.
                 cm.reportIncomingPushCall(callId: callId, pushCompletion: completion)
             } else {
-                // App just launched; AppDelegate.start() hasn't run yet.
-                // Store the call id — start() will flush it.
+                // AppDelegate.start() hasn't run yet; it flushes the stored id.
                 pendingCallId = callId
                 completion()
             }

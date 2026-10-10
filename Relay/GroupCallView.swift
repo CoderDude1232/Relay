@@ -3,9 +3,9 @@
 //  Relay
 //
 //  Group calls and call-link calls (full-mesh WebRTC). The layout adapts to
-//  who's here: alone → a waiting screen (with Invite for call links), one
-//  other person → a 1:1 layout like CallView, two → stacked, more → a grid.
-//  Controls sit in one glass bar at the bottom.
+//  who's here: alone shows a waiting screen (with Invite for call links), one
+//  other person gets a 1:1 layout like CallView, two are stacked, more use a
+//  grid.
 //
 
 import RelayCore
@@ -28,9 +28,8 @@ struct GroupCallView: View {
 
     var body: some View {
         ZStack {
-            // One other person: same backdrop as a 1:1 call — their photo as a
-            // vivid blur, or their avatar colour.
-            // While waiting alone it matches your own photo/avatar colour.
+            // One other person: same backdrop as a 1:1 call (their photo as a blur, or
+            // their avatar colour). While waiting alone it matches your own.
             CallBackdrop(name: backdropName, photo: backdropPhoto,
                          matchAvatar: peers.count <= 1 && callManager.groupRingInfo == nil)
 
@@ -388,7 +387,7 @@ struct GroupCallView: View {
 private struct CallBackdrop: View {
     let name: String
     let photo: Data?
-    /// One other person: match CallView exactly (photo wash or avatar-colour gradient).
+    /// One other person: match CallView (photo wash or avatar-colour gradient).
     var matchAvatar = false
 
     var body: some View {

@@ -2,9 +2,9 @@
 //  LinkConfirmation.swift
 //  Relay
 //
-//  Text for the "open this link?" confirmation shown for links in received
-//  messages. Shows the REAL destination (host in its ASCII/punycode form, so
-//  look-alike Unicode domains are visible), not the link text the sender chose.
+//  Text for the "open this link?" confirmation for links in received messages.
+//  Shows the real destination (host in ASCII/punycode, so look-alike Unicode
+//  domains are visible), not the link text the sender chose.
 //
 
 import Foundation

@@ -2,24 +2,22 @@
 //  Schema.swift
 //  SecureStorage
 //
-//  Versioned migrations for the client database. Everything here is
-//  encrypted at rest by SQLCipher; the identity private key is NOT here —
-//  it lives in the Keychain (see KeychainIdentityStore).
+//  Versioned migrations for the client database, encrypted at rest by
+//  SQLCipher. The identity private key is not stored here; it lives in the
+//  Keychain (KeychainSecureStore).
 //
 
 import Foundation
 
 enum Schema {
-    /// Runs one migration step atomically and idempotently. The app and the
-    /// Notification Service Extension can open the same file at the same time
-    /// after an update; each step takes the write lock (BEGIN IMMEDIATE —
-    /// the second process waits on the busy timeout), then re-reads
-    /// `user_version` INSIDE the transaction and skips the step if another
-    /// connection already applied it. `body` must end by setting
-    /// `user_version` to `version`.
+    /// Runs one migration step atomically and idempotently. The app and the NSE
+    /// may open the file at the same time after an update, so each step takes the
+    /// write lock (BEGIN IMMEDIATE; the other process waits on the busy timeout),
+    /// re-reads `user_version` inside the transaction, and skips the step if it
+    /// is already applied. `body` must set `user_version` to `version`.
     private static func step(_ db: Database, to version: Int64, _ body: () throws -> Void) throws {
-        // Cheap unlocked pre-check so a fully migrated DB doesn't take the
-        // write lock 22 times on every open.
+        // Unlocked pre-check so a migrated DB doesn't take the write lock for every
+        // step on each open.
         if try userVersion(db) >= version { return }
         try db.transaction {
             guard try userVersion(db) < version else { return }
@@ -96,19 +94,15 @@ enum Schema {
             try db.run("PRAGMA user_version = 1;")
         }
         try step(db, to: 2) {
-            // Records the identity key that was in effect when the user last
-            // verified a peer. Lets the UI tell "never verified" (NULL) apart
-            // from "was verified, key has since changed" (differs from the
-            // current identity_key) — the safety-number-changed warning.
+            // The identity key in effect when the user last verified a peer. NULL means
+            // never verified; a value differing from identity_key means the key changed.
             try db.run("ALTER TABLE remote_identities ADD COLUMN verified_key BLOB;")
             try db.run("PRAGMA user_version = 2;")
         }
         try step(db, to: 3) {
-            // Replies (quotes) and emoji reactions. A quote is a self-
-            // contained snapshot stored on the replying message so it renders
-            // without a lookup and survives the original's deletion. Reactions
-            // reference their target by (conversation, sender timestamp), the
-            // same author+timestamp identity Signal uses for messages.
+            // Replies and reactions. A quote is a snapshot stored on the reply, so it
+            // renders without a lookup and survives deletion of the original. Reactions
+            // reference their target by (conversation, sender timestamp).
             try db.run("ALTER TABLE messages ADD COLUMN reply_to_timestamp INTEGER;")
             try db.run("ALTER TABLE messages ADD COLUMN reply_to_author TEXT;")
             try db.run("ALTER TABLE messages ADD COLUMN reply_to_text TEXT;")
@@ -126,17 +120,14 @@ enum Schema {
             try db.run("PRAGMA user_version = 3;")
         }
         try step(db, to: 4) {
-            // "Unsend" tombstones. A deleted message keeps its row (and its
-            // place in the timeline) but its plaintext is cleared; the UI
-            // renders a "message was deleted" placeholder.
+            // Unsend tombstones: the row keeps its place but its plaintext is cleared.
             try db.run("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
             try db.run("PRAGMA user_version = 4;")
         }
         try step(db, to: 5) {
-            // Envelope-level dedup shared by the app and the Notification
-            // Service Extension. Double-Ratchet decryption is destructive, so
-            // exactly one process may process a given envelope; whoever claims
-            // its id here first decrypts it, the other skips.
+            // Envelope dedup shared by the app and the NSE. Ratchet decryption is
+            // destructive, so only one process may handle an envelope: whoever claims
+            // its id first.
             try db.run("""
                 CREATE TABLE processed_envelopes (
                     id           TEXT PRIMARY KEY,
@@ -146,10 +137,9 @@ enum Schema {
             try db.run("PRAGMA user_version = 5;")
         }
         try step(db, to: 6) {
-            // Media attachments. The encrypted blob lives on disk (App Group
-            // container); this table holds only the metadata + the key/digest
-            // needed to fetch and decrypt it. `downloaded` flips once the
-            // ciphertext is cached locally.
+            // Attachments. The encrypted blob lives on disk in the App Group container;
+            // this table holds metadata and the key and digest to fetch and decrypt it.
+            // `downloaded` is set once the ciphertext is cached.
             try db.run("""
                 CREATE TABLE attachments (
                     id           TEXT PRIMARY KEY,   -- relay blob id
@@ -169,10 +159,9 @@ enum Schema {
             try db.run("PRAGMA user_version = 6;")
         }
         try step(db, to: 7) {
-            // Groups. A group is a conversation with `group_id` set; its
-            // roster/metadata (mirrored from the relay) lives in group_state +
-            // group_members. Messages record `sender_account` so group bubbles
-            // can be attributed (1:1 leaves it null).
+            // Groups: a conversation with `group_id` set, with roster and metadata in
+            // group_state and group_members. `sender_account` attributes group messages
+            // and is null for 1:1.
             try db.run("ALTER TABLE conversations ADD COLUMN group_id TEXT;")
             try db.run("ALTER TABLE messages ADD COLUMN sender_account TEXT;")
             try db.run("""
@@ -194,10 +183,9 @@ enum Schema {
         }
 
         try step(db, to: 8) {
-            // Peer profiles (self-set display name + avatar), distributed E2EE.
-            // avatar_data holds the already-decrypted image bytes for display;
-            // avatar_id tracks the source blob so unchanged avatars aren't
-            // re-downloaded. revision is the sender's clock (newest wins).
+            // Peer profiles (display name and avatar). avatar_data is the decrypted
+            // image; avatar_id tracks the source blob so unchanged avatars aren't
+            // downloaded again. revision is the sender's clock; newest wins.
             try db.run("""
                 CREATE TABLE profiles (
                     account_id   TEXT PRIMARY KEY,
@@ -211,10 +199,9 @@ enum Schema {
         }
 
         try step(db, to: 9) {
-            // Per-member receipts for group messages. A 1:1 message keeps its
-            // single status column; a group message's author records each
-            // member's delivered/read state here (keyed by the message's
-            // sender clock) to drive "Read by N" and an aggregate status.
+            // Per-member receipts for group messages, keyed by the message's sender
+            // clock, for "Read by N" and the aggregate status. 1:1 messages use the
+            // status column.
             try db.run("""
                 CREATE TABLE message_receipts (
                     conversation_id   TEXT NOT NULL,
@@ -228,8 +215,8 @@ enum Schema {
         }
 
         try step(db, to: 10) {
-            // Calls are stored independently from chat messages so the Calls
-            // tab can show missed, failed, declined, and completed sessions.
+            // Calls are stored apart from messages so the Calls tab can show missed,
+            // failed, declined and completed calls.
             try db.run("""
                 CREATE TABLE calls (
                     id           TEXT PRIMARY KEY,
@@ -248,8 +235,8 @@ enum Schema {
         }
 
         try step(db, to: 11) {
-            // Conversation UX state: pinned ordering, local read position,
-            // disappearing-message TTL, and per-chat privacy controls.
+            // Pinned order, local read position, disappearing-message TTL, per-chat
+            // privacy controls.
             try db.run("ALTER TABLE conversations ADD COLUMN pinned_at INTEGER;")
             try db.run("ALTER TABLE conversations ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0;")
             try db.run("ALTER TABLE conversations ADD COLUMN disappearing_seconds INTEGER NOT NULL DEFAULT 0;")
@@ -262,52 +249,48 @@ enum Schema {
         }
 
         try step(db, to: 12) {
-            // Archive conversations (hidden from main list) and pin specific
-            // messages (shown in a banner at the top of the chat).
+            // Archived conversations and pinned messages.
             try db.run("ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;")
             try db.run("ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;")
             try db.run("PRAGMA user_version = 12;")
         }
 
         try step(db, to: 13) {
-            // Starred messages: a per-user bookmark separate from pinning.
-            // Pinning is conversation-wide (shows a banner); starring is personal.
+            // Starred messages: a personal bookmark, unlike conversation-wide pins.
             try db.run("ALTER TABLE messages ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;")
             try db.run("CREATE INDEX idx_messages_starred ON messages (conversation_id, starred) WHERE starred = 1;")
             try db.run("PRAGMA user_version = 13;")
         }
 
         try step(db, to: 14) {
-            // Conversation labels: user-defined tags (e.g. "Work", "Family")
-            // for filtering the conversation list.
+            // User-defined conversation labels for filtering.
             try db.run("ALTER TABLE conversations ADD COLUMN label TEXT;")
             try db.run("PRAGMA user_version = 14;")
         }
 
         try step(db, to: 15) {
-            // Per-conversation privacy: screen-capture protection and custom
-            // notification sound (nil = system default).
+            // Screen-capture protection and custom notification sound (nil = default).
             try db.run("ALTER TABLE conversations ADD COLUMN screen_security INTEGER NOT NULL DEFAULT 0;")
             try db.run("ALTER TABLE conversations ADD COLUMN notification_sound TEXT;")
             try db.run("PRAGMA user_version = 15;")
         }
 
         try step(db, to: 16) {
-            // Group profile: description text and avatar blob stored locally.
+            // Group description and avatar.
             try db.run("ALTER TABLE group_state ADD COLUMN description TEXT NOT NULL DEFAULT '';")
             try db.run("ALTER TABLE group_state ADD COLUMN avatar_data BLOB;")
             try db.run("PRAGMA user_version = 16;")
         }
 
         try step(db, to: 17) {
-            // Message editing: timestamp when a message was last edited; NULL = unedited.
+            // Last edit time; NULL means unedited.
             try db.run("ALTER TABLE messages ADD COLUMN edited_at INTEGER;")
             try db.run("PRAGMA user_version = 17;")
         }
 
         try step(db, to: 18) {
-            // Admin roles and announce-only mode for groups.
-            // Poll votes: keyed by (conversation, poll_author, poll_timestamp, voter_account).
+            // Group admins and announce-only mode. Poll votes keyed by (conversation,
+            // poll_author, poll_timestamp, voter_account).
             try db.run("ALTER TABLE group_state ADD COLUMN admins TEXT NOT NULL DEFAULT '[]';")
             try db.run("ALTER TABLE group_state ADD COLUMN is_announce_only INTEGER NOT NULL DEFAULT 0;")
             try db.run("""
@@ -325,14 +308,11 @@ enum Schema {
         }
 
         try step(db, to: 19) {
-            // Key peer identities by (address, device_id) instead of account
-            // alone. A peer with multiple devices publishes a distinct identity
-            // per device (or, post shared-identity, the same one) — keying by
-            // account made the second device look like a key replacement of the
-            // first, which raised UntrustedIdentity and blocked sends. SQLite
-            // can't alter a PRIMARY KEY in place, so recreate the table and
-            // migrate existing rows to device_id = 1 (they re-populate from the
-            // next bundle fetch). verified/verified_key are preserved per row.
+            // Key peer identities by (address, device_id). Keyed by account alone, a
+            // second device looked like a key replacement and blocked sends. SQLite
+            // can't alter a PRIMARY KEY, so recreate the table; existing rows move to
+            // device_id = 1 and refill on the next bundle fetch. verified and
+            // verified_key are kept per row.
             try db.run("""
                 CREATE TABLE remote_identities_v19 (
                     address       TEXT NOT NULL,
@@ -356,27 +336,23 @@ enum Schema {
         }
 
         try step(db, to: 20) {
-            // Peer profile: a short status line and a longer bio, distributed
-            // E2EE alongside display name + avatar (newest-wins by revision).
+            // Profile status line and bio.
             try db.run("ALTER TABLE profiles ADD COLUMN status TEXT;")
             try db.run("ALTER TABLE profiles ADD COLUMN bio TEXT;")
             try db.run("PRAGMA user_version = 20;")
         }
 
         try step(db, to: 21) {
-            // Peer profile: labelled links, stored as a JSON array of
-            // {label,url} objects, distributed E2EE inside ProfileUpdate.
+            // Profile links as a JSON array of {label,url}.
             try db.run("ALTER TABLE profiles ADD COLUMN links TEXT;")
             try db.run("PRAGMA user_version = 21;")
         }
 
         try step(db, to: 22) {
-            // Screenshot protection. `screen_security` is the local user's own
-            // per-chat preference (already present); `peer_screen_security` mirrors
-            // the DM peer's preference so the effective state is the OR of both
-            // (content is hidden unless BOTH sides disable it). Groups get an
-            // admin-controlled flag on group_state. All default ON (privacy-first):
-            // existing conversations are flipped on, and the new columns default 1.
+            // Screenshot protection. The effective state is the OR of our
+            // `screen_security` and the peer's `peer_screen_security`, so content is
+            // hidden unless both sides turn it off. Groups use an admin flag on
+            // group_state. Everything defaults on, including existing conversations.
             try db.run("ALTER TABLE conversations ADD COLUMN peer_screen_security INTEGER NOT NULL DEFAULT 0;")
             try db.run("UPDATE conversations SET screen_security = 1;")
             try db.run("ALTER TABLE group_state ADD COLUMN screen_security INTEGER NOT NULL DEFAULT 1;")

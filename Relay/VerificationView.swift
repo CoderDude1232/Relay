@@ -2,16 +2,10 @@
 //  VerificationView.swift
 //  Relay
 //
-//  Safety-number verification for a 1:1 conversation: shows the 60-digit
-//  numeric fingerprint and a QR code of the scannable encoding, lets the
-//  user compare in person (by digits or by scanning the peer's QR), and
-//  marks the peer verified. A distinct state warns when a previously
-//  verified contact's identity key has changed.
+//  Safety-number verification for a 1:1 conversation.
 //
-//  The QR carries the Base64 of libsignal's scannable fingerprint encoding
-//  (ASCII, so it round-trips through AVFoundation's string decoding). Both
-//  ends of a Relay conversation use this convention; there is no external
-//  spec to match.
+//  The QR carries Base64 of libsignal's scannable fingerprint encoding, so it
+//  survives AVFoundation's string decoding.
 //
 
 import AVFoundation
@@ -225,11 +219,8 @@ struct VerificationView: View {
         verification = service.peerVerification(for: conversationId)
     }
 
-    /// Saves with add-only Photos access. Uses the async authorization API so
-    /// no callback runs off the main actor (the app target is MainActor by
-    /// default, and a main-isolated closure invoked on Photos' background
-    /// queue would trap). Denied/restricted access shows an alert with a
-    /// shortcut to Settings instead of failing silently.
+    /// Uses the async authorization API: a MainActor-isolated callback invoked
+    /// on Photos' background queue would trap.
     private func saveQRToPhotos(_ image: UIImage) {
         Task {
             var status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
@@ -405,7 +396,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                 DispatchQueue.main.async { self?.configureSession() }
             }
         default:
-            break // denied/restricted — Settings has the toggle
+            break // denied/restricted; Settings has the toggle
         }
     }
 

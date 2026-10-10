@@ -2,29 +2,29 @@
 //  RelayAPIClient.swift
 //  RelayKit
 //
-//  The relay's JSON REST control plane: accounts, devices, prekeys.
-//  Binary fields are standard base64, matching server/README.md exactly.
+//  The relay's JSON REST API: accounts, devices, prekeys. Binary fields are
+//  standard base64, as in server/README.md.
 //
 //  Two transports:
-//   • `session` — authenticated calls, each signed with Relay-Sig v2 (see
-//     RelaySigning.swift). HTTP Basic is used only to register a device's very
-//     first auth key; there is no fallback to Basic after a failed signature.
-//   • `anonymousSession` — a SEPARATE ephemeral URLSession for requests that
-//     must not be linkable to the logged-in connection: sealed sends, call
-//     rings, attachment GET/PUT, invite claims, sign-up/recovery. They never
-//     carry credentials and never share a connection with `session`.
+//   - `session`: authenticated calls, each signed with Relay-Sig v2. HTTP Basic
+//     is used only to register a device's first auth key; a failed signature
+//     never falls back to Basic.
+//   - `anonymousSession`: a separate ephemeral session for requests that must
+//     not be linkable to the logged-in connection (sealed sends, call rings,
+//     attachments, invite claims, sign-up and recovery). No credentials, no
+//     shared connection.
 //
 
 import CryptoCore
 import Foundation
 import Security
 
-/// One resolved blinded-directory hit.
+/// One resolved blinded-directory match.
 public struct DirectoryMatch: Sendable, Equatable {
     public let token: Data
     public let accountId: String
     public let username: String
-    /// The account's sealed-sender access key, when the relay serves it.
+    /// The account's sealed-sender access key, if the relay serves it.
     public let accessKey: Data?
 
     public init(token: Data, accountId: String, username: String, accessKey: Data? = nil) {
@@ -37,9 +37,8 @@ public struct DirectoryMatch: Sendable, Equatable {
 
 public enum RelayAPIError: Error, LocalizedError {
     case http(status: Int, message: String)
-    /// HTTP 429 from any endpoint (sealed sends, attachments, auth, discovery,
-    /// reports, …). Distinct from `.http` so callers can back off rather than
-    /// treat it as a failure; `retryAfter` is the Retry-After header, if sent.
+    /// HTTP 429 from any endpoint. Separate from `.http` so callers back off
+    /// instead of failing; `retryAfter` is the Retry-After header, if sent.
     case rateLimited(message: String, retryAfter: TimeInterval?)
     case malformedResponse
 
@@ -57,15 +56,14 @@ public enum RelayAPIError: Error, LocalizedError {
 
 /// Result of a Supabase social-login provisioning call.
 public enum OAuthProvisionOutcome: Sendable {
-    /// The user is signed in: fresh device credentials, the account's username,
-    /// and whether the account was created by this call.
+    /// New device credentials, the account's username, and whether this call
+    /// created the account.
     case signedIn(credentials: RelayCredentials, username: String, created: Bool)
-    /// No account exists yet for this user and no username was supplied — the
-    /// caller should prompt for one and retry.
+    /// No account exists and no username was given; prompt for one and retry.
     case usernameRequired
-    /// The account has an account password (registration lock): signing in on
-    /// a new device, which replaces the account's devices, needs it. `incorrect`
-    /// is true when one was supplied but didn't match.
+    /// The account has a password (registration lock), needed to sign in on a
+    /// new device since that replaces the account's devices. `incorrect` is true
+    /// if one was given and didn't match.
     case accountPasswordRequired(incorrect: Bool)
 }
 
@@ -77,12 +75,11 @@ public struct RelayAPIClient: Sendable {
     private let signer: (any RelayRequestSigner)?
 
     /// - Parameters:
-    ///   - session: transport for authenticated (signed) requests.
-    ///   - anonymousSession: transport for unauthenticated requests; defaults
-    ///     to the process-wide ephemeral `RelayTLS.sharedAnonymousSession`.
-    ///     Pass `RelayTLS.makeAnonymousSession(pins:)` when using pinned TLS.
-    ///   - signer: the device auth key. Required for any account whose device
-    ///     has registered an auth key (the relay refuses Basic after that).
+    ///   - session: transport for signed requests.
+    ///   - anonymousSession: transport for unauthenticated requests. Pass
+    ///     `RelayTLS.makeAnonymousSession(pins:)` when pinning.
+    ///   - signer: the device auth key. Required once the device has registered
+    ///     one, since the relay then refuses Basic.
     public init(baseURL: URL, credentials: RelayCredentials?,
                 session: URLSession = RelayTLS.sharedSession,
                 anonymousSession: URLSession = RelayTLS.sharedAnonymousSession,
@@ -96,14 +93,13 @@ public struct RelayAPIClient: Sendable {
 
     // MARK: - Accounts
 
-    /// Creates an account + primary device; needs no credentials.
-    /// `supabaseAccessToken` (optional) links the account to a Supabase user:
-    /// the relay verifies it server-side and stores the user's email (as its
-    /// keyed token, for recovery and discovery) ONLY if Supabase reports it
-    /// confirmed. A raw email is never accepted.
-    /// Pass a non-nil accountPassword to enable recovery via POST /v1/accounts/recover.
-    /// Throws `.http(409, …)` when the username is taken, or when the sign-in
-    /// identity already belongs to an account (sign in instead).
+    /// Creates an account and primary device; needs no credentials.
+    /// `supabaseAccessToken` links the account to a Supabase user. The relay
+    /// verifies it and stores the email, as a keyed token for recovery and
+    /// discovery, only if Supabase reports it confirmed; a raw email is never
+    /// accepted. A non-nil accountPassword enables POST /v1/accounts/recover.
+    /// Throws `.http(409, ...)` if the username is taken or the sign-in identity
+    /// already has an account.
     public func register(username: String, supabaseAccessToken: String? = nil, password: String,
                          accountPassword: String? = nil) async throws -> RelayCredentials {
         struct Response: Decodable {
@@ -125,12 +121,8 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    /// Recovers an account by verifying the user's recovery password against the
-    /// (verified) email on file and provisions a new device. Every failure —
-    /// unknown email, no recovery password, wrong password — is the same
-    /// `.http(401, …)`; repeated failures get `.http(429, …)`.
     /// App Review sign-in: a short review code signs this device in to one of
-    /// the isolated demo accounts (no email or password).
+    /// the isolated demo accounts, with no email or password.
     public func demoSignIn(code: String) async throws -> (credentials: RelayCredentials, username: String) {
         struct Response: Decodable {
             let accountId: String
@@ -157,8 +149,8 @@ public struct RelayAPIClient: Sendable {
         }
     }
 
-    /// Replaces the blob if `baseVersion` is current (0 = none yet); returns the
-    /// new version. 409 = another device wrote first.
+    /// Replaces the blob if `baseVersion` is current (0 for none) and returns the
+    /// new version. 409 means another device wrote first.
     public func putAccountStorage(_ blob: Data, baseVersion: Int64) async throws -> Int64 {
         struct Body: Encodable { let blob: String; let baseVersion: Int64 }
         struct Response: Decodable { let version: Int64 }
@@ -196,9 +188,9 @@ public struct RelayAPIClient: Sendable {
         return (creds, response.username)
     }
 
-    /// "Forgot password": with a Supabase session from a password-recovery code,
-    /// sets a new account password and provisions this device (the account's
-    /// other devices are replaced, like any fresh sign-in).
+    /// Forgot password: with a Supabase session from a recovery code, sets a new
+    /// account password and provisions this device, replacing the account's
+    /// other devices like any fresh sign-in.
     public func resetPassword(supabaseAccessToken: String, newAccountPassword: String,
                               devicePassword: String) async throws -> (credentials: RelayCredentials, username: String) {
         struct Response: Decodable { let accountId: String; let username: String; let deviceId: UInt32 }
@@ -212,21 +204,20 @@ public struct RelayAPIClient: Sendable {
                                  password: devicePassword), response.username)
     }
 
-    /// After a confirmed Supabase email change, re-keys the account's email
-    /// token (`PUT /v1/accounts/me/email`).
+    /// Re-keys the account's email token after a confirmed Supabase email change
+    /// (`PUT /v1/accounts/me/email`).
     public func updateEmail(supabaseAccessToken: String) async throws {
         try await requestExpectingNoContent("PUT", "v1/accounts/me/email",
                                             body: ["accessToken": supabaseAccessToken])
     }
 
-    /// Signs a Supabase-authenticated user into their relay account (creating it
-    /// on first use) and provisions a fresh device. The relay verifies the
-    /// Supabase access token directly with Supabase, so this works on any device
-    /// — the way back in for passwordless social-login accounts.
+    /// Signs a Supabase user into their relay account, creating it on first use,
+    /// and provisions a new device. The relay verifies the access token with
+    /// Supabase, so this is how passwordless social-login accounts sign in on any
+    /// device.
     ///
-    /// `username` is required only when creating a brand-new account. If it is
-    /// nil and no account exists yet, the server replies 404 and this returns
-    /// `.usernameRequired` so the caller can prompt for one and retry.
+    /// `username` is needed only to create an account. If it is nil and no account
+    /// exists, the server returns 404 and this returns `.usernameRequired`.
     /// `devicePassword` is the client-chosen password for the new device.
     public func provisionOAuth(
         accessToken: String, username: String?, devicePassword: String, accountPassword: String? = nil
@@ -257,24 +248,24 @@ public struct RelayAPIClient: Sendable {
         }
     }
 
-    /// Sets or changes the account password — used for email recovery and as
-    /// the registration lock on new-device sign-ins (`PUT /v1/accounts/me/account-password`).
+    /// Sets the account password, used for email recovery and as the registration
+    /// lock on new-device sign-ins (`PUT /v1/accounts/me/account-password`).
     public func setAccountPassword(_ password: String) async throws {
         try await requestExpectingNoContent(
             "PUT", "v1/accounts/me/account-password", body: ["accountPassword": password])
     }
 
-    /// Opts in or out of being found by email in blinded discovery (off by
-    /// default; `PUT /v1/accounts/me/discoverability`).
+    /// Opts in or out of email discovery in blinded discovery. Off by default
+    /// (`PUT /v1/accounts/me/discoverability`).
     public func setEmailDiscoverable(_ discoverable: Bool) async throws {
         struct Body: Encodable { let email: Bool }
         try await requestExpectingNoContent(
             "PUT", "v1/accounts/me/discoverability", body: Body(email: discoverable))
     }
 
-    /// Whether `name` is free to register (case-insensitive). Unauthenticated and
-    /// rate-limited per IP; returns only a boolean, never an account id. Throws
-    /// `.http(400, …)` for a syntactically invalid username.
+    /// Whether `name` is free (case-insensitive). Unauthenticated, rate-limited
+    /// per IP, and returns only a boolean. Throws `.http(400, ...)` for an
+    /// invalid username.
     public func usernameAvailable(_ name: String) async throws -> Bool {
         struct Response: Decodable { let available: Bool }
         let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
@@ -285,9 +276,9 @@ public struct RelayAPIClient: Sendable {
         return response.available
     }
 
-    /// Blinded discovery, step 1: sends client-blinded ristretto elements and
-    /// returns the server's OPRF evaluations (k·B). The relay never sees the
-    /// underlying identifiers. Each element spends from a daily per-account budget.
+    /// Blinded discovery step 1: sends client-blinded ristretto elements and
+    /// returns the OPRF evaluations (k*B). Each element spends from a daily
+    /// per-account budget.
     public func directoryEvaluate(blinded: [Data]) async throws -> [Data] {
         struct Req: Encodable { let blinded: [String] }
         struct Response: Decodable { let evaluated: [String] }
@@ -298,10 +289,9 @@ public struct RelayAPIClient: Sendable {
         return r.evaluated.compactMap { Data(base64Encoded: $0) }
     }
 
-    /// Blinded discovery, step 2: resolves derived OPRF tokens to accounts
-    /// WITHOUT sending the tokens. Only each token's 16-bit bucket goes to the
-    /// relay; matching (tag) and decryption (box) happen here. Unmatched tokens
-    /// are simply absent from the result (non-users stay private).
+    /// Blinded discovery step 2: resolves OPRF tokens to accounts without sending
+    /// them. Only each token's 16-bit bucket goes to the relay; matching and
+    /// decryption happen here. Unmatched tokens are omitted.
     public func directoryResolve(tokens: [Data]) async throws -> [DirectoryMatch] {
         guard !tokens.isEmpty else { return [] }
         var byBucket: [UInt16: [Data]] = [:]
@@ -327,8 +317,8 @@ public struct RelayAPIClient: Sendable {
         return matches
     }
 
-    /// Raw bucket fetch (`POST /v1/directory/buckets`): every entry the relay
-    /// holds in each requested bucket. Prefer `directoryResolve(tokens:)`.
+    /// Every entry the relay holds in each requested bucket
+    /// (`POST /v1/directory/buckets`). Prefer `directoryResolve(tokens:)`.
     public func directoryBuckets(_ buckets: [UInt16]) async throws -> [UInt16: [DirectoryBucketEntry]] {
         struct Req: Encodable { let buckets: [UInt16] }
         struct EntryDTO: Decodable { let tag: String; let box: String; let accessBox: String? }
@@ -345,7 +335,7 @@ public struct RelayAPIClient: Sendable {
         return out
     }
 
-    /// Changes the authenticated account's username. Throws RelayAPIError.http(409,…) if taken.
+    /// Changes the account's username. Throws `.http(409, ...)` if taken.
     public func updateUsername(_ username: String) async throws {
         try await requestExpectingNoContent(
             "PUT", "v1/accounts/me/username",
@@ -353,19 +343,17 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    /// Mints a single-use contact invite token for the authenticated account.
-    /// Share it as a link; the first person to open it (and only them) resolves
-    /// to this account, then the token is spent.
+    /// Mints a single-use contact invite token. The first person to open the
+    /// link resolves to this account and spends the token.
     public func createContactInvite() async throws -> (token: String, expiresAt: Int64) {
         struct Response: Decodable { let token: String; let expiresAt: Int64 }
         let r: Response = try await request("POST", "v1/contact-invites", body: nil as [String: String]?)
         return (r.token, r.expiresAt)
     }
 
-    /// Consumes a contact invite token, returning the inviter's account id and
-    /// username. Throws `RelayAPIError.http(404,…)` if invalid/expired/used.
-    /// Anonymous: sent with no credentials over the unlinkable session, so the
-    /// relay can't record who redeemed the invite.
+    /// Redeems a contact invite, returning the inviter's account id and username.
+    /// Throws `.http(404, ...)` if invalid, expired or used. Sent anonymously so
+    /// the relay can't record who redeemed it.
     public func claimContactInvite(token: String) async throws -> (accountId: String, username: String) {
         struct Response: Decodable { let accountId: String; let username: String }
         let r: Response = try await request(
@@ -374,8 +362,8 @@ public struct RelayAPIClient: Sendable {
         return (r.accountId, r.username)
     }
 
-    /// Uploads this account's sealed-sender access key (32 bytes). Senders present
-    /// it on the unauthenticated delivery path; rotating it revokes old senders.
+    /// Uploads the account's 32-byte sealed-sender access key. Senders present it
+    /// on the unauthenticated path; rotating it revokes old senders.
     public func setAccessKey(_ key: Data) async throws {
         try await requestExpectingNoContent(
             "PUT", "v1/accounts/me/access-key",
@@ -383,10 +371,9 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    /// Rotates this device's opaque mailbox id and returns the new one. Mailbox
-    /// ids are otherwise stable — call this only on an explicit need (e.g. a
-    /// suspected leak), never on a schedule. Peers pick it up on their next
-    /// bundle fetch; sends to the old id fail-and-retry.
+    /// Rotates this device's opaque mailbox id and returns the new one. Only on
+    /// explicit need, such as a suspected leak, never on a schedule. Peers pick it
+    /// up on their next bundle fetch; sends to the old id fail and retry.
     @discardableResult
     public func rotateMailbox() async throws -> String {
         struct Response: Decodable { let mailboxId: String }
@@ -396,10 +383,9 @@ public struct RelayAPIClient: Sendable {
         return r.mailboxId
     }
 
-    /// Fetches a sealed-sender delivery certificate for this device (binds the
-    /// account/device to its identity key, 7-day expiry). Clients cache it and
-    /// refresh before `expiresAt`. Throws `RelayAPIError.http(503,…)` if the relay
-    /// hasn't enabled sealed sender.
+    /// A sealed-sender delivery certificate binding this account and device to
+    /// its identity key, valid 7 days. Cache it and refresh before `expiresAt`.
+    /// Throws `.http(503, ...)` if the relay has sealed sender disabled.
     public func deliveryCertificate() async throws -> (certificate: Data, expiresAt: Int64) {
         struct Response: Decodable { let certificate: String; let expiresAt: Int64 }
         let r: Response = try await request("GET", "v1/certificate/delivery", body: nil as [String: String]?)
@@ -409,14 +395,11 @@ public struct RelayAPIClient: Sendable {
         return (data, r.expiresAt)
     }
 
-    /// Delivers a sealed-sender message to one recipient device via the
-    /// **unauthenticated** delivery endpoint, over the separate anonymous
-    /// session — no Authorization header and no shared connection, so the relay
-    /// never learns who sent it. `content` is the opaque sealed blob from
-    /// `CryptoEngine.sealedEncrypt`; `accessKey` is the recipient's 32-byte
-    /// access key (from their prekey bundle). No client clock goes on the wire
-    /// (timestamps that matter live inside the encrypted content); returns the
-    /// relay's receive time.
+    /// Delivers a sealed-sender message to one device via the unauthenticated
+    /// endpoint over the anonymous session, so the relay never learns the sender.
+    /// `content` is the blob from `CryptoEngine.sealedEncrypt`; `accessKey` is the
+    /// recipient's 32-byte key from their bundle. No client clock is sent.
+    /// Returns the relay's receive time.
     public func sendSealed(
         mailboxId: String,
         type: MessageKind,
@@ -446,7 +429,7 @@ public struct RelayAPIClient: Sendable {
         return r.serverTimestamp
     }
 
-    /// Source-compatible shim: `clientTimestamp` is IGNORED and never sent.
+    /// Source-compatible shim; `clientTimestamp` is ignored.
     @available(*, deprecated, message: "clientTimestamp is no longer sent; drop the argument")
     public func sendSealed(
         mailboxId: String,
@@ -460,11 +443,9 @@ public struct RelayAPIClient: Sendable {
                              accessKey: accessKey, ephemeral: ephemeral)
     }
 
-    /// Fetches this device's queued envelopes over the (HTTP/3) REST plane — a
-    /// QUIC fallback for receiving when the TCP WebSocket can't connect. Does not
-    /// dequeue; the caller acks each via `ackMessage`. Follows the paginated
-    /// `GET /v1/queue?limit=&cursor=` until `more == false`, at most
-    /// `maxPages` pages per call (anything left is picked up next time).
+    /// Fetches queued envelopes over REST (HTTP/3), for when the TCP WebSocket
+    /// can't connect. Doesn't dequeue; ack each with `ackMessage`. Follows
+    /// `GET /v1/queue?limit=&cursor=` for at most `maxPages` pages per call.
     public func fetchQueue(pageSize: Int = 100, maxPages: Int = 10) async throws -> [IncomingEnvelope] {
         struct Response: Decodable {
             let envelopes: [String]
@@ -478,8 +459,8 @@ public struct RelayAPIClient: Sendable {
             var items = [URLQueryItem(name: "limit", value: String(min(max(pageSize, 1), 100)))]
             if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
             components.queryItems = items
-            // URLComponents leaves "+" literal, which servers decode as a space;
-            // the cursor is opaque (may be base64), so encode it explicitly.
+            // URLComponents leaves "+" literal, which servers decode as a space. The
+            // cursor may be base64, so encode it explicitly.
             let query = (components.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B")
             var request = makeRequest("GET", "v1/queue")
             if var urlComponents = request.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) {
@@ -497,8 +478,8 @@ public struct RelayAPIClient: Sendable {
         return all
     }
 
-    /// Removes a delivered envelope from this device's queue (REST equivalent of
-    /// the WebSocket ack).
+    /// Removes a delivered envelope from the queue; the REST form of the
+    /// WebSocket ack.
     public func ackMessage(envelopeId: String) async throws {
         try await requestExpectingNoContent("POST", "v1/messages/ack", body: ["envelopeId": envelopeId])
     }
@@ -511,14 +492,14 @@ public struct RelayAPIClient: Sendable {
         try await requestExpectingNoContent("PUT", "v1/devices/voip", body: ["token": token])
     }
 
-    /// Sets whether this device wants the encrypted envelope carried in its APNs
-    /// payload (`true`) or a content-free wake (`false`, the private default).
+    /// Whether APNs pushes carry the encrypted envelope (`true`) or are a
+    /// contentless wake (`false`, the default).
     public func setPushIncludeContent(_ include: Bool) async throws {
         try await requestExpectingNoContent("PUT", "v1/devices/me/push-content", body: ["includeContent": include])
     }
 
-    /// Fetches the ECDSA-P256 auth public key for a device in the same account.
-    /// Used to independently verify nuke command signatures on the client.
+    /// The P-256 auth public key of a device on this account, used to verify
+    /// nuke command signatures.
     public func deviceAuthKey(deviceId: UInt32) async throws -> Data {
         struct Response: Decodable { let authPublicKey: String }
         let r: Response = try await request("GET", "v1/devices/\(deviceId)/auth-key", body: nil as String?)
@@ -528,10 +509,9 @@ public struct RelayAPIClient: Sendable {
         return data
     }
 
-    /// Registers (or re-asserts) this device's auth key. Signed with the current
-    /// key; if the relay has no key for this device yet (first upload), this is
-    /// the ONE request that falls back to HTTP Basic. Rotating to a different key
-    /// must be signed by the old one — Basic is refused once a key exists.
+    /// Registers this device's auth key. Signed with the current key; only when
+    /// the relay has no key for the device yet does this fall back to HTTP Basic.
+    /// Rotating to a new key must be signed by the old one.
     public func setDeviceAuthorizationKey(_ publicKey: Data) async throws {
         do {
             try await requestExpectingNoContent(
@@ -540,8 +520,8 @@ public struct RelayAPIClient: Sendable {
                 body: DeviceAuthorizationKeyRequest(publicKey: publicKey.base64EncodedString())
             )
         } catch RelayAPIError.http(status: 401, _) where signer != nil {
-            // Share the one Basic bootstrap with any signed request racing us,
-            // then re-assert the key signed: succeeds once the relay holds it.
+            // Share the single Basic bootstrap with any signed request racing us, then
+            // re-assert the key with a signature.
             guard let credentials else { throw RelayAPIError.http(status: 401, message: "no device credentials") }
             let client = self
             await AuthKeyBootstrapLedger.shared.runOnce(for: credentials) {
@@ -559,9 +539,8 @@ public struct RelayAPIClient: Sendable {
         }
     }
 
-    /// Registers a new linked device under the same account. The primary device
-    /// calls this on behalf of the new device, supplying the password the new
-    /// device will use. Returns the new device's id.
+    /// Called by the primary to register a linked device with the password the
+    /// new device will use. Returns the new device id.
     public func addDevice(password: String, authorization: DeviceMutationAuthorization) async throws -> UInt32 {
         struct Response: Decodable { let deviceId: UInt32 }
         let r: Response = try await request(
@@ -589,18 +568,16 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    // MARK: - Reversed device linking (shared account identity)
+    // MARK: - Device linking
 
-    /// New device: mints a blind provisioning session. Unauthenticated — the new
-    /// device has no account yet. Its `sessionId` + a locally generated ephemeral
-    /// public key go in the QR the primary scans.
+    /// New device: creates a provisioning session. Unauthenticated. Its
+    /// `sessionId` and an ephemeral public key go in the QR the primary scans.
     public func createProvisioningSession() async throws -> ProvisioningSession {
         try await request("POST", "v1/provisioning-sessions", body: nil as String?, authenticated: false)
     }
 
-    /// New device: polls for the primary's encrypted payload. Returns nil while
-    /// the primary hasn't provisioned yet (204); throws `.http(404)` once the
-    /// session has expired or been consumed.
+    /// New device: polls for the primary's encrypted payload. Nil until it is
+    /// provisioned (204); throws `.http(404)` once expired or consumed.
     public func fetchProvisioningBlob(sessionId: String) async throws -> Data? {
         let request = makeRequest("GET", "v1/provisioning-sessions/\(sessionId)")
         let (data, status) = try await send(request, authenticated: false)
@@ -612,7 +589,7 @@ public struct RelayAPIClient: Sendable {
         return blob
     }
 
-    /// Primary: deposits the encrypted provisioning payload for a session.
+    /// Primary: stores the encrypted provisioning payload for a session.
     public func storeProvisioningBlob(sessionId: String, blob: Data) async throws {
         try await requestExpectingNoContent(
             "PUT",
@@ -621,8 +598,8 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    /// Primary: creates the new device row after scanning the QR, supplying the
-    /// password (bound into the mutation signature). Returns the new device id.
+    /// Primary: creates the new device after scanning the QR. The password is
+    /// bound into the mutation signature. Returns the new device id.
     public func linkDevice(password: String, deviceName: String? = nil, authorization: DeviceMutationAuthorization) async throws -> UInt32 {
         struct Response: Decodable { let deviceId: UInt32 }
         let r: Response = try await request(
@@ -637,10 +614,9 @@ public struct RelayAPIClient: Sendable {
         try await request("GET", "v1/devices", body: nil as String?)
     }
 
-    /// Fetches time-limited TURN credentials (coturn REST API format).
-    /// Returns nil if TURN is not configured on the server. `afterFailure`:
-    /// the call's relay just failed — the relay checks its TURN server on the
-    /// spot and hands out the backup if it's down.
+    /// Time-limited TURN credentials (coturn REST format), or nil if TURN isn't
+    /// configured. With `afterFailure`, the relay checks its TURN server and
+    /// hands out the backup if it's down.
     public func fetchTurnCredentials(afterFailure: Bool = false) async throws -> TurnCredentials? {
         do {
             var request = makeRequest("GET", "v1/turn-credentials")
@@ -653,13 +629,12 @@ public struct RelayAPIClient: Sendable {
         }
     }
 
-    /// Lists all devices registered to this account.
     public func listDevices() async throws -> [LinkedDevice] {
         let list = try await deviceList()
         return list.devices
     }
 
-    /// Removes a linked device. The primary device (id 1) cannot be removed.
+    /// Removes a linked device. The primary (id 1) can't be removed.
     public func removeDevice(deviceId: UInt32, authorization: DeviceMutationAuthorization) async throws {
         try await requestExpectingNoContent(
             "DELETE",
@@ -668,12 +643,10 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    /// Permanently deletes the authenticated account on the relay
-    /// (`DELETE /v1/accounts/me`): every device, prekey, queued envelope,
-    /// push token, directory entry and username is removed and live sockets
-    /// are closed. The credentials are useless afterwards.
-    /// Deletes the account. `appleAuthorizationCode` (a fresh Sign in with
-    /// Apple code) lets the relay revoke the user's Apple token, as Apple requires.
+    /// Permanently deletes the account (`DELETE /v1/accounts/me`): devices,
+    /// prekeys, queued envelopes, push tokens, directory entries and username.
+    /// `appleAuthorizationCode`, a fresh Sign in with Apple code, lets the relay
+    /// revoke the user's Apple token as Apple requires.
     public func deleteAccount(appleAuthorizationCode: String? = nil) async throws {
         var request = makeRequest("DELETE", "v1/accounts/me")
         if let appleAuthorizationCode {
@@ -683,10 +656,9 @@ public struct RelayAPIClient: Sendable {
         _ = try await send(request, authenticated: true)
     }
 
-    /// Reports another account for abuse (`POST /v1/reports`). `messages` is
-    /// plaintext the user explicitly chose to forward (empty by default);
-    /// nothing else about the conversation is sent. Throws
-    /// `RelayAPIError.http(429, …)` when the daily report cap is reached.
+    /// Reports an account for abuse (`POST /v1/reports`). `messages` is plaintext
+    /// the user chose to forward; nothing else is sent. Throws `.http(429, ...)`
+    /// at the daily cap.
     public func reportAccount(
         _ accountId: String,
         reason: ReportReason,
@@ -711,8 +683,8 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    /// Posts a signed remote-wipe command. The server validates signature shape and
-    /// relays it to all devices; each device verifies the full signature before wiping.
+    /// Posts a signed remote-wipe command. The server checks the signature shape
+    /// and relays it; each device verifies the signature before wiping.
     public func sendNukeCommand(commandId: String, creationTimeMs: Int64, initiatingDeviceId: UInt32, signature: Data) async throws {
         struct NukeRequest: Encodable {
             let commandId: String
@@ -731,14 +703,12 @@ public struct RelayAPIClient: Sendable {
         )
     }
 
-    /// Rings the callee's devices (VoIP / FCM wake) for an incoming call via the
-    /// **unauthenticated** `POST /v1/calls/ring`, over the anonymous session.
-    /// Authorised exactly like a sealed send: `destinationMailbox` is any one of
-    /// the callee's mailbox ids and `accessKey` their 32-byte sealed-sender access
-    /// key (both from their prekey bundle). The relay rings all of the callee's
-    /// devices with a push carrying ONLY `callId` — the caller's identity and the
-    /// call kind travel solely inside the E2E-encrypted offer (a sealed message).
-    /// Throws `.http(403, …)` for a stale mailbox or wrong key (indistinguishable).
+    /// Rings the callee's devices via the unauthenticated `POST /v1/calls/ring`
+    /// over the anonymous session, authorized like a sealed send:
+    /// `destinationMailbox` is one of the callee's mailbox ids and `accessKey`
+    /// their access key. The push carries only `callId`; the caller and call kind
+    /// travel inside the encrypted offer. Throws `.http(403, ...)` for a stale
+    /// mailbox or wrong key, indistinguishably.
     public func ringCall(destinationMailbox: String, accessKey: Data, callId: String) async throws {
         struct Req: Encodable {
             let destinationMailbox: String
@@ -757,11 +727,9 @@ public struct RelayAPIClient: Sendable {
 
     // MARK: - Prekeys
 
-    /// Uploads a key publication. `replaceOneTimePreKeys` tells the relay to
-    /// delete this device's existing one-time pool before storing the batch —
-    /// use it when the local store is fresh (install/restore) or a desync was
-    /// detected, so the relay can't serve an orphaned one-time key. Ordinary
-    /// top-ups leave it false and append.
+    /// Uploads a key publication. `replaceOneTimePreKeys` deletes the device's
+    /// existing one-time pool first; use it when the local store is fresh or out
+    /// of sync, so the relay can't serve an orphaned key. Top-ups append.
     public func uploadKeys(_ publication: PreKeyPublication, replaceOneTimePreKeys: Bool = false) async throws {
         try await requestExpectingNoContent(
             "PUT", "v1/keys", body: PublicationDTO(publication, replaceOneTimePreKeys: replaceOneTimePreKeys)
@@ -776,15 +744,13 @@ public struct RelayAPIClient: Sendable {
         return response.count
     }
 
-    /// Fetches prekey bundles for every device of the account (consuming
-    /// one-time prekeys server-side).
+    /// Bundles for every device of the account. Consumes one-time prekeys.
     public func fetchPreKeyBundles(account: String) async throws -> [PeerPreKeyBundle] {
         try await fetchPreKeyBundlesWithAccessKey(account: account).bundles
     }
 
-    /// Like `fetchPreKeyBundles`, but also returns the account's sealed-sender
-    /// access key (when it has published one) so the caller can address the
-    /// recipient on the unauthenticated delivery path without a second round-trip.
+    /// Also returns the account's sealed-sender access key, if published, so the
+    /// caller can use the unauthenticated path without another round trip.
     public func fetchPreKeyBundlesWithAccessKey(
         account: String
     ) async throws -> (bundles: [PeerPreKeyBundle], accessKey: Data?) {
@@ -797,9 +763,9 @@ public struct RelayAPIClient: Sendable {
         return (bundles, accessKey)
     }
 
-    /// Anonymous variant: proves we may reach `account` with its sealed-sender
-    /// access key instead of signing as ourselves, so the relay can't record who
-    /// fetches whose keys. Sent with no credentials. 403 = wrong/rotated key.
+    /// Anonymous variant, authorized by the account's access key instead of our
+    /// signature so the relay can't record who fetches whose keys. 403 means a
+    /// wrong or rotated key.
     public func fetchPreKeyBundlesSealed(account: String, accessKey: Data) async throws -> [PeerPreKeyBundle] {
         struct Response: Decodable { let devices: [BundleDTO] }
         var request = makeRequest("GET", "v1/keys/\(account)/sealed")
@@ -808,11 +774,10 @@ public struct RelayAPIClient: Sendable {
         return try JSONDecoder().decode(Response.self, from: data).devices.map { try $0.model() }
     }
 
-    // MARK: - Group invites (relay stores only opaque encrypted blobs; groups
-    // themselves are fully client-managed and E2E — no server roster/name/admins)
+    // MARK: - Group invites
 
-    /// Uploads an opaque encrypted group-invite blob, returning the token + expiry.
-    /// The relay only stores ciphertext; the decrypt key rides the URL fragment.
+    /// Uploads an encrypted group-invite blob and returns the token and expiry.
+    /// The decryption key travels in the URL fragment.
     public func createEncryptedGroupInvite(blob: Data) async throws -> (token: String, expiresAt: Int64) {
         struct Req: Encodable { let blob: String }
         struct Response: Decodable { let token: String; let expiresAt: Int64 }
@@ -822,8 +787,8 @@ public struct RelayAPIClient: Sendable {
         return (r.token, r.expiresAt)
     }
 
-    /// Fetches the opaque encrypted blob for an invite token (to decrypt client-side).
-    /// Anonymous (no credentials, unlinkable session): the token is the capability.
+    /// Fetches the encrypted blob for an invite token. Anonymous; the token is
+    /// the capability.
     public func claimEncryptedGroupInvite(token: String) async throws -> Data {
         struct Response: Decodable { let blob: String }
         let r: Response = try await request(
@@ -833,12 +798,11 @@ public struct RelayAPIClient: Sendable {
         return blob
     }
 
-    // MARK: - Attachments (opaque encrypted blobs)
+    // MARK: - Attachments
 
-    /// Allocates a blob id (authenticated — the relay reserves it), then uploads
-    /// the encrypted bytes to it ANONYMOUSLY over the unlinkable session (the id
-    /// is the capability; each id can be written once). Returns the id to put in
-    /// the AttachmentPointer.
+    /// Reserves a blob id (authenticated), then uploads the ciphertext to it
+    /// anonymously. The id is the capability and can be written once. Returns the
+    /// id for the AttachmentPointer.
     public func uploadAttachment(_ ciphertext: Data) async throws -> String {
         struct Response: Decodable { let id: String }
         let created: Response = try await request(
@@ -851,18 +815,14 @@ public struct RelayAPIClient: Sendable {
         return created.id
     }
 
-    /// Downloads an encrypted blob by id (raw ciphertext). Anonymous: no
-    /// credentials, separate session — the download can't be tied to the account.
-    /// Largest attachment ciphertext we'll accept: the relay's 25 MiB upload
-    /// cap plus encryption overhead. A misbehaving relay can't make us buffer
-    /// an arbitrarily large download.
+    /// Largest attachment ciphertext accepted: the relay's 25 MiB upload cap plus
+    /// overhead, so a misbehaving relay can't make us buffer an unbounded download.
     public static let maxAttachmentDownloadBytes = 26 << 20
 
     public func downloadAttachment(id: String) async throws -> Data {
         var request = makeRequest("GET", "v1/attachments/\(id)")
         request.setValue(nil, forHTTPHeaderField: "Authorization")
-        // Stream to a temp file (ciphertext) rather than memory, and check the
-        // size before loading it.
+        // Download to a temp file and check the size before loading it.
         let (file, response) = try await anonymousSession.download(for: request)
         defer { try? FileManager.default.removeItem(at: file) }
         guard let http = response as? HTTPURLResponse else { throw RelayAPIError.malformedResponse }
@@ -883,12 +843,10 @@ public struct RelayAPIClient: Sendable {
         return request
     }
 
-    /// Sends `request`. Anonymous requests go out with no credentials over the
-    /// separate ephemeral session. Authenticated requests are signed (Relay-Sig
-    /// v2) — or, only when no signer is configured, use HTTP Basic. A signed
-    /// request rejected with 401 because the device has no auth key on the relay
-    /// yet triggers a one-time bootstrap (register the key via Basic) and a
-    /// single re-signed retry; there is no silent downgrade to Basic.
+    /// Sends `request`. Anonymous requests carry no credentials and use the
+    /// separate session. Authenticated ones are signed, or use HTTP Basic only
+    /// when no signer is configured. A 401 because the relay has no auth key for
+    /// the device yet triggers a one-time bootstrap and one re-signed retry.
     private func send(_ request: URLRequest, authenticated: Bool) async throws -> (Data, Int) {
         guard authenticated else {
             var anonymous = request
@@ -906,10 +864,9 @@ public struct RelayAPIClient: Sendable {
         do {
             return try await perform(try signed(request, credentials: credentials, signer: signer), on: session)
         } catch RelayAPIError.http(status: 401, let message) {
-            // Bootstrap: the relay may hold no key for this device yet. Register
-            // it via Basic at most once per process (concurrent callers share the
-            // attempt), then retry once, freshly signed — even if our Basic upload
-            // was refused, another path may have registered the key meanwhile.
+            // The relay may have no key for this device. Register it via Basic at most
+            // once per process, then retry once with a fresh signature; even if our
+            // upload was refused, another path may have registered the key.
             guard request.url?.path(percentEncoded: false).hasSuffix("/v1/devices/auth-key") == false,
                   let publicKey = signer.relayAuthPublicKey()
             else { throw RelayAPIError.http(status: 401, message: message) }
@@ -930,9 +887,9 @@ public struct RelayAPIClient: Sendable {
         return request
     }
 
-    /// Registers `publicKey` as this device's auth key using HTTP Basic — the
-    /// only Basic request the client ever makes, and the relay accepts it only
-    /// while the device has no key. Returns false if the relay refused.
+    /// Registers `publicKey` as the auth key over HTTP Basic, the only Basic
+    /// request the client makes; the relay accepts it only while the device has
+    /// no key. Returns false if refused.
     private func bootstrapAuthKey(_ publicKey: Data) async throws -> Bool {
         guard let credentials else { return false }
         var request = makeRequest("PUT", "v1/devices/auth-key")
@@ -985,9 +942,8 @@ public struct RelayAPIClient: Sendable {
     }
 }
 
-// MARK: - Groups
+// MARK: - Reports
 
-/// A group's roster + state as returned by the relay.
 /// Abuse-report categories accepted by `POST /v1/reports`.
 public enum ReportReason: String, CaseIterable, Sendable, Identifiable {
     case spam
@@ -1009,16 +965,15 @@ public enum ReportReason: String, CaseIterable, Sendable, Identifiable {
     }
 }
 
-/// Time-limited TURN credentials in coturn REST API format.
+/// Time-limited TURN credentials in coturn REST format.
 public struct TurnCredentials: Decodable, Sendable {
     public let urls: [String]
     public let username: String
     public let credential: String
-    /// Lifetime in seconds from issue time.
+    /// Lifetime in seconds from issue.
     public let ttl: Int
-    /// Ordered TURN servers, preferred first. Present on newer relays: when
-    /// Relay's own TURN server is down or overloaded this lists a backup
-    /// provider first. Older relays send only the top-level fields.
+    /// TURN servers, preferred first. When Relay's own TURN server is down or
+    /// overloaded, a backup provider is listed first. Absent from older relays.
     public let iceServers: [IceServer]?
 
     public struct IceServer: Decodable, Sendable {
@@ -1094,7 +1049,7 @@ private struct DeviceAuthorizationKeyRequest: Encodable {
     let publicKey: String
 }
 
-// MARK: - Wire DTOs (base64 binary fields)
+// MARK: - Wire DTOs
 
 private struct SignedPreKeyDTO: Codable {
     let keyId: UInt32

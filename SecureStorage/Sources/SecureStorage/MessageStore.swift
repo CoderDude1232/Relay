@@ -2,8 +2,8 @@
 //  MessageStore.swift
 //  SecureStorage
 //
-//  Conversation and message history, encrypted at rest by SQLCipher.
-//  Plaintext bodies exist only inside this database (and on screen).
+//  Conversation and message history. Plaintext bodies exist only inside the
+//  SQLCipher database and on screen.
 //
 
 import Foundation
@@ -16,9 +16,9 @@ public struct Conversation: Sendable, Equatable, Identifiable {
     public let lastMessageBody: String?
     /// True when the last message was sent by the local user.
     public let lastMessageIsOutgoing: Bool
-    /// Status of the last message (nil when conversation has no messages).
+    /// Nil when the conversation has no messages.
     public let lastMessageStatus: MessageStatus?
-    /// Non-nil for group conversations (equals the group id).
+    /// Set for group conversations; equal to the group id.
     public let groupId: String?
     public let pinnedAt: Int64?
     public let readAt: Int64
@@ -28,15 +28,13 @@ public struct Conversation: Sendable, Equatable, Identifiable {
     public let hidePreviews: Bool
     public let unreadCount: Int
     public let archived: Bool
-    /// Optional user-assigned label (e.g. "Work", "Family").
     public let label: String?
-    /// The local user's own screenshot-hide preference for this conversation.
+    /// Our own screenshot-hide preference for this conversation.
     public let screenSecurity: Bool
-    /// The DM peer's screenshot-hide preference (synced E2E). Effective hiding is
-    /// `screenSecurity || peerScreenSecurity` — both must disable to turn it off.
-    /// Unused for groups (they use the admin-controlled group flag).
+    /// The DM peer's screenshot-hide preference. Hiding applies if either side
+    /// enables it. Unused for groups, which have an admin flag.
     public let peerScreenSecurity: Bool
-    /// Custom notification sound name, nil = system default.
+    /// Custom notification sound; nil for the system default.
     public let notificationSound: String?
 
     public init(
@@ -69,7 +67,7 @@ public struct Conversation: Sendable, Equatable, Identifiable {
     public var isPinned: Bool { pinnedAt != nil }
 }
 
-/// A group's roster + state, mirrored from the relay.
+/// A group's roster and state.
 public struct StoredGroup: Sendable, Equatable {
     public let id: String
     public let name: String
@@ -80,7 +78,7 @@ public struct StoredGroup: Sendable, Equatable {
     public let members: [String]
     public let admins: [String]
     public let isAnnounceOnly: Bool
-    /// Admin-controlled screenshot-hide flag for the whole group.
+    /// Admin-controlled screenshot-hide flag for the group.
     public let screenSecurity: Bool
 
     public init(
@@ -106,8 +104,8 @@ public enum MessageStatus: String, Sendable {
     case received
 }
 
-/// A snapshot of the message a reply quotes — self-contained so it renders
-/// without a lookup and survives the original being deleted.
+/// Snapshot of the quoted message, so a reply renders without a lookup and
+/// survives deletion of the original.
 public struct QuotedMessage: Sendable, Equatable {
     public let targetTimestamp: Int64
     public let author: String
@@ -120,11 +118,10 @@ public struct QuotedMessage: Sendable, Equatable {
     }
 }
 
-/// One emoji reaction on a message.
 public struct MessageReaction: Sendable, Equatable {
     public let emoji: String
     public let author: String
-    /// True when the local user is the reactor.
+    /// True when we are the reactor.
     public let isOutgoing: Bool
 
     public init(emoji: String, author: String, isOutgoing: Bool) {
@@ -134,8 +131,8 @@ public struct MessageReaction: Sendable, Equatable {
     }
 }
 
-/// A media attachment on a message. The encrypted blob lives on disk; this
-/// carries the metadata plus the key/digest needed to fetch and decrypt it.
+/// A message attachment. The encrypted blob is on disk; this holds the
+/// metadata and the key and digest to fetch and decrypt it.
 public struct StoredAttachment: Sendable, Equatable, Identifiable {
     public let id: String            // relay blob id
     public let key: Data             // AES-256-GCM key
@@ -170,7 +167,7 @@ public struct StoredProfile: Sendable, Equatable {
     public let revision: Int64
     public let status: String?
     public let bio: String?
-    /// JSON array of {label,url} objects; opaque to storage (app encodes/decodes).
+    /// JSON array of {label,url}; the app encodes and decodes it.
     public let linksJSON: String?
 
     public init(displayName: String?, avatarId: String?, avatarData: Data?, revision: Int64,
@@ -253,25 +250,22 @@ public struct StoredMessage: Sendable, Equatable, Identifiable {
     public let conversationId: String
     public let isOutgoing: Bool
     public let body: String
-    /// Sender's clock (ms since epoch); receipts reference this.
+    /// Sender's clock in ms; receipts reference it.
     public let timestamp: Int64
     public let status: MessageStatus
-    /// Set when this message replies to an earlier one.
     public let replyTo: QuotedMessage?
-    /// Reactions attached to this message, oldest first.
+    /// Oldest first.
     public let reactions: [MessageReaction]
-    /// True once the message has been unsent (delete-for-everyone); the body
-    /// is cleared and the UI shows a tombstone placeholder.
+    /// Unsent by the author: the body is cleared and the UI shows a tombstone.
     public let isDeleted: Bool
-    /// Media attachments, in send order.
+    /// In send order.
     public let attachments: [StoredAttachment]
-    /// For group messages, the account id of the sender (nil for 1:1).
+    /// The sender's account id for group messages; nil for 1:1.
     public let senderAccount: String?
-    /// True if the user pinned this message (shows in the chat header banner).
+    /// Pinned messages appear in the chat header banner.
     public let isPinned: Bool
-    /// True when the local user has starred (bookmarked) this message.
     public let isStarred: Bool
-    /// Timestamp (ms since epoch) when the message was last edited; nil = unedited.
+    /// Last edit time in ms; nil if never edited.
     public let editedAt: Int64?
 
     public init(
@@ -299,9 +293,9 @@ public struct StoredMessage: Sendable, Equatable, Identifiable {
 }
 
 public final class MessageStore: @unchecked Sendable {
-    /// `sender_account` of locally generated system lines (call events, group
-    /// membership, notices). Mirrors `MessagingService.systemSender`. They are
-    /// stored as incoming/received but are never unread and never get receipts.
+    /// `sender_account` of locally generated system lines (call events,
+    /// membership, notices); matches `MessagingService.systemSender`. Stored as
+    /// incoming but never unread and never receipted.
     public static let systemSender = "__system__"
 
     private let db: Database
@@ -312,14 +306,13 @@ public final class MessageStore: @unchecked Sendable {
 
     // MARK: - Conversations
 
-    /// Returns the conversation with this peer, creating it if needed.
+    /// The conversation with this peer, created if needed.
     @discardableResult
     public func conversation(withPeer account: String, username: String? = nil) throws -> String {
-        // 1:1 only. Groups and 1:1 chats share the peer_account key, so a group
-        // whose id equals this account id was forged (real group ids are random
-        // UUIDs): someone sent a group-create using a contact's account id to
-        // capture that contact's 1:1 messages and our replies. The account
-        // always wins — evict the forged group before using the key.
+        // 1:1 only. Groups and 1:1 chats share the peer_account key, and real
+        // group ids are random UUIDs, so a group whose id equals this account id
+        // is forged: a group-create meant to capture that contact's messages and
+        // our replies. The account wins; drop the forged group first.
         if let forged = try db.query(
             "SELECT id FROM conversations WHERE peer_account = ? AND group_id IS NOT NULL", [.text(account)]
         ).first?.first?.string {
@@ -339,7 +332,7 @@ public final class MessageStore: @unchecked Sendable {
             return id
         }
         let id = UUID().uuidString
-        // screen_security defaults ON for new chats (privacy-first).
+        // screen_security defaults on for new chats.
         try db.run(
             "INSERT INTO conversations (id, peer_account, peer_username, created_at, screen_security) VALUES (?, ?, ?, ?, 1)",
             [
@@ -463,7 +456,6 @@ public final class MessageStore: @unchecked Sendable {
         try db.run("UPDATE messages SET pinned = ? WHERE id = ?", [.integer(pinned ? 1 : 0), .text(id)])
     }
 
-    /// Replaces the body of an existing message and marks it as edited.
     public func editMessage(conversationId: String, targetTimestamp: Int64, newBody: String) throws {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         try db.run(
@@ -513,7 +505,7 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    /// Returns the most-recently pinned non-deleted message in a conversation, if any.
+    /// The most recently pinned non-deleted message in a conversation, if any.
     public func pinnedMessage(in conversationId: String) throws -> StoredMessage? {
         let reactions = try reactionsByTarget(in: conversationId)
         let rows = try db.query(
@@ -568,13 +560,13 @@ public final class MessageStore: @unchecked Sendable {
         )
     }
 
-    /// The local user's own screenshot-hide preference for a conversation.
+    /// Our own screenshot-hide preference for a conversation.
     public func setConversationScreenSecurity(_ conversationId: String, enabled: Bool) throws {
         try db.run("UPDATE conversations SET screen_security = ? WHERE id = ?",
                    [.integer(enabled ? 1 : 0), .text(conversationId)])
     }
 
-    /// The DM peer's screenshot-hide preference, synced from a ScreenSecurityUpdate.
+    /// The DM peer's screenshot-hide preference, from a ScreenSecurityUpdate.
     public func setConversationPeerScreenSecurity(_ conversationId: String, enabled: Bool) throws {
         try db.run("UPDATE conversations SET peer_screen_security = ? WHERE id = ?",
                    [.integer(enabled ? 1 : 0), .text(conversationId)])
@@ -621,20 +613,18 @@ public final class MessageStore: @unchecked Sendable {
 
     // MARK: - Groups
 
-    /// Creates or updates a group's local state + roster, ensuring a
-    /// conversation row exists for it (peer_account == group id).
+    /// Creates or updates a group's state and roster, and makes sure it has a
+    /// conversation row (peer_account == group id).
     public func upsertGroup(
         id: String, name: String, distributionId: String, revision: Int64, members: [String],
         admins: [String] = [], isAnnounceOnly: Bool? = nil
     ) throws {
         let adminsJSON = (try? JSONEncoder().encode(admins)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         try db.transaction {
-            // Ensure the conversation exists and is tagged as a group. Group and
-            // 1:1 conversations share the peer_account key, so a group id equal
-            // to an existing 1:1 peer (or our own account, for Note to Self)
-            // must never convert that chat into a group — otherwise a forged
-            // group-create could make every later message in it fan out to the
-            // forger.
+            // Group and 1:1 conversations share the peer_account key. A group id
+            // equal to an existing 1:1 peer, or to our own account (Note to Self),
+            // must never turn that chat into a group; otherwise a forged group-create
+            // could make every later message in it fan out to the forger.
             let existingRow = try db.query(
                 "SELECT id, group_id FROM conversations WHERE peer_account = ?", [.text(id)]
             ).first
@@ -657,8 +647,8 @@ public final class MessageStore: @unchecked Sendable {
                     [.text(name), .text(id), .text(id)]
                 )
             }
-            // Preserve existing description and avatar_data when upserting roster.
-            // Only update admins/announce_only when explicitly provided.
+            // Keep description and avatar_data. Admins and announce_only change only
+            // when passed.
             if let isAnnounceOnly {
                 try db.run(
                     """
@@ -754,7 +744,7 @@ public final class MessageStore: @unchecked Sendable {
         )
     }
 
-    /// The conversation id for a group (nil if not yet created locally).
+    /// Nil if the group has no local conversation yet.
     public func groupConversationId(groupId: String) throws -> String? {
         try db.query(
             "SELECT id FROM conversations WHERE peer_account = ?", [.text(groupId)]
@@ -763,9 +753,8 @@ public final class MessageStore: @unchecked Sendable {
 
     // MARK: - Messages
 
-    /// Inserts a message; returns false if it already exists (dedup on id,
-    /// which is the relay envelope id for incoming messages — delivery is
-    /// at-least-once, so replays must be no-ops).
+    /// Inserts a message, returning false if its id already exists. Incoming ids
+    /// are envelope ids and delivery is at-least-once, so replays are no-ops.
     @discardableResult
     public func insertMessage(
         id: String,
@@ -782,7 +771,7 @@ public final class MessageStore: @unchecked Sendable {
             let exists = try !db.query("SELECT 1 FROM messages WHERE id = ?", [.text(id)]).isEmpty
             if exists { return false }
             let createdAt = Int64(Date().timeIntervalSince1970 * 1000)
-            // System messages (call events, group membership lines) never disappear.
+            // System lines (call events, membership) never disappear.
             let ttl = senderAccount == Self.systemSender ? 0 : try disappearingSeconds(conversationId: conversationId)
             let expiresAt: SQLValue = ttl > 0 ? .integer(createdAt + ttl * 1000) : .null
             try db.run(
@@ -828,10 +817,9 @@ public final class MessageStore: @unchecked Sendable {
         return inserted
     }
 
-    /// Inserts or updates a single "live location" message in place, keyed by a
-    /// stable id (one row per sharer per conversation) so a moving share updates
-    /// one bubble instead of spamming a new one on every tick. Returns true if a
-    /// new row was created (vs. an in-place update). Never expires mid-share.
+    /// Inserts or updates a live-location message keyed by a stable id (one row
+    /// per sharer per conversation), so a moving share updates a single bubble.
+    /// Returns true if a row was created. Never expires mid-share.
     @discardableResult
     public func upsertLiveLocation(
         id: String,
@@ -888,8 +876,8 @@ public final class MessageStore: @unchecked Sendable {
         return rows.count
     }
 
-    /// Newest `limit` messages, oldest first (ready for chat display), with
-    /// their reply snapshots and reactions attached.
+    /// The newest `limit` messages, oldest first, with reply snapshots and
+    /// reactions attached.
     public func messages(in conversationId: String, limit: Int = 100) throws -> [StoredMessage] {
         let reactions = try reactionsByTarget(in: conversationId)
         let attachments = try attachmentsByMessage(in: conversationId)
@@ -961,14 +949,14 @@ public final class MessageStore: @unchecked Sendable {
         return result
     }
 
-    /// Marks an attachment's ciphertext as cached locally on disk.
+    /// Marks an attachment's ciphertext as cached on disk.
     public func markAttachmentDownloaded(id: String) throws {
         try db.run("UPDATE attachments SET downloaded = 1 WHERE id = ?", [.text(id)])
     }
 
     // MARK: - Profiles
 
-    /// A peer's self-set profile (display name + decrypted avatar bytes + status/bio).
+    /// A peer's profile, with the decrypted avatar.
     public func peerProfile(account: String) throws -> StoredProfile? {
         let rows = try db.query(
             "SELECT display_name, avatar_id, avatar_data, revision, status, bio, links FROM profiles WHERE account_id = ?",
@@ -986,8 +974,8 @@ public final class MessageStore: @unchecked Sendable {
         )
     }
 
-    /// Replaces a peer's profile row wholesale (the caller resolves newest-wins
-    /// and avatar reuse before calling).
+    /// Replaces a peer's profile row. The caller resolves newest-wins and avatar
+    /// reuse first.
     public func upsertProfile(
         account: String, displayName: String?, avatarId: String?,
         avatarData: Data?, revision: Int64, status: String?, bio: String?, linksJSON: String?
@@ -1088,8 +1076,8 @@ public final class MessageStore: @unchecked Sendable {
 
     // MARK: - Reactions
 
-    /// Applies or retracts one author's reaction to a message. One reaction
-    /// per author per message; setting a new emoji replaces the previous.
+    /// Sets or retracts one author's reaction. One reaction per author per
+    /// message; a new emoji replaces the old one.
     public func setReaction(
         conversationId: String,
         targetTimestamp: Int64,
@@ -1121,10 +1109,10 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    /// Applies an "unsend": clears the message's plaintext (body, quote,
-    /// reactions) and marks it deleted, leaving a tombstone in place. Matches
-    /// by sender clock within a conversation, so it works both for the
-    /// author's own copy and the recipient's. Returns whether a row changed.
+    /// Applies an unsend: clears body, quote and reactions and marks the message
+    /// deleted, leaving a tombstone. Matches by sender clock within the
+    /// conversation, so it works on the author's and the recipient's copy.
+    /// Returns whether a row changed.
     @discardableResult
     public func markDeleted(conversationId: String, targetTimestamp: Int64) throws -> Bool {
         try db.transaction {
@@ -1158,8 +1146,7 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    /// Deletes a message locally (delete-for-me), along with any reactions
-    /// on it. Does not notify the peer.
+    /// Deletes a message and its reactions locally. The peer isn't notified.
     public func deleteMessage(id: String) throws {
         try db.transaction {
             let rows = try db.query(
@@ -1176,7 +1163,7 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    /// Deletes a conversation and all its messages, reactions, and attachments.
+    /// Deletes a conversation with its messages, reactions and attachments.
     public func deleteConversation(id: String) throws {
         try db.transaction {
             try db.run("DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)", [.text(id)])
@@ -1186,9 +1173,8 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    /// Applies a receipt: marks outgoing messages with these timestamps in
-    /// this conversation as delivered/read. Read never downgrades to
-    /// delivered.
+    /// Marks outgoing messages with these timestamps as delivered or read.
+    /// Read never downgrades to delivered.
     public func applyReceipt(
         conversationId: String,
         timestamps: [Int64],
@@ -1207,10 +1193,10 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    // MARK: - Group receipts (per-member)
+    // MARK: - Group receipts
 
-    /// Records each member's delivered/read state for a group message the
-    /// local user authored. Read never downgrades to delivered.
+    /// Records each member's delivered/read state for a group message we sent.
+    /// Read never downgrades to delivered.
     public func recordGroupReceipt(
         conversationId: String,
         member: String,
@@ -1231,7 +1217,7 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    /// The per-member receipt state for one group message: member → status.
+    /// Member to status for one group message.
     public func groupReceipts(conversationId: String, messageTimestamp: Int64) throws -> [String: MessageStatus] {
         let rows = try db.query(
             "SELECT member_account, status FROM message_receipts WHERE conversation_id = ? AND message_timestamp = ?",
@@ -1282,13 +1268,12 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
-    // MARK: - Envelope dedup (shared by app + NSE)
+    // MARK: - Envelope dedup
 
-    /// Atomically claims an envelope id for processing. Returns true if this
-    /// caller won the claim and should decrypt it; false if it was already
-    /// claimed (by the other process, or an earlier delivery). Combined with
-    /// a cross-process lock around decryption, this guarantees exactly one
-    /// decrypt of each envelope despite the shared ratchet state.
+    /// Atomically claims an envelope id. Returns false if it was already claimed
+    /// by the other process or an earlier delivery. Together with the
+    /// cross-process lock around decryption, each envelope is decrypted exactly
+    /// once despite the shared ratchet state.
     @discardableResult
     public func claimEnvelope(id: String) throws -> Bool {
         try db.transaction {
@@ -1310,8 +1295,8 @@ public final class MessageStore: @unchecked Sendable {
         ).isEmpty
     }
 
-    /// Releases a previously claimed envelope id. Used for ephemeral content
-    /// (typing) that needs no dedup, to keep the dedup table from growing.
+    /// Releases a claimed envelope id. Used for ephemeral content such as typing,
+    /// which needs no dedup, so the table doesn't grow.
     public func releaseEnvelope(id: String) throws {
         try db.run("DELETE FROM processed_envelopes WHERE id = ?", [.text(id)])
     }

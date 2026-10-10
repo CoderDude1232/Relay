@@ -20,7 +20,7 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = 45 * time.Second
-	maxFrameSize   = 512 * 1024 // generous for text; media moves over HTTP later
+	maxFrameSize   = 512 * 1024 // generous for text; media goes over HTTP
 	sendBufferSize = 256
 	// maxMalformedFrames is how many non-binary or unparseable frames one
 	// connection may send before the server closes it (1008).
@@ -118,11 +118,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	go sess.writePump()
 
 	// If a nuke was issued while this device was offline, deliver it directly
-	// and then close — the client will wipe itself and there is nothing left to
-	// drain. We write directly to the connection instead of going through the
-	// buffered channel so the frame is guaranteed to be sent before the deferred
-	// cleanup fires (close(sess.done) could race with writePump draining the
-	// channel and cause the nuke frame to be silently dropped).
+	// and then close; the client wipes itself and there is nothing to drain.
+	// Write to the connection directly rather than via the buffered channel:
+	// close(sess.done) in the deferred cleanup could race writePump and drop
+	// the frame.
 	if pending, err := s.store.PendingNukeForAccount(dev.AccountID); err != nil {
 		slog.Error("ws: pending nuke check failed", "err", privlog.Error(err))
 	} else if pending != nil && nukeIsStale(pending.CreationTimeMs) {
@@ -160,7 +159,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		return
 	}
 
-	// Read loop.
 	conn.SetReadLimit(maxFrameSize)
 	conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error {
@@ -267,9 +265,9 @@ func (sess *wsSession) writePump() {
 	}
 }
 
-// handleSend routes one encrypted payload to one opaque device mailbox. New
-// clients no longer send destination account IDs on this path; the protobuf
-// field is kept for wire compatibility but now contains a mailbox ID.
+// handleSend routes one encrypted payload to one opaque device mailbox. The
+// protobuf field is named destination_account for wire compatibility but
+// carries a mailbox ID.
 func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *relaypb.SendResponse {
 	now := time.Now().UnixMilli()
 	resp := &relaypb.SendResponse{ServerTimestamp: now}

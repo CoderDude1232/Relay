@@ -3,9 +3,8 @@
 //  Relay
 //
 //  Links that change who you talk to (group invites, contact invites, username
-//  links) never act on their own: the user always sees what the link does and
-//  confirms it first. Links are also held until the app lock (if enabled) has
-//  been unlocked.
+//  links) never act on their own: the user sees what the link does and
+//  confirms it. Links are also held until the app lock, if enabled, is opened.
 //
 
 import SwiftUI

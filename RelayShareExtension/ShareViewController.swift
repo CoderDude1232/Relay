@@ -71,7 +71,6 @@ final class ShareViewController: UIViewController {
     ) async -> PendingShare {
         for item in items {
             for provider in item.attachments ?? [] {
-                // Image: use loadDataRepresentation (not deprecated)
                 if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                     if let data = await loadData(provider, type: UTType.image.identifier) {
                         return PendingShare(conversationId: conversationId, text: nil,
@@ -79,14 +78,12 @@ final class ShareViewController: UIViewController {
                                            fileData: nil, filename: nil)
                     }
                 }
-                // URL: use loadObject(ofClass: NSURL.self)
                 if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                     if let url = await loadURL(provider) {
                         return PendingShare(conversationId: conversationId, text: url.absoluteString,
                                            imageData: nil, imageUTI: nil, fileData: nil, filename: nil)
                     }
                 }
-                // Text: load as data + decode
                 if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
                     if let data = await loadData(provider, type: UTType.plainText.identifier),
                        let text = String(data: data, encoding: .utf8) {
@@ -94,7 +91,6 @@ final class ShareViewController: UIViewController {
                                            imageData: nil, imageUTI: nil, fileData: nil, filename: nil)
                     }
                 }
-                // Generic file: copy to temp dir via loadFileRepresentation
                 if provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) {
                     if let (fileData, filename) = await loadFile(provider) {
                         return PendingShare(conversationId: conversationId, text: nil,

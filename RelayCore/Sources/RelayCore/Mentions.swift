@@ -6,8 +6,8 @@
 import Foundation
 
 public enum Mentions {
-    /// Whether `body` mentions `@username` as a whole word — so "@test2" is not
-    /// found inside "@test2ax" or "me@test2". Case-insensitive.
+    /// Whether `body` mentions `@username` as a whole word, case-insensitively.
+    /// "@test2" does not match inside "@test2ax" or "me@test2".
     public static func contains(_ body: String, username: String) -> Bool {
         guard !username.isEmpty else { return false }
         let target = "@\(username)"

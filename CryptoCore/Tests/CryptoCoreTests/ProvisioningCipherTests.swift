@@ -2,9 +2,8 @@
 //  ProvisioningCipherTests.swift
 //  CryptoCoreTests
 //
-//  Validates the reversed-linking provisioning box: ECDH + HKDF + AES-GCM
-//  round-trips, and that a blob can only be opened with the matching ephemeral
-//  private key (the one whose public half was shown in the QR).
+//  Round-trips the provisioning box and checks that only the matching
+//  ephemeral private key (the one shown in the QR) can open it.
 //
 
 import Foundation
@@ -17,7 +16,7 @@ import Testing
     let payload = Data("shared identity key + credentials".utf8)
 
     let blob = try ProvisioningCipher.seal(payload, toEphemeralPublicKey: newDevice.publicKey)
-    // version byte + 32-byte ephemeral pub + at least the GCM nonce/tag.
+    // Version byte, 32-byte ephemeral public key, then at least the GCM nonce and tag.
     #expect(blob.first == ProvisioningCipher.version)
     #expect(blob.count > 1 + 32)
 

@@ -3,7 +3,7 @@
 //  SecureStorage
 //
 //  Composition root for the storage layer: opens the encrypted database,
-//  runs migrations, and exposes the libsignal stores + message history.
+//  runs migrations, and exposes the libsignal stores and message history.
 //
 
 import CryptoCore
@@ -15,12 +15,10 @@ public final class SecureStore {
     public let signalStore: SQLCipherSignalStore
     public let messages: MessageStore
 
-    /// Opens (or creates) the encrypted database at `path`.
+    /// Opens or creates the encrypted database at `path`.
     ///
-    /// Production: pass a `KeychainSecureStore` as both key source and
-    /// credentials — it owns the Secure-Enclave-wrapped master key and the
-    /// Keychain-resident identity. Tests inject a static key and in-memory
-    /// credentials.
+    /// In production `KeychainSecureStore` serves as both key source and
+    /// credentials. Tests inject a static key and in-memory credentials.
     public init(
         path: String,
         key: DatabaseKey,
@@ -32,16 +30,15 @@ public final class SecureStore {
         self.messages = MessageStore(database: database)
     }
 
-    /// Convenience for production: everything keyed from the Keychain/
-    /// Secure Enclave store.
+    /// Production initializer, keyed entirely from the Keychain store.
     public convenience init(path: String, keychain: KeychainSecureStore) throws {
         try self.init(path: path, key: keychain.databaseKey(), credentials: keychain)
     }
 
     /// A `CryptoEngine` running on the persistent stores.
     public func makeCryptoEngine(accountId: String, deviceId: UInt32) throws -> CryptoEngine {
-        // Our own account's other devices must carry our identity key; tell the
-        // store whose account is "us" (see SQLCipherSignalStore.isTrustedIdentity).
+        // Our own other devices must carry our identity key, so the store needs to
+        // know which account is ours (see SQLCipherSignalStore.isTrustedIdentity).
         signalStore.localAccountName = accountId
         return CryptoEngine(
             store: signalStore,

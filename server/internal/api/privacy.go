@@ -47,7 +47,7 @@ func requestDeadlines(next http.Handler) http.Handler {
 		var read, write time.Time
 		switch {
 		case r.URL.Path == webSocketUpgradePrefix:
-			// Zero = no deadline; also clears one left over from an earlier
+			// Zero means no deadline; it also clears one left over from an earlier
 			// request on this keep-alive connection. The WS pumps manage
 			// their own deadlines after the upgrade.
 		case strings.HasPrefix(r.URL.Path, "/v1/attachments/"):

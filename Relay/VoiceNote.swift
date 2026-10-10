@@ -2,10 +2,8 @@
 //  VoiceNote.swift
 //  Relay
 //
-//  Microphone capture and playback for voice messages. Recording writes a
-//  short AAC/m4a file to the temporary directory; the bytes are handed to the
-//  normal attachment pipeline (AES-GCM sealed, uploaded, cached) and the temp
-//  file is deleted — plaintext audio never persists to disk unencrypted.
+//  Voice message recording and playback. The temporary m4a is deleted once
+//  its bytes go to the attachment pipeline, so plaintext audio doesn't persist.
 //
 
 import AVFoundation
@@ -23,8 +21,7 @@ final class VoiceRecorder {
     private var fileURL: URL?
     private var ticker: Task<Void, Never>?
 
-    /// Requests mic permission (once) and begins recording. Returns false if
-    /// permission was denied or the audio session couldn't start.
+    /// Returns false if permission was denied or the audio session failed.
     func start() async -> Bool {
         guard await AVAudioApplication.requestRecordPermission() else { return false }
         let session = AVAudioSession.sharedInstance()
@@ -53,8 +50,7 @@ final class VoiceRecorder {
         }
     }
 
-    /// Stops recording and returns the finished clip as a pending attachment,
-    /// or nil if it was too short (< 1s) or couldn't be read.
+    /// Nil if the clip is under 1s or couldn't be read.
     func finish() -> MessagingService.PendingAttachment? {
         guard let recorder, let fileURL else { cancel(); return nil }
         let duration = recorder.currentTime
@@ -67,7 +63,6 @@ final class VoiceRecorder {
         )
     }
 
-    /// Aborts recording and discards the clip.
     func cancel() {
         recorder?.stop()
         if let fileURL { cleanup(fileURL) }
@@ -102,8 +97,7 @@ final class VoiceRecorder {
     }
 }
 
-/// Plays back a single voice message. One instance per voice bubble; the
-/// decrypted audio bytes are supplied on first play and held only in memory.
+/// One instance per voice bubble. Decrypted audio is held only in memory.
 @Observable
 final class VoicePlayer {
     private(set) var isPlaying = false
@@ -142,7 +136,6 @@ final class VoicePlayer {
         }
     }
 
-    /// Cycles through 1×, 1.5×, 2× playback speeds.
     func cycleRate() {
         rate = rate < 1.2 ? 1.5 : rate < 1.8 ? 2.0 : 1.0
         player?.rate = Float(rate)
@@ -156,7 +149,7 @@ final class VoicePlayer {
                 if player.isPlaying {
                     self.progress = self.duration > 0 ? player.currentTime / self.duration : 0
                 } else {
-                    // Reached the end (natural finish): reset for replay.
+                    // Natural finish: reset for replay.
                     self.isPlaying = false
                     self.progress = 0
                     player.currentTime = 0
@@ -172,7 +165,7 @@ final class VoicePlayer {
     }
 }
 
-/// Formats a duration as m:ss for compact labels.
+/// m:ss
 func formatDuration(_ seconds: TimeInterval) -> String {
     let total = Int(seconds.rounded())
     return String(format: "%d:%02d", total / 60, total % 60)

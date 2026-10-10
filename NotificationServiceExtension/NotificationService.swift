@@ -2,10 +2,9 @@
 //  NotificationService.swift
 //  NotificationServiceExtension
 //
-//  Decrypts the pushed envelope (carried in the APNs payload as base64) using
-//  the SAME shared EnvelopeProcessor the app uses, then fills the banner with
-//  the real sender + preview. Apple only ever saw ciphertext; decryption
-//  happens here, on-device, against the App-Group SQLCipher store.
+//  Decrypts the pushed envelope with the same EnvelopeProcessor the app uses,
+//  against the App Group SQLCipher store, and fills in the banner with the
+//  sender and preview. APNs only ever carries ciphertext or nothing.
 //
 
 import CryptoCore
@@ -41,10 +40,10 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         // Two modes:
-        //  • Content-free wake (default): the payload has no "e". Fetch the queued
-        //    envelope(s) from the relay, decrypt on-device, then present.
-        //  • Ciphertext-in-push (opt-in): the payload carries the encrypted
-        //    envelope in "e". Decrypt it directly — no round-trip.
+        //  - Contentless wake (default): no "e" in the payload. Fetch the queued
+        //    envelopes from the relay and decrypt them.
+        //  - Ciphertext in push (opt-in): "e" carries the encrypted envelope.
+        //    Decrypt it directly.
         Task { [weak self] in
             let outcome: DecryptOutcome?
             if let self, let embedded = self.decryptEmbedded(request) {
@@ -63,7 +62,7 @@ class NotificationService: UNNotificationServiceExtension {
     ) {
         switch outcome {
         case .show(let title, let body, let conversationId, let senderAccount):
-            // Reveal sender + preview, and embed conversationId for tap-to-navigate.
+            // Sender, preview, and the conversation id for tap-to-navigate.
             content.title = title
             content.body = body
             content.categoryIdentifier = "RELAY_MESSAGE"
@@ -73,10 +72,9 @@ class NotificationService: UNNotificationServiceExtension {
                 content.userInfo = info
                 content.threadIdentifier = conversationId
             }
-            // Wrap in INSendMessageIntent so iOS shows the sender's avatar as the
-            // notification icon — but only when the preview level allows the
-            // sender's name to be shown at all. In "no name or content" mode
-            // nothing about the sender is handed to the system.
+            // Wrap in INSendMessageIntent so iOS shows the sender's avatar, but only
+            // when the preview level allows the name. In "none" mode nothing about
+            // the sender goes to the system.
             guard Self.previewLevel(defaults: UserDefaults(suiteName: RelayStore.appGroupId)) != "none",
                   !senderAccount.isEmpty, !conversationId.isEmpty
             else {
@@ -88,8 +86,8 @@ class NotificationService: UNNotificationServiceExtension {
                                     conversationId: conversationId))
         case .suppress, .none:
             // Call signalling (handled by VoIP push), a duplicate the app already
-            // drained, a control message, or nothing to fetch — suppress rather than
-            // surface a spurious "New message" banner.
+            // drained, a control message, or nothing to fetch. Suppress instead of
+            // showing a generic "New message" banner.
             contentHandler(UNMutableNotificationContent())
         }
     }
@@ -102,15 +100,15 @@ class NotificationService: UNNotificationServiceExtension {
 
     // MARK: - Communication Notification enrichment
 
-    /// The app-wide preview level. Default (never chosen): name only.
+    /// The app-wide preview level; name only if never set.
     private static func previewLevel(defaults: UserDefaults?) -> String {
         defaults?.string(forKey: "relay.notificationPrivacy") ?? "nameOnly"
     }
 
-    /// Builds a communication notification. The donated intent carries NO
-    /// message content (iOS stores donations in its own interaction database,
-    /// outside Relay's encryption) and identifies the sender only by the opaque
-    /// local conversation id — never their Relay account id.
+    /// Builds a communication notification. The donated intent carries no
+    /// message content, since iOS keeps donations outside Relay's encryption,
+    /// and identifies the sender only by the local conversation id, never the
+    /// account id.
     private func enriched(
         content: UNMutableNotificationContent,
         senderName: String,
@@ -168,13 +166,11 @@ class NotificationService: UNNotificationServiceExtension {
 
     private enum DecryptOutcome {
         case show(title: String, body: String, conversationId: String, senderAccount: String)
-        case suppress   // Decrypted successfully but nothing to surface (call, etc.)
+        case suppress // decrypted, but nothing to show
     }
 
-    // Opt-in ciphertext-in-push path: the encrypted envelope rode along in the
-    // APNs payload ("e"). Decrypt it directly — no network round-trip. Returns
-    // nil when the payload carries no envelope (the content-free default), so the
-    // caller falls back to fetching from the queue.
+    // Ciphertext-in-push path: the envelope is in the payload as "e". Returns
+    // nil when it isn't, so the caller fetches from the queue instead.
     private func decryptEmbedded(_ request: UNNotificationRequest) -> DecryptOutcome? {
         guard
             let encoded = request.content.userInfo["e"] as? String,
@@ -196,20 +192,19 @@ class NotificationService: UNNotificationServiceExtension {
             sealedSenderTrustRoot: RelaySealedSender.trustRoot,
             processLock: .envelopeProcessing(appGroupId: appGroupId)
         )
-        // Blocked senders are still decrypted (keeps the ratchet in sync) but
-        // the processor drops them before storing — matching the app.
+        // Blocked senders are still decrypted to keep the ratchet in sync; the
+        // processor drops them before storing, as in the app.
         let blocked = RelayStore.blockedAccounts(in: storage)
         guard let result = try? processor.process(envelope, blockedAccounts: blocked) else { return .suppress }
-        // The envelope is now claimed and the ratchet advanced, so the app can
-        // never re-decrypt it: hand it the control payloads to apply later.
+        // The ratchet has advanced and the app can't decrypt this again, so
+        // hand it the control payloads to apply later.
         PendingControlStore.persist(result, envelopeId: envelope.id, in: storage)
         return outcome(for: result, storage: storage, appGroupId: appGroupId, account: account)
     }
 
-    // Contentless push: the APNs payload carries no message data — not even
-    // ciphertext. The push is only a wake. We fetch this device's queued
-    // envelope(s) from the relay over our own (HTTP/3-capable) connection,
-    // decrypt them on-device, store them, and ack each so the server dequeues.
+    // Contentless push: the payload carries no message data at all, only a
+    // wake. Fetch this device's queued envelopes, decrypt and store them, and
+    // ack each one so the server dequeues it.
     private func fetchAndDecrypt() async -> DecryptOutcome? {
         let appGroupId = RelayStore.appGroupId
         guard
@@ -218,8 +213,8 @@ class NotificationService: UNNotificationServiceExtension {
             let engine = try? storage.makeCryptoEngine(accountId: account.accountId, deviceId: account.deviceId)
         else { return nil }
 
-        // Sign with this device's auth key (shared with the app through the App
-        // Group keychain): the relay refuses HTTP Basic once a key is set.
+        // Sign with the device auth key, shared via the App Group keychain. The
+        // relay refuses HTTP Basic once a key is set.
         let keychain = KeychainSecureStore(configuration: KeychainConfiguration(accessGroup: appGroupId))
         let api = RelayAPIClient(
             baseURL: account.serverURL,
@@ -235,8 +230,8 @@ class NotificationService: UNNotificationServiceExtension {
         )
         guard let envelopes = try? await api.fetchQueue(), !envelopes.isEmpty else { return nil }
 
-        // Pass the trust root so sealed-sender envelopes (empty envelope sender)
-        // decrypt here too, and ownAccountId so self-sync copies resolve.
+        // The trust root lets sealed-sender envelopes (empty sender) decrypt here;
+        // ownAccountId resolves self-sync copies.
         let processor = EnvelopeProcessor(
             storage: storage,
             engine: engine,
@@ -245,22 +240,20 @@ class NotificationService: UNNotificationServiceExtension {
             processLock: .envelopeProcessing(appGroupId: appGroupId)
         )
 
-        // Blocked senders are still decrypted (keeps the ratchet in sync) but
-        // the processor drops them before storing — matching the app.
+        // Blocked senders are still decrypted to keep the ratchet in sync; the
+        // processor drops them before storing, as in the app.
         let blocked = RelayStore.blockedAccounts(in: storage)
 
         var latest: DecryptOutcome?
         for envelope in envelopes {
             let result = try? processor.process(envelope, blockedAccounts: blocked)
-            // The envelope is now claimed and the ratchet advanced, so the app
-            // can never re-decrypt it: persist the control payloads (group
-            // updates, profiles, receipts to send, …) for the app to apply.
+            // The ratchet has advanced and the app can't decrypt this again, so
+            // persist the control payloads for the app to apply.
             if let result {
                 PendingControlStore.persist(result, envelopeId: envelope.id, in: storage)
             }
-            // Ack either way: a message we stored, or a poison one we drop
-            // (matches the app's poison-message protection). Ephemeral envelopes
-            // never queue, so we won't see them here.
+            // Ack stored and poison messages alike, as the app does. Ephemeral
+            // envelopes never queue.
             try? await api.ackMessage(envelopeId: envelope.id)
             guard let result else { continue }
             if let mapped = outcome(for: result, storage: storage, appGroupId: appGroupId, account: account) {
@@ -278,17 +271,15 @@ class NotificationService: UNNotificationServiceExtension {
         appGroupId: String,
         account: RelayAccount
     ) -> DecryptOutcome? {
-        // Call signalling: HANGUP means the caller gave up before we answered
-        // — show a missed call banner. Everything else (OFFER, ICE, ANSWER…)
-        // is handled by VoIP push + CallKit; suppress the regular APNs banner.
+        // HANGUP means the caller gave up before we answered: show a missed call.
+        // Other signalling goes through VoIP push and CallKit; suppress it here.
         if let callInfo = result.callInfo {
             if callInfo.type == .offer {
                 savePendingCallOffer(callInfo, in: storage)
             }
             if callInfo.type == .linkJoinRequest {
-                // Only for a link we really created, with the right secret, so
-                // nobody can spam this banner. The app gets the request via
-                // PendingControlStore and shows Admit / Deny.
+                // Only for a link we created, with the right secret, so nobody can spam
+                // this banner. The app picks the request up via PendingControlStore.
                 let defaults = UserDefaults(suiteName: appGroupId)
                 guard let secret = CallLinkRecords.secret(forCallId: callInfo.callId, defaults: defaults),
                       secret == callInfo.sdp
@@ -299,8 +290,8 @@ class NotificationService: UNNotificationServiceExtension {
                              conversationId: "", senderAccount: "")
             }
             if callInfo.type == .hangup {
-                // Missed-call banner, honoring the preview level. No account
-                // prefix fallback: an unknown caller is just "Missed call".
+                // Missed-call banner, honouring the preview level. An unknown caller is
+                // just "Missed call", never an account id prefix.
                 let callerAccount = result.peerAccount ?? ""
                 let showName = Self.previewLevel(defaults: UserDefaults(suiteName: appGroupId)) != "none"
                 let name = showName ? (callerDisplayName(for: callerAccount, in: storage) ?? "Relay") : "Relay"
@@ -311,35 +302,32 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         guard let notification = result.notification else {
-            // The app may already have processed the same pushed envelope after a
-            // VoIP wake or foreground reconnect. Duplicates, receipts, ICE, and
-            // other non-visible control messages should not fall back to the
-            // server's generic "New message" placeholder.
+            // The app may already have processed this envelope after a VoIP wake or
+            // reconnect. Duplicates, receipts, ICE and other invisible control
+            // messages shouldn't fall back to the server's "New message" placeholder.
             return .suppress
         }
         let defaults = UserDefaults(suiteName: appGroupId)
-        // Mute: the app stores per-conversation expiries in `relay.muteExpiries`.
-        // Like the app, an @mention of us still surfaces in a muted conversation.
+        // Like the app, an @mention of us still shows in a muted conversation.
         if RelayStore.isConversationMuted(notification.conversationId, defaults: defaults) {
             let mentioned = account.username.map {
                 Mentions.contains(notification.body, username: $0)
             } ?? false
             if !mentioned { return .suppress }
         }
-        // Shared-notepad updates are stored as prefixed text; don't leak the
-        // raw marker into the banner.
+        // Notepad updates are stored as prefixed text; keep the marker out of
+        // the banner.
         let previewBody = notification.body.hasPrefix(PendingControlStore.notepadPrefix)
             ? "📝 Updated the shared notepad"
             : notification.body == "__sticker__" ? "Sent a sticker"
             : notification.body
 
-        // Never fall back to (part of) the sender's account id in a banner.
+        // Never show any part of the sender's account id.
         let title = displayName(for: notification.conversationId, in: storage) ?? "Relay"
 
-        // Notification privacy: app-level setting takes precedence over per-conversation.
-        // "nameOnly": show sender name but redact message content.
-        // "none": hide both sender name and content.
-        // Per-conversation hidePreviews overrides with "nameOnly" when set.
+        // The app-level setting takes precedence. "nameOnly" redacts content,
+        // "none" hides name and content. Per-conversation hidePreviews forces
+        // "nameOnly".
         let globalPrivacy = Self.previewLevel(defaults: defaults)
         let convHidePreviews = conversationHidesPreviews(notification.conversationId, in: storage)
         let effectivePrivacy = (globalPrivacy == "none") ? "none"
@@ -402,8 +390,8 @@ class NotificationService: UNNotificationServiceExtension {
         return resolvedName(forAccount: account, fallback: username, in: storage)
     }
 
-    // Mirrors MessagingService.resolveDisplayName priority:
-    // nickname (kv table) → profile display name → username
+    // Same order as MessagingService.resolveDisplayName: nickname (kv),
+    // profile display name, username.
     private func resolvedName(forAccount account: String, fallback: String?, in storage: SecureStore) -> String? {
         if !account.isEmpty,
            let nick = (try? storage.database.query(

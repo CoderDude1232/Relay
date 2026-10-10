@@ -2,10 +2,10 @@
 //  SiriSendHandler.swift
 //  Relay
 //
-//  Handles "Send a message with Relay" (Siri, CarPlay, Shortcuts) inside the
-//  app, which iOS launches in the background for it — so the message actually
-//  goes out now. The Intents extension (RelayIntents) can only queue it until
-//  the app next runs, so it stays as the fallback.
+//  Handles "Send a message with Relay" (Siri, CarPlay, Shortcuts) in the app,
+//  which iOS launches in the background, so the message goes out immediately.
+//  The Intents extension can only queue it until the app next runs, so it
+//  remains the fallback.
 //
 
 import Intents

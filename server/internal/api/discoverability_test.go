@@ -34,7 +34,7 @@ func (c *client) directoryHas(tok []byte) bool {
 	return false
 }
 
-// TestEmailDiscoverabilityOptIn: a verified email is NOT discoverable until the
+// TestEmailDiscoverabilityOptIn: a verified email is not discoverable until the
 // owner opts in, and opting out removes it again; the username entry stays.
 func TestEmailDiscoverabilityOptIn(t *testing.T) {
 	env := newTestEnv(t)

@@ -1,10 +1,10 @@
 package api
 
 // TURN failover: our own coturn is the only TURN server handed to clients while
-// it's healthy. A background prober checks it every few seconds — a STUN
-// Binding Request (is it answering?) plus the load agent on the TURN box
+// it's healthy. A background prober checks it every few seconds with a STUN
+// Binding Request (is it answering?) and the load agent on the TURN box
 // (cmd/turnload: is it near its bandwidth/packet/CPU limits?). New calls move
-// to Cloudflare's TURN service *before* the box is overwhelmed (the host has no
+// to Cloudflare's TURN service before the box is overwhelmed (the host has no
 // DDoS filtering), and come back once it settles. Cloudflare is never
 // contacted, and sees no call traffic, while coturn is healthy.
 
@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-// iceServer is one entry of the `iceServers` list in GET /v1/turn-credentials,
+// iceServer is one entry of the iceServers list in GET /v1/turn-credentials,
 // in WebRTC's RTCIceServer shape.
 type iceServer struct {
 	URLs       []string `json:"urls"`
@@ -52,7 +52,7 @@ const (
 	turnProbeInterval = 5 * time.Second
 	turnProbeTimeout  = 3 * time.Second
 	// Consecutive results needed to flip state. Failing over takes 3 misses
-	// in a row (ordinary packet loss produced 2-miss blips); coming back takes
+	// in a row (ordinary packet loss causes 2-miss blips); coming back takes
 	// 2 good checks. Calls that actually drop don't wait for this: they ask
 	// for an immediate check (CheckNow).
 	turnProbeFailAfter    = 3
@@ -178,7 +178,7 @@ func stunProbe(addr string, timeout time.Duration) error {
 }
 
 // CloudflareTURN mints short-lived credentials for Cloudflare Realtime TURN.
-// The request carries nothing about the user — just the TTL.
+// The request carries nothing about the user, only the TTL.
 type CloudflareTURN struct {
 	KeyID    string
 	APIToken string
@@ -220,8 +220,8 @@ func (c *CloudflareTURN) generate(ctx context.Context, ttl int) (iceServer, erro
 }
 
 // parseCloudflareICE accepts both response shapes Cloudflare has used
-// (`iceServers` as a list or a single object) and keeps only turn:/turns: URLs
-// — Cloudflare's STUN would show callers' IPs to Cloudflare for nothing.
+// (iceServers as a list or a single object) and keeps only turn:/turns: URLs.
+// Cloudflare's STUN would show callers' IPs to Cloudflare for nothing.
 func parseCloudflareICE(raw []byte) (iceServer, error) {
 	var env struct {
 		ICEServers json.RawMessage `json:"iceServers"`

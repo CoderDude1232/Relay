@@ -19,7 +19,7 @@ func TestFailureLockoutBacksOff(t *testing.T) {
 	if !l.permit("k") {
 		t.Fatal("free failures should not lock")
 	}
-	l.fail("k") // first paid failure → lockoutBase
+	l.fail("k") // first paid failure: lockoutBase
 	if l.permit("k") {
 		t.Fatal("not locked after exceeding the free allowance")
 	}
@@ -30,7 +30,7 @@ func TestFailureLockoutBacksOff(t *testing.T) {
 	if !l.permit("k") {
 		t.Fatal("still locked after the backoff elapsed")
 	}
-	l.fail("k") // second paid failure → 2·lockoutBase
+	l.fail("k") // second paid failure: 2*lockoutBase
 	now = now.Add(lockoutBase)
 	if l.permit("k") {
 		t.Fatal("backoff did not grow")

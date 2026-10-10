@@ -36,18 +36,16 @@ struct ConversationListView: View {
     @State private var newFolderName = ""
     // Kept as @State so the DB query only runs when searchText changes, not on every render.
     @State private var searchResults: [MessageStore.SearchResult] = []
-    // Conversations successfully unlocked via Face ID this session.
-    // Without this, setting selectedConversationId back after auth triggers
-    // onChange again, re-prompting indefinitely.
+    // Chats unlocked with Face ID this session. Restoring selectedConversationId
+    // after auth re-fires onChange, which would otherwise prompt again.
     @State private var sessionUnlocked: Set<String> = []
     @State private var showingPanicPINError = false
     @State private var panicLockoutUntil: Date?
     @State private var qrStartError: String?
     @State private var confirmBulkDelete = false
     @State private var deleteError: String?
-    /// Message to scroll to when a global-search message hit opens its chat.
-    /// Hook for ChatView — see the detail column below. Survives the Face ID
-    /// re-selection dance; cleared when a different chat is opened.
+    /// Message to scroll to when a global-search hit opens its chat. Survives
+    /// the Face ID re-selection; cleared when another chat is opened.
     @State private var searchTarget: (conversationId: String, messageId: String)?
 
     private var isSearching: Bool {
@@ -94,8 +92,7 @@ struct ConversationListView: View {
             .navigationTitle("Chats")
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search messages").incognitoKeyboard()
             .onAppear {
-                // Handle notification taps that arrived while this view was off-screen
-                // (e.g. user was on a different tab when the notification fired).
+                // Notification taps that arrived while this view was off-screen.
                 if let id = model.pendingNotificationConversationId {
                     model.pendingNotificationConversationId = nil
                     openConversation(id)
@@ -299,21 +296,20 @@ struct ConversationListView: View {
             }
         }
         .onChange(of: selectedConversationId) { oldId, newId in
-            // Drive conversation open/close here so it fires reliably regardless of
-            // NavigationSplitView lifecycle ordering on compact (iPhone) mode.
+            // Open/close here: NavigationSplitView lifecycle ordering is
+            // unreliable in compact mode.
             if let oldId, oldId != newId { service.closeConversation(id: oldId) }
             if let newId, searchTarget?.conversationId != newId { searchTarget = nil }
             if let newId { service.openConversation(newId) }
 
-            // Re-lock when leaving a chat — back to the list (iPhone) or
-            // straight to another chat in the sidebar (iPad).
+            // Re-lock when leaving a chat, whether to the list or another chat.
             if let oldId, oldId != newId { sessionUnlocked.remove(oldId) }
             guard let newId else { return }
             searchText = ""
             guard let conv = service.conversations.first(where: { $0.id == newId }),
                   conv.requireBiometricChat,
                   !sessionUnlocked.contains(newId) else { return }
-            // Immediately hide the chat so content isn't visible during auth.
+            // Hide the chat while authenticating.
             selectedConversationId = nil
             Task {
                 guard await BiometricGate.authenticate(reason: "Unlock this chat in Relay.") else { return }
@@ -420,8 +416,8 @@ struct ConversationListView: View {
     }
 
     private var conversationList: some View {
-        // Use List(selection:) so NavigationSplitView compact mode (iPhone)
-        // automatically pushes to the detail column when a row is tapped.
+        // List(selection:) makes compact NavigationSplitView push the detail
+        // column on tap.
         List(selection: Binding(
                 get: { isEditing ? nil : selectedConversationId },
                 set: { if !isEditing { selectedConversationId = $0 } }
@@ -663,8 +659,7 @@ struct ConversationListView: View {
         return "Delete this group chat?"
     }
 
-    /// The group id when `conversationId` is a group we're still a member of
-    /// (so "Leave Group" makes sense); nil for 1:1 chats or groups already left.
+    /// The group id if `conversationId` is a group we're still in; otherwise nil.
     private func activeGroupId(for conversationId: String) -> String? {
         guard let group = service.group(for: conversationId),
               group.members.contains(service.credentials.accountId) else { return nil }
@@ -705,8 +700,8 @@ private struct NewChatSheet: View {
     @State private var startingContactEmail: String?
     @State private var invitePayload: InvitePayload?
     @State private var addError: String?
-    /// Set when the "who's on Relay" lookup failed (503 / offline) — contacts
-    /// are then shown without Invite buttons rather than all as "not on Relay".
+    /// Set when the lookup failed (503 or offline). Contacts are then shown
+    /// without Invite buttons rather than all as "not on Relay".
     @State private var discoveryError: String?
 
     private var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -741,7 +736,6 @@ private struct NewChatSheet: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 List {
-                    // Quick-action rows
                     Section {
                         actionRow("Find by @username", icon: "magnifyingglass") { showingUsernameSearch = true }
                         actionRow("New Group", icon: "person.3") {
@@ -759,8 +753,8 @@ private struct NewChatSheet: View {
                         }
                     }
 
-                    // Contact sections — only after the user explicitly asks
-                    // (never on demo accounts: they can't reach real users).
+                    // Only after the user asks, and never on demo accounts (they
+                    // can't reach real users).
                     if service.isDemoAccount {
                         EmptyView()
                     } else if !discoveryStarted {
@@ -856,9 +850,8 @@ private struct NewChatSheet: View {
         // No automatic contact access or lookup: see requestContactDiscovery().
     }
 
-    /// Contact discovery runs only when the user taps "Find contacts on Relay".
-    /// The first time, they see what it does and must agree; the agreement is
-    /// remembered so later taps go straight to the lookup.
+    /// Runs only from "Find contacts on Relay". Asks for consent the first
+    /// time; the answer is remembered.
     private func requestContactDiscovery() {
         if ContactDiscoveryConsent.isGranted {
             startContactDiscovery()
@@ -952,11 +945,10 @@ private struct NewChatSheet: View {
             return
         }
 
-        // enumerateContacts is synchronous and slow on large address books —
-        // keep it off the main thread.
+        // enumerateContacts is synchronous and slow; keep it off the main thread.
         let raw = await Task.detached(priority: .userInitiated) { Self.readAddressBook() }.value
 
-        // Deduplicate: if two contacts share an email, only keep the first.
+        // If two contacts share an email, keep the first.
         var seen = Set<String>()
         let deduped = raw.filter { entry in
             let keys = entry.emails + entry.phones
@@ -992,10 +984,9 @@ private struct NewChatSheet: View {
         return raw
     }
 
-    /// Privately matches every contact email against the directory in one
-    /// blinded batch. A lookup failure (503 / offline) is surfaced as an error
-    /// with Retry — never as "not on Relay", which would offer Invite to
-    /// people who are already here.
+    /// Matches every contact email against the directory in one blinded batch.
+    /// A failure is shown as an error with Retry, not as "not on Relay", which
+    /// would offer Invite to people already here.
     private func checkRelayStatus() async {
         discoveryError = nil
         for i in contacts.indices { contacts[i].relayStatus = .checking }
@@ -1381,7 +1372,7 @@ private struct ConversationRow: View {
             }
 
             VStack(alignment: .leading, spacing: 5) {
-                // — Name row —
+                // Name row
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
                     HStack(spacing: 4) {
                         if conversation.isPinned {
@@ -1423,7 +1414,7 @@ private struct ConversationRow: View {
                     .animation(.spring(duration: 0.35), value: lastMessageStatusSymbol)
                 }
 
-                // — Preview row —
+                // Preview row
                 HStack(spacing: 0) {
                     let isTypingHere = service.typingConversations.contains(conversation.id)
                     let preview = lastMessagePreview

@@ -48,37 +48,34 @@ type Server struct {
 	turnHealth   *TURNHealth     // nil = no failover
 	cfTURN       *CloudflareTURN // nil = no failover
 
-	// Supabase social-login verification. When supabaseURL is set, the OAuth
-	// account endpoint verifies a user's Supabase access token by asking
-	// Supabase who it belongs to (server-to-server GET /auth/v1/user), then
-	// trusts the returned id/email. verifySupabaseToken is a field so tests can
-	// stub it without hitting the network.
+	// Supabase social login. When supabaseURL is set, access tokens are
+	// verified server-to-server via GET /auth/v1/user and the returned
+	// id/email are trusted. verifySupabaseToken is a field so tests can stub it.
 	supabaseURL     string
 	supabaseAnonKey string
-	// supabaseServiceKey (service-role) lets account deletion also delete the
-	// user's Supabase auth record, which holds their email. Optional.
+	// supabaseServiceKey is the optional service-role key used to delete the
+	// user's Supabase auth record (which holds their email) on account deletion.
 	supabaseServiceKey  string
 	verifySupabaseToken func(ctx context.Context, accessToken string) (supabaseUser, error)
 
-	// Sealed-sender certificate issuance. When set, GET /v1/certificate/delivery
-	// mints a libsignal-compatible sender certificate for the authenticated device.
+	// sealed, when set, enables GET /v1/certificate/delivery.
 	sealed *sealedIssuer
 
-	// Blinded discovery. When set, the directory endpoints evaluate the OPRF and
-	// resolve tokens; the server (re)builds the directory index under this key.
+	// oprf, when set, enables blinded discovery; the directory index is built
+	// under this key.
 	oprf *oprf.Key
 
-	// Per-account attachment upload budgets (count/day at allocation,
-	// bytes/day at upload).
+	// Per-account attachment budgets: count/day at allocation, bytes/day at
+	// upload.
 	attachQuota *attachmentQuota
 
 	// attachDiskCap is the global attachment disk watermark: once the blob
-	// directory holds this many bytes, new allocations and uploads get 507
-	// until GC frees space. 0 = unlimited.
+	// directory holds this many bytes, allocations and uploads get 507 until
+	// GC frees space. 0 means unlimited.
 	attachDiskCap int64
 
-	// appleRevoker, when set, revokes the user's Sign in with Apple grant on
-	// account deletion (see handleDeleteAccount). nil = not configured.
+	// appleRevoker, if non-nil, revokes the user's Sign in with Apple grant on
+	// account deletion.
 	appleRevoker AppleRevoker
 }
 
@@ -92,7 +89,7 @@ type AppleRevoker interface {
 // deletion.
 func (s *Server) SetAppleRevoker(r AppleRevoker) { s.appleRevoker = r }
 
-// appleRevokeTimeout bounds the whole exchange + revoke on account deletion.
+// appleRevokeTimeout bounds the code exchange and revoke on account deletion.
 const appleRevokeTimeout = 10 * time.Second
 
 // DefaultAttachmentDiskCap is the default global attachment disk watermark.
@@ -134,10 +131,6 @@ func (s *Server) SetAttachmentQuota(dailyBytes int64, dailyCount int) {
 	s.attachQuota = newAttachmentQuota(dailyBytes, dailyCount)
 }
 
-// SetSupabaseAuth enables the social-login account endpoint by pointing the
-// server at a Supabase project. projectURL is the base (e.g.
-// https://xxxx.supabase.co); anonKey is the project's anon API key, required as
-// the apikey header on GoTrue calls.
 // SetSupabaseServiceKey enables deleting the Supabase auth user when its
 // relay account is deleted. Requires SetSupabaseAuth for the project URL.
 func (s *Server) SetSupabaseServiceKey(key string) {
@@ -169,6 +162,9 @@ func (s *Server) deleteSupabaseUser(ctx context.Context, userID string) {
 	}
 }
 
+// SetSupabaseAuth enables social login against a Supabase project. projectURL
+// is the base URL (e.g. https://xxxx.supabase.co); anonKey is sent as the
+// apikey header on GoTrue calls.
 func (s *Server) SetSupabaseAuth(projectURL, anonKey string) {
 	s.supabaseURL = strings.TrimRight(projectURL, "/")
 	s.supabaseAnonKey = anonKey
@@ -190,10 +186,9 @@ func (s *Server) SetSealedSender(trustRoot sealedsender.KeyPair) error {
 	return nil
 }
 
-// SetOPRF enables blinded discovery under the given OPRF key and rebuilds the
-// directory index from the current accounts (so existing users are discoverable
-// and any drift is corrected on restart). It also enables the username reuse
-// cooldown (see store.UsernameReuseCooldown).
+// SetOPRF enables blinded discovery under key and rebuilds the directory index
+// from the current accounts, correcting any drift on restart. It also enables
+// the username reuse cooldown (see store.UsernameReuseCooldown).
 func (s *Server) SetOPRF(key *oprf.Key) error {
 	s.oprf = key
 	// The username reuse cooldown keys its hashes from the OPRF key, so they
@@ -210,10 +205,10 @@ func (s *Server) SetOPRF(key *oprf.Key) error {
 	return s.store.ReplaceDirectory(entries)
 }
 
-// directoryEntries computes the OPRF token rows for an account's username/email,
-// each with its bucket, match tag and a box sealing (accountId, username) under
-// a key derived from the token — so a bucket fetch is a plain read and only a
-// client that already holds the token can recognise or open its entry.
+// directoryEntries computes the OPRF token rows for an account's username and
+// email. Each row carries its bucket, match tag and a box sealing (accountId,
+// username) under a key derived from the token, so a bucket fetch is a plain
+// read and only a client that already holds the token can open its entry.
 func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry {
 	var entries []store.DirectoryEntry
 	add := func(token []byte, kind int16) {
@@ -245,9 +240,9 @@ func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry
 	return entries
 }
 
-// emailToken derives the OPRF-keyed token we store in place of a plaintext
-// email. Returns nil when there's no email or OPRF isn't configured (in which
-// case email-based features degrade rather than storing anything sensitive).
+// emailToken derives the OPRF-keyed token stored in place of a plaintext
+// email. It returns nil when there is no email or OPRF isn't configured, so
+// email features degrade rather than store anything sensitive.
 func (s *Server) emailToken(email string) []byte {
 	if email == "" || s.oprf == nil {
 		return nil
@@ -293,12 +288,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
 	mux.HandleFunc("POST /v1/devices/link-invitations", s.auth(s.handleCreateDeviceLinkInvitation))
 	mux.HandleFunc("POST /v1/devices/link-claims", s.handleClaimDeviceLink)
-	// Reversed device linking (shared account identity). The new device creates
-	// a blind provisioning session and shows a QR; the primary scans it, creates
-	// the device, and drops an encrypted payload the new device polls for.
-	// Top-level path (NOT under /v1/devices/) so the `{id}` wildcard doesn't
-	// collide with GET /v1/devices/{id}/auth-key — Go 1.22's mux rejects such
-	// ambiguous patterns at registration.
+	// Reversed device linking: the new device creates a provisioning session and
+	// shows a QR; the primary scans it, creates the device, and stores an
+	// encrypted payload the new device polls for. The path is not under
+	// /v1/devices/ because ServeMux rejects the {id} wildcard there as ambiguous
+	// with GET /v1/devices/{id}/auth-key.
 	mux.HandleFunc("POST /v1/provisioning-sessions", s.handleCreateProvisioningSession)     // unauthenticated (new device)
 	mux.HandleFunc("GET /v1/provisioning-sessions/{id}", s.handleFetchProvisioning)         // unauthenticated (new device polls)
 	mux.HandleFunc("PUT /v1/provisioning-sessions/{id}", s.auth(s.handleStoreProvisioning)) // primary stores ciphertext
@@ -337,9 +331,8 @@ func (s *Server) Handler() http.Handler {
 
 // ---------------------------------------------------------------------------
 // Auth: Relay-Sig (see sigauth.go) on every authenticated route. HTTP Basic
-// "<accountID>.<deviceID>" is accepted on exactly one route — the bootstrap
-// PUT /v1/devices/auth-key (wrapped with bootstrapAuth) — and only for a
-// device that has not registered an auth key yet.
+// "<accountID>.<deviceID>" is accepted only on PUT /v1/devices/auth-key
+// (bootstrapAuth), and only for a device with no registered auth key.
 // ---------------------------------------------------------------------------
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Device)
@@ -347,8 +340,8 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, dev *store.Devic
 // auth requires a Relay-Sig signature.
 func (s *Server) auth(next authedHandler) http.HandlerFunc { return s.authenticate(false, next) }
 
-// bootstrapAuth additionally accepts HTTP Basic, for the one-time upload of a
-// new device's auth key (which it has no other way to prove itself for).
+// bootstrapAuth also accepts HTTP Basic, for the one-time upload of a new
+// device's auth key.
 func (s *Server) bootstrapAuth(next authedHandler) http.HandlerFunc {
 	return s.authenticate(true, next)
 }
@@ -361,15 +354,13 @@ var basicAuthSuccessLimiter = newTokenBucketLimiter(10, time.Hour)
 
 func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Failed-auth throttling: a source that keeps failing is cut off before
-		// any bcrypt / signature work is done (see authFailIPLimiter).
+		// A source that keeps failing is cut off before any bcrypt or
+		// signature work.
 		ip := clientIP(r)
 		if authFailIPLimiter.exhausted(ip) {
 			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
 			return
 		}
-		// Preferred: signature auth (proves possession of the device's auth private
-		// key without sending a reusable secret).
 		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
 			dev, err := s.authenticateSignature(r)
 			if errors.Is(err, errNonceBudget) {
@@ -419,10 +410,10 @@ func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerF
 			return
 		}
 		basicAuthSuccessLimiter.allow(deviceKey)
-		// Basic is a bootstrap credential only: once a device has registered an
-		// auth key it must sign every request, so a leaked device password alone
-		// can no longer act as the device (or swap its auth key — rotating the key
-		// therefore requires a Relay-Sig request signed by the old key).
+		// Basic is a bootstrap credential only. Once a device has an auth key it
+		// must sign every request, so a leaked device password can neither act
+		// as the device nor swap its key; rotation needs a request signed by the
+		// old key.
 		if len(dev.AuthPublicKey) > 0 {
 			httpError(w, http.StatusUnauthorized, "this device must use Relay-Sig authentication")
 			return
@@ -436,7 +427,6 @@ func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerF
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
-	// Rate limit: 20 registrations per source IP per hour.
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "registration rate limit exceeded; try again later")
@@ -445,11 +435,10 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
-		// Optional Supabase access token. When present the relay asks Supabase
-		// who it belongs to and links the account to that user; the email is
-		// kept (as its OPRF token) ONLY if Supabase reports it confirmed. A raw
-		// client-supplied email is never accepted — that let anyone pre-claim
-		// someone else's address (account pre-hijack via recovery/OAuth adoption).
+		// Optional. Links the account to the Supabase user; the email is kept
+		// (as its OPRF token) only if Supabase reports it confirmed. A raw
+		// client-supplied email is never accepted, since it would let anyone
+		// pre-claim someone else's address for later recovery or OAuth adoption.
 		SupabaseAccessToken string `json:"supabaseAccessToken"`
 		AccountPassword     string `json:"accountPassword"`
 		Email               string `json:"email"` // rejected; see above
@@ -509,20 +498,18 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	if len(devices) > 0 {
 		mailboxID = devices[0].MailboxID
 	}
-	s.reindexAccount(accountID) // make the new user discoverable immediately
+	s.reindexAccount(accountID)
 	writeJSON(w, http.StatusCreated, map[string]any{"accountId": accountID, "deviceId": deviceID, "mailboxId": mailboxID})
 }
 
-// errSignInInstead is the one response for "this sign-in identity can't create
-// a new account" — it never says whether (or which) account exists.
+// errSignInInstead is returned whenever a sign-in identity can't create a new
+// account. It never says whether, or which, account exists.
 const errSignInInstead = "could not create an account with this sign-in; sign in instead"
 
 // handleOAuthAccount signs a Supabase-authenticated user into their relay
-// account, creating it on first use, and provisions a fresh device. The request
-// carries the user's Supabase access token, which the server verifies directly
-// with Supabase; the returned id/email are authoritative. An existing account
-// is adopted by email only when Supabase reports the email confirmed (and the
-// relay only ever stores confirmed emails).
+// account, creating it on first use, and provisions a fresh device. The access
+// token is verified directly with Supabase. An existing account is adopted by
+// email only when Supabase reports the email confirmed.
 func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow("oauth:" + ip) {
@@ -581,8 +568,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusLocked, "account password incorrect")
 		return
 	case errors.Is(err, store.ErrUsernameRequired):
-		// No account exists yet for this user and no username was supplied.
-		// Signal the client to prompt for one and retry.
+		// New user without a username: the client prompts for one and retries.
 		httpError(w, http.StatusNotFound, "username required")
 		return
 	case errors.Is(err, store.ErrUsernameTaken):
@@ -605,7 +591,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
-		s.reindexAccount(dev.AccountID) // index the new social-login user for discovery
+		s.reindexAccount(dev.AccountID)
 	}
 	writeJSON(w, status, map[string]any{
 		"accountId": dev.AccountID,
@@ -617,9 +603,9 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	s.retireReplacedDevices(dev)
 }
 
-// retireReplacedDevices tells each device a fresh sign-in/recovery replaced
-// that it was removed (so a still-running app signs itself out), then drops
-// its socket. Its rows are already gone, so its credentials no longer work.
+// retireReplacedDevices tells each device replaced by a sign-in or recovery
+// that it was removed, so a running app signs itself out, then drops its
+// socket. Its rows are already gone, so its credentials no longer work.
 func (s *Server) retireReplacedDevices(dev store.AddedDevice) {
 	for _, old := range dev.ReplacedDevices {
 		s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_REMOVED, old)
@@ -673,10 +659,9 @@ func recoveryAuthTime(accessToken string) time.Time {
 // supabaseHTTPClient bounds every server-to-server Supabase call.
 var supabaseHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
-// verifySupabaseTokenHTTP asks Supabase who an access token belongs to via a
-// server-to-server GET /auth/v1/user. Returns the authoritative user id, email
-// and whether that email has been confirmed (email_confirmed_at, or
-// confirmed_at for an email-only user).
+// verifySupabaseTokenHTTP asks Supabase who an access token belongs to via
+// GET /auth/v1/user. Email is confirmed if email_confirmed_at (or confirmed_at
+// for an email-only user) is set.
 func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string) (supabaseUser, error) {
 	if s.supabaseURL == "" {
 		return supabaseUser{}, errors.New("supabase auth not configured")
@@ -716,9 +701,8 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 }
 
 // sealedDummyAccessKey is compared against when a sealed send names an unknown
-// mailbox (or an account with no access key), so the comparison work is the
-// same either way. Random per process; it can never match because a known
-// mailbox's real key is used instead and an unknown one is rejected regardless.
+// mailbox or an account with no access key, so the comparison work is the same
+// either way. It is random per process, and a match is rejected regardless.
 var sealedDummyAccessKey = func() (k [32]byte) {
 	if _, err := rand.Read(k[:]); err != nil {
 		panic("api: crypto/rand failed: " + err.Error())
@@ -726,22 +710,20 @@ var sealedDummyAccessKey = func() (k [32]byte) {
 	return k
 }()
 
-// handleSealedSend delivers a sealed-sender message. It is UNAUTHENTICATED by
-// design — the relay must not learn who sent the message. The sender proves it's
-// allowed to reach the destination by presenting the recipient's access key
-// (obtained with the prekey bundle); the server verifies it in constant time
-// without learning the sender's identity. The delivered envelope carries no
-// sender fields; the recipient recovers the sender by decrypting the sealed blob.
+// handleSealedSend delivers a sealed-sender message. It is unauthenticated by
+// design so the relay never learns the sender. The sender presents the
+// recipient's access key (obtained with the prekey bundle), checked in constant
+// time. The envelope carries no sender fields; the recipient recovers the
+// sender by decrypting the sealed blob.
 func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !sealedSendIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
-	// No client timestamp is accepted: a sender clock on the wire is a
-	// clock-offset fingerprint that could link anonymous sends to one device.
-	// Timestamps that matter (ordering, receipts) live inside the encrypted
-	// content; the envelope carries only the relay's receive time.
+	// No client timestamp is accepted: a sender clock offset is a fingerprint
+	// that could link anonymous sends to one device. Timestamps that matter live
+	// inside the encrypted content; the envelope carries the relay's receive time.
 	var req struct {
 		MailboxID string `json:"mailboxId"`
 		Type      int32  `json:"type"`
@@ -776,12 +758,10 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UnixMilli()
 	env := &relaypb.Envelope{
 		Id: newEnvelopeID(),
-		// SenderAccount / SenderDevice intentionally left empty: the relay does
-		// not know who sent a sealed message. The recipient recovers the sender
-		// from the sealed blob.
+		// Sender fields are left empty: the relay doesn't know the sender.
 		Type:            relaypb.CiphertextType(req.Type),
 		Content:         content,
-		ClientTimestamp: now, // server-stamped, never the sender's clock
+		ClientTimestamp: now, // never the sender's clock
 		ServerTimestamp: now,
 		Ephemeral:       req.Ephemeral,
 	}
@@ -792,8 +772,8 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, store.ErrNotFound) {
-			// The device vanished after the access check: same answer as an
-			// unknown mailbox.
+			// Device removed after the access check: answer as for an unknown
+			// mailbox.
 			httpError(w, http.StatusForbidden, "delivery rejected")
 			return
 		}
@@ -804,12 +784,11 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"serverTimestamp": env.ServerTimestamp})
 }
 
-// checkMailboxAccess is the unauthenticated-path capability check shared by
-// sealed sends and call rings: the presented key must equal the access key of
-// the account owning the mailbox. Any failure is the same false result and
-// takes the same path — one query either way, and the constant-time comparison
-// always runs (against a random dummy key when the mailbox or its key is
-// unknown) — so a caller can't tell an unknown mailbox from a wrong key.
+// checkMailboxAccess is the capability check for sealed sends and call rings:
+// the presented key must equal the access key of the account owning the
+// mailbox. Every failure takes the same path (one query, and a constant-time
+// comparison against a dummy key when the mailbox or key is unknown), so a
+// caller can't tell an unknown mailbox from a wrong key.
 func (s *Server) checkMailboxAccess(mailboxID string, presented []byte) (*store.Device, bool) {
 	dest, stored, lookupErr := s.store.SealedTargetByMailbox(mailboxID)
 	known := lookupErr == nil && len(stored) == len(sealedDummyAccessKey)
@@ -823,16 +802,13 @@ func (s *Server) checkMailboxAccess(mailboxID string, presented []byte) (*store.
 	return dest, true
 }
 
-// handleFetchQueue returns this device's currently-queued envelopes over the
-// (HTTP/3-capable) REST plane. Used as a QUIC fallback for receiving when the
-// TCP WebSocket can't connect (congested networks / stadiums). Does not dequeue
-// — the client acks each envelope via POST /v1/messages/ack, preserving
-// at-least-once delivery. The WebSocket stays the primary live path.
+// handleFetchQueue returns this device's queued envelopes over REST, which can
+// run on HTTP/3 when the WebSocket can't connect. It does not dequeue: the
+// client acks each envelope via POST /v1/messages/ack (at-least-once).
 //
-// Paged: `?limit=N` (1–100, default 100) caps the envelope count, and a page
-// also stops once it holds 4 MiB of ciphertext. The response carries
-// `more` (bool) and, when more is true, an opaque `cursor`; pass it back as
-// `?cursor=` to read the next page. Acking is independent of paging.
+// ?limit=N (1-100, default 100) caps the envelope count, and a page also stops
+// at 4 MiB of ciphertext. When "more" is true the response carries an opaque
+// "cursor" to pass back as ?cursor= for the next page.
 func (s *Server) handleFetchQueue(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	limit := queuePageMaxEnvelopes
 	if q := r.URL.Query().Get("limit"); q != "" {
@@ -885,8 +861,8 @@ func parseQueueCursor(v string) (store.QueueCursor, bool) {
 	return store.QueueCursor{CreatedAt: n, EnvelopeID: id}, true
 }
 
-// handleAckMessage removes a delivered envelope from this device's queue (the
-// REST equivalent of the WebSocket AckRequest).
+// handleAckMessage removes a delivered envelope from this device's queue; the
+// REST equivalent of the WebSocket AckRequest.
 func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		EnvelopeID string `json:"envelopeId"`
@@ -902,9 +878,8 @@ func (s *Server) handleAckMessage(w http.ResponseWriter, r *http.Request, dev *s
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSetAccessKey stores this account's sealed-sender access key (32 bytes).
-// The client uploads it once (and on rotation); senders present it on the
-// unauthenticated delivery path.
+// handleSetAccessKey stores this account's 32-byte sealed-sender access key,
+// which senders present on the unauthenticated delivery path.
 func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		AccessKey string `json:"accessKey"`
@@ -927,11 +902,9 @@ func (s *Server) handleSetAccessKey(w http.ResponseWriter, r *http.Request, dev 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRotateMailbox assigns the authenticated device a fresh mailbox id and
-// returns it. The relay never rotates mailboxes on its own (ids are stable);
-// this exists only for an explicit client request (e.g. after a suspected
-// mailbox-id leak). Peers pick up the new id on their next bundle fetch, and
-// sealed sends to the stale id fail-and-retry.
+// handleRotateMailbox assigns the device a fresh mailbox id and returns it.
+// The relay never rotates mailboxes on its own. Peers pick up the new id on
+// their next bundle fetch; sealed sends to the old id fail and retry.
 func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	mailboxID, err := s.store.RotateMailbox(dev.AccountID, dev.DeviceID)
 	if err != nil {
@@ -941,11 +914,10 @@ func (s *Server) handleRotateMailbox(w http.ResponseWriter, r *http.Request, dev
 	writeJSON(w, http.StatusOK, map[string]any{"mailboxId": mailboxID})
 }
 
-// handleDirectoryOPRF evaluates the OPRF over a batch of client-blinded elements
-// (returns E = k·B for each). The server learns nothing about the identifiers
-// the client is querying — only opaque curve points cross the wire. Every
-// evaluated element spends one unit of a per-account and a per-IP daily budget,
-// so the oracle can't be driven to enumerate identifiers offline.
+// handleDirectoryOPRF evaluates the OPRF (E = k·B) over a batch of blinded
+// elements, so the server learns nothing about the identifiers queried. Each
+// element spends one unit of a per-account and a per-IP daily budget, so the
+// oracle can't be used to enumerate identifiers.
 func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.oprf == nil {
 		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
@@ -993,10 +965,10 @@ func (s *Server) handleDirectoryOPRF(w http.ResponseWriter, r *http.Request, dev
 }
 
 // handleDirectoryBuckets returns the directory entries for the requested
-// 16-bit buckets. The client derives bucket(t) from each OPRF token t locally
-// and sends only that; tokens never leave the device. Each entry is a match
-// tag plus a box only a holder of the token can open, so the relay learns at
-// most which buckets were requested — not which identifiers, nor which matched.
+// 16-bit buckets. Clients derive buckets from OPRF tokens locally and tokens
+// never leave the device. Each entry is a match tag plus a box only a token
+// holder can open, so the relay learns which buckets were requested but not
+// which identifiers, or which matched.
 func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.oprf == nil {
 		httpError(w, http.StatusServiceUnavailable, "discovery not configured")
@@ -1061,8 +1033,8 @@ func (s *Server) handleDirectoryBuckets(w http.ResponseWriter, r *http.Request, 
 }
 
 // handleDeliveryCertificate mints a sealed-sender certificate for the
-// authenticated device, binding its account id, device id, and stored identity
-// key with a 7-day expiry. The client uses it to send sealed-sender messages.
+// authenticated device, binding its account id, device id, username and stored
+// identity key with a 7-day expiry.
 func (s *Server) handleDeliveryCertificate(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.sealed == nil {
 		httpError(w, http.StatusServiceUnavailable, "sealed sender not configured")
@@ -1073,8 +1045,8 @@ func (s *Server) handleDeliveryCertificate(w http.ResponseWriter, r *http.Reques
 		httpError(w, http.StatusConflict, "device has not published an identity key")
 		return
 	}
-	// The relay-attested username travels inside the certificate, so
-	// recipients learn who wrote without asking the relay about the sender.
+	// The username travels in the certificate so recipients learn who wrote
+	// without asking the relay about the sender.
 	username, err := s.store.LookupUsername(dev.AccountID)
 	if err != nil {
 		internalError(w, err)
@@ -1111,9 +1083,9 @@ func (s *Server) handleCreateContactInvite(w http.ResponseWriter, r *http.Reques
 }
 
 // handleClaimContactInvite consumes a contact invite token, returning the
-// inviter's account id and username. Single-use: the row is deleted on claim,
-// so a second claim returns 404. UNAUTHENTICATED — the token is the capability
-// — so the relay can't record which account redeemed whose invite.
+// inviter's account id and username. A second claim returns 404. It is
+// unauthenticated (the token is the capability) so the relay can't record who
+// redeemed whose invite.
 func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !inviteClaimIPLimiter.allow(ip) {
@@ -1139,21 +1111,14 @@ func (s *Server) handleClaimContactInvite(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"accountId": accountID, "username": username})
 }
 
-// handleRecoverAccount provisions a new device for the account whose verified
-// email matches, given its recovery password. Every recovery failure (unknown
-// email, no recovery password, wrong password) gets the same 401 after the
-// same bcrypt work, and repeated failures for one email back off
-// exponentially — applied identically whether or not the email is registered,
-// so neither status, timing nor lockout reveals account existence.
 // passwordResetWindow bounds how old the Supabase recovery sign-in may be.
 const passwordResetWindow = 15 * time.Minute
 
 // handlePasswordReset is "forgot password". The client proves control of the
-// account's verified email with a Supabase session minted by a password-
-// recovery code (amr "recovery", within passwordResetWindow) — an ordinary
-// social or password session is NOT enough, so a stolen session can't be used
-// to get past the account-password lock. The account gets the new account
-// password and, like any fresh sign-in, its devices are replaced by this one.
+// account's verified email with a Supabase session minted by a recovery code
+// (amr "recovery", within passwordResetWindow). An ordinary session is not
+// enough, so a stolen session can't bypass the account-password lock. The
+// account gets the new password and its devices are replaced by this one.
 func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow("reset:" + ip) {
@@ -1208,11 +1173,9 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 	s.retireReplacedDevices(dev)
 }
 
-// handleUpdateEmail runs after the user confirmed a new email with Supabase:
-// the client sends its (now updated) Supabase session, the relay checks it
-// belongs to this account's linked Supabase user and that the new email is
-// confirmed, then re-keys the account's email token (recovery and the opt-in
-// email discovery follow the new address).
+// handleUpdateEmail runs after the user confirmed a new email with Supabase.
+// It checks the session belongs to this account's linked Supabase user and the
+// email is confirmed, then re-keys the account's email token.
 func (s *Server) handleUpdateEmail(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.refuseIfDemo(w, dev.AccountID) {
 		return
@@ -1259,6 +1222,11 @@ func (s *Server) handleUpdateEmail(w http.ResponseWriter, r *http.Request, dev *
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRecoverAccount provisions a new device for the account whose verified
+// email matches, given its account password. Every failure gets the same 401
+// after the same bcrypt work, and lockout backoff applies whether or not the
+// email is registered, so none of status, timing or lockout reveals whether an
+// account exists.
 func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !accountCreationLimiter.allow("recover:" + ip) {
@@ -1332,13 +1300,13 @@ func (s *Server) handleUpdateUsername(w http.ResponseWriter, r *http.Request, de
 		return
 	}
 	usernameChangeLimiter.allow(dev.AccountID) // only completed changes spend budget
-	s.reindexAccount(dev.AccountID)            // update the blinded directory for the new username
+	s.reindexAccount(dev.AccountID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleSetDiscoverability sets whether the account's verified email gets a
-// blinded-directory entry (opt-in; off by default) and reindexes the account.
-// Username entries are unaffected. Body: {"email": bool} — the field is required.
+// blinded-directory entry (off by default). Username entries are unaffected.
+// Body: {"email": bool}, required.
 func (s *Server) handleSetDiscoverability(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.refuseIfDemo(w, dev.AccountID) {
 		return
@@ -1364,7 +1332,7 @@ var accountPasswordLimiter = newTokenBucketLimiter(10, time.Hour)
 
 // handleSetAccountPassword sets or changes the account password, which guards
 // email recovery and the sign-in registration lock. Any signed device of the
-// account may set it (such a device already controls the account).
+// account may set it.
 func (s *Server) handleSetAccountPassword(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.refuseIfDemo(w, dev.AccountID) {
 		return
@@ -1496,8 +1464,8 @@ func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCreateProvisioningSession mints a blind mailbox for the reversed
-// linking flow. Unauthenticated: the new device has no account yet.
+// handleCreateProvisioningSession creates a provisioning session for reversed
+// linking. It is unauthenticated because the new device has no account yet.
 func (s *Server) handleCreateProvisioningSession(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !provisioningLimiter.allow(ip) {
@@ -1516,7 +1484,7 @@ func (s *Server) handleCreateProvisioningSession(w http.ResponseWriter, r *http.
 }
 
 // handleFetchProvisioning lets the new device poll for the primary's encrypted
-// payload. 204 while it's not there yet, 404 once expired/consumed.
+// payload: 204 until it arrives, 404 once expired or consumed.
 func (s *Server) handleFetchProvisioning(w http.ResponseWriter, r *http.Request) {
 	if !provisioningPollIPLimiter.allow(clientIP(r)) {
 		httpError(w, http.StatusTooManyRequests, "polling too fast; try again later")
@@ -1532,15 +1500,14 @@ func (s *Server) handleFetchProvisioning(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if blob == nil {
-		w.WriteHeader(http.StatusNoContent) // not provisioned yet; keep polling
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"blob": blob})
 }
 
-// handleStoreProvisioning lets the primary deposit the encrypted payload for a
-// session. Authenticated so only a real account device can write; the payload
-// itself is end-to-end encrypted to the new device's ephemeral key.
+// handleStoreProvisioning stores the primary's payload for a session. The
+// payload is end-to-end encrypted to the new device's ephemeral key.
 func (s *Server) handleStoreProvisioning(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxProvisioningBlobBytes)
 	var req struct {
@@ -1566,10 +1533,10 @@ func (s *Server) handleStoreProvisioning(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleLinkDevice creates a new device row for the primary's account using a
-// primary-supplied password, bound into the device-mutation signature. The
-// reversed-flow replacement for the invitation/claim round-trip: the QR scan is
-// the trust anchor, so there is no separate verification code.
+// handleLinkDevice creates a device for the primary's account with a
+// primary-supplied password, bound into the device-mutation signature. In the
+// reversed flow the QR scan is the trust anchor, so there is no verification
+// code.
 func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		Password   string             `json:"password"`
@@ -1584,8 +1551,8 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		httpError(w, http.StatusForbidden, err.Error())
 		return
 	}
-	// req.DeviceName is accepted for older clients but ignored: device names
-	// travel only between the account's own devices, end-to-end encrypted.
+	// req.DeviceName is ignored: device names travel only between the
+	// account's own devices, end-to-end encrypted.
 	deviceID, err := s.store.AllocateLinkedDevice(dev.AccountID, req.Password, req.Auth.ExpectedVersion)
 	if errors.Is(err, store.ErrDeviceListVersionMismatch) {
 		httpError(w, http.StatusConflict, "device list changed; refresh and try again")
@@ -1600,7 +1567,6 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"deviceId": deviceID})
-	// Like every other add path, tell the account's live devices.
 	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, deviceID)
 }
 
@@ -1656,7 +1622,6 @@ func (s *Server) handleRemoveDevice(w http.ResponseWriter, r *http.Request, dev 
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-	// The removed device's credentials are gone; drop its live socket too.
 	s.hub.DisconnectDevice(dev.AccountID, uint32(id), "device removed")
 	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_REMOVED, uint32(id))
 }
@@ -1712,8 +1677,6 @@ func (s *Server) handleSetDeviceAuthKey(w http.ResponseWriter, r *http.Request, 
 		httpError(w, http.StatusBadRequest, "publicKey too large")
 		return
 	}
-	// Validate that the bytes represent a valid, uncompressed P-256 public key
-	// before persisting. elliptic.Unmarshal returns nil on invalid input.
 	x, y := elliptic.Unmarshal(elliptic.P256(), req.PublicKey)
 	if x == nil || y == nil {
 		httpError(w, http.StatusBadRequest, "publicKey is not a valid P-256 uncompressed point")
@@ -1726,8 +1689,8 @@ func (s *Server) handleSetDeviceAuthKey(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleGetDeviceAuthKey returns the auth public key for any device in the same
-// account. Used by clients to independently verify nuke command signatures.
+// handleGetDeviceAuthKey returns the auth public key of a device in the same
+// account, so clients can verify nuke command signatures themselves.
 func (s *Server) handleGetDeviceAuthKey(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	id, err := strconv.ParseUint(r.PathValue("id"), 10, 32)
 	if err != nil {
@@ -1746,9 +1709,9 @@ func (s *Server) handleGetDeviceAuthKey(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{"authPublicKey": base64.StdEncoding.EncodeToString(key)})
 }
 
-// validAPNsToken matches an APNs / PushKit device token: hex, 64–200 chars
-// (32 bytes today; Apple documents tokens as variable length). Anything else
-// would only be spliced into the APNs request path.
+// validAPNsToken matches an APNs or PushKit device token: 64-200 hex chars,
+// since Apple documents tokens as variable length. The token is spliced into
+// the APNs request path.
 var validAPNsToken = regexp.MustCompile(`^[0-9a-fA-F]{64,200}$`)
 
 func (s *Server) handleSetAPNSToken(w http.ResponseWriter, r *http.Request, dev *store.Device) {
@@ -1796,9 +1759,9 @@ func (s *Server) handleSetVoIPToken(w http.ResponseWriter, r *http.Request, dev 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSetPushContent records this device's push-content preference: false
-// (default) = content-free wake, the NSE fetches the envelope; true = embed the
-// encrypted envelope in the APNs payload for a faster, slightly less private wake.
+// handleSetPushContent records this device's push-content preference. By
+// default pushes are content-free and the NSE fetches the envelope; when set,
+// the encrypted envelope is embedded in the APNs payload.
 func (s *Server) handleSetPushContent(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		IncludeContent bool `json:"includeContent"`
@@ -1817,13 +1780,11 @@ func (s *Server) handleSetPushContent(w http.ResponseWriter, r *http.Request, de
 // validCallID bounds the opaque call id echoed into the push payload.
 var validCallID = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
-// handleCallRing wakes the callee's devices for an incoming call. It is
-// UNAUTHENTICATED by design, exactly like sealed sends: the caller proves it
-// may reach the callee by presenting the callee's access key for one of their
-// mailboxes, so the relay never learns who is calling whom. Unknown mailbox
-// and wrong key get the identical 403. The push carries only the call id; the
-// caller's identity reaches the callee solely inside the E2E-encrypted offer
-// (delivered as a sealed message).
+// handleCallRing wakes the callee's devices for an incoming call. Like sealed
+// sends it is unauthenticated: the caller presents the callee's access key for
+// one of their mailboxes, so the relay never learns who is calling whom. The
+// push carries only the call id; the caller's identity arrives in the
+// encrypted offer, sent as a sealed message.
 func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !callRingIPLimiter.allow(ip) {
@@ -1858,11 +1819,10 @@ func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleUsernameAvailable answers "is this username free?" for sign-up and
-// rename. Unauthenticated (new users have no credentials) and rate-limited per
-// source IP. It returns only a boolean — never an account id — so it can't be
-// used to map usernames to accounts; comparison is case-insensitive, matching
-// how uniqueness is enforced.
+// handleUsernameAvailable reports whether a username is free, for sign-up and
+// rename. It is unauthenticated and rate-limited per IP, and returns only a
+// boolean so it can't map usernames to accounts. Comparison is
+// case-insensitive, matching how uniqueness is enforced.
 func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !usernameLookupLimiter.allow(ip) {
@@ -1886,9 +1846,9 @@ func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request)
 // Attachments (opaque encrypted blobs)
 // ---------------------------------------------------------------------------
 
-// handleCreateAttachment allocates an attachment id for the authenticated
-// device (charged to its daily attachment quota) and records it as reserved,
-// so the (unauthenticated) PUT can only write ids the relay handed out, once.
+// handleCreateAttachment allocates an attachment id, charged to the account's
+// daily quota, and reserves it so the unauthenticated PUT can only write ids
+// the relay handed out, once.
 func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.attachmentDiskFull() {
 		httpError(w, http.StatusInsufficientStorage, "attachment storage is full; try again later")
@@ -1910,7 +1870,7 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 
-// countingReader counts bytes read through it (attachment byte quota).
+// countingReader counts bytes read through it.
 type countingReader struct {
 	r io.Reader
 	n int64
@@ -1923,10 +1883,10 @@ func (c *countingReader) Read(p []byte) (int, error) {
 }
 
 // handleUploadAttachment stores the ciphertext for a reserved id. It is
-// UNAUTHENTICATED: the unguessable 128-bit id is the capability, so the upload
-// can't be tied to the uploader's account. Write-once: an id that was never
-// allocated, has expired, or was already written gets 404. Bytes are charged
-// to the allocating account's quota via the in-memory allocation record.
+// unauthenticated (the 128-bit id is the capability) so the upload can't be
+// tied to an account. An id that was never allocated, has expired, or was
+// already written gets 404. Bytes are charged to the allocating account via
+// the in-memory allocation record.
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !attachmentIPLimiter.allow(clientIP(r)) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
@@ -1969,11 +1929,11 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// handleDownloadAttachment streams the blob from disk (never buffering it in
-// memory) via http.ServeContent, which also serves Range requests so large
-// downloads can resume. No Last-Modified is sent: the upload time is not
-// disclosed. UNAUTHENTICATED: knowing the id (shared only inside E2E-encrypted
-// content) is the capability, so downloads can't be linked to an account.
+// handleDownloadAttachment streams the blob from disk with http.ServeContent,
+// which handles Range requests so large downloads can resume. No Last-Modified
+// is sent, to avoid disclosing the upload time. It is unauthenticated (the id,
+// shared only inside encrypted content, is the capability) so downloads can't
+// be linked to an account.
 func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !attachmentIPLimiter.allow(clientIP(r)) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
@@ -1993,13 +1953,13 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 }
 
 // ---------------------------------------------------------------------------
-// Group invites (relay stores only opaque encrypted blobs; groups are fully
-// client-managed — the server keeps no roster, name, admin, or membership state)
+// Group invites. The relay stores only opaque encrypted blobs and keeps no
+// group state.
 // ---------------------------------------------------------------------------
 
 // handleCreateEncryptedGroupInvite stores an opaque encrypted invite blob and
-// returns a token. The relay never learns the group id, name, or roster — the
-// blob is decryptable only with the key carried in the invite URL fragment.
+// returns a token. The blob is decryptable only with the key in the invite URL
+// fragment.
 func (s *Server) handleCreateEncryptedGroupInvite(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if !groupCreateLimiter.allow(dev.AccountID) {
 		httpError(w, http.StatusTooManyRequests, "too many invites; try again later")
@@ -2026,9 +1986,9 @@ func (s *Server) handleCreateEncryptedGroupInvite(w http.ResponseWriter, r *http
 }
 
 // handleClaimEncryptedGroupInvite returns the opaque blob for a token so the
-// redeemer can decrypt it client-side with the fragment key. Multi-use until
-// expiry. UNAUTHENTICATED — the token is the capability — and rate-limited per
-// source IP, so the relay can't tell which account joined via which link.
+// redeemer can decrypt it with the fragment key. Tokens are multi-use until
+// expiry. It is unauthenticated (the token is the capability) and rate-limited
+// per IP, so the relay can't tell which account joined via which link.
 func (s *Server) handleClaimEncryptedGroupInvite(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !inviteClaimIPLimiter.allow(ip) {
@@ -2080,9 +2040,8 @@ func (s *Server) handleSetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		SignedPreKey   jsonSignedPreKey    `json:"signedPreKey"`
 		KyberPreKey    jsonSignedPreKey    `json:"kyberPreKey"`
 		OneTimePreKeys []jsonOneTimePreKey `json:"oneTimePreKeys"`
-		// When true, the device's existing one-time pool is deleted before this
-		// batch is stored (fresh install/restore or desync heal). Defaults false
-		// so ordinary top-ups keep appending.
+		// Deletes the device's one-time pool before storing this batch (fresh
+		// install, restore, or desync). Ordinary top-ups append.
 		ReplaceOneTimePreKeys bool `json:"replaceOneTimePreKeys"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
@@ -2131,17 +2090,16 @@ func (s *Server) handleKeyCount(w http.ResponseWriter, r *http.Request, dev *sto
 	writeJSON(w, http.StatusOK, map[string]any{"count": n})
 }
 
-// GET /v1/keys/{account}?device=N — omit ?device to fetch bundles for all
-// of the account's devices. Each fetch consumes a one-time prekey when one
-// is available; `oneTimePreKey` is null when the pool is exhausted.
+// handleGetKeys serves GET /v1/keys/{account}?device=N; without ?device it
+// returns bundles for all of the account's devices. Each fetch consumes a
+// one-time prekey if available; oneTimePreKey is null when the pool is empty.
 func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	account := r.PathValue("account")
 	if s.crossesDemoLine(dev.AccountID, account) {
 		httpError(w, http.StatusNotFound, "unknown account/device or keys not yet uploaded")
 		return
 	}
-	// Exempt own-account fetches (device sync / session refresh). Rate-limit
-	// cross-account fetches to prevent prekey-pool depletion attacks.
+	// Only cross-account fetches are limited, to stop prekey pool depletion.
 	if dev.AccountID != account {
 		if !preKeyFetchLimiter.allow(dev.AccountID + ":" + account) {
 			httpError(w, http.StatusTooManyRequests, "prekey fetch rate limit exceeded; try again later")
@@ -2157,9 +2115,8 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		}
 		deviceIDs = []uint32{uint32(id)}
 	}
-	// One-time prekey budgets (cross-account only): once the target device's
-	// hourly budget or the requester's is spent, the bundle is still served,
-	// just without a one-time prekey (see preKeyTargetOTKLimiter).
+	// Cross-account only: once the target device's or the requester's hourly
+	// one-time prekey budget is spent, bundles are served without one.
 	var allowOneTime func(uint32) bool
 	if dev.AccountID != account {
 		allowOneTime = func(deviceID uint32) bool {
@@ -2182,19 +2139,17 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 		return
 	}
 
-	// Include the account's sealed-sender access key so a sender who establishes
-	// a session (fetches the bundle) can then send sealed to this account.
+	// Include the access key so the fetcher can send sealed to this account.
 	accessKey, _ := s.store.AccessKey(account)
 	writeKeyBundles(w, bundles, accessKey)
 }
 
-// handleGetKeysSealed serves prekey bundles to a caller that proves it may
-// reach `account` with the account's sealed-sender access key — without saying
-// who it is, so the relay can't record who fetches whose keys. Clients use it
-// whenever they already know the peer's access key (every fetch after the first
-// contact); the signed GET /v1/keys/{account} remains for first contact.
-// Unknown account and wrong key get the same 403. Abuse is bounded per source
-// IP and by the target's one-time-prekey budget.
+// handleGetKeysSealed serves prekey bundles to an anonymous caller holding the
+// account's sealed-sender access key, so the relay can't record who fetches
+// whose keys. Clients use it once they know the peer's access key; first
+// contact uses the signed GET /v1/keys/{account}. Unknown account and wrong
+// key get the same 403. Abuse is bounded per IP and by the target's one-time
+// prekey budget.
 func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !sealedKeyFetchIPLimiter.allow(ip) {
@@ -2225,8 +2180,7 @@ func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
 		}
 		deviceIDs = []uint32{uint32(id)}
 	}
-	// Same one-time prekey budgets as the signed path, with the source IP
-	// standing in for the (unknown) requester.
+	// Same one-time prekey budgets as the signed path, keyed by source IP.
 	requester := "ip:" + ip
 	allowOneTime := func(deviceID uint32) bool {
 		if preKeyRequesterOTKLimiter.exhausted(requester) {
@@ -2294,8 +2248,8 @@ func writeKeyBundles(w http.ResponseWriter, bundles []store.PreKeyBundle, access
 // Helpers
 // ---------------------------------------------------------------------------
 
-// b64 marshals []byte as standard (padded) base64 in JSON, the encoding
-// all clients must use for binary key material in the REST API.
+// b64 marshals []byte as standard padded base64, the encoding for all binary
+// fields in the REST API.
 type b64 []byte
 
 func (b b64) MarshalJSON() ([]byte, error) {
@@ -2315,14 +2269,11 @@ func (b *b64) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// errTrailingJSON rejects a request body that carries anything after its
-// single JSON value.
 var errTrailingJSON = errors.New("unexpected data after the JSON body")
 
 // decodeJSON decodes exactly one JSON value from the request body into v and
-// rejects any trailing data (whitespace aside). Every JSON handler uses it, so
-// the body a handler acts on is the whole body the request signature covered —
-// never a prefix followed by bytes nothing looked at.
+// rejects trailing non-whitespace data, so a handler always acts on the whole
+// body the request signature covered and not just a prefix of it.
 func decodeJSON(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil {
@@ -2353,16 +2304,13 @@ func internalError(w http.ResponseWriter, err error) {
 // Account deletion and abuse reports
 // ---------------------------------------------------------------------------
 
-// handleDeleteAccount permanently deletes the authenticated account and all
-// server-side data keyed to it (see store.DeleteAccount), then drops every live
-// WebSocket of the account. After this, the account's credentials no longer
-// authenticate (401) and its username enters the reuse cooldown.
+// handleDeleteAccount permanently deletes the account and all server-side data
+// keyed to it (see store.DeleteAccount), then drops the account's WebSockets.
+// Its username enters the reuse cooldown.
 //
 // The optional body {"appleAuthorizationCode": "..."} carries a fresh Sign in
-// with Apple authorization code; when the relay is configured for it, the
-// user's Apple grant is revoked after the deletion (best-effort: Apple being
-// unreachable never fails the deletion). The code is used once and never
-// stored or logged.
+// with Apple code used to revoke the user's Apple grant after deletion. This
+// is best effort, and the code is never stored or logged.
 func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		AppleAuthorizationCode string `json:"appleAuthorizationCode"`
@@ -2375,8 +2323,8 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 		httpError(w, http.StatusBadRequest, "appleAuthorizationCode too long")
 		return
 	}
-	// A demo account is reset instead: devices, keys and queues go, the login
-	// stays, so the same credentials keep working for the next reviewer.
+	// A demo account is reset instead: devices, keys and queues go but the
+	// login stays, so the credentials keep working for the next reviewer.
 	if s.isDemo(dev.AccountID) {
 		if _, err := s.store.ResetDemoAccount(dev.AccountID); err != nil {
 			internalError(w, err)
@@ -2386,7 +2334,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	// Read the linked Supabase user before the row (and the link) is gone.
+	// Read the linked Supabase user before the row is gone.
 	supabaseUserID, err := s.store.SupabaseUserID(dev.AccountID)
 	if err != nil {
 		internalError(w, err)
@@ -2426,9 +2374,8 @@ var validReportReasons = map[string]bool{
 }
 
 // handleCreateReport stores an abuse report filed by the authenticated account
-// against another account. `messages` are plaintext messages the reporter
-// explicitly chose to forward from their decrypted conversation — the relay
-// otherwise never sees message content.
+// against another account. messages holds plaintext the reporter chose to
+// forward from the conversation; the relay otherwise never sees content.
 func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		ReportedAccount string   `json:"reportedAccount"`
@@ -2471,7 +2418,7 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request, dev 
 		httpError(w, http.StatusNotFound, "no such account")
 		return
 	}
-	// Count only well-formed reports against real accounts toward the cap.
+	// Only well-formed reports against real accounts count toward the cap.
 	if !reportLimiter.allow(dev.AccountID) {
 		httpError(w, http.StatusTooManyRequests, "report rate limit exceeded; try again later")
 		return
@@ -2495,9 +2442,9 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request, dev 
 // Nuke (remote wipe / crypto-shred)
 // ---------------------------------------------------------------------------
 
-// handleNuke processes a signed remote-wipe command. The server validates the
-// signature shape but cannot generate a valid command; clients independently
-// verify the full signature before wiping local storage.
+// handleNuke verifies, records and broadcasts a signed remote-wipe command.
+// The server cannot forge one, and clients verify the signature themselves
+// before wiping.
 func (s *Server) handleNuke(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		CommandID          string `json:"commandId"`
@@ -2513,12 +2460,11 @@ func (s *Server) handleNuke(w http.ResponseWriter, r *http.Request, dev *store.D
 		httpError(w, http.StatusBadRequest, "commandId and signature required")
 		return
 	}
-	// A device may only issue a nuke command in its own name.
 	if req.InitiatingDeviceID != dev.DeviceID {
 		httpError(w, http.StatusForbidden, "initiatingDeviceId must match authenticated device")
 		return
 	}
-	// Reject commands more than 5 minutes old to limit replay window.
+	// Limit the replay window.
 	age := time.Since(time.UnixMilli(req.CreationTimeMs))
 	if age > 5*time.Minute || age < -30*time.Second {
 		httpError(w, http.StatusBadRequest, "nuke command timestamp out of acceptable range")
@@ -2588,17 +2534,16 @@ func verifyNukeSignature(authPublicKey []byte, accountID, commandID string, crea
 const turnTTL = 3600 // seconds
 
 // handleTurnCredentials issues time-limited TURN credentials using coturn's
-// REST API HMAC format: username="{expiry}:{random}", password=HMAC-SHA1.
-// Returns 404 if TURN is not configured on this server.
+// REST API format: username "{expiry}:{random}", password HMAC-SHA1. It
+// returns 404 if TURN is not configured.
 func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request, _ *store.Device) {
 	if len(s.turnURLs) == 0 || s.turnSecret == "" {
 		httpError(w, http.StatusNotFound, "TURN not configured on this server")
 		return
 	}
 	expiry := time.Now().Unix() + turnTTL
-	// The part after the expiry is 16 random hex chars, NOT derived from the
-	// account: the TURN server (and its logs) must not be able to tie relayed
-	// call traffic to a relay account. coturn only needs it to be unique-ish.
+	// The suffix is random rather than derived from the account, so the TURN
+	// server and its logs can't tie relayed call traffic to an account.
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		internalError(w, err)
@@ -2609,13 +2554,12 @@ func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request, _
 	mac.Write([]byte(username))
 	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	own := iceServer{URLs: s.turnURLs, Username: username, Credential: credential}
-	// While our coturn is healthy it's the only server handed out. When it's
-	// down or overloaded only Cloudflare's TURN is (listing ours too would keep
-	// adding allocations to a box that needs the load taken off it), in both
-	// the list and the legacy top-level fields older clients read.
+	// Hand out only our coturn while it is healthy, and only Cloudflare's TURN
+	// when it is down or overloaded, so a struggling box gets no new
+	// allocations. The legacy top-level fields follow the same choice.
 	servers, legacy := []iceServer{own}, own
-	// ?failed=1: the phone's call just lost its relay. Check our TURN now
-	// instead of waiting for the background prober (~15 s) to notice.
+	// ?failed=1 means the client's call just lost its relay: probe our TURN
+	// now instead of waiting for the background prober.
 	down := s.turnHealth != nil && !s.turnHealth.Healthy()
 	if !down && s.cfTURN != nil && s.turnHealth != nil && r.URL.Query().Get("failed") == "1" {
 		down = !s.turnHealth.CheckNow()
@@ -2661,7 +2605,7 @@ func (l *slidingWindowLimiter) reset() {
 }
 
 func (l *slidingWindowLimiter) allow(key string) bool {
-	key = limitkey.Hash(key) // never hold a raw IP / account id / pair in memory
+	key = limitkey.Hash(key) // never hold raw IPs or account ids in memory
 	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -2682,9 +2626,8 @@ func (l *slidingWindowLimiter) allow(key string) bool {
 	return true
 }
 
-// PruneStaleLimiterKeys removes map entries that have no activity within
-// their window. Called periodically so low-frequency callers (e.g. one-time
-// source IPs hitting the registration endpoint) don't leak memory forever.
+// PruneStaleLimiterKeys removes limiter entries with no activity within their
+// window. Call it periodically so one-off keys don't accumulate.
 func (s *Server) PruneStaleLimiterKeys() {
 	s.pruneTokenBuckets()
 	recoveryLockout.prune()
@@ -2726,51 +2669,50 @@ func (s *Server) PruneStaleLimiterKeys() {
 }
 
 const (
-	// maxProvisioningBlobBytes caps the sealed device-linking payload. The blob
-	// is identity + credentials + up to ~50 conversation stubs — a few KiB — so
-	// 64 KiB is generous while preventing a huge-blob DoS on the session table.
+	// maxProvisioningBlobBytes caps the device-linking payload, which is
+	// normally a few KiB.
 	maxProvisioningBlobBytes = 64 * 1024
-	// maxGroupNameBytes caps group name length at 512 UTF-8 bytes.
+	// maxGroupNameBytes caps group names, in UTF-8 bytes.
 	maxGroupNameBytes = 512
-	// maxGroupDescriptionBytes caps group descriptions at 4 KiB.
+	// maxGroupDescriptionBytes caps group descriptions.
 	maxGroupDescriptionBytes = 4096
-	// maxGroupMembers caps the roster size to prevent fan-out explosions.
+	// maxGroupMembers bounds message fan-out.
 	maxGroupMembers = 256
-	// maxPasswordBytes caps password length to prevent DoS via huge bcrypt inputs.
+	// maxPasswordBytes bounds bcrypt input.
 	maxPasswordBytes = 1024
-	// maxOneTimePreKeysPerUpload caps how many OTKs a client can upload in one call.
+	// maxOneTimePreKeysPerUpload caps one-time prekeys per upload.
 	maxOneTimePreKeysPerUpload = 200
 )
 
 // 20 registrations per source IP per hour.
 var accountCreationLimiter = newSlidingWindowLimiter(20, time.Hour)
 
-// 200 prekey-bundle fetches per (requester, target) pair per hour.
-// Prevents one account from draining another's one-time prekey pool.
-// Own-account fetches (device sync) are exempt.
+// 200 prekey-bundle fetches per (requester, target) pair per hour, so one
+// account can't drain another's one-time prekey pool. Own-account fetches are
+// exempt.
 var preKeyFetchLimiter = newSlidingWindowLimiter(200, time.Hour)
 
 // 20 group creations per account per day.
 var groupCreateLimiter = newSlidingWindowLimiter(20, 24*time.Hour)
 
-// Unauthenticated invite claims (contact + group) per source IP per hour, to
-// bound token brute-forcing.
+// Unauthenticated contact and group invite claims per IP per hour, to bound
+// token brute-forcing.
 var inviteClaimIPLimiter = newSlidingWindowLimiter(60, time.Hour)
 
 // Unauthenticated attachment GET/PUT per source IP per minute.
 var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 
-// Call rings are unauthenticated (access-key capability, like sealed sends):
-// bound them per source IP and per destination mailbox.
+// Call rings are unauthenticated, so they are bounded per IP and per
+// destination mailbox.
 var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
 var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
 
-// usernameLookupLimiter: unauthenticated username-availability checks per IP per hour.
-// Debounced in the client; enough for sign-up typing, too few for bulk probing.
+// usernameLookupLimiter bounds username availability checks per IP per hour:
+// enough for sign-up typing, too few for bulk probing.
 var usernameLookupLimiter = newSlidingWindowLimiter(120, time.Hour)
 
-// Sealed-sender delivery is unauthenticated, so rate-limit per source IP and per
-// destination mailbox to bound abuse on top of the access-key check.
+// Sealed-sender delivery is unauthenticated, so it is also limited per IP and
+// per destination mailbox (sealedSendMailboxLimiter).
 var sealedSendIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 
 // accountStorageLimiter bounds encrypted chat-list writes per account.
@@ -2780,20 +2722,20 @@ var accountStorageLimiter = newSlidingWindowLimiter(120, time.Hour)
 var sealedKeyFetchIPLimiter = newSlidingWindowLimiter(300, time.Hour)
 var sealedSendMailboxLimiter = newSlidingWindowLimiter(120, time.Minute)
 
-// directoryLimiter: blinded-discovery requests (OPRF eval + bucket fetch) per
-// account per hour. Batched (up to 1024 per request), so a full address-book
-// sync is a couple of calls.
+// directoryLimiter bounds discovery requests (OPRF and bucket fetch) per
+// account per hour. Requests are batched, so an address-book sync takes only a
+// few.
 var directoryLimiter = newSlidingWindowLimiter(200, time.Hour)
 
-// directoryIPLimiter: bucket fetches per source IP per hour.
+// directoryIPLimiter bounds bucket fetches per IP per hour.
 var directoryIPLimiter = newSlidingWindowLimiter(400, time.Hour)
 
 // maxDirectoryBatch caps elements/buckets per discovery request.
 const maxDirectoryBatch = 1024
 
-// oprfBudget meters OPRF evaluations per ELEMENT (not per request): a few
-// thousand per account and per source IP per day — enough to sync a large
-// address book, far too few to enumerate the identifier space offline.
+// oprfBudget meters OPRF evaluations per element, per account and per IP per
+// day: enough to sync a large address book, far too few to enumerate
+// identifiers.
 var oprfBudget = newElementBudget(map[string]budgetSpec{
 	"acct:": {capacity: 5000, period: 24 * time.Hour},
 	"ip:":   {capacity: 20000, period: 24 * time.Hour},
@@ -2802,15 +2744,14 @@ var oprfBudget = newElementBudget(map[string]budgetSpec{
 // 100 key uploads per account per hour.
 var keyUploadLimiter = newSlidingWindowLimiter(100, time.Hour)
 
-// 10 new provisioning (device-linking) sessions per source IP per 10 minutes.
+// 10 provisioning sessions per IP per 10 minutes.
 var provisioningLimiter = newSlidingWindowLimiter(10, 10*time.Minute)
 
-// 20 abuse reports per reporting account per rolling 24 hours.
+// 20 abuse reports per account per rolling 24 hours.
 var reportLimiter = newSlidingWindowLimiter(20, 24*time.Hour)
 
-// ipRateLimiter kept for backward compatibility with existing call site.
 type ipRateLimiter = slidingWindowLimiter
 
-// validUsername matches alphanumeric, dots, underscores, and hyphens only.
-// This avoids homograph attacks by excluding non-ASCII lookalike characters.
+// validUsername allows only ASCII letters, digits, dots, underscores and
+// hyphens, which rules out non-ASCII lookalike characters.
 var validUsername = regexp.MustCompile(`^[a-zA-Z0-9._\-]{1,64}$`)

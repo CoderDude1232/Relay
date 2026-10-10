@@ -1,10 +1,8 @@
 // Package fcm sends push notifications to Android devices via Firebase Cloud
-// Messaging (HTTP v1). It mirrors the APNs sender's privacy model exactly: the
-// default push is a CONTENT-FREE, data-only wake carrying no message data — the
-// device then fetches the encrypted envelope from the relay and decrypts it
-// on-device, so Google's push infrastructure never carries message content. A
-// device that opted in to ciphertext-in-push gets the base64 envelope under the
-// data key "e" (identical to the APNs "e" field).
+// Messaging (HTTP v1), with the same privacy model as package apns: the
+// default push is a data-only wake with no message data, and the device fetches
+// the encrypted envelope from the relay itself. A device that opted in to
+// ciphertext-in-push gets the base64 envelope under data key "e", as in APNs.
 package fcm
 
 import (
@@ -102,23 +100,21 @@ func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 		if len(b64) <= maxDataEnvelopeB64 {
 			data = map[string]string{"type": "msg", "e": b64}
 		}
-		// else: too big for the payload — fall back to the content-free wake.
+		// Too big for the payload: fall back to the content-free wake.
 	}
 	return p.send(deviceToken, data)
 }
 
-// PushCall wakes an Android device for an incoming call — the FCM analogue of
-// iOS PushKit, since Android has no VoIP push. The data payload is only
-// {"type": "call", "call_id": "<id>"} ("type" just routes a call wake vs a
-// message wake): no caller account, name or kind reaches Google. The client
-// rings generically and learns the caller from the E2E-encrypted offer.
+// PushCall wakes an Android device for an incoming call (Android has no VoIP
+// push). The data payload is only {"type": "call", "call_id": "<id>"}: no
+// caller account, name or kind reaches Google. The client rings generically
+// and learns the caller from the end-to-end-encrypted offer.
 func (p *Pusher) PushCall(deviceToken, callID string) error {
 	return p.send(deviceToken, map[string]string{"type": "call", "call_id": callID})
 }
 
-// send posts a data-only, high-priority FCM message (no "notification" block, so
-// the app — not the OS — decides what to display; required for the contentless
-// model).
+// send posts a data-only, high-priority FCM message. There is no "notification"
+// block, so the app, not the OS, decides what to display.
 func (p *Pusher) send(deviceToken string, data map[string]string) error {
 	body, err := json.Marshal(map[string]any{
 		"message": map[string]any{

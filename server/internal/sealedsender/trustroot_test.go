@@ -27,8 +27,8 @@ func TestLoadOrCreateTrustRoot(t *testing.T) {
 		t.Fatal("unreadable trust-root path silently generated a new key")
 	}
 
-	// A write-only file can't be read but could be overwritten: the old loader
-	// replaced the operator's key here. It must fail and leave the file alone.
+	// A write-only file can't be read but could be overwritten. Loading must
+	// fail and leave the file alone.
 	locked := filepath.Join(dir, "locked.key")
 	if err := os.WriteFile(locked, []byte("original"), 0o200); err != nil {
 		t.Fatal(err)

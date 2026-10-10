@@ -2,11 +2,8 @@
 //  LinkPreviewView.swift
 //  Relay
 //
-//  Detects URLs in message bodies and renders a compact tappable preview card.
-//  For links we sent, LPMetadataProvider fetches only page metadata (no
-//  sub-resources), then the title + domain is shown. Received links are never
-//  fetched (that would leak our IP to a server the sender picked). The fetch happens once and the result is cached in
-//  the view's @State for the lifetime of the bubble.
+//  Compact preview cards for URLs in messages. Only links we sent are fetched
+//  (page metadata only); received links show just the domain.
 //
 
 import LinkPresentation
@@ -15,7 +12,6 @@ import SwiftUI
 // MARK: - URL detection helper
 
 extension String {
-    /// Returns the first HTTP/HTTPS URL found in the string, or nil.
     var firstURL: URL? {
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
         else { return nil }
@@ -31,7 +27,7 @@ extension String {
     }
 }
 
-// App-wide cache so titles survive view recycling (up to 200 entries).
+// App-wide cache so titles survive view recycling.
 private let linkPreviewCache: NSCache<NSString, NSString> = {
     let c = NSCache<NSString, NSString>()
     c.countLimit = 200
@@ -93,10 +89,9 @@ struct LinkPreviewView: View {
             }
             guard !fetched else { return }
             fetched = true
-            // Only fetch for links we sent. Fetching a received link would
-            // contact a server the sender chose, revealing our IP address and
-            // that we read the message — incoming cards show the domain only.
-            // Settings → Privacy → Generate Link Previews can turn off even these.
+            // Never fetch received links: that would reveal our IP, and that we
+            // read the message, to a server the sender chose. The Generate Link
+            // Previews privacy setting disables fetching entirely.
             guard isOutgoing, PrivacyPreferences.linkPreviewsEnabled else { return }
             let provider = LPMetadataProvider()
             provider.shouldFetchSubresources = false

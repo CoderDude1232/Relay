@@ -84,8 +84,7 @@ func (f *fakeApple) handler() http.Handler {
 	return mux
 }
 
-// newFake returns a Revoker wired to a fake Apple server that accepts exactly
-// `code`.
+// newFake returns a Revoker wired to a fake Apple server that accepts only code.
 func newFake(t *testing.T, code string) (*Revoker, *fakeApple) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

@@ -2,8 +2,7 @@
 import Foundation
 import PackageDescription
 
-// See CryptoCore/Package.swift — test bundles must link the prebuilt
-// libsignal_ffi.a explicitly.
+// Test bundles link the prebuilt libsignal_ffi.a explicitly; see CryptoCore/Package.swift.
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 
 let package = Package(

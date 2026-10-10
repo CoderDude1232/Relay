@@ -142,7 +142,7 @@ func TestRequestBodyDigestDeclared(t *testing.T) {
 	sum := sha256.Sum256(body)
 	good := hex.EncodeToString(sum[:])
 
-	// Small body + wrong declared digest → rejected up front.
+	// Small body with a wrong declared digest is rejected up front.
 	r := httptest.NewRequest("PUT", "/x", bytes.NewReader(body))
 	r.Header.Set(bodyHashHeader, strings.Repeat("0", 64))
 	if _, err := requestBodyDigest(r); err == nil {
@@ -174,12 +174,11 @@ func TestRequestBodyDigestDeclared(t *testing.T) {
 	}
 }
 
-// TestChunkedBodyWithDeclaredDigestBufferedOnJSONRoutes is the regression test
-// for the streaming bypass: on a JSON route a chunked body is never trusted on
-// its declared digest. The server buffers and hashes it, so a body that
-// differs from what was signed is rejected before the handler runs — even
-// when its first JSON value matches and only trailing bytes differ (which a
-// JSON decoder would never have read).
+// TestChunkedBodyWithDeclaredDigestBufferedOnJSONRoutes: on a JSON route a
+// chunked body is never trusted on its declared digest. The server buffers and
+// hashes it, so a body that differs from what was signed is rejected before
+// the handler runs, even when only trailing bytes a JSON decoder would never
+// read differ.
 func TestChunkedBodyWithDeclaredDigestBufferedOnJSONRoutes(t *testing.T) {
 	signed := []byte(`{"envelopeId":"abc"}`)
 	sum := sha256.Sum256(signed)

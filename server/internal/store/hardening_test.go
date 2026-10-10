@@ -24,9 +24,8 @@ func testKeys(t *testing.T, s *Store, account string, device uint32) {
 	}
 }
 
-// Removing a device that has published prekeys used to fail on the prekey
-// foreign keys; it must now remove the device's prekeys and queue with it, and
-// its id must never be handed out again.
+// Removing a device that has published prekeys removes its prekeys and queue
+// with it, and its id is never handed out again.
 func TestRemoveDeviceWithPrekeysAndNoIDReuse(t *testing.T) {
 	s := openTestStore(t)
 	acct, _, err := s.CreateAccount(uniqueName("rm"), nil, "", "device-pw-1", "")

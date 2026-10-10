@@ -11,7 +11,7 @@ import (
 // elementBudget is a keyed token bucket that meters work in units (e.g. OPRF
 // elements evaluated) rather than requests. Each key prefix has its own
 // capacity, refilled continuously over period. take(n, keys...) succeeds only
-// if EVERY key has n tokens, and then debits all of them atomically.
+// if every key has n tokens, and then debits all of them atomically.
 type elementBudget struct {
 	mu      sync.Mutex
 	specs   map[string]budgetSpec // by key prefix
@@ -44,8 +44,8 @@ func (b *elementBudget) specFor(key string) (budgetSpec, bool) {
 }
 
 // bucket returns the bucket for raw key, refilled to now (callers hold mu).
-// The map is indexed by limitkey.Hash(key) — never the raw account id or IP —
-// and the spec is chosen from the raw key's prefix before hashing.
+// The map is indexed by limitkey.Hash(key), never the raw account id or IP;
+// the spec is chosen from the raw key's prefix before hashing.
 func (b *elementBudget) bucket(key string, now time.Time) *budgetBucket {
 	hk := limitkey.Hash(key)
 	bk := b.buckets[hk]

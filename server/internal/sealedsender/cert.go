@@ -46,7 +46,7 @@ func GenerateKeyPair() (KeyPair, error) {
 // trust root signs the server certificate; clients embed its 33-byte Public to
 // validate the sealed-sender certificate chain, so it must stay stable.
 //
-// A new key is generated ONLY when the file does not exist. Any other read
+// A new key is generated only when the file does not exist. Any other read
 // error (permissions, an I/O fault, a path that is a directory) fails startup:
 // silently minting a fresh root would invalidate every client's embedded trust
 // root and break sealed sending for everyone.
@@ -113,7 +113,7 @@ func MintServerCertificate(trustRootPrivate []byte, keyID uint32, serverPublic [
 // senderUsername, when non-empty, is carried in libsignal's sender_e164 field
 // (Relay has no phone numbers). Recipients read it from the validated
 // certificate, so a sender's username is attested by the relay and arrives
-// inside the sealed message — no lookup that would tie sender to recipient.
+// inside the sealed message without a lookup that would tie sender to recipient.
 func MintSenderCertificate(
 	serverCertificate, serverCertPrivate []byte,
 	senderUUID, senderUsername string, deviceID uint32, identityKey []byte, expiresMs uint64,
@@ -126,7 +126,7 @@ func MintSenderCertificate(
 	}
 	// SenderCertificate.Certificate fields, ascending: e164(1, used for the
 	// username), device(2), expires(3, fixed64), identityKey(4), signer
-	// certificate(5), uuidString(6). Field order is free — libsignal verifies
+	// certificate(5), uuidString(6). Field order is free; libsignal verifies
 	// over these exact bytes.
 	var cert []byte
 	if senderUsername != "" {

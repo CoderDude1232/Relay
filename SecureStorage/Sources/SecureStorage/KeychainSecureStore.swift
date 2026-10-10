@@ -2,18 +2,15 @@
 //  KeychainSecureStore.swift
 //  SecureStorage
 //
-//  Custody of the two long-lived secrets, per the security design:
+//  Holds the two long-lived secrets:
 //
-//  * Database master key — 32 random bytes, wrapped (ECIES) by a P-256 key
-//    that lives inside the Secure Enclave; only the wrapped blob is stored
-//    in the Keychain. Where no Enclave exists (Simulator), the key is
-//    stored Keychain-only and re-wrapped transparently if an Enclave
-//    appears later. `AfterFirstUnlockThisDeviceOnly` throughout, so the
-//    Notification Service Extension can decrypt pushes while the device
-//    is locked.
+//  - Database master key: 32 random bytes, ECIES-wrapped by a Secure Enclave
+//    P-256 key; only the wrapped blob goes in the Keychain. Without an Enclave
+//    (Simulator) it is stored Keychain-only and re-wrapped if one appears.
+//    `AfterFirstUnlockThisDeviceOnly` so the NSE can decrypt while locked.
 //
-//  * Identity key pair + registration id — Keychain-only, never written to
-//    the database or anywhere else.
+//  - Identity key pair and registration id: Keychain-only, never written to
+//    the database.
 //
 //  All items use the App Group access group so the NSE shares them.
 //
@@ -23,8 +20,8 @@ import LibSignalClient
 import Security
 
 public struct KeychainConfiguration: Sendable {
-    /// Keychain access group; on iOS an App Group id works directly.
-    /// nil = the app's default access group (tests, single-target use).
+    /// Keychain access group; an App Group id works directly on iOS. Nil uses
+    /// the app's default group.
     public let accessGroup: String?
     public let service: String
 
@@ -52,8 +49,7 @@ public final class KeychainSecureStore {
 
     // MARK: - Database master key
 
-    /// Returns the database master key, creating and persisting it on
-    /// first call.
+    /// The database master key, created and persisted on first call.
     public func databaseKey() throws -> DatabaseKey {
         if let wrapped = try read(Item.wrappedDatabaseKey) {
             return DatabaseKey(bytes: try unwrap(wrapped))
@@ -71,8 +67,8 @@ public final class KeychainSecureStore {
             try write(Item.plainDatabaseKey, data: key.bytes)
         }
         #else
-        // Every supported iPhone has a Secure Enclave. A failure here is an
-        // error to surface, not a reason to store the master key unwrapped.
+        // Every supported iPhone has a Secure Enclave. Failing here is an error,
+        // not a reason to store the master key unwrapped.
         try write(Item.wrappedDatabaseKey, data: try wrap(key.bytes, with: try enclaveWrappingKey()))
         #endif
         return key
@@ -136,10 +132,9 @@ public final class KeychainSecureStore {
 
     private static let signingAlgorithm = SecKeyAlgorithm.ecdsaSignatureMessageX962SHA256
 
-    /// Returns the public half of this device's authorization key, creating a
-    /// non-exportable private key in the Secure Enclave where available. The
-    /// Simulator falls back to a Keychain-held private key so the feature stays
-    /// testable without changing app behavior.
+    /// Public half of this device's auth key. The private key is created
+    /// non-exportable in the Secure Enclave; the Simulator falls back to a
+    /// Keychain-held key.
     public func deviceAuthorizationPublicKey() throws -> Data {
         let key = try deviceAuthorizationPrivateKey()
         guard let publicKey = SecKeyCopyPublicKey(key) else {
@@ -152,8 +147,7 @@ public final class KeychainSecureStore {
         return data as Data
     }
 
-    /// Signs device-control payloads for later stages. Stage 3A only uploads
-    /// the public key; Stage 3B will define the signed device-list payloads.
+    /// Signs a device-control or request payload with the auth key.
     public func signDeviceAuthorizationPayload(_ payload: Data) throws -> Data {
         let key = try deviceAuthorizationPrivateKey()
         guard SecKeyIsAlgorithmSupported(key, .sign, Self.signingAlgorithm) else {
@@ -270,7 +264,7 @@ public final class KeychainSecureStore {
         return plain as Data
     }
 
-    // MARK: - Generic secrets (account credentials, etc.)
+    // MARK: - Generic secrets
 
     public func storeSecret(_ value: Data, for account: String) throws {
         try write(account, data: value)
@@ -333,9 +327,8 @@ public final class KeychainSecureStore {
 // MARK: - Identity credentials
 
 extension KeychainSecureStore: IdentityCredentialProviding {
-    /// Loads the device identity, generating and persisting a fresh one on
-    /// first launch. The serialized private key exists only inside the
-    /// Keychain item.
+    /// The device identity, generated and persisted on first use. The serialized
+    /// private key exists only in the Keychain item.
     public func identityKeyPair() throws -> IdentityKeyPair {
         if let stored = try read(Item.identityKeyPair) {
             return try IdentityKeyPair(bytes: stored)
@@ -355,21 +348,16 @@ extension KeychainSecureStore: IdentityCredentialProviding {
         return value
     }
 
-    /// Installs an account identity provisioned from the primary device during
-    /// linking, so this device shares the account's identity key rather than
-    /// generating its own. Must be called before anything reads
-    /// `identityKeyPair()` (which would otherwise auto-generate a fresh one).
+    /// Installs the account identity provisioned by the primary during linking.
+    /// Must run before anything calls `identityKeyPair()`, which would otherwise
+    /// generate a new one.
     ///
-    /// By default refuses to overwrite an existing identity — a device that
-    /// already has one must not have it silently replaced. Keychain items
-    /// survive sign-out and app deletion, so a phone that ever ran Relay still
-    /// holds a stale identity: the link flow passes `replacingExisting: true`
-    /// (or calls `wipeIdentity()` first) to adopt the account's identity. When
-    /// replacing, the stale registration id is dropped too so a fresh one is
-    /// generated for this device. The serialized private key lives only inside
-    /// the Keychain item; it is never logged.
+    /// Refuses to overwrite an existing identity unless `replacingExisting` is
+    /// set. Keychain items survive sign-out and app deletion, so a phone that
+    /// once ran Relay still holds a stale identity; the link flow replaces it.
+    /// Replacing also drops the old registration id so a new one is generated.
     public func installProvisionedIdentity(_ serialized: Data, replacingExisting: Bool = false) throws {
-        // Validate before persisting; a malformed payload should fail loudly.
+        // A malformed payload should fail here, before anything is persisted.
         _ = try IdentityKeyPair(bytes: serialized)
         if try read(Item.identityKeyPair) != nil {
             guard replacingExisting else {
@@ -382,33 +370,25 @@ extension KeychainSecureStore: IdentityCredentialProviding {
 
     // MARK: - Wiping
 
-    /// Deletes this install's per-account identity material from the Keychain:
+    /// Deletes this install's identity material from the Keychain: the identity
+    /// key pair, the registration id, and the device auth key (recreated on
+    /// demand).
     ///
-    /// * `identity-key-pair` — the identity private/public key pair
-    /// * `registration-id`   — the libsignal registration id
-    /// * the device authorization key (Secure Enclave / Keychain P-256 key
-    ///   used for `Relay-Sig` request signing); a new one is created on demand
+    /// Leaves the database master key, its wrapping key, and secrets stored via
+    /// `storeSecret`; see `wipeAllSecrets()` for a full reset.
     ///
-    /// NOT deleted: the database master key (wrapped/plain) and its Secure
-    /// Enclave wrapping key, and generic secrets stored via `storeSecret`
-    /// (e.g. saved account credentials) — callers delete those by name. Use
-    /// `wipeAllSecrets()` for a full reset.
-    ///
-    /// Call on sign-out (after closing the database/service) and before
-    /// installing a provisioned identity on a phone that may have run Relay
-    /// before. The next `identityKeyPair()` / `registrationId()` generates
-    /// fresh values. Idempotent: missing items are not an error.
+    /// Call on sign-out after closing the database, and before installing a
+    /// provisioned identity. Idempotent.
     public func wipeIdentity() throws {
         try deleteSecret(for: Item.identityKeyPair)
         try deleteSecret(for: Item.registrationId)
         try deleteKey(tag: Item.deviceAuthKeyTag)
     }
 
-    /// Full reset: everything `wipeIdentity()` deletes, PLUS the database
-    /// master key (wrapped and plain variants), the Secure Enclave wrapping
-    /// key, and every generic secret stored under this store's service
-    /// (including anything written via `storeSecret`). Any existing database
-    /// file becomes undecryptable — delete it as well. Idempotent.
+    /// Full reset: everything `wipeIdentity()` deletes plus the database master
+    /// key (both variants), the Enclave wrapping key, and every secret under this
+    /// service. Any existing database becomes undecryptable, so delete it too.
+    /// Idempotent.
     public func wipeAllSecrets() throws {
         try wipeIdentity()
         try deleteKey(tag: Item.enclaveKeyTag)
@@ -432,6 +412,6 @@ extension KeychainSecureStore: IdentityCredentialProviding {
 }
 
 public enum KeychainError: Error, Equatable {
-    /// An identity key already exists; refusing to overwrite it during linking.
+    /// An identity already exists and replacement wasn't requested.
     case identityAlreadyExists
 }

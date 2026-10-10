@@ -2,20 +2,17 @@
 //  ProvisioningCipher.swift
 //  CryptoCore
 //
-//  End-to-end encryption for the reversed device-linking payload. Follows
-//  Signal's ProvisioningCipher shape, simplified to AES-256-GCM:
+//  Encryption for the device-linking payload, modelled on Signal's
+//  ProvisioningCipher but using AES-256-GCM:
 //
-//    - The NEW device generates an ephemeral Curve25519 key-agreement pair and
-//      publishes its public half in the QR code (never on the wire).
-//    - The PRIMARY generates its own ephemeral pair, does ECDH against the new
-//      device's public key, derives a symmetric key via HKDF-SHA256 with a
-//      domain-separated info string, and seals the provisioning payload. It
-//      ships its ephemeral public key alongside the ciphertext.
-//    - The NEW device does the matching ECDH and opens the box.
+//    - The new device generates an ephemeral Curve25519 pair and shows the
+//      public half in the QR code. It is never sent over the network.
+//    - The primary generates its own ephemeral pair, does ECDH with the new
+//      device's key, derives a key with HKDF-SHA256 and a domain-separated
+//      info string, and seals the payload, prefixed by its ephemeral public key.
+//    - The new device does the matching ECDH and opens the box.
 //
-//  The relay only ever stores the resulting opaque blob. The identity private
-//  key inside the payload never crosses the wire in the clear. We own this
-//  format — there is no external spec to match.
+//  The relay only stores the opaque blob.
 //
 
 import CryptoKit
@@ -27,19 +24,17 @@ public enum ProvisioningCipherError: Error, Equatable {
 }
 
 public enum ProvisioningCipher {
-    /// Domain separation: this HKDF info string binds the derived key to this
-    /// exact use, so a shared secret can't be repurposed elsewhere.
+    /// HKDF info string, binding the derived key to this one use.
     static let info = Data("Relay Device Provisioning v1".utf8)
     static let version: UInt8 = 0x01
     static let publicKeyLength = 32
 
-    /// The new device's ephemeral key pair. The public half goes in the QR; the
-    /// private half is held only in memory on the new device for the duration of
-    /// the linking session and is used once to open the provisioning blob.
+    /// The new device's ephemeral pair. The private half stays in memory on the
+    /// new device for the linking session and is used once to open the blob.
     public struct EphemeralKeyPair: Sendable {
-        /// Raw 32-byte public key — embed in the QR the primary scans.
+        /// Raw 32-byte public key, embedded in the QR.
         public let publicKey: Data
-        /// Raw 32-byte private key — never leaves the new device, never logged.
+        /// Raw 32-byte private key. Never leaves the new device or gets logged.
         public let privateKey: Data
 
         public init() {
@@ -49,9 +44,8 @@ public enum ProvisioningCipher {
         }
     }
 
-    /// Primary side: seals `payload` for the new device identified by its
-    /// ephemeral public key. Returns `version ‖ primaryEphemeralPub(32) ‖
-    /// nonce‖ciphertext‖tag`.
+    /// Primary side: seals `payload` for the new device's ephemeral public key.
+    /// Returns `version || primaryEphemeralPub(32) || nonce || ciphertext || tag`.
     public static func seal(_ payload: Data, toEphemeralPublicKey recipientPublicKey: Data) throws -> Data {
         let recipient = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: recipientPublicKey)
         let ephemeral = Curve25519.KeyAgreement.PrivateKey()
@@ -67,8 +61,8 @@ public enum ProvisioningCipher {
         return blob
     }
 
-    /// New device side: opens a blob produced by `seal`, using the private half
-    /// of the ephemeral key whose public half was shown in the QR.
+    /// New-device side: opens a blob from `seal` with the ephemeral private key
+    /// whose public half was shown in the QR.
     public static func open(_ blob: Data, ephemeralPrivateKey privateKeyRaw: Data) throws -> Data {
         let data = Data(blob) // normalize slice indices
         guard data.count > 1 + publicKeyLength else { throw ProvisioningCipherError.malformed }

@@ -2,9 +2,9 @@
 //  HardeningTests.swift
 //  SecureStorageTests
 //
-//  Regression tests for: cross-thread transaction atomicity, idempotent /
-//  concurrent schema migration, per-account identity trust for new device
-//  ids, and system lines never counting as unread.
+//  Cross-thread transaction atomicity, concurrent schema migration,
+//  per-account identity trust for new device ids, and system lines never
+//  counting as unread.
 //
 
 import CryptoCore
@@ -51,7 +51,7 @@ struct TransactionConcurrencyTests {
                         try db.transaction {
                             let before = try kvCount(db)
                             try db.run("INSERT INTO kv (key, value) VALUES (?, x'01')", [.text("t-\(worker)-\(i)-a")])
-                            usleep(100) // give other threads a chance to sneak in
+                            usleep(100) // let other threads in
                             try db.run("INSERT INTO kv (key, value) VALUES (?, x'01')", [.text("t-\(worker)-\(i)-b")])
                             let after = try kvCount(db)
                             // Nothing from another thread may land inside our transaction.
@@ -85,7 +85,7 @@ struct TransactionConcurrencyTests {
                 try db.transaction {
                     try db.run("INSERT INTO kv (key, value) VALUES ('doomed', x'00')")
                     started.signal()
-                    usleep(50_000) // the other thread's write is waiting on us now
+                    usleep(50_000) // the other thread's write is now waiting on us
                     throw StorageError.recordNotFound("abort")
                 }
             } catch StorageError.recordNotFound {
@@ -138,7 +138,7 @@ struct TransactionConcurrencyTests {
             throw StorageError.recordNotFound("outer")
         }
         #expect(try kvCount(db, prefix: "gone") == 0)
-        // And the connection is usable for a fresh top-level transaction.
+        // The connection still works for a new top-level transaction.
         try db.transaction { try db.run("INSERT INTO kv (key, value) VALUES ('after', x'00')") }
         #expect(try kvCount(db, prefix: "after") == 1)
     }
@@ -155,8 +155,8 @@ struct MigrationTests {
     }
 
     @Test func concurrentMigrationFromTwoConnectionsSucceeds() throws {
-        // Models the app and the NSE opening the same file right after an
-        // update: separate connections, migrating at the same time.
+        // The app and the NSE opening the same file after an update: separate
+        // connections migrating at the same time.
         for _ in 0..<5 {
             let path = tempPath()
             let key = DatabaseKey.random()
@@ -180,8 +180,8 @@ struct MigrationTests {
     }
 
     @Test func secondProcessReopeningAfterPartialMigrationSkipsAppliedSteps() throws {
-        // One connection fully migrates; another that read the old version
-        // earlier must not re-run steps (e.g. v20's ALTER TABLE ADD COLUMN).
+        // One connection fully migrates; another that read the old version earlier
+        // must not re-run steps such as an ALTER TABLE ADD COLUMN.
         let path = tempPath()
         let key = DatabaseKey.random()
         let early = try Database(path: path, key: key)
@@ -213,17 +213,17 @@ struct IdentityTrustTests {
         #expect(try store.isTrustedIdentity(accountKey, for: device2, direction: .receiving, context: context))
         #expect(try store.saveIdentity(accountKey, for: device2, context: context) == .newOrUnchanged)
 
-        // New device presenting a different key: untrusted (both directions),
-        // exactly like a changed key.
+        // New device presenting a different key: untrusted in both directions,
+        // like a changed key.
         #expect(try !store.isTrustedIdentity(rogueKey, for: device3, direction: .sending, context: context))
         #expect(try !store.isTrustedIdentity(rogueKey, for: device3, direction: .sending, context: context))
-        // Receiving from a contact's unfamiliar key is accepted (and surfaced as
-        // a safety-number change); sending to it stays blocked.
+        // Receiving from an unfamiliar contact key is allowed and surfaced as a
+        // safety-number change; sending to it stays blocked.
         #expect(try store.isTrustedIdentity(rogueKey, for: device3, direction: .receiving, context: context))
-        // Saving it (the app's explicit acceptance path) reports a replacement…
+        // Saving it (explicit acceptance) reports a replacement...
         #expect(try store.saveIdentity(rogueKey, for: device3, context: context) == .replacedExisting)
-        // …after which that device is trusted with that key, and the account
-        // now exposes two distinct keys for the app's acknowledgement check.
+        // ...after which that device is trusted with that key, and the account
+        // has two distinct keys for the app's acknowledgement check.
         #expect(try store.isTrustedIdentity(rogueKey, for: device3, direction: .sending, context: context))
         #expect(try store.identityKeys(address: "peer") == [accountKey.serialize(), rogueKey.serialize()])
 
@@ -252,7 +252,7 @@ struct IdentityTrustTests {
         #expect(try store.verificationState(address: "peer") == .changed)
         #expect(try !store.isVerified(address: "peer"))
 
-        // Changed key on an existing device still resets verified (unchanged semantics).
+        // A changed key on an existing device still resets verified.
         try store.setVerified(true, address: "peer")
         #expect(try store.verificationState(address: "peer") == .verified)
         #expect(try store.saveIdentity(rogueKey, for: try .init(name: "peer", deviceId: 1), context: context) == .replacedExisting)
@@ -298,8 +298,8 @@ struct SystemLineUnreadTests {
         try store.markConversationRead(convo)
         #expect(try store.conversations().first?.unreadCount == 0)
 
-        // "Mark unread" targets the latest REAL incoming message, so it still
-        // shows exactly one unread even when a system line is newer.
+        // "Mark unread" targets the latest real incoming message, so there is
+        // exactly one unread even when a system line is newer.
         try store.markConversationUnread(convo)
         #expect(try store.conversations().first?.unreadCount == 1)
     }
@@ -314,7 +314,7 @@ struct OwnAccountAndGroupGuardTests {
         let context = NullContext()
         let otherOwnDevice = try ProtocolAddress(name: "me", deviceId: 2)
 
-        // No trust-on-first-use for our own account: only our own key passes.
+        // No TOFU for our own account: only our own key passes.
         let rogue = IdentityKeyPair.generate().identityKey
         #expect(try !store.isTrustedIdentity(rogue, for: otherOwnDevice, direction: .sending, context: context))
         #expect(try !store.isTrustedIdentity(rogue, for: otherOwnDevice, direction: .receiving, context: context))

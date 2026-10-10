@@ -20,7 +20,7 @@ class IntentHandler: INExtension, INSendMessageIntentHandling {
         let conversations = ShareBridge.readConversations()
 
         guard let requestedNames = intent.recipients, !requestedNames.isEmpty else {
-            // No name provided yet — present full conversation list for disambiguation.
+            // No name yet: offer every conversation for disambiguation.
             let people = conversations.map { makePerson(from: $0) }
             completion(people.isEmpty ? [.needsValue()] : [.disambiguation(with: people)])
             return
@@ -85,9 +85,8 @@ class IntentHandler: INExtension, INSendMessageIntentHandling {
         )
         ShareBridge.writePendingShare(pending)
 
-        // Report success so Siri says "Sent" without launching the app.
-        // The queued PendingShare is consumed by processPendingShare() the next
-        // time the app activates (background refresh or foreground).
+        // Report success so Siri says "Sent" without launching the app. The app
+        // sends the queued PendingShare the next time it becomes active.
         completion(INSendMessageIntentResponse(code: .success, userActivity: nil))
     }
 
@@ -97,9 +96,8 @@ class IntentHandler: INExtension, INSendMessageIntentHandling {
         var components = PersonNameComponents()
         components.givenName = conv.displayName
 
-        // Use the real avatar if available; otherwise render the same colored
-        // initials circle the app shows so Siri never falls back to Apple's
-        // generic gray person silhouette.
+        // Use the avatar if there is one, otherwise the same initials circle the
+        // app draws, so Siri never shows the generic silhouette.
         let image: INImage? = {
             if let data = ShareBridge.readAvatar(forConversationId: conv.id) {
                 return INImage(imageData: data)

@@ -2,14 +2,13 @@
 //  RelayWebSocket.swift
 //  RelayKit
 //
-//  Real-time channel to the relay. Each WebSocket binary message is one
-//  protobuf ClientFrame (out) or ServerFrame (in). On connect the server
-//  drains the offline queue, then signals `.queueDrained`; everything after
-//  is live. Delivery is at-least-once — consumers ack envelopes once
-//  they're durably stored, and must dedup by envelope id.
+//  Real-time channel to the relay. Each binary message is one protobuf
+//  ClientFrame (out) or ServerFrame (in). On connect the server drains the
+//  offline queue and then sends `.queueDrained`; everything after is live.
+//  Delivery is at-least-once: ack envelopes once durably stored, dedup by
+//  envelope id.
 //
-//  Reconnection policy lives with the caller (the messaging service);
-//  this actor represents exactly one connection.
+//  One actor per connection; reconnection is up to the caller.
 //
 
 import Foundation
@@ -17,11 +16,11 @@ import OSLog
 
 public enum RelayEvent: Sendable {
     case envelope(IncomingEnvelope)
-    /// Offline queue fully delivered; subsequent envelopes are real-time.
+    /// The offline queue is delivered; later envelopes are live.
     case queueDrained
-    /// A signed remote-wipe command. The client must verify the signature before wiping.
+    /// A signed remote-wipe command. Verify the signature before wiping.
     case nukeCommand(NukeEvent)
-    /// The account's device list changed; refresh device list from server.
+    /// The account's device list changed.
     case deviceListChanged(DeviceListChangedEvent)
     /// The connection ended; the stream finishes after this event.
     case disconnected
@@ -47,10 +46,9 @@ public actor RelayWebSocket {
     private var eventContinuation: AsyncStream<RelayEvent>.Continuation?
     private let log = Logger(subsystem: "com.relaytextingapp.RelayKit", category: "websocket")
 
-    /// - Parameter signer: the device auth key. The upgrade is signed with
-    ///   Relay-Sig v2; once a device has registered its auth key the relay
-    ///   refuses HTTP Basic, so pass the same signer as the REST client. Basic is
-    ///   used only when no signer is given (a device with no auth key yet).
+    /// - Parameter signer: the device auth key, used to sign the upgrade with
+    ///   Relay-Sig v2. The relay refuses HTTP Basic once a device has an auth key,
+    ///   so pass the same signer as the REST client. Basic is used only without one.
     public init(baseURL: URL, credentials: RelayCredentials, session: URLSession = RelayTLS.sharedSession,
                 signer: (any RelayRequestSigner)? = nil) {
         self.baseURL = baseURL
@@ -59,9 +57,8 @@ public actor RelayWebSocket {
         self.signer = signer
     }
 
-    /// Opens the socket and returns the event stream. The stream yields
-    /// queued envelopes, then `.queueDrained`, then live traffic, and
-    /// finishes after `.disconnected`.
+    /// Opens the socket. The stream yields queued envelopes, `.queueDrained`,
+    /// then live traffic, and finishes after `.disconnected`.
     public func connect() -> AsyncStream<RelayEvent> {
         disconnectInternal()
 
@@ -78,13 +75,11 @@ public actor RelayWebSocket {
         }
         let url = wsBaseURL.appending(path: "v1/ws")
         var request = URLRequest(url: url)
-        // NOTE: Do NOT set assumesHTTP3Capable here. URLSessionWebSocketTask runs
-        // over TCP (RFC 6455); with this flag, iOS on a physical device attempts
-        // the WebSocket over HTTP/3/QUIC, which the server doesn't support for
-        // WebSockets — the connection stalls and the socket is RST ("Socket is
-        // not connected", POSIX 57). Plain TCP is correct for the WS handshake.
+        // Don't set assumesHTTP3Capable. On a device it makes iOS try the
+        // WebSocket over QUIC, which the server doesn't support; the connection
+        // stalls and is reset (POSIX 57). The handshake must go over TCP.
         if let signer {
-            // Sign the upgrade exactly as the server sees it: GET /v1/ws, empty body.
+            // Sign the upgrade as the server sees it: GET /v1/ws, empty body.
             if !RelaySignature.sign(&request, credentials: credentials, signer: signer) {
                 log.warning("websocket upgrade signing failed")
             }
@@ -113,9 +108,8 @@ public actor RelayWebSocket {
         disconnectInternal()
     }
 
-    /// Sends one or more encrypted payloads to a destination mailbox. The
-    /// generated protobuf field is still named `destinationAccount`, but new
-    /// servers interpret it as an opaque mailbox identifier.
+    /// Sends encrypted payloads to a destination mailbox. The proto field is
+    /// named `destinationAccount` but the server treats it as an opaque mailbox id.
     public func send(
         to destinationMailbox: String,
         messages: [DeviceMessagePayload],
@@ -146,8 +140,8 @@ public actor RelayWebSocket {
         return SendOutcome(response)
     }
 
-    /// Confirms durable receipt; the relay then drops the envelope from
-    /// this device's queue.
+    /// Confirms durable receipt so the relay drops the envelope from this
+    /// device's queue.
     public func ack(envelopeId: String) async throws {
         guard let task else { throw RelayWebSocketError.notConnected }
         var frame = Relay_V1_ClientFrame()
@@ -192,13 +186,10 @@ public actor RelayWebSocket {
         }
     }
 
-    /// Pings the server every 25s. Idle WebSockets otherwise get silently torn
-    /// down by the transport / Cloudflare (the "nw_read Operation timed out" you
-    /// see on a device that's only receiving), during which the server may deliver
-    /// to a half-open socket and the client only recovers on a slow reconnect.
-    /// Keeping the connection warm makes messages arrive live; a failed ping means
-    /// the socket is dead, so we tear it down to trigger an immediate reconnect
-    /// (which drains any queued envelopes).
+    /// Pings every 25s. The transport or Cloudflare otherwise tears down idle
+    /// sockets silently ("nw_read Operation timed out" on a receive-only device),
+    /// and the client only notices on a slow reconnect. A failed ping means the
+    /// socket is dead, so tear it down to reconnect right away.
     private func runPingLoop(_ task: URLSessionWebSocketTask) async {
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(25))

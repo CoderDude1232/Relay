@@ -35,6 +35,6 @@ func TestDisconnectAccount(t *testing.T) {
 	if h.sessions[key("acct-other", 1)] != other {
 		t.Fatal("unrelated account's session was detached")
 	}
-	// The sessions' own deferred Unregister must now be a harmless no-op.
+	// The sessions' own deferred Unregister must be a harmless no-op.
 	h.Unregister("acct", 1, a1)
 }

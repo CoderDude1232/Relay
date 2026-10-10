@@ -16,12 +16,11 @@ struct MediaGalleryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mediaMessages: [StoredMessage] = []
     @State private var fullScreenImage: UIImage?
-    /// False until the per-chat "Require Face ID for media" gate is passed
-    /// (or immediately true when the chat doesn't require it).
+    /// False until the per-chat "Require Face ID for media" gate is passed.
     @State private var unlocked = false
     @State private var isAuthenticating = false
 
-    /// Mirrors ChatView: unknown conversation → require auth (fail closed).
+    /// Mirrors ChatView: an unknown conversation requires auth (fail closed).
     private var requiresBiometric: Bool {
         service.conversations.first { $0.id == conversationId }?.mediaRequiresBiometric ?? true
     }
@@ -84,8 +83,7 @@ struct MediaGalleryView: View {
         } else {
             source = (try? service.allMessages(in: conversationId)) ?? []
         }
-        // View-once media is only viewable once, inline in the chat — never
-        // surface it in the gallery.
+        // View-once media is only shown inline in the chat, never here.
         mediaMessages = source.filter {
             !$0.body.hasPrefix(MessagingService.viewOncePrefix)
                 && $0.attachments.contains { $0.isImage }
@@ -150,9 +148,8 @@ private struct GalleryThumbnail: View {
         defer { isLoading = false }
         var data = service.attachmentPlaintext(attachment)
         if data == nil {
-            // Not cached yet (never downloaded, or cleared by "Clear cached
-            // media") — fetch it, then decrypt. downloadAttachment is idempotent
-            // and honours the Wi-Fi-only setting.
+            // Not cached (never downloaded, or cleared). downloadAttachment is
+            // idempotent and honours the Wi-Fi-only setting.
             await service.downloadAttachment(attachment, in: conversationId)
             data = service.attachmentPlaintext(attachment)
         }

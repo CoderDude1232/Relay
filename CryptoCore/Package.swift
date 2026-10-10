@@ -24,9 +24,8 @@ let package = Package(
             dependencies: [
                 .product(name: "LibSignalClient", package: "LibSignalClient")
             ],
-            // libsignal_ffi bundles BoringSSL, which is C++: every binary that
-            // links it needs libc++. Newer deployment targets pull it in
-            // implicitly; at iOS 18 the NSE failed to link without this.
+            // libsignal_ffi bundles BoringSSL (C++), so anything linking it needs libc++.
+            // Newer deployment targets pull it in implicitly; iOS 18 does not.
             linkerSettings: [.linkedLibrary("c++")]
         ),
         .testTarget(

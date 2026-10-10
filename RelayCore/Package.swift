@@ -2,10 +2,9 @@
 import Foundation
 import PackageDescription
 
-// Application core shared by the app target and the Notification Service
-// Extension: the one place that turns an incoming envelope into stored state
-// + a notification, so both processes decrypt identically. See
-// CryptoCore/Package.swift for why test bundles link libsignal_ffi.a directly.
+// Shared by the app and the Notification Service Extension so both turn an
+// incoming envelope into stored state and a notification the same way.
+// Test bundles link libsignal_ffi.a explicitly; see CryptoCore/Package.swift.
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 
 let package = Package(

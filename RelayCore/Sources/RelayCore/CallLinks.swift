@@ -2,10 +2,9 @@
 //  CallLinks.swift
 //  RelayCore
 //
-//  The call links this account has created. Kept in App Group defaults so the
-//  Notification Service Extension can check a join request's secret before
-//  showing "X wants to join your call" (otherwise anyone could trigger that
-//  banner). Never leaves the device.
+//  Call links this account has created, kept in App Group defaults so the NSE
+//  can check a join request's secret before showing a "wants to join" banner.
+//  Never leaves the device.
 //
 
 import Foundation

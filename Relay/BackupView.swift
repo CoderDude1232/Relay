@@ -2,9 +2,7 @@
 //  BackupView.swift
 //  Relay
 //
-//  Exports an encrypted JSON backup of all conversations + messages
-//  to the Files app (or any share destination). The export is
-//  encrypted with a one-time password the user sets.
+//  Password-encrypted JSON export of conversations and messages.
 //
 
 import Clibsodium
@@ -176,9 +174,8 @@ struct BackupView: View {
 
     /// File layout: "RELAYBK2" | salt (16) | opslimit (UInt64 BE) |
     /// memlimit (UInt64 BE) | AES-GCM nonce | ciphertext | tag.
-    /// The key comes from Argon2id over the password, so an attacker who gets
-    /// the file has to pay a memory-hard cost per password guess (a plain hash
-    /// would let them try billions per second).
+    /// The key is Argon2id over the password, so each offline guess against a
+    /// stolen file pays a memory-hard cost.
     private func encryptExport(_ plaintext: Data, password: String) throws -> Data {
         _ = sodium_init()
         var salt = [UInt8](repeating: 0, count: Int(crypto_pwhash_SALTBYTES))

@@ -2,11 +2,10 @@
 //  AppleReauthorization.swift
 //  Relay
 //
-//  Apple requires apps that offer Sign in with Apple to revoke the user's Apple
-//  token when they delete their account (App Review 5.1.1(v)). Revocation needs
-//  a fresh authorization code, so account deletion asks Apple for one here and
-//  hands it to the relay, which exchanges and revokes it immediately (the code
-//  and tokens are never stored).
+//  Sign in with Apple accounts must have their Apple token revoked on account
+//  deletion (App Review 5.1.1(v)). Revocation needs a fresh authorization
+//  code, so deletion requests one here and hands it to the relay, which
+//  exchanges and revokes it immediately without storing anything.
 //
 
 import AuthenticationServices

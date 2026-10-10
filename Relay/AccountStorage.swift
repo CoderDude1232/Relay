@@ -2,11 +2,9 @@
 //  AccountStorage.swift
 //  Relay
 //
-//  Keeps the chat and group list (never message history) with the account, so
-//  signing out and back in brings the chats back. The list is encrypted on the
-//  phone with a key derived from the account password (Argon2id) and stored on
-//  the relay as an opaque blob, padded so its size reveals little. The relay
-//  can't read it; without the account password nobody can.
+//  Keeps the chat and group list (not message history) with the account. The
+//  list is encrypted with an Argon2id key derived from the account password and
+//  stored on the relay as a padded, opaque blob.
 //
 
 import Clibsodium
@@ -94,9 +92,8 @@ extension MessagingService {
                                   [.text(Self.storageKeyKV), .blob(key)])
     }
 
-    /// After sign-in: brings back the chat and group list (no messages). If the
-    /// blob can't be opened (password changed via "forgot password"), it's
-    /// just overwritten by the next upload.
+    /// Restores the chat and group list after sign-in. A blob that can't be
+    /// opened (password reset) is overwritten by the next upload.
     func restoreAccountStorage() async {
         guard let key = accountStorageKey, let stored = try? await apiClient.accountStorage() else { return }
         accountStorageVersion = stored.version

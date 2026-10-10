@@ -2,19 +2,12 @@
 //  CloudBackupManager.swift
 //  Relay
 //
-//  Signal-style end-to-end-encrypted iCloud backup. A snapshot of local chat
-//  state is encrypted on-device with a key derived from a user-held Recovery
-//  Key, then stored as an opaque blob in the app's CloudKit private database.
-//  Apple (and Relay) only ever see ciphertext — losing the Recovery Key means
-//  the backup is unrecoverable, by design.
+//  End-to-end-encrypted iCloud backup. A snapshot of local chat state is
+//  encrypted with a key derived from the user's Recovery Key (32 random bytes,
+//  shown as grouped hex and cached in the Keychain) and stored in the CloudKit
+//  private database. Without the Recovery Key the backup is unrecoverable.
 //
-//  The Recovery Key is 32 random bytes shown to the user as a grouped hex
-//  string to write down. It's cached in this device's Keychain so backups keep
-//  running automatically; on a new device the user re-enters it to restore.
-//
-//  NOTE: encryption sessions are Secure-Enclave-bound and are NOT part of the
-//  backup — restoring brings back message history; sessions re-key on next
-//  contact (a safety-number change, like a Signal reinstall).
+//  Signal sessions are not backed up; they re-key on next contact.
 //
 
 import CloudKit
@@ -113,8 +106,8 @@ final class CloudBackupManager {
             let snapshotJSON = try Self.encoder.encode(snapshot)
             let digest = Self.contentDigest(snapshotJSON, key: key)
             let now = Date()
-            // The timestamp travels INSIDE the ciphertext — CloudKit only sees
-            // an opaque blob plus a format number.
+            // The timestamp is inside the ciphertext; CloudKit sees only the
+            // blob and a format number.
             let envelope = BackupEnvelopeV2(updatedAt: now, snapshot: snapshot,
                                             accountId: service.credentials.accountId)
             let plaintext = try Self.encoder.encode(envelope)
@@ -154,9 +147,8 @@ final class CloudBackupManager {
         }
     }
 
-    /// Background-transition entry point: backs up at most once a day unless
-    /// the content changed (and never more than every 15 minutes), instead of
-    /// on every trip to the home screen.
+    /// Called on backgrounding: backs up at most daily unless the content
+    /// changed, and never more than every 15 minutes.
     func backupIfDue(service: MessagingService) async {
         guard isEnabled else { return }
         if let last = lastBackup {
@@ -192,8 +184,7 @@ final class CloudBackupManager {
     private struct BackupEnvelopeV2: Codable {
         let updatedAt: Date
         let snapshot: MessagingService.BackupSnapshot
-        /// Which account made it (inside the ciphertext). Optional: older
-        /// backups didn't record it.
+        /// The account that made the backup. Absent in older backups.
         var accountId: String?
     }
 
@@ -216,10 +207,9 @@ final class CloudBackupManager {
         fileprivate let snapshot: MessagingService.BackupSnapshot
     }
 
-    /// After signing in, looks for this account's iCloud backup using the
-    /// recovery key still on this device (it survives sign-out). Returns nil —
-    /// so sign-in just continues without history — when there's no key, no
-    /// iCloud, no backup, or the backup belongs to a different account.
+    /// Looks for this account's backup using the recovery key still on this
+    /// device (it survives sign-out). Returns nil if there's no key, iCloud or
+    /// backup, or the backup belongs to another account.
     func findBackupAfterSignIn(accountId: String) async -> FoundBackup? {
         guard let recoveryKey = recoveryKeyData(),
               (try? await accountAvailable()) == true,
@@ -254,8 +244,8 @@ final class CloudBackupManager {
             guard try await accountAvailable() else {
                 throw BackupError.noICloud
             }
-            // v2 records are named from the recovery key; older backups were
-            // named after the account id — fall back to that once.
+            // v2 records are named from the recovery key; fall back to the
+            // pre-v2 name (the account id).
             let record: CKRecord
             if let found = try await fetchRecord(named: Self.recordName(recoveryKey: recoveryKey)) {
                 record = found
@@ -323,9 +313,8 @@ final class CloudBackupManager {
         }
     }
 
-    /// v2 record name: HMAC-SHA256(recovery key, constant). Stable for a given
-    /// recovery key (so restore can find it from the key alone) and unlinkable
-    /// to the Relay account id.
+    /// v2 record name: HMAC-SHA256(recovery key, constant). Findable from the
+    /// key alone and unlinkable to the account id.
     private static func recordName(recoveryKey: Data) -> String {
         let mac = HMAC<SHA256>.authenticationCode(
             for: Data("relay-icloud-backup-record-v2".utf8),

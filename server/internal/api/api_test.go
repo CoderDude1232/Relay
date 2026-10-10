@@ -264,8 +264,6 @@ func sendFrame(dest string, msgs ...*relaypb.DeviceMessage) *relaypb.ClientFrame
 	}
 }
 
-// ---------------------------------------------------------------------------
-
 func TestVerifyDeviceMutation(t *testing.T) {
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -427,7 +425,7 @@ func (e *testEnv) connect(c *client) *wsConn { return c.connectWS() }
 // creates the account, a later sign-in from a "new device" (no local creds)
 // recovers the same account (bumping the device list), an account registered
 // with a confirmed email is adopted by email from another Supabase identity,
-// and an UNconfirmed email never adopts anything.
+// and an unconfirmed email never adopts anything.
 func TestOAuthAccountProvisioning(t *testing.T) {
 	env := newTestEnv(t)
 	// Stub Supabase verification: the token is "userID|email"; user ids starting
@@ -460,12 +458,12 @@ func TestOAuthAccountProvisioning(t *testing.T) {
 		Created   bool   `json:"created"`
 	}
 
-	// Missing username on first sign-in → 404 (client should prompt).
+	// Missing username on first sign-in: 404 (the client should prompt).
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
 		map[string]string{"accessToken": u1 + "|" + emailA, "password": "device-pw-123"},
 		http.StatusNotFound, nil)
 
-	// First sign-in with a username → creates the account (201).
+	// First sign-in with a username creates the account (201).
 	var first oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
 		map[string]string{"accessToken": u1 + "|" + emailA, "username": alice, "password": "device-pw-123"},
@@ -474,7 +472,7 @@ func TestOAuthAccountProvisioning(t *testing.T) {
 		t.Fatalf("first sign-in: %+v", first)
 	}
 
-	// Second sign-in from a fresh device (no username) → same account, new device.
+	// Second sign-in from a fresh device (no username): same account, new device.
 	var second oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
 		map[string]string{"accessToken": u1 + "|" + emailA, "password": "device-pw-456"},
@@ -492,17 +490,17 @@ func TestOAuthAccountProvisioning(t *testing.T) {
 	env.doJSON("POST", "/v1/accounts", "", "",
 		map[string]string{"username": bob, "password": "bob-pw-1234", "email": emailB},
 		http.StatusBadRequest, nil)
-	// Register with a Supabase token whose email is confirmed → email linked.
+	// Registering with a Supabase token whose email is confirmed links the email.
 	env.doJSON("POST", "/v1/accounts", "", "",
 		map[string]string{"username": bob, "password": "bob-pw-1234", "supabaseAccessToken": u2 + "|" + emailB},
 		http.StatusCreated, nil)
 
-	// An unconfirmed email never adopts the account (no id match → username required).
+	// An unconfirmed email never adopts the account (no id match, so a username is required).
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
 		map[string]string{"accessToken": "nc-" + u3 + "|" + emailB, "password": "device-pw-000"},
 		http.StatusNotFound, nil)
 
-	// Another Supabase identity with the same CONFIRMED email signs in to bob.
+	// Another Supabase identity with the same confirmed email signs in to bob.
 	var adopt oauthResp
 	env.doJSON("POST", "/v1/accounts/oauth", "", "",
 		map[string]string{"accessToken": u3 + "|" + emailB, "password": "device-pw-789"},
@@ -552,7 +550,7 @@ func TestContactInviteSingleUse(t *testing.T) {
 		t.Fatalf("bad invite: %+v", created)
 	}
 
-	// First claim → resolves to alice.
+	// First claim resolves to alice.
 	var claim struct {
 		AccountID string `json:"accountId"`
 		Username  string `json:"username"`
@@ -563,11 +561,11 @@ func TestContactInviteSingleUse(t *testing.T) {
 		t.Fatalf("first claim wrong: %+v", claim)
 	}
 
-	// Second claim of the same token → rejected (single-use).
+	// Second claim of the same token is rejected (single-use).
 	env.doJSON("POST", "/v1/contact-invites/claim", bob.authUser(), bob.password,
 		map[string]string{"token": created.Token}, http.StatusNotFound, nil)
 
-	// Unknown token → rejected.
+	// Unknown token is rejected.
 	env.doJSON("POST", "/v1/contact-invites/claim", bob.authUser(), bob.password,
 		map[string]string{"token": "deadbeef"}, http.StatusNotFound, nil)
 }
@@ -586,7 +584,7 @@ func TestSealedSendDelivery(t *testing.T) {
 		map[string]string{"accessKey": base64.StdEncoding.EncodeToString(accessKey)},
 		http.StatusNoContent, nil)
 
-	// Alice fetches Bob's bundle → obtains his mailbox and access key.
+	// Alice fetches Bob's bundle, which carries his mailbox and access key.
 	var keys struct {
 		Devices []struct {
 			MailboxID string `json:"mailboxId"`
@@ -603,14 +601,14 @@ func TestSealedSendDelivery(t *testing.T) {
 	mailbox := keys.Devices[0].MailboxID
 	content := []byte("sealed-ciphertext-blob")
 
-	// Wrong access key → rejected.
+	// Wrong access key is rejected.
 	env.doJSON("POST", "/v1/messages/sealed", "", "", map[string]any{
 		"mailboxId": mailbox, "type": 2,
 		"content":   base64.StdEncoding.EncodeToString(content),
 		"accessKey": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x22}, 32)),
 	}, http.StatusForbidden, nil)
 
-	// Correct access key → accepted (queued while Bob is offline).
+	// Correct access key is accepted (queued while Bob is offline).
 	env.doJSON("POST", "/v1/messages/sealed", "", "", map[string]any{
 		"mailboxId": mailbox, "type": 2,
 		"content":   base64.StdEncoding.EncodeToString(content),
@@ -708,7 +706,7 @@ func TestMailboxRotation(t *testing.T) {
 
 	oldMailbox := mailboxOf()
 
-	// Rotate → a new, different mailbox id.
+	// Rotating yields a new, different mailbox id.
 	var rot struct {
 		MailboxID string `json:"mailboxId"`
 	}
@@ -727,7 +725,7 @@ func TestMailboxRotation(t *testing.T) {
 			"accessKey": base64.StdEncoding.EncodeToString(accessKey),
 		}, want, nil)
 	}
-	// The stale mailbox no longer routes; the new one does.
+	// The old mailbox doesn't route; the new one does.
 	send(oldMailbox, http.StatusForbidden)
 	send(rot.MailboxID, http.StatusOK)
 }
@@ -746,7 +744,7 @@ func TestBlindedDirectory(t *testing.T) {
 	bob := env.register("bob-dir", "password-bob")
 
 	// Simulate the client's oblivious lookup of "bob-dir": blind H1(x), have the
-	// server evaluate under k, unblind, derive the token — the server never sees x.
+	// server evaluate under k, unblind, derive the token. The server never sees x.
 	id := []byte(oprf.Normalize(bob.username))
 	h := sha512.New()
 	h.Write([]byte("Relay-OPRF-v1-h2g"))
@@ -813,7 +811,7 @@ func TestBlindedDirectory(t *testing.T) {
 		t.Fatalf("expected to resolve %s, got %q (found=%v)", bob.username, user, ok)
 	}
 
-	// An unknown token matches nothing — non-registered contacts stay private.
+	// An unknown token matches nothing, so non-registered contacts stay private.
 	junk := make([]byte, 32)
 	rand.Read(junk)
 	if _, _, ok := fetch(junk); ok {

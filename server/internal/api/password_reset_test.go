@@ -87,7 +87,7 @@ func TestPasswordResetAndEmailChange(t *testing.T) {
 	if devs, _ := env.api.store.Devices(reset.AccountID); len(devs) != 1 {
 		t.Fatalf("old device not replaced: %+v", devs)
 	}
-	// Recovery now takes the new password.
+	// Recovery takes the new password.
 	env.doJSON("POST", "/v1/accounts/recover", "", "", map[string]string{"email": email, "accountPassword": "old-account-pw"}, http.StatusUnauthorized, nil)
 
 	// Email change: signed in as the new device.
@@ -99,7 +99,7 @@ func TestPasswordResetAndEmailChange(t *testing.T) {
 	env.doJSON("PUT", "/v1/accounts/me/email", c.authUser(), c.password, map[string]string{"accessToken": "someone-else|" + newEmail + "|0"}, http.StatusForbidden, nil)
 	// The account's own user, with the new confirmed email, succeeds.
 	env.doJSON("PUT", "/v1/accounts/me/email", c.authUser(), c.password, map[string]string{"accessToken": uid + "|" + newEmail + "|0"}, http.StatusNoContent, nil)
-	// Recovery now follows the new email, not the old one.
+	// Recovery follows the new email, not the old one.
 	env.doJSON("POST", "/v1/accounts/recover", "", "", map[string]string{"email": email, "accountPassword": "new-account-pw"}, http.StatusUnauthorized, nil)
 	env.doJSON("POST", "/v1/accounts/recover", "", "", map[string]string{"email": newEmail, "accountPassword": "new-account-pw"}, http.StatusCreated, nil)
 }

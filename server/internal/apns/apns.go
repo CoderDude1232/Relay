@@ -1,7 +1,7 @@
 // Package apns sends push notifications to Apple over HTTP/2 using
-// token-based (.p8 / JWT ES256) authentication. The relay only ever sends a
-// wake + the already-encrypted envelope; the device's Notification Service
-// Extension decrypts it. Apple never sees plaintext.
+// token-based (.p8 / JWT ES256) authentication. The relay only sends a wake,
+// optionally with the already-encrypted envelope; the device's Notification
+// Service Extension decrypts it. Apple never sees plaintext.
 package apns
 
 import (
@@ -36,7 +36,7 @@ type Pusher struct {
 	// APNs environment. Development builds (run from Xcode) get sandbox
 	// tokens and TestFlight/App Store builds get production tokens, and
 	// Apple rejects a token sent to the wrong environment with
-	// BadDeviceToken — so on that error the push is retried on altHost and
+	// BadDeviceToken, so on that error the push is retried on altHost and
 	// the working host is remembered per token. One relay serves both.
 	host    string
 	altHost string
@@ -55,7 +55,7 @@ type Pusher struct {
 // full (a cleared token just costs one extra request next time).
 const maxRememberedTokens = 50_000
 
-// New loads the .p8 signing key and prepares a pusher. `production` selects
+// New loads the .p8 signing key and prepares a pusher. production selects
 // which APNs environment is tried first; tokens from the other environment
 // still work via the BadDeviceToken fallback in send.
 func New(keyPath, keyID, teamID, topic string, production bool) (*Pusher, error) {
@@ -86,19 +86,17 @@ func New(keyPath, keyID, teamID, topic string, production bool) (*Pusher, error)
 	}, nil
 }
 
-// Push sends a wake notification. By default it is CONTENT-FREE: `envelope` is
-// nil and the payload carries no message data at all. The push only tells the
-// device something is waiting; the Notification Service Extension then fetches
-// the encrypted envelope from the relay over its own connection and decrypts it
-// on-device, keeping message content off Apple's push infrastructure entirely.
+// Push sends a wake notification. By default envelope is nil and the payload
+// carries no message data: the Notification Service Extension fetches the
+// encrypted envelope from the relay itself, so message content never touches
+// Apple's push infrastructure.
 //
-// If the destination device opted in to ciphertext-in-push, the caller passes a
-// non-nil `envelope` and it is embedded (base64) so the NSE can decrypt straight
-// from the payload without a round-trip — faster, but Apple's servers then carry
-// the (still end-to-end-encrypted) blob.
+// If the device opted in to ciphertext-in-push, the caller passes envelope and
+// it is embedded (base64) so the NSE can skip the fetch. Apple then carries the
+// end-to-end-encrypted blob.
 func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 	aps := map[string]any{
-		// A placeholder the NSE replaces after it fetches + decrypts;
+		// A placeholder the NSE replaces after it fetches and decrypts;
 		// mutable-content lets the extension run and rewrite the title/body.
 		"alert":           map[string]any{"body": "New message"},
 		"mutable-content": 1,
@@ -121,10 +119,9 @@ func (p *Pusher) Push(deviceToken string, envelope []byte) error {
 
 // PushVoIP sends a PushKit VoIP push that wakes the app and presents the
 // CallKit incoming-call UI. The payload is exactly {"call_id": "<id>"}: no
-// caller account, name or call kind ever reaches Apple — the app reports a
-// generic incoming call and fills in the caller from the end-to-end-encrypted
-// offer. It must not contain content-available (PushKit VoIP pushes are always
-// treated as high-priority wakes by iOS).
+// caller account, name or call kind reaches Apple. The app reports a generic
+// incoming call and fills in the caller from the end-to-end-encrypted offer.
+// It must not contain content-available.
 func (p *Pusher) PushVoIP(deviceToken, callID string) error {
 	payload, err := json.Marshal(map[string]string{"call_id": callID})
 	if err != nil {
@@ -168,7 +165,7 @@ func (p *Pusher) send(deviceToken string, payload []byte, topic, pushType string
 			return nil
 		}
 		if status == http.StatusGone || isBadDeviceToken(status, reason) {
-			// Rejected by BOTH environments: the token is dead.
+			// Rejected by both environments: the token is dead.
 			p.forgetHost(deviceToken)
 			return &TokenError{Status: status, Reason: reason}
 		}

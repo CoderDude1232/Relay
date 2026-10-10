@@ -27,7 +27,7 @@ func TestUsernameReuseCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only keyed hashes are stored — never the name.
+	// Only keyed hashes are stored, never the name.
 	var nameHash, ownerHash []byte
 	if err := s.db.QueryRow(ctx, `SELECT name_hash, owner_hash FROM released_usernames WHERE name_hash = $1`,
 		s.releasedNameHash(old)).Scan(&nameHash, &ownerHash); err != nil {

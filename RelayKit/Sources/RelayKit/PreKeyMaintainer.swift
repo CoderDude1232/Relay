@@ -2,17 +2,15 @@
 //  PreKeyMaintainer.swift
 //  RelayKit
 //
-//  Keeps the device's one-time prekey pool topped up: when the relay
-//  reports fewer than `threshold` remaining, a fresh batch is generated
-//  (with a rotated signed prekey and Kyber prekey) and uploaded.
+//  Keeps the one-time prekey pool topped up. When the relay reports fewer
+//  than `threshold` keys, uploads a fresh batch with rotated signed and
+//  Kyber prekeys.
 //
 
 import CryptoCore
 import Foundation
 
-/// Hands out prekey ids that are never reused across the device's
-/// lifetime. Backed by the encrypted kv table in the app; in-memory in
-/// tests.
+/// Hands out prekey ids that are never reused over the device's lifetime.
 public protocol PreKeyIdAllocating: AnyObject, Sendable {
     func allocateIds(count: Int) throws -> Range<UInt32>
 }
@@ -26,12 +24,10 @@ public struct PreKeyMaintainer: Sendable {
         self.batchSize = batchSize
     }
 
-    /// Uploads the device's very first key publication. The local key store is
-    /// fresh here (registration / linking / restore), so it replaces the relay's
-    /// one-time pool rather than appending — otherwise a prior install's
-    /// higher-id one-time keys survive on the relay, get served after the fresh
-    /// low-id keys are consumed, and every session built on them fails to decrypt
-    /// (the local store lacks their private halves).
+    /// Uploads the device's first key publication. The local store is fresh, so
+    /// this replaces the relay's one-time pool instead of appending to it. Otherwise
+    /// a previous install's higher-id keys survive on the relay, get served once the
+    /// new keys run out, and every session built on them fails to decrypt.
     public func publishInitialKeys(
         api: RelayAPIClient,
         engine: CryptoEngine,
@@ -40,10 +36,9 @@ public struct PreKeyMaintainer: Sendable {
         try await upload(api: api, engine: engine, allocator: allocator, replaceOneTime: true)
     }
 
-    /// Rebuilds the entire published pool from scratch: a fresh signed/Kyber
-    /// prekey plus a full one-time batch, replacing whatever the relay holds.
-    /// Called reactively when an inbound message references a one-time prekey the
-    /// local store no longer has (a desync), to heal it for future sessions.
+    /// Replaces the whole published pool: fresh signed and Kyber prekeys plus a
+    /// full one-time batch. Used when an inbound message references a one-time
+    /// prekey the local store no longer has.
     public func replacePublishedPool(
         api: RelayAPIClient,
         engine: CryptoEngine,
@@ -53,10 +48,9 @@ public struct PreKeyMaintainer: Sendable {
     }
 
     /// Re-publishes the identity, signed prekey and Kyber prekey (no one-time
-    /// keys), replacing whatever the server currently holds. Run on launch so the
-    /// server can never serve a signed prekey this device lacks the private for —
-    /// which happens after the local key store is wiped (app reinstall) while the
-    /// server keeps the old published bundle, breaking new inbound sessions.
+    /// keys), replacing what the server holds. Run on launch so the server never
+    /// serves a signed prekey whose private half this device lost, e.g. after a
+    /// reinstall wiped the local store.
     public func republishSignedPreKey(
         api: RelayAPIClient,
         engine: CryptoEngine,
@@ -71,8 +65,7 @@ public struct PreKeyMaintainer: Sendable {
         try await api.uploadKeys(publication)
     }
 
-    /// Checks the pool and replenishes when it's below threshold.
-    /// Returns true when an upload happened.
+    /// Replenishes the pool when it's below threshold. Returns true if it uploaded.
     @discardableResult
     public func replenishIfNeeded(
         api: RelayAPIClient,
@@ -91,8 +84,7 @@ public struct PreKeyMaintainer: Sendable {
         allocator: any PreKeyIdAllocating,
         replaceOneTime: Bool = false
     ) async throws {
-        // One id for the signed prekey, one for the Kyber prekey, the rest
-        // for the one-time pool.
+        // One id each for the signed and Kyber prekeys, the rest for the pool.
         let ids = try allocator.allocateIds(count: batchSize + 2)
         let publication = try engine.generatePreKeyPublication(
             signedPreKeyId: ids.lowerBound,

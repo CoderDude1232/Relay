@@ -31,3 +31,6 @@ android/app/google-services.json
 # Local API tokens — never commit
 .cloudflare-token
 .cloudflare-turn
+
+# Local notes
+CLAUDE.md

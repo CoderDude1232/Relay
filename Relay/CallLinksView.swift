@@ -2,9 +2,8 @@
 //  CallLinksView.swift
 //  Relay
 //
-//  Call links: a shareable link that starts (or joins) a call with whoever
-//  opens it, after the host lets them in. See CallManager "Call links" for the
-//  protocol; the links themselves are stored on this device only.
+//  Call links: a shareable link that starts or joins a call once the host lets
+//  the joiner in. Protocol is in CallManager; links are stored on this device only.
 //
 
 import Observation
@@ -50,7 +49,6 @@ final class CallLinkStore {
     func link(_ id: String) -> CallLinkRecord? { links.first { $0.id == id } }
 }
 
-/// Calls → Call Links.
 struct CallLinksView: View {
     let service: MessagingService
     @Environment(CallManager.self) private var callManager
@@ -144,7 +142,7 @@ struct CallLinksView: View {
     }
 }
 
-/// Host: "X wants to join your call" with Deny / Let In.
+/// Host side: a join request with Deny / Let In.
 struct LinkJoinRequestBanner: View {
     @Environment(CallManager.self) private var callManager
     let request: LinkJoinRequest
@@ -172,7 +170,7 @@ struct LinkJoinRequestBanner: View {
     }
 }
 
-/// Joiner: waiting to be let in (or told no).
+/// Joiner side: waiting to be let in or refused.
 struct OutgoingLinkJoinCard: View {
     @Environment(CallManager.self) private var callManager
     let join: OutgoingLinkJoin

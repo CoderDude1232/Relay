@@ -3,14 +3,12 @@
 //  Relay
 //
 //  Client half of the ristretto255 DH-OPRF used for blinded contact discovery.
-//  We never send a plaintext username/email to the relay: we blind H1(x) with a
-//  random scalar, let the server evaluate it under its secret key, unblind, and
-//  derive a lookup token. The token itself never leaves the device either:
-//  `RelayAPIClient.directoryResolve(tokens:)` sends only each token's 16-bit
-//  bucket and matches/decrypts the returned entries locally (see RelayKit's
-//  DirectoryBuckets.swift). This MUST match the server's `internal/oprf` package
-//  byte-for-byte — same domain tags, normalization, hashes, and ristretto
-//  encodings (see the interop test).
+//  The relay never sees a plaintext username or email: we blind H1(x), the
+//  server evaluates it under its key, and we unblind and derive a lookup token.
+//  The token stays on device too; `directoryResolve(tokens:)` sends only a
+//  16-bit bucket and matches entries locally (see DirectoryBuckets.swift).
+//  Must match the server's `internal/oprf` byte-for-byte: domain tags,
+//  normalization, hashes and encodings (see the interop test).
 //
 
 import Clibsodium
@@ -18,7 +16,7 @@ import CryptoKit
 import Foundation
 
 enum BlindedDiscovery {
-    // Domain-separation tags — identical to server/internal/oprf/oprf.go.
+    // Domain-separation tags; must match server/internal/oprf/oprf.go.
     private static let hashToGroupDomain = Data("Relay-OPRF-v1-h2g".utf8)
     private static let tokenDomain = Data("Relay-OPRF-v1-token".utf8)
 
@@ -48,8 +46,8 @@ enum BlindedDiscovery {
         fileprivate let normalized: Data    // x
     }
 
-    /// Blinds an identifier. Returns nil only on the astronomically unlikely
-    /// degenerate scalar/point (libsodium rejects the identity element).
+    /// Returns nil only for a degenerate scalar/point (libsodium rejects the
+    /// identity element).
     static func blind(_ identifier: String) -> Blinded? {
         _ = initOnce
         let x = normalize(identifier)

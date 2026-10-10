@@ -29,7 +29,6 @@ final class SampleHandler: RPBroadcastSampleHandler {
     }
 
     override func broadcastFinished() {
-        // Removes the frame AND the state file — nothing is left behind.
         removeLatestFrame()
     }
 
@@ -51,10 +50,8 @@ final class SampleHandler: RPBroadcastSampleHandler {
         let uiImage = UIImage(cgImage: cgImage)
         guard let data = uiImage.jpegData(compressionQuality: 0.62) else { return }
 
-        // A screen frame can show anything (messages, codes, photos): write it
-        // with complete Data Protection (unreadable while locked), atomically
-        // (temp + rename), and keep it out of backups. It is deleted when the
-        // broadcast ends.
+        // A screen frame can show anything, so it is written atomically with complete
+        // file protection, excluded from backup, and deleted when the broadcast ends.
         var frameURL = containerURL.appendingPathComponent(Self.frameFilename)
         do {
             try data.write(to: frameURL, options: [.atomic, .completeFileProtection])
@@ -91,7 +88,7 @@ final class SampleHandler: RPBroadcastSampleHandler {
         Self.excludeFromBackup(&url)
     }
 
-    /// Deletes the last frame (and any temp file an older build left behind).
+    /// Deletes the last frame and any leftover temp file.
     private func removeLatestFrame() {
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId) else { return }
         let fm = FileManager.default

@@ -22,7 +22,7 @@ func TestDemoAccounts(t *testing.T) {
 	demoFlags.entries = map[string]demoCacheEntry{}
 	demoFlags.mu.Unlock()
 
-	// Isolation: no key fetches across the line, either way; demo↔demo works.
+	// Isolation: no key fetches across the line in either direction; demo to demo works.
 	env.doJSON("GET", "/v1/keys/"+demo1.accountID, alice.authUser(), alice.password, nil, http.StatusNotFound, nil)
 	env.doJSON("GET", "/v1/keys/"+alice.accountID, demo1.authUser(), demo1.password, nil, http.StatusNotFound, nil)
 	env.doJSON("GET", "/v1/keys/"+demo2.accountID, demo1.authUser(), demo1.password, nil, http.StatusOK, nil)

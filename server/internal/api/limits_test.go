@@ -88,7 +88,7 @@ func TestAuthFailureThrottle(t *testing.T) {
 }
 
 // TestBasicRefusedOutsideBootstrap: every route but the auth-key bootstrap
-// refuses HTTP Basic outright — before any store access (the server here has
+// refuses HTTP Basic outright, before any store access (the server here has
 // no store, so reaching one would panic).
 func TestBasicRefusedOutsideBootstrap(t *testing.T) {
 	for _, l := range allLimiters {

@@ -23,10 +23,10 @@ func TestBasicOnlyForAuthKeyBootstrap(t *testing.T) {
 	env.doJSON("GET", "/v1/keys/count", c.authUser(), c.password, nil, http.StatusUnauthorized, nil)
 	env.doJSON("GET", "/v1/devices", c.authUser(), c.password, nil, http.StatusUnauthorized, nil)
 
-	// The bootstrap upload works over Basic (1st success)…
+	// The bootstrap upload works over Basic (first success).
 	env.clients[c.authUser()] = c
 	c.uploadDeviceAuthKey()
-	// …after which the route needs a signature, yet each further correct
+	// After that the route needs a signature, yet each further correct
 	// password still costs a bcrypt and spends the success budget.
 	for i := 2; i <= 10; i++ {
 		req, _ := http.NewRequest("PUT", env.srv.URL+"/v1/devices/auth-key", nil)

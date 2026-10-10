@@ -2,30 +2,28 @@
 //  RelaySigning.swift
 //  RelayKit
 //
-//  Relay-Sig v2 request signing (see server/README.md "Authentication").
-//  Every authenticated REST call and the WebSocket upgrade carry a fresh
-//  ECDSA-P256 signature from the device auth key, over:
+//  Relay-Sig v2 request signing (server/README.md, "Authentication"). Every
+//  authenticated REST call and the WebSocket upgrade carry a fresh ECDSA P-256
+//  signature from the device auth key over:
 //
 //      "relay-sig-v2" \n METHOD \n REQUEST-URI \n ACCOUNT \n DEVICE \n
 //      TIMESTAMP \n NONCE \n hex(SHA-256(body))
 //
-//  REQUEST-URI is the percent-encoded path plus "?query" when present, exactly
-//  as it goes on the wire. Nothing replayable transits the wire.
+//  REQUEST-URI is the percent-encoded path plus "?query" if present, exactly
+//  as sent.
 //
 
 import CryptoKit
 import Foundation
 import Security
 
-/// Signs the per-request canonical string with the device's P256 authorization
-/// key (the same key used for device mutations). Injected by the app, which
-/// owns the Keychain/Secure-Enclave key. Returns the ECDSA-P256 (ASN.1 DER)
-/// signature over SHA-256 of `message`, or nil if the key is unavailable.
+/// Signs the canonical request string with the device's P-256 auth key, which
+/// the app owns. Returns a DER ECDSA signature over SHA-256 of `message`, or
+/// nil if the key is unavailable.
 public protocol RelayRequestSigner: Sendable {
     func signRelayRequest(_ message: Data) -> Data?
-    /// The uncompressed P-256 public key (0x04‖X‖Y) matching the signing key.
-    /// Used once, to bootstrap a device that has not registered its auth key
-    /// with the relay yet. Return nil if unknown.
+    /// Uncompressed P-256 public key (0x04 || X || Y) for the signing key, used
+    /// once to register it with the relay. Nil if unknown.
     func relayAuthPublicKey() -> Data?
 }
 
@@ -33,9 +31,8 @@ public extension RelayRequestSigner {
     func relayAuthPublicKey() -> Data? { nil }
 }
 
-/// A closure-backed signer — lets targets that can't see the app's
-/// `DeviceAuthSigner` (e.g. the Notification Service Extension) sign with the
-/// shared Keychain key:
+/// A closure-backed signer for targets that can't see the app's
+/// `DeviceAuthSigner`, such as the NSE:
 ///
 ///     RelayClosureSigner(
 ///         sign: { try? keychain.signDeviceAuthorizationPayload($0) },
@@ -59,7 +56,7 @@ enum RelaySignature {
     static let nonceBytes = 32
 
     /// The request target as the server sees it: percent-encoded path plus
-    /// "?query" when the URL has one.
+    /// "?query" if present.
     static func requestURI(_ url: URL) -> String {
         var uri = url.path(percentEncoded: true)
         if uri.isEmpty { uri = "/" }
@@ -79,8 +76,8 @@ enum RelaySignature {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Adds Relay-Sig headers to `request` (its URL, method and httpBody must be
-    /// final). Returns false if the signer could not produce a signature.
+    /// Adds Relay-Sig headers to `request`, whose URL, method and body must be
+    /// final. Returns false if the signer produced no signature.
     static func sign(_ request: inout URLRequest, credentials: RelayCredentials, signer: any RelayRequestSigner) -> Bool {
         guard let url = request.url else { return false }
         let timestamp = String(Int64(Date().timeIntervalSince1970 * 1000))
@@ -89,8 +86,8 @@ enum RelaySignature {
             return false
         }
         let nonce = Data(nonceBytes).base64EncodedString()
-        // A caller streaming a large body may pre-declare its digest; otherwise
-        // hash the in-memory body (empty when there is none).
+        // A caller streaming a large body may supply its digest; otherwise hash the
+        // in-memory body (empty if none).
         let bodyHex = request.value(forHTTPHeaderField: "X-Relay-Content-SHA256")?.lowercased()
             ?? sha256Hex(request.httpBody ?? Data())
         let message = canonical(
@@ -111,18 +108,17 @@ enum RelaySignature {
     }
 }
 
-/// Runs the automatic Basic bootstrap of a device's auth key at most once per
-/// process, so a signed request that fails for another reason (e.g. clock
-/// skew) doesn't resend the device password every time. Concurrent callers —
-/// right after sign-up several signed requests race before the key exists —
-/// all await the same attempt instead of only the first one recovering.
+/// Runs the Basic-auth bootstrap of a device's auth key at most once per
+/// process, so a signed request failing for another reason (clock skew, say)
+/// doesn't resend the password each time. Right after sign-up several signed
+/// requests race before the key exists; they all await the same attempt.
 final class AuthKeyBootstrapLedger: @unchecked Sendable {
     static let shared = AuthKeyBootstrapLedger()
     private let lock = NSLock()
     private var attempts: [String: Task<Void, Never>] = [:]
 
-    /// Starts `bootstrap` for this device if no attempt exists yet, then waits
-    /// for that (single) attempt to finish, whatever its outcome.
+    /// Starts `bootstrap` for this device if no attempt exists, then waits for
+    /// that attempt to finish, whatever its outcome.
     func runOnce(for credentials: RelayCredentials,
                  _ bootstrap: @escaping @Sendable () async -> Void) async {
         let key = "\(credentials.accountId).\(credentials.deviceId)"

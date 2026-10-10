@@ -2,14 +2,13 @@
 //  SupabaseAuth.swift
 //  Relay
 //
-//  Lightweight Supabase auth — no SDK dependency, plain URLSession.
-//  Update SupabaseConfig once you have a project (see setup steps in README).
+//  Minimal Supabase auth client over URLSession.
 //
 
 import Foundation
 import Security
 
-// MARK: - Config  (update these after creating your Supabase project)
+// MARK: - Config
 
 enum SupabaseConfig {
     static let projectURL = "https://kmhxqtouqlfefzaedoqx.supabase.co"
@@ -33,7 +32,7 @@ actor SupabaseAuth {
 
     private(set) var session: SupabaseSession?
 
-    // Legacy UserDefaults key — only read for one-time migration.
+    // Legacy UserDefaults key, read only for migration.
     private static let legacySessionKey = "supabase.session"
 
     init() {
@@ -57,10 +56,8 @@ actor SupabaseAuth {
         let data = try await send(path: "/auth/v1/signup", body: ["email": email, "password": password])
         // With "Confirm email" on, Supabase returns the user without a session.
         guard let raw = try? JSONDecoder().decode(SupabaseRawSession.self, from: data) else {
-            // For an address that's already registered Supabase sends no email
-            // (so sign-up can't be used to probe who has an account) and
-            // returns a user with an empty identities list. Say so instead of
-            // waiting for a code that will never arrive.
+            // For an already registered address Supabase sends no email and
+            // returns a user with no identities, so no code will arrive.
             if let pending = try? JSONDecoder().decode(SupabasePendingUser.self, from: data),
                let identities = pending.identities ?? pending.user?.identities,
                identities.isEmpty {
@@ -152,9 +149,7 @@ actor SupabaseAuth {
         UserDefaults.standard.removeObject(forKey: Self.legacySessionKey)
     }
 
-    /// Exchanges the stored refresh token for a fresh access + refresh token pair.
-    /// Call this when a Supabase API call returns 401 (token expired).
-    /// Returns the refreshed session, or throws if no session exists or the refresh fails.
+    /// Exchanges the stored refresh token for a new token pair. Call on a 401.
     @discardableResult
     func refresh() async throws -> SupabaseSession {
         guard let current = session else {
@@ -242,7 +237,7 @@ actor SupabaseAuth {
         return data
     }
 
-    // MARK: - Keychain (access + refresh tokens are credentials; use Keychain)
+    // MARK: - Keychain
 
     private static let kcService = "com.relayapp.relay.supabase"
     private static let kcAccount = "session"

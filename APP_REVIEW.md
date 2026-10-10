@@ -35,7 +35,7 @@ changed, and "Delete Account" resets them instead of deleting (see
    `ethandaly525+relayreview1@gmail.com` (codes arrive in the normal inbox) →
    username e.g. `relay_review_a` → Profile → Account → **Account Password**.
 2. Same again with `+relayreview2` → `relay_review_b`.
-3. Ask Claude (or run the SQL in `server/README.md`) to mark both as demo.
+3. Mark both as demo with the SQL in `server/README.md` ("Demo accounts").
 4. From A, start a chat with `relay_review_b` and exchange a few messages and a
    photo, so the reviewer sees a real conversation.
 5. Simplest for Apple: the **review code** (in 1Password; on the server at

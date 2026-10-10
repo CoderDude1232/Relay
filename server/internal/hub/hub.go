@@ -40,7 +40,7 @@ type Pusher interface {
 type FCMPusher interface {
 	Push(deviceToken string, envelope []byte) error
 	// PushCall wakes an Android device for an incoming call (the FCM analogue of
-	// PushKit): a high-priority data message carrying ONLY the call id.
+	// PushKit): a high-priority data message carrying only the call id.
 	PushCall(deviceToken, callID string) error
 }
 
@@ -108,11 +108,11 @@ func (h *Hub) SetFCMPusher(p FCMPusher) { h.fcmPusher = p }
 func (h *Hub) SetVoIPPusher(p VoIPPusher) { h.voipPusher = p }
 
 // PushCallToAccount wakes every device of accountID for an incoming call,
-// picking the transport each device registered — the same per-device branch
-// Deliver uses. iOS ('apns') gets a PushKit VoIP push (its separate VoIP token);
-// Android ('fcm') gets a high-priority FCM data message. The push carries ONLY
-// the call id — never who is calling: the caller's identity (and audio/video
-// kind) reach the callee solely inside the end-to-end-encrypted call offer.
+// using the transport each device registered, as Deliver does. iOS ('apns')
+// gets a PushKit VoIP push to its separate VoIP token; Android ('fcm') gets a
+// high-priority FCM data message. The push carries only the call id, never who
+// is calling: the caller's identity and call kind reach the callee only inside
+// the end-to-end-encrypted call offer.
 func (h *Hub) PushCallToAccount(accountID, callID string) {
 	devices, err := h.store.ListDevices(accountID)
 	if err != nil {
@@ -142,7 +142,7 @@ func (h *Hub) PushCallToAccount(accountID, callID string) {
 					slog.Debug("call push sent", "kind", "fcm")
 				}
 			}()
-		default: // apns — PushKit uses the device's separate VoIP token
+		default: // apns; PushKit uses the device's separate VoIP token
 			if h.voipPusher == nil {
 				continue
 			}
@@ -183,7 +183,7 @@ func (h *Hub) Register(accountID string, deviceID uint32, s Session) {
 	h.mu.Unlock()
 	if prev != nil && prev != s {
 		// Outside the lock: closing runs the old session's Unregister, which
-		// is a no-op now that the map points at the new session.
+		// is a no-op because the map points at the new session.
 		if c, ok := prev.(Closer); ok {
 			c.Close("replaced by a newer connection")
 		}
@@ -227,7 +227,7 @@ func (h *Hub) DisconnectAccount(accountID string, reason string) int {
 	}
 	h.mu.Unlock()
 	// Close outside the lock: closing triggers the session's own Unregister,
-	// which takes h.mu (it is a no-op now since the entry is already gone).
+	// which takes h.mu (a no-op, since the entry is already gone).
 	for _, s := range victims {
 		if c, ok := s.(Closer); ok {
 			c.Close(reason)
@@ -269,8 +269,8 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 // DeliverFrom routes one envelope to one device. Non-ephemeral envelopes are
 // queued first so a crash between here and the socket write loses nothing.
 //
-// sender identifies who is sending for queue fairness — an authenticated
-// account id, or a source-IP bucket for sealed sends ("" = unaccounted). It is
+// sender identifies who is sending for queue fairness: an authenticated
+// account id, or a source-IP bucket for sealed sends ("" is unaccounted). It is
 // only ever used hashed. If that sender already holds maxQueuedPerSender
 // unacked envelopes in this device's queue, ErrSenderQuota is returned and
 // nothing is queued or pushed.
@@ -306,9 +306,8 @@ func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relayp
 	if s != nil {
 		if !s.Send(frame) {
 			// Socket is full or already gone (close frame not yet processed).
-			// The envelope is already queued; also fire an APNs push so the
-			// device wakes immediately rather than waiting for the 60s pong
-			// timeout to expire and the next reconnect to drain the queue.
+			// The envelope is already queued; push as well so the device wakes
+			// now instead of after the 60s pong timeout and a reconnect.
 			slog.Debug("hub: session backlogged, also pushing")
 			if !env.Ephemeral {
 				h.notifyOffline(accountID, deviceID, env, blob)
@@ -355,11 +354,11 @@ func (h *Hub) notifyOffline(accountID string, deviceID uint32, env *relaypb.Enve
 		send = h.pusher.Push
 	}
 
-	// Content-free wake by default: the device fetches + decrypts the envelope
+	// Content-free wake by default: the device fetches and decrypts the envelope
 	// from the relay, so the push provider never carries message data. A device
 	// may opt in to ciphertext-in-push (faster) via its push-content preference.
 	//
-	// Only a SEALED envelope (no sender fields) is ever embedded: the push
+	// Only a sealed envelope (no sender fields) is ever embedded: the push
 	// provider must not learn who messaged whom. Stripping the sender from an
 	// authenticated-path envelope would leave the recipient unable to decrypt
 	// it from the payload, so such envelopes get a content-free wake instead

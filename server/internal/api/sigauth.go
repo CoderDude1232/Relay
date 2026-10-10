@@ -24,15 +24,15 @@ import (
 
 // Signature-based request authentication (Relay-Sig v2). Instead of presenting
 // a reusable device password (HTTP Basic), a client signs each request with
-// its P256 auth private key — the same keypair used for nuke commands, whose
-// private half never leaves the device. The server verifies against the stored
-// `auth_public_key`. Nothing replayable ever transits the wire.
+// its P-256 auth key, the same keypair used for nuke commands, whose private
+// half never leaves the device. The server verifies against the stored
+// auth_public_key, so nothing replayable crosses the wire.
 //
 // Wire format:
 //
 //	Authorization:         Relay-Sig <accountId>.<deviceId>:<base64(ECDSA-P256 sig)>
 //	X-Relay-Timestamp:     <unix millis>
-//	X-Relay-Nonce:         <base64 of 16–64 random bytes>
+//	X-Relay-Nonce:         <base64 of 16-64 random bytes>
 //	X-Relay-Content-SHA256 (optional): <lowercase hex SHA-256 of the body>
 //
 // The signature is ECDSA-P256 (ASN.1 DER) over SHA-256 of the canonical string
@@ -50,12 +50,12 @@ import (
 // The server always buffers the body (bounded by the 1 MiB request cap) and
 // hashes it itself; a declared X-Relay-Content-SHA256, if sent, must match.
 // Only a streamable route (the attachment upload, see streamableBodyRoute) may
-// instead be checked against the declared digest as it is read: everywhere
+// instead be checked against the declared digest as it is read. Everywhere
 // else a JSON handler may stop reading before EOF, so a streamed body whose
 // tail differs from what was signed would never be detected.
 //
 // A request is accepted iff the signature validates, the timestamp is within
-// ±sigAuthSkew, and the (account, device, nonce) triple hasn't been seen in
+// sigAuthSkew of now, and the (account, device, nonce) triple hasn't been seen in
 // that window.
 const sigAuthScheme = "Relay-Sig"
 
@@ -78,7 +78,7 @@ var emptyBodySHA256 = hex.EncodeToString(sha256.New().Sum(nil))
 // Replay cache. Seen nonces are kept in maps bucketed by expiry time: an entry
 // expires at its signed timestamp + sigAuthSkew, and lands in the slot
 // expiry/nonceSlotWidth. Expired slots are dropped whole (no per-entry scan),
-// and at most ~3 slots are ever live (expiries span now … now+2·skew). The
+// and at most about 3 slots are ever live (expiries span now to now+2*skew). The
 // cache is sharded by device so unrelated devices don't contend on one lock,
 // and each device may hold at most maxNoncesPerSlot entries per slot, so one
 // (validly signing) device can't grow the cache without bound.
@@ -100,7 +100,7 @@ var (
 
 type nonceSlot struct {
 	nonces    map[string]struct{} // hashed (account, device, nonce)
-	perDevice map[string]int      // hashed (account, device) -> entries in this slot
+	perDevice map[string]int      // entries in this slot, by hashed (account, device)
 }
 
 type nonceShard struct {
@@ -227,8 +227,8 @@ var errBodyHashMismatch = errors.New("request body does not match the signed dig
 // streamableBodyRoute reports whether r may have its body verified while it
 // streams instead of being buffered first: only the attachment upload
 // (PUT /v1/attachments/{id}), whose handler copies the body to EOF and
-// discards the blob when the read fails. (That route is unauthenticated today,
-// so in practice every signed request is buffered.)
+// discards the blob when the read fails. That route is unauthenticated, so in
+// practice every signed request is buffered.
 func streamableBodyRoute(r *http.Request) bool {
 	return r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/attachments/")
 }
@@ -339,8 +339,8 @@ func (s *Server) authenticateSignature(r *http.Request) (*store.Device, error) {
 	return dev, nil
 }
 
-// sigAuthCanonical builds the exact string the client signs. Clients MUST
-// reproduce this byte-for-byte.
+// sigAuthCanonical builds the exact string the client signs. Clients must
+// reproduce it byte for byte.
 func sigAuthCanonical(method, requestURI, accountID string, deviceID uint32, timestamp, nonce, bodySHA256Hex string) string {
 	return strings.Join([]string{
 		sigAuthVersion,

@@ -33,27 +33,24 @@ enum BiometricGate {
     static var isPasscodeSet: Bool {
         var error: NSError?
         if LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) { return true }
-        // Locked out / biometry problems still mean a passcode exists.
+        // Lockout or biometry errors still mean a passcode exists.
         return (error as? LAError)?.code != .passcodeNotSet
     }
 
-    /// Asks the device owner to authenticate (Face ID / Touch ID, falling back
-    /// to the passcode).
+    /// Asks the device owner to authenticate (biometrics, falling back to the
+    /// passcode).
     ///
     /// - Parameter requirePasscode: With no passcode set there is nothing to
-    ///   authenticate against. For app lock / chat lock that means there is
-    ///   nothing to protect, so the default lets the user through. Pass `true`
-    ///   for actions that must prove the owner is present — device-linking
-    ///   approval, emergency wipe — so they FAIL when no passcode is set
-    ///   (check `isPasscodeSet` first to explain why).
+    ///   authenticate against. App lock and chat lock let the user through in
+    ///   that case; actions that must prove the owner is present (device-linking
+    ///   approval, emergency wipe) pass `true` so they fail instead. Check
+    ///   `isPasscodeSet` first to explain why.
     static func authenticate(reason: String, requirePasscode: Bool = false) async -> Bool {
         let context = LAContext()
         context.localizedCancelTitle = "Cancel"
 
-        // `.deviceOwnerAuthentication` falls back to the device passcode, so a
-        // phone without Face ID enrolled — or locked out after failed attempts —
-        // can still get in. Biometrics-only would lock the user out of their
-        // own media and chats with no way back.
+        // `.deviceOwnerAuthentication` falls back to the passcode, so a phone without
+        // biometrics enrolled, or locked out after failed attempts, can still get in.
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
             if (error as? LAError)?.code == .passcodeNotSet {

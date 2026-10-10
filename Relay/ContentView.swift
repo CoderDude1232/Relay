@@ -13,8 +13,8 @@ import UIKit
 struct ContentView: View {
     @Environment(AppModel.self) private var model
     @State private var isObscured = false
-    // Start locked on a cold launch when the app lock is on — otherwise a link
-    // or notification that launches the app would land before any unlock.
+    // Start locked on a cold launch so a launching link or notification can't
+    // land before unlock.
     @State private var isLocked = UserDefaults.standard.bool(forKey: "relay.screenLockEnabled")
     @State private var backgroundedAt: Date? = nil
     @State private var isAuthenticating = false
@@ -36,8 +36,7 @@ struct ContentView: View {
                     .task(id: model.shouldOfferBackupRestore) {
                         guard model.shouldOfferBackupRestore else { return }
                         model.shouldOfferBackupRestore = false
-                        // No backup → nothing to ask; the account just starts
-                        // without history.
+                        // No backup: the account starts without history.
                         foundBackup = await CloudBackupManager.shared
                             .findBackupAfterSignIn(accountId: service.credentials.accountId)
                     }
@@ -56,9 +55,8 @@ struct ContentView: View {
                 StorageUnavailableView(message: message)
             }
 
-            // Privacy screen: covers content the instant the app loses focus.
-            // Uses UIKit notifications rather than scenePhase so it fires
-            // synchronously at the start of the swipe, not a frame later.
+            // Privacy screen. UIKit notifications fire synchronously at the start
+            // of the app-switcher swipe; scenePhase arrives a frame later.
             if isObscured {
                 Rectangle()
                     .fill(.regularMaterial)
@@ -99,7 +97,6 @@ struct ContentView: View {
             if elapsed >= Double(screenLockTimeout) {
                 isLocked = true
                 Task {
-                    // Auto-prompt on resume so the user doesn't need to tap.
                     try? await Task.sleep(for: .milliseconds(200))
                     guard isLocked, !isAuthenticating else { return }
                     isAuthenticating = true
@@ -115,8 +112,7 @@ struct ContentView: View {
 // MARK: - Lock screen
 
 /// Shown when the encrypted database can't be opened at launch. Offers a
-/// retry (the usual cause is protected data not yet available) and, as a last
-/// resort, a local reset back to onboarding.
+/// retry (usually protected data isn't available yet) and a local reset.
 private struct StorageUnavailableView: View {
     let message: String
     @Environment(AppModel.self) private var model
@@ -222,9 +218,8 @@ struct MainTabView: View {
     @State private var inviteError: String?
     @State private var pendingLinkAction: PendingLinkAction?
     @Environment(\.relayAppLocked) private var appLocked
-    /// Missed calls at or before this instant (ms since epoch) have been seen;
-    /// only newer ones count toward the Calls tab badge. Written by CallsView
-    /// on appear and here whenever the Calls tab is selected.
+    /// Missed calls at or before this time (ms since epoch) have been seen and
+    /// don't count toward the Calls tab badge.
     @AppStorage(CallsView.missedCallsSeenAtKey) private var missedCallsSeenAt: Double = 0
 
     private var isCallActive: Bool {
@@ -269,9 +264,8 @@ struct MainTabView: View {
         missedCallsSeenAt = max(missedCallsSeenAt, newest, Date().timeIntervalSince1970 * 1000)
     }
 
-    /// Picks up any pending username / contact-invite / group-invite link and
-    /// asks the user to confirm it. Nothing is joined, claimed or started
-    /// without that confirmation, and links wait while the app lock is up.
+    /// Asks the user to confirm a pending username, contact or group invite
+    /// link. Nothing happens without confirmation, and links wait while locked.
     private func handlePendingLinks() {
         guard !appLocked, pendingLinkAction == nil else { return }
         if let username = model.pendingDeepLinkUsername {
@@ -303,10 +297,10 @@ struct MainTabView: View {
             let fragment = parts.count > 1 ? String(parts[1]) : ""
             Task {
                 do {
-                    // Decrypts the invite to show its name and size. Does NOT join.
+                    // Decrypts the invite to show its name and size; doesn't join.
                     let preview = try await service.previewGroupInvite(token: token, fragment: fragment)
                     if let conversationId = preview.existingConversationId {
-                        // Already in this group: nothing to confirm, just open it.
+                        // Already a member: just open it.
                         selectedTab = 0
                         model.pendingNotificationConversationId = conversationId
                     } else {
@@ -450,9 +444,8 @@ struct MainTabView: View {
             }
 
             if service.authenticationExpired {
-                // Relay credentials were rejected (401). Clear only the relay
-                // account so the user can re-register; keep the Supabase session
-                // so they don't have to re-enter their password.
+                // 401: clear only the relay account so the user can re-register,
+                // keeping the Supabase session so no password is needed.
                 ExpiredSessionView {
                     model.signOutRelayOnly()
                 }
@@ -491,8 +484,8 @@ struct MainTabView: View {
         .animation(.spring(duration: 0.3), value: callManager.outgoingLinkJoin)
         // Links that arrived while the app lock was up run once it's unlocked.
         .onChange(of: appLocked) { _, locked in if !locked { handlePendingLinks() } }
-        // Links opened on a cold start (or during onboarding) are set before this
-        // view exists, so onChange never sees them — drain them on appear.
+        // Links from a cold start or onboarding were set before this view
+        // existed, so onChange never saw them.
         .onAppear { handlePendingLinks() }
         .sheet(item: $pendingLinkAction) { action in
             LinkConfirmationSheet(
@@ -580,10 +573,7 @@ private struct ExpiredSessionView: View {
 
 // MARK: - Profile tab icon
 
-// UIGraphicsImageRenderer uses the main screen scale by default, so the
-// resulting UIImage has size=(side,side) in points at the correct pixel
-// density — no manual scale math, no blur, no oversized frame.
-// .withRenderingMode(.alwaysOriginal) prevents the tab bar tinting the photo.
+// .alwaysOriginal stops the tab bar from tinting the photo.
 private struct ProfileTabIcon: View {
     let data: Data?
     let name: String
@@ -600,7 +590,6 @@ private struct ProfileTabIcon: View {
     private func circularCrop(_ src: UIImage) -> UIImage {
         let side: CGFloat = 28
         let sz = CGSize(width: side, height: side)
-        // Renderer auto-uses UIScreen.main.scale → sharp pixels, correct pt size.
         let cropped = UIGraphicsImageRenderer(size: sz).image { _ in
             UIBezierPath(ovalIn: CGRect(origin: .zero, size: sz)).addClip()
             let s = src.size
@@ -622,7 +611,7 @@ private struct MinimizedCallBar: View {
     let callManager: CallManager
     let peerName: String
     let onReturn: () -> Void
-    /// Group / call-link calls supply their own status and hang-up.
+    /// Group and call-link calls supply their own status and hang-up.
     var status: String? = nil
     var onEnd: (() -> Void)? = nil
 

@@ -2,9 +2,8 @@
 //  ChatAppearance.swift
 //  Relay
 //
-//  Local, device-only chat personalization: a wallpaper behind the message
-//  list and the outgoing-bubble gradient. Nothing here is shared or synced —
-//  it's purely how *this* device renders chats.
+//  Device-local chat personalization (wallpaper and outgoing-bubble gradient).
+//  Nothing here is shared or synced.
 //
 
 import SwiftUI
@@ -55,17 +54,17 @@ struct AppearanceTheme: Identifiable {
 final class ChatAppearance {
     /// Curated bubble gradient palette stored as "startHex-endHex". nil = accent.
     static let bubblePalette: [(String, String)] = [
-        ("0A84FF", "5E5CE6"),  // blue → indigo
-        ("30D158", "00C7BE"),  // green → teal
-        ("BF5AF2", "FF2D55"),  // purple → pink
-        ("FF3B30", "FF9500"),  // red → amber
-        ("FF9500", "FFCC00"),  // amber → gold
-        ("34C759", "0A84FF"),  // green → blue
+        ("0A84FF", "5E5CE6"),  // blue, indigo
+        ("30D158", "00C7BE"),  // green, teal
+        ("BF5AF2", "FF2D55"),  // purple, pink
+        ("FF3B30", "FF9500"),  // red, amber
+        ("FF9500", "FFCC00"),  // amber, gold
+        ("34C759", "0A84FF"),  // green, blue
         ("2C2C2E", "48484A"),  // graphite
         ("FF2D55", "FF6B35"),  // coral-red
     ]
 
-    /// Curated wallpaper + bubble combos — bubble contrasts against the wallpaper.
+    /// Wallpaper and bubble pairs chosen so the bubble contrasts with the wallpaper.
     static let themes: [AppearanceTheme] = [
         AppearanceTheme(id: "ocean",    name: "Ocean",    wallpaper: .ocean,    bubbleKey: "30D158-00C7BE"),  // green on blue
         AppearanceTheme(id: "forest",   name: "Forest",   wallpaper: .forest,   bubbleKey: "FF9500-FFCC00"),  // amber on dark green
@@ -100,8 +99,7 @@ final class ChatAppearance {
         if photoData != nil { Self.protectPhotoFile() } // files saved by older builds
     }
 
-    /// Keeps the wallpaper photo out of iCloud/computer backups and sets its
-    /// protection class (also upgrades files written by older builds).
+    /// Excludes the wallpaper photo from backups and sets its protection class.
     private static func protectPhotoFile() {
         var url = photoURL
         var values = URLResourceValues()
@@ -123,7 +121,6 @@ final class ChatAppearance {
         bubbleTintHex = theme.bubbleKey
     }
 
-    /// Parses the stored hex key into gradient start + end colors.
     private func parsedStops() -> (Color, Color) {
         guard let hex = bubbleTintHex else { return (.accentColor, .accentColor) }
         let parts = hex.split(separator: "-", maxSplits: 1).map(String.init)
@@ -137,7 +134,6 @@ final class ChatAppearance {
     /// Flat outgoing-bubble color (first gradient stop).
     var bubbleTint: Color { parsedStops().0 }
 
-    /// Diagonal gradient for outgoing bubbles.
     var bubbleGradient: LinearGradient {
         let (a, b) = parsedStops()
         return LinearGradient(colors: [a, b], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -146,10 +142,8 @@ final class ChatAppearance {
     func setPhoto(_ data: Data?) {
         photoData = data
         if let data {
-            // Until-first-unlock (not complete) protection: the app can be
-            // launched in the background while locked (VoIP push) and must
-            // still be able to read it. Device-only: never in iCloud/iTunes
-            // backups.
+            // Until-first-unlock, not complete: a VoIP push can launch the app
+            // in the background while the device is locked.
             try? data.write(to: Self.photoURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             Self.protectPhotoFile()
             wallpaper = .photo

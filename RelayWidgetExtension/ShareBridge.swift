@@ -1,12 +1,11 @@
 //
 //  ShareBridge.swift
-//  Extension mirror of Relay/ShareBridge.swift (read side + pending-share
+//  Extension copy of Relay/ShareBridge.swift (read side and pending-share
 //  writer). Keep the storage format in sync with the app's copy.
 //
-//  Conversations are identified only by opaque local conversation ids (never a
-//  peer account id); files carry explicit Data Protection, live in directories
-//  excluded from backup, and a pending share is a protected file (never
-//  UserDefaults) that the app deletes once processed.
+//  Conversations are identified only by opaque local ids, never a peer account
+//  id. Files carry explicit data protection and are excluded from backup. A
+//  pending share is a protected file, not UserDefaults, deleted once processed.
 //
 
 import Foundation
@@ -66,8 +65,8 @@ enum ShareBridge {
         try? dir.setResourceValues(dirValues)
 
         var url = dir.appendingPathComponent(pendingShareFile)
-        // Complete protection; if the device is locked right now, fall back to
-        // completeUnlessOpen (creatable while locked, unreadable until unlock).
+        // Complete protection, or completeUnlessOpen if the device is locked right
+        // now (creatable while locked, unreadable until unlock).
         do {
             try data.write(to: url, options: [.atomic, .completeFileProtection])
         } catch {

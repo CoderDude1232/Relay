@@ -36,23 +36,23 @@ final class AppModel {
     private static let accountSecretName = "relay-account"
     private static let accessKeySecretName = "relay-access-key"
     /// Set once this device received the account's shared identity via linking.
-    /// Absent on secondaries linked before the shared-identity change — they
-    /// still hold a self-generated identity and see the re-link nudge.
+    /// Secondaries linked without it hold a self-generated identity and see the
+    /// re-link nudge.
     static let identityProvisionedKey = "relay.identityProvisioned"
 
     private(set) var phase: Phase = .loading
     /// Set when an existing account signs in on this device; the main screen
-    /// then looks for an iCloud backup to offer (and clears it).
+    /// then offers an iCloud backup if one exists, and clears this.
     var shouldOfferBackupRestore = false
-    /// Set by onOpenURL when the user opens a relay://add/<username> link.
+    /// relay://add/<username>
     var pendingDeepLinkUsername: String?
-    /// Set by onOpenURL when the user opens a relay://join/<token> invite link.
+    /// relay://join/<token> invite link.
     var pendingGroupInviteToken: String?
     /// A call link opened from outside (universal link or relay://call/…).
     var pendingCallLink: (callId: String, host: String, secret: String)?
-    /// Set by onOpenURL when the user opens a one-time relay://contact/<token> link.
+    /// One-time relay://contact/<token> link.
     var pendingContactInviteToken: String?
-    /// Set by AppDelegate's UNUserNotificationCenterDelegate when the user taps a message banner.
+    /// Set when the user taps a message notification.
     var pendingNotificationConversationId: String?
 
     var isReady: Bool {
@@ -62,7 +62,7 @@ final class AppModel {
     private let keychain = KeychainSecureStore(
         configuration: KeychainConfiguration(accessGroup: appGroupId)
     )
-    /// One certificate-pinned session shared by every relay connection.
+    /// Certificate-pinned session shared by every relay connection.
     private let session = RelayTLS.makeSession()
     /// Latest APNs device token (hex), uploaded once a session exists.
     private var apnsTokenHex: String?
@@ -125,14 +125,13 @@ final class AppModel {
     }
 
     /// Keeps the WebSocket alive for ~25s after backgrounding so quick app
-    /// switches reconnect instantly. If the delay elapses the socket closes
-    /// cleanly, the relay marks the device offline, and APNs takes over for
-    /// future messages. The NSE decrypts those pushes as before.
+    /// switches reconnect instantly. After that the socket closes, the relay
+    /// marks the device offline, and APNs takes over.
     func enterBackground() {
         backgroundDisconnectTask?.cancel()
 
-        // Expiry handler: iOS is reclaiming background time — stop immediately.
-        // The expiry handler runs on the main thread, same as this actor.
+        // iOS is reclaiming background time; stop now. The expiry handler runs on
+        // the main thread, same as this actor.
         let bgTask = UIApplication.shared.beginBackgroundTask(withName: "relay-keep-alive") { [weak self] in
             guard let self else { return }
             if case .ready(let service) = self.phase { service.stop() }
@@ -156,7 +155,7 @@ final class AppModel {
     }
 
     func enterForeground() {
-        // Cancel the pending disconnect — the socket may still be alive.
+        // The socket may still be alive.
         backgroundDisconnectTask?.cancel()
         backgroundDisconnectTask = nil
         if keepAliveBackgroundTask != .invalid {
@@ -165,7 +164,7 @@ final class AppModel {
         }
 
         if case .ready(let service) = phase {
-            service.start()  // no-op if socket is already running
+            service.start()  // no-op if the socket is already running
             service.markActiveConversationReadOnForeground()
             Task { await service.ensureNoteToSelf() }
             Task {
@@ -176,15 +175,13 @@ final class AppModel {
         }
     }
 
-    /// Called by the BGAppRefreshTask to drain any Siri-queued pending shares
-    /// when the foreground socket has already closed. Reconnects briefly, sends,
-    /// then closes again so the relay marks the device offline as expected.
+    /// Drains Siri-queued shares from BGAppRefreshTask when the foreground socket
+    /// has already closed: reconnects briefly, sends, then closes again.
     func handleBackgroundRefresh() async {
         guard case .ready(let service) = phase else { return }
         let wasDisconnected = service.connectionState == .disconnected
         if wasDisconnected { service.start() }
 
-        // Poll until connected or 10s elapsed.
         for _ in 0..<20 {
             if service.connectionState == .connected { break }
             try? await Task.sleep(for: .milliseconds(500))
@@ -198,9 +195,8 @@ final class AppModel {
         if wasDisconnected { service.stop() }
     }
 
-    /// Points the existing account at a new relay URL (e.g. after the Mac's
-    /// LAN IP changed) and reconnects — without wiping local data. Returns an
-    /// error message on failure, nil on success.
+    /// Points the existing account at a new relay URL and reconnects without
+    /// wiping local data. Returns an error message on failure, nil on success.
     @discardableResult
     func updateServerURL(_ url: URL) async -> String? {
         guard case .ready(let old) = phase,
@@ -231,8 +227,8 @@ final class AppModel {
         }
     }
 
-    /// Records the APNs device token and uploads it if a session is ready.
-    /// The token can arrive before or after onboarding, so we stash it.
+    /// The token can arrive before or after onboarding, so it's stashed until a
+    /// session exists.
     func setAPNSDeviceToken(_ data: Data) {
         apnsTokenHex = data.map { String(format: "%02x", $0) }.joined()
         uploadPushTokenIfReady()
@@ -251,15 +247,15 @@ final class AppModel {
                 let publicKey = try keychain.deviceAuthorizationPublicKey()
                 try await service.apiClient.setDeviceAuthorizationKey(publicKey)
             } catch {
-                // Stage 3B will require this key for signed device-list changes.
+                // Best effort; not yet required for device-list changes.
             }
         }
     }
 
     /// Ensures this account has a sealed-sender access key (32 random bytes,
-    /// persisted in the Keychain, generated once) and uploads it to the relay.
-    /// Idempotent — safe to call on every launch. Senders obtain this key with
-    /// the prekey bundle and present it on the unauthenticated delivery path.
+    /// generated once, kept in the Keychain) and uploads it. Idempotent. Senders
+    /// get the key with the prekey bundle and present it on the unauthenticated
+    /// delivery path.
     private func publishAccessKeyIfReady() {
         guard case .ready(let service) = phase else { return }
         let keychain = self.keychain
@@ -289,14 +285,8 @@ final class AppModel {
         }
     }
 
-    /// Supabase-backed registration: uses the Supabase user ID as relay username.
-    /// If credentials already exist in the Keychain for this Supabase user they
-    /// are reused (handles reinstall / new app launch). Otherwise a fresh relay
-    /// account is registered with a cryptographically-random password.
-    /// Thrown when a Supabase user has no relay account yet and hasn't chosen a
-    /// username — onboarding catches this to show the username picker.
-    /// The account is protected by its account password (registration lock);
-    /// onboarding prompts for it and retries.
+    /// The account has a registration lock; onboarding prompts for the account
+    /// password and retries.
     struct AccountPasswordRequiredError: LocalizedError {
         let incorrect: Bool
         var errorDescription: String? {
@@ -309,15 +299,12 @@ final class AppModel {
     }
 
     /// Signs a Supabase-authenticated user into their relay account, creating it
-    /// on first use. The relay verifies the Supabase access token directly, so
-    /// this is the way back in for passwordless social-login accounts on any
-    /// device — no email collision, no password required. Pass `username` only
-    /// when the user has chosen one; when it is nil and no account exists yet,
-    /// this throws `NeedsUsernameError` so onboarding can prompt for one.
+    /// on first use. The relay verifies the Supabase access token itself, so this
+    /// works for passwordless social-login accounts on any device. When `username`
+    /// is nil and no account exists yet, throws `NeedsUsernameError`.
     func registerWithSupabase(serverURL: URL, accessToken: String, email: String, supabaseUserId: String, username: String?, displayName: String, accountPassword: String? = nil) async throws {
-        // Fast path: this device already holds credentials for this Supabase
-        // user — resume without hitting the server (which would provision a new
-        // device on every call).
+        // This device already holds credentials for this Supabase user. Resume
+        // without hitting the server, which would provision a new device each time.
         if let data = try? keychain.loadSecret(for: Self.accountSecretName),
            let saved = try? JSONDecoder().decode(SavedAccount.self, from: data),
            saved.supabaseUserId == supabaseUserId
@@ -325,8 +312,7 @@ final class AppModel {
              || saved.username == email {
             if case .ready = phase { return }
             do {
-                // If the server URL changed (e.g. after a redeploy), persist the
-                // new URL so subsequent cold boots use the correct server.
+                // Persist a changed server URL so cold boots use it.
                 if saved.serverURL != serverURL {
                     let updated = SavedAccount(
                         accountId: saved.accountId, deviceId: saved.deviceId,
@@ -391,8 +377,8 @@ final class AppModel {
             phase = .ready(service)
             if let accountPassword, !accountPassword.isEmpty {
                 UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
-                // Keep the chat list with the account; on an existing account
-                // this also brings it back.
+                // Keep the chat list with the account; on an existing account this also
+                // restores it.
                 Task {
                     await service.setAccountStorageKey(password: accountPassword)
                     if !created { await service.restoreAccountStorage() }
@@ -407,15 +393,14 @@ final class AppModel {
             uploadPushTokenIfReady()
             publishDeviceAuthorizationKeyIfReady()
             publishAccessKeyIfReady()
-            // Publish initial prekeys in the background so the UI is responsive
-            // immediately. Retried automatically by PreKeyMaintainer on connect.
+            // Prekey publication runs in the background; PreKeyMaintainer retries on
+            // connect.
             Task {
                 try? await service.publishInitialKeys()
             }
         }
     }
 
-    /// Changes the relay username for the current account and updates the Keychain.
     func changeUsername(_ newUsername: String) async throws {
         guard case .ready(let service) = phase else { return }
         do {
@@ -429,7 +414,6 @@ final class AppModel {
         }
         // Recipients read our username from the sender certificate.
         service.invalidateSenderCertificate()
-        // Persist the new username across restarts.
         if let data = try? keychain.loadSecret(for: Self.accountSecretName),
            let saved = try? JSONDecoder().decode(SavedAccount.self, from: data) {
             let updated = SavedAccount(
@@ -448,7 +432,7 @@ final class AppModel {
     enum UsernameAvailability: Equatable {
         case available
         case taken
-        /// The relay couldn't be reached — say so rather than claiming it's free.
+        /// The relay couldn't be reached, so availability is unknown.
         case unknown
     }
 
@@ -456,10 +440,10 @@ final class AppModel {
     func checkUsername(_ username: String) async -> UsernameAvailability {
         let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
         do {
-            // Answers only yes/no — no account id comes back.
+            // Answers yes/no only; no account id comes back.
             return try await api.usernameAvailable(username) ? .available : .taken
         } catch {
-            return .unknown    // network trouble — registration still gates it
+            return .unknown  // network trouble; registration still gates it
         }
     }
 
@@ -469,8 +453,7 @@ final class AppModel {
         await checkUsername(username) != .taken
     }
 
-    /// 32 cryptographically-random bytes, hex-encoded (256-bit entropy).
-    /// Called once per new registration; stored in Keychain immediately after.
+    /// 32 random bytes, hex-encoded.
     private static func generateRandomPassword() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
@@ -478,8 +461,6 @@ final class AppModel {
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Registers a fresh account, publishes its first keys, and persists
-    /// the credentials in the Keychain.
     func register(serverURL: URL, username: String, supabaseAccessToken: String? = nil, displayName: String, password: String, accountPassword: String? = nil, supabaseUserId: String? = nil) async throws {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
 
@@ -526,16 +507,15 @@ final class AppModel {
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
-        // Publish initial prekeys in the background so the UI is responsive
-        // immediately after registration. Key publication is retried automatically
-        // by PreKeyMaintainer whenever the socket connects.
+        // Prekey publication runs in the background; PreKeyMaintainer retries on
+        // connect.
         Task {
             try? await service.publishInitialKeys()
         }
     }
 
-    /// Recovers access to an existing account by verifying the user's email +
-    /// account recovery password against the server, then provisions a new device.
+    /// Verifies email + account recovery password with the relay, then
+    /// provisions a new device.
     func recoverAccount(serverURL: URL, email: String, accountPassword: String) async throws {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
         let (credentials, username): (RelayCredentials, String)
@@ -629,9 +609,9 @@ final class AppModel {
         Task { try? await service.publishInitialKeys() }
     }
 
-    /// "Forgot password": verifies the emailed recovery code with Supabase, sets
-    /// the new account password on the relay and signs this device in. Like any
-    /// fresh sign-in, the account's other devices are signed out.
+    /// Verifies the emailed recovery code with Supabase, sets the new account
+    /// password on the relay and signs this device in. As with any fresh sign-in,
+    /// the account's other devices are signed out.
     func resetPassword(serverURL: URL, email: String, code: String, newPassword: String) async throws {
         struct ResetError: LocalizedError {
             let message: String
@@ -663,8 +643,8 @@ final class AppModel {
         } catch {
             throw SetupError(step: "Password reset", underlying: error)
         }
-        // Keep the email sign-in password in step (best effort — the relay's
-        // account password is what actually gates sign-in).
+        // Keep the email sign-in password in step. Best effort: the relay's account
+        // password is what gates sign-in.
         try? await SupabaseAuth.shared.updatePassword(newPassword)
 
         let service: MessagingService
@@ -693,8 +673,8 @@ final class AppModel {
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
         Task { try? await service.publishInitialKeys() }
-        // The chat list kept under the old password can't be opened any more;
-        // keep a new one under this password from now on.
+        // The chat list kept under the old password can't be opened any more; keep
+        // a new one under this password.
         Task {
             await service.setAccountStorageKey(password: newPassword)
             await service.restoreAccountStorage()
@@ -709,13 +689,13 @@ final class AppModel {
         return saved.email
     }
 
-    /// Step 1 of an email change: Supabase emails a code to the new address.
+    /// Email change, step 1: Supabase emails a code to the new address.
     func requestEmailChange(to newEmail: String) async throws {
         try await SupabaseAuth.shared.requestEmailChange(to: newEmail)
     }
 
-    /// Step 2: confirms the code, then re-keys the relay's email lookup (used
-    /// for recovery and, if enabled, being found by email).
+    /// Step 2: confirms the code, then re-keys the relay's email lookup (used for
+    /// recovery and, if enabled, discovery by email).
     func confirmEmailChange(newEmail: String, code: String) async throws {
         guard case .ready(let service) = phase else { return }
         let supabase: SupabaseSession
@@ -767,10 +747,9 @@ final class AppModel {
         }
     }
 
-    /// New-device side of reversed linking, step 1: creates a blind provisioning
-    /// session on the relay and returns the QR string the primary will scan, plus
-    /// the ephemeral key pair the caller must retain (in memory) for step 2. The
-    /// private half never leaves this device.
+    /// Reversed linking, new-device step 1: creates a provisioning session on the
+    /// relay and returns the QR string for the primary to scan, plus an ephemeral
+    /// key pair the caller keeps in memory for step 2.
     func beginDeviceLinking() async throws -> (qr: String, sessionId: String, ephemeral: ProvisioningCipher.EphemeralKeyPair) {
         let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
         let ephemeral = ProvisioningCipher.EphemeralKeyPair()
@@ -790,11 +769,11 @@ final class AppModel {
         return (qr, info.sessionId, ephemeral)
     }
 
-    /// New-device side, step 2: polls until the primary provisions, installs the
-    /// shared account identity + credentials, then boots. Throws on timeout.
+    /// Step 2: polls until the primary provisions, installs the shared account
+    /// identity and credentials, then boots. Throws on timeout.
     func completeDeviceLinking(sessionId: String, ephemeral: ProvisioningCipher.EphemeralKeyPair) async throws {
         let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
-        let deadline = Date().addingTimeInterval(600) // session lifetime (~10 min)
+        let deadline = Date().addingTimeInterval(600)  // session lifetime
         var blob: Data?
         while Date() < deadline {
             if let b = try await api.fetchProvisioningBlob(sessionId: sessionId) {
@@ -813,9 +792,9 @@ final class AppModel {
             throw SetupError(step: "Decrypt provisioning payload", underlying: error)
         }
 
-        // Authenticate the payload before adopting the identity: verify the
-        // primary's signature over the session/ephemeral/credentials transcript.
-        // Rejects a replayed or substituted-but-well-formed provisioning blob.
+        // Verify the primary's signature over the session/ephemeral/credentials
+        // transcript before adopting the identity. This rejects a replayed or
+        // substituted provisioning blob.
         guard let signature = payload.signature,
               ProvisioningSignature.verify(
                 signature,
@@ -830,12 +809,11 @@ final class AppModel {
             throw SetupError(step: "Verify provisioning signature", underlying: LinkingError.unauthenticated)
         }
 
-        // Install the shared account identity BEFORE opening storage/service, so
-        // the Keychain never auto-generates a fresh identity for this device.
+        // Install the shared identity before opening storage/service so the Keychain
+        // never generates a fresh identity for this device.
         do {
-            // Replace any identity left by an earlier install: Keychain items
-            // survive sign-out and app deletion, and this device is now
-            // joining a different (or the same) account as a linked device.
+            // Keychain items survive sign-out and app deletion, so replace any identity
+            // left by an earlier install.
             try keychain.installProvisionedIdentity(payload.identityKeyPair, replacingExisting: true)
         } catch {
             throw SetupError(step: "Install account identity", underlying: error)
@@ -862,8 +840,8 @@ final class AppModel {
             supabaseUserId: nil
         )
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
-        // This device received the account's shared identity, so its safety
-        // numbers are verifiable — suppress the re-link nudge for it.
+        // This device has the account's shared identity, so its safety numbers are
+        // verifiable; suppress the re-link nudge.
         UserDefaults.standard.set(true, forKey: Self.identityProvisionedKey)
         if !payload.peers.isEmpty {
             service.importConversationStubs(payload.peers.map { (account: $0.account, username: $0.username) })
@@ -874,7 +852,7 @@ final class AppModel {
             await service.importHistoryBlob(attachmentId: historyId, key: historyKey, digest: historyDigest)
         }
         service.start()
-        // Transparency on the new device too: confirm the link in its Relay chat.
+        // Confirm the link in the new device's Relay chat too.
         service.postRelayNotice("This device was just linked to your Relay account.")
         phase = .ready(service)
         uploadPushTokenIfReady()
@@ -883,15 +861,11 @@ final class AppModel {
         Task { try? await service.publishInitialKeys() }
     }
 
-    /// Signs out of the account: forgets the credentials and deletes all
-    /// local message history and session state. Used both by the Settings
-    /// button and to recover from credentials the server no longer knows.
-    /// Signs out. With `removeFromServer` (a normal sign-out) this device is
-    /// first removed from the account on the relay, so it doesn't linger as a
-    /// ghost that keeps collecting messages; that step is capped at a few
-    /// seconds so being offline never blocks signing out. Pass false when the
-    /// device or account is already gone (remote wipe, account deletion,
-    /// replaced by a sign-in elsewhere).
+    /// Forgets the credentials and deletes local history and session state.
+    /// With `removeFromServer` this device is first removed from the account on
+    /// the relay so it doesn't keep collecting messages; that step is capped at a
+    /// few seconds so being offline never blocks sign-out. Pass false when the
+    /// device or account is already gone (remote wipe, account deletion).
     func signOut(removeFromServer: Bool = true) {
         guard removeFromServer, case .ready(let service) = phase else {
             finishSignOut()
@@ -910,23 +884,21 @@ final class AppModel {
         if case .ready(let service) = phase {
             service.stop()
         }
-        // The identity key outlives app deletion in the Keychain; drop it so
-        // the next account (registered or linked) starts clean.
+        // The identity key outlives app deletion in the Keychain; drop it so the
+        // next account starts clean.
         try? keychain.wipeIdentity()
         Task { await SupabaseAuth.shared.signOut() }
         try? keychain.deleteSecret(for: Self.accountSecretName)
         wipeLocalFiles()
-        // Wipe App Group share state so a fresh account doesn't inherit the old
-        // account's conversations, avatars, or badge count in the share sheet,
-        // widgets, and Siri suggestions.
+        // Clear App Group share state so the next account doesn't inherit
+        // conversations, avatars or badge count in the share sheet, widgets and Siri.
         ShareBridge.clearAll()
         phase = .onboarding
     }
 
-    /// Clears only the relay credentials and local database (not the Supabase
-    /// session) so the user can re-register after a relay server reset without
-    /// re-entering their Supabase password. The onboarding flow will use the
-    /// stored Supabase session to re-register with a fresh relay account.
+    /// Clears only the relay credentials and local database, keeping the Supabase
+    /// session, so the user can re-register after a relay reset without signing
+    /// in again.
     func signOutRelayOnly() {
         if case .ready(let service) = phase {
             service.stop()
@@ -939,9 +911,7 @@ final class AppModel {
     }
 
     /// Removes everything the previous account left on disk: the database,
-    /// cached attachment ciphertext, and this app's preferences (profile
-    /// status/bio, privacy toggles, per-chat flags), so the next account on
-    /// this phone starts clean.
+    /// cached attachment ciphertext, and this app's preferences.
     private func wipeLocalFiles() {
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(at: Self.databaseURL(suffix: suffix))
@@ -955,8 +925,8 @@ final class AppModel {
         ChatFolderStore.shared.reload()
         CallLinkStore.shared.clearAll()
         MyStickerStore.shared.wipe()
-        // Traces the OS keeps for us outside the app's files: Siri/share-sheet
-        // interaction donations, Spotlight entries, and delivered notifications.
+        // Traces the OS keeps outside the app's files: Siri/share-sheet donations,
+        // Spotlight entries and delivered notifications.
         INInteraction.deleteAll(completion: nil)
         SpotlightIndexer.deindexAll()
         ShareBridge.clearAll()
@@ -967,8 +937,7 @@ final class AppModel {
         center.removeAllPendingNotificationRequests()
     }
 
-    /// The database lives in the App Group container so the Notification
-    /// Service Extension can share it (push stage).
+    /// In the App Group container so the NSE can share it.
     private static func databaseURL(suffix: String = "") -> URL {
         let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupId)
@@ -1007,9 +976,8 @@ final class AppModel {
     private func makeService(credentials: RelayCredentials, serverURL: URL, username: String?) async throws -> MessagingService {
         let dbPath = Self.databaseURL().path
         let kc = keychain
-        // SecureStore.init does SE key derivation + SQLCipher open — can take
-        // 150-400ms on device. Running it on a background thread keeps the
-        // loading spinner responsive and unblocks the main thread.
+        // SE key derivation + SQLCipher open can take 150-400ms on device; keep it
+        // off the main thread.
         let storage: SecureStore = try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 cont.resume(with: Result { try SecureStore(path: dbPath, keychain: kc) })

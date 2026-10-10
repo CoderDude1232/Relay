@@ -2,27 +2,23 @@
 //  Models.swift
 //  CryptoCore
 //
-//  Plain value types crossing the crypto boundary. These mirror the relay's
-//  REST/WebSocket schema but deliberately have no networking or protobuf
-//  dependency — CryptoCore stays a pure crypto module.
+//  Value types crossing the crypto boundary. They mirror the relay's schema
+//  but have no networking or protobuf dependency.
 //
 
 import Foundation
 
-/// The kind of libsignal ciphertext, so the receiving side knows how to
-/// decrypt. Maps 1:1 onto the relay's `CiphertextType` protobuf enum.
+/// The libsignal ciphertext kind. Maps 1:1 onto the relay's `CiphertextType`.
 public enum MessageKind: Sendable, Equatable {
-    /// PreKeySignalMessage: first message of a session, carries the PQXDH
-    /// handshake material.
+    /// First message of a session; carries the PQXDH handshake.
     case preKey
-    /// SignalMessage: normal Double Ratchet message in an established session.
+    /// Double Ratchet message in an established session.
     case message
-    /// SenderKeyMessage: group message (groups phase).
+    /// Group message.
     case senderKey
 }
 
-/// A ciphertext together with its kind — what `encrypt` produces and
-/// `decrypt` consumes. The `data` bytes travel opaquely through the relay.
+/// A ciphertext and its kind, as produced by `encrypt` and consumed by `decrypt`.
 public struct SecureMessage: Sendable, Equatable {
     public let kind: MessageKind
     public let data: Data
@@ -33,7 +29,7 @@ public struct SecureMessage: Sendable, Equatable {
     }
 }
 
-/// A public one-time prekey as uploaded to / served by the relay.
+/// A public one-time prekey.
 public struct PublicPreKey: Sendable, Equatable {
     public let id: UInt32
     public let publicKey: Data
@@ -44,8 +40,8 @@ public struct PublicPreKey: Sendable, Equatable {
     }
 }
 
-/// A public prekey signed by the device's identity key (the signed EC
-/// prekey, or the last-resort Kyber prekey — both share this shape).
+/// A prekey signed by the identity key: the signed EC prekey or the
+/// last-resort Kyber prekey.
 public struct SignedPublicPreKey: Sendable, Equatable {
     public let id: UInt32
     public let publicKey: Data
@@ -58,8 +54,7 @@ public struct SignedPublicPreKey: Sendable, Equatable {
     }
 }
 
-/// Everything a device publishes (PUT /v1/keys) so peers can establish
-/// PQXDH sessions with it. Contains only public material.
+/// Everything a device publishes (PUT /v1/keys). Public material only.
 public struct PreKeyPublication: Sendable, Equatable {
     public let registrationId: UInt32
     public let identityKey: Data
@@ -83,9 +78,8 @@ public struct PreKeyPublication: Sendable, Equatable {
     }
 }
 
-/// A peer device's bundle as fetched from the relay (GET /v1/keys/…).
-/// `oneTimePreKey` is nil when the peer's pool is exhausted — the session
-/// is then established from the signed prekey alone (degraded but valid).
+/// A peer device's bundle (GET /v1/keys/...). `oneTimePreKey` is nil when the
+/// peer's pool is exhausted; the session then uses the signed prekey alone.
 public struct PeerPreKeyBundle: Sendable, Equatable {
     public let deviceId: UInt32
     public let mailboxId: String?
@@ -114,8 +108,7 @@ public struct PeerPreKeyBundle: Sendable, Equatable {
     }
 }
 
-/// A safety number for out-of-band identity verification: the 60-digit
-/// numeric string users compare, and the scannable encoding for QR codes.
+/// A safety number: the 60-digit string users compare and its QR encoding.
 public struct SafetyNumber: Sendable, Equatable {
     public let numeric: String
     public let scannable: Data

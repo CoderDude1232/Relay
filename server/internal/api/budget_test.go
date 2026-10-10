@@ -31,7 +31,7 @@ func TestElementBudget(t *testing.T) {
 	if !b.take(15, "acct:c", "ip:1") {
 		t.Fatal("refill not applied")
 	}
-	// Bucket keys are salted hashes, never the raw account id / IP.
+	// Bucket keys are salted hashes, never the raw account id or IP.
 	for k := range b.buckets {
 		if strings.Contains(k, "acct:") || strings.Contains(k, "ip:") || len(k) != 16 {
 			t.Fatalf("budget stored raw key %q", k)

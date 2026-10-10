@@ -1,11 +1,10 @@
 #!/bin/sh
-# Generates a self-signed TLS certificate for the DEVELOPMENT relay and
+# Generates a self-signed TLS certificate for the development relay and
 # prints the SPKI pin the iOS client must trust.
 #
-# The cert is EC P-256, valid 10 years, with SANs for this Mac's LAN IP (so
-# the iPhone can connect over Wi-Fi), 127.0.0.1 and localhost. The client
-# pins the public key (SPKI SHA-256), so regenerating with the SAME key
-# keeps the pin stable; a fresh key means updating RelayTLS.devPins.
+# The cert is EC P-256, valid 10 years, with SANs for this Mac's LAN IP,
+# 127.0.0.1 and localhost. The client pins the SPKI SHA-256, so reusing the
+# key keeps the pin stable; a fresh key means updating RelayTLS.devPins.
 #
 # Usage: sh gen-dev-cert.sh [lan-ip]
 set -eu

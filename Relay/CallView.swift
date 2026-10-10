@@ -2,9 +2,8 @@
 //  CallView.swift
 //  Relay
 //
-//  In-app call UI: shown when a call is outgoing or active. Incoming calls
-//  that arrive while the app is in the background are handled by CallKit's
-//  native lock-screen UI; this view handles in-foreground incoming calls too.
+//  In-app call UI for outgoing, active and foreground incoming calls.
+//  Background incoming calls use CallKit's lock-screen UI.
 //
 
 import AVKit
@@ -29,7 +28,6 @@ struct CallView: View {
 
     var body: some View {
         ZStack {
-            // Background — purple gradient for audio, dark navy for video
             if isVideoCall {
                 LinearGradient(
                     stops: [
@@ -48,7 +46,6 @@ struct CallView: View {
                 videoStage
             }
 
-            // Controls overlay — fades out during active video calls until tapped.
             VStack(spacing: 0) {
                 if isVideoCall {
                     videoHeader
@@ -90,7 +87,6 @@ struct CallView: View {
             .allowsHitTesting(controlsVisible)
             .animation(.easeInOut(duration: 0.3), value: controlsVisible)
         }
-        // Any tap anywhere on screen shows controls and resets the hide timer.
         .simultaneousGesture(TapGesture().onEnded { revealControls() })
         .task {
             while !Task.isCancelled {
@@ -122,11 +118,10 @@ struct CallView: View {
 
     @ViewBuilder
     private var audioBackground: some View {
-        // Dark base ensures the screen is never blank while layers load.
+        // Dark base so the screen isn't blank while layers load.
         Color.black.ignoresSafeArea()
 
         if let data = peerAvatar, let uiImage = DecodedImageCache.image(for: data) {
-            // Real profile photo — blur heavily and boost saturation to a vivid wash.
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFill()
@@ -136,7 +131,6 @@ struct CallView: View {
                 .overlay(Color.black.opacity(0.38))
                 .ignoresSafeArea()
         } else {
-            // No photo — derive gradient from the same color AvatarView picks.
             let color = peerNameColor(peerName)
             LinearGradient(
                 stops: [
@@ -150,7 +144,7 @@ struct CallView: View {
         }
     }
 
-    // Mirror of AvatarView.avatarColor so the call background always matches the avatar.
+    // Must match AvatarView.avatarColor.
     private func peerNameColor(_ name: String) -> Color {
         let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
         var hash = 0
@@ -158,8 +152,7 @@ struct CallView: View {
         return palette[abs(hash) % palette.count]
     }
 
-    // Show controls immediately and (re)start the 4-second auto-hide timer.
-    // During audio calls or non-active states, controls stay permanently visible.
+    // Controls only auto-hide during active video calls.
     private func revealControls() {
         controlsHideTask?.cancel()
         if !controlsVisible {
@@ -206,7 +199,6 @@ struct CallView: View {
 
     private var videoHeader: some View {
         HStack(alignment: .center) {
-            // Minimize — left side
             Button { onMinimize?() } label: {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 20, weight: .semibold))
@@ -220,7 +212,6 @@ struct CallView: View {
 
             Spacer()
 
-            // Name + status — centered
             VStack(spacing: 6) {
                 Text(peerName)
                     .font(.headline.weight(.semibold))
@@ -239,7 +230,7 @@ struct CallView: View {
 
             Spacer()
 
-            // Balance the left button so name stays centered
+            // Balances the minimize button so the name stays centered.
             Color.clear.frame(width: 44, height: 44)
         }
         .padding(.horizontal, 8)
@@ -250,9 +241,8 @@ struct CallView: View {
 
     private var videoStage: some View {
         ZStack(alignment: .topTrailing) {
-            // Remote feed fills the entire screen edge-to-edge.
-            // Blurred fill behind an aspect-fit overlay: face calls look full-bleed,
-            // screen shares show the complete screen without cropping.
+            // Blurred fill behind an aspect-fit feed: camera video looks
+            // full-bleed and screen shares aren't cropped.
             if let remoteTrack = callManager.remoteVideoTrack {
                 ZStack {
                     RTCVideoTrackView(track: remoteTrack, contentMode: .scaleAspectFill)
@@ -267,7 +257,7 @@ struct CallView: View {
                     .shadow(radius: 20)
             }
 
-            // Local camera — below Dynamic Island with a small breathing gap.
+            // Local camera, just below the Dynamic Island.
             if let localTrack = callManager.localVideoTrack {
                 localCameraPreview(track: localTrack)
                     .padding(.top, 52)
@@ -364,7 +354,7 @@ struct CallView: View {
         }
     }
 
-    // MARK: - Incoming controls (Answer / Decline)
+    // MARK: - Incoming controls
 
     private var incomingControls: some View {
         HStack(spacing: 80) {
@@ -385,7 +375,7 @@ struct CallView: View {
         }
     }
 
-    // MARK: - Active controls (Mute / Speaker / End)
+    // MARK: - Active controls
 
     private var activeControls: some View {
         HStack(spacing: 0) {
@@ -540,8 +530,8 @@ private struct ScreenShareOptionsView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
 
-                // RPSystemBroadcastPickerView — must be tapped by the user to show
-                // the system picker. Relay's broadcast extension is pre-selected.
+                // RPSystemBroadcastPickerView only shows the system picker on a
+                // real user tap. Our broadcast extension is preselected.
                 SystemBroadcastPickerButton()
                     .frame(width: 60, height: 60)
 

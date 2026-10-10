@@ -2,10 +2,9 @@
 //  TempMediaFiles.swift
 //  Relay
 //
-//  Decrypted attachments that must exist as files (QuickLook, AVPlayer) are
-//  written here — never under their original filename — with complete Data
-//  Protection, excluded from backup, deleted when the viewer closes, and swept
-//  at every launch in case the app was killed while one was open.
+// Decrypted attachments that must exist as files (QuickLook, AVPlayer).
+// Files get random names and complete Data Protection, are excluded from
+// backup, deleted when the viewer closes, and swept at launch.
 //
 
 import Foundation
@@ -13,7 +12,7 @@ import Foundation
 nonisolated enum TempMediaFiles {
     private static let dirName = "relay-media-tmp"
 
-    /// tmp/relay-media-tmp — created on demand, excluded from backup.
+    /// tmp/relay-media-tmp, created on demand and excluded from backup.
     static var directory: URL {
         var dir = FileManager.default.temporaryDirectory.appendingPathComponent(dirName, isDirectory: true)
         if !FileManager.default.fileExists(atPath: dir.path) {
@@ -28,9 +27,8 @@ nonisolated enum TempMediaFiles {
         return dir
     }
 
-    /// Writes decrypted bytes to a randomly named file. Only the extension of
-    /// `originalName` is kept (so QuickLook/AVPlayer pick the right viewer);
-    /// the name itself never touches the filesystem.
+    /// Writes decrypted bytes to a randomly named file, keeping only the
+    /// extension of `originalName` so the right viewer is picked.
     static func write(_ data: Data, originalName: String?, fallbackExtension: String) throws -> URL {
         let ext = sanitizedExtension(from: originalName) ?? fallbackExtension
         var url = directory.appendingPathComponent(UUID().uuidString)

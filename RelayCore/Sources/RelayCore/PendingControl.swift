@@ -2,15 +2,11 @@
 //  PendingControl.swift
 //  RelayCore
 //
-//  When the Notification Service Extension processes an envelope, it claims
-//  it and advances the Double Ratchet — the app can never decrypt it again.
-//  Anything the processor *returns* for the caller to apply (group changes,
-//  profiles, receipts to send, in-chat notices…) would be lost, so the NSE
-//  persists those payloads here and the app drains + applies them once its
-//  message loop runs (`MessagingService.drainPendingControlMessages`).
-//
-//  Rows live in the shared SQLCipher `kv` table, so they're encrypted at rest
-//  exactly like the pending call offers the NSE already stores.
+//  Once the NSE processes an envelope, the ratchet has advanced and the app
+//  can't decrypt it again. Anything the processor returns for the caller to
+//  apply (group changes, profiles, receipts, notices) is persisted here and
+//  applied by the app later (`MessagingService.drainPendingControlMessages`).
+//  Rows live in the SQLCipher `kv` table.
 //
 
 import Foundation
@@ -20,28 +16,27 @@ import SecureStorage
 public enum PendingControl: Codable, Sendable {
     case groupUpdate(GroupUpdateInfo, authenticatedSender: String?)
     case profile(ProfileInfo)
-    /// A delivery receipt the app must send to `peerAccount` (the attested
-    /// author). `conversationId` lets the app add the group context.
+    /// A delivery receipt to send to `peerAccount`, the attested author.
+    /// `conversationId` supplies the group context.
     case deliveryReceipt(peerAccount: String, conversationId: String?, timestamp: Int64)
-    /// Legacy: older builds queued a username lookup here. Usernames now come
-    /// from the sender certificate; kept so persisted items still decode.
+    /// Unused; usernames come from the sender certificate. Kept so persisted
+    /// items still decode.
     case backfillUsername(conversationId: String, account: String)
     case screenshotAlert(ScreenshotAlertInfo)
     case screenSecurity(ScreenSecurityInfo)
-    /// A shared-notepad update (message body minus `notepadPrefix`).
+    /// A shared-notepad update (body without `notepadPrefix`).
     case notepad(conversationId: String, content: String)
-    /// Someone opened one of our call links while the app wasn't running; the
-    /// app re-checks it and shows the admit prompt if it's still recent.
+    /// A call-link join request received while the app wasn't running. The app
+    /// re-checks it and prompts if it's still recent.
     case callLinkRequest(callId: String, account: String, secret: String, receivedAt: Date)
 }
 
 public enum PendingControlStore {
     static let keyPrefix = "pending-control:"
-    /// Mirrors the app's `notepadPrefix` (Relay/NotepadView.swift).
+    /// Must match `notepadPrefix` in Relay/NotepadView.swift.
     public static let notepadPrefix = "__relay_notepad__"
 
-    /// The payloads in `result` that the app would normally apply after
-    /// processing, in the order the app applies them.
+    /// The payloads in `result` the app would apply, in the order it applies them.
     public static func items(from result: ProcessedEnvelope) -> [PendingControl] {
         var items: [PendingControl] = []
         if let ts = result.sideEffects.deliveryReceiptTimestamp, let peer = result.peerAccount, !peer.isEmpty {
@@ -87,8 +82,7 @@ public enum PendingControlStore {
         }
     }
 
-    /// All pending payloads, oldest first. Rows that no longer decode (e.g.
-    /// written by an incompatible build) are deleted.
+    /// All pending payloads, oldest first. Rows that fail to decode are deleted.
     public static func load(from storage: SecureStore) -> [(key: String, item: PendingControl)] {
         let rows = (try? storage.database.query(
             "SELECT key, value FROM kv WHERE key LIKE ? ORDER BY key",
@@ -116,8 +110,8 @@ public enum PendingControlStore {
 
 /// Shared readers for app settings the NSE must honour.
 extension RelayStore {
-    /// Accounts the user blocked (the app persists them in the encrypted kv
-    /// table under `relay.blockedAccounts` as a JSON array).
+    /// Accounts the user blocked, stored by the app in the kv table under
+    /// `relay.blockedAccounts` as a JSON array.
     public static func blockedAccounts(in storage: SecureStore) -> Set<String> {
         guard let data = (try? storage.database.query(
             "SELECT value FROM kv WHERE key = 'relay.blockedAccounts'"
@@ -127,10 +121,9 @@ extension RelayStore {
         return Set(list)
     }
 
-    /// Whether a conversation is muted right now. The app stores
-    /// `relay.muteExpiries` in App-Group defaults as JSON `[conversationId: ms]`
-    /// where `Int64.max` means forever. Also honours the legacy
-    /// `relay.mutedConversationIds` array in case the app hasn't migrated yet.
+    /// Whether a conversation is currently muted. `relay.muteExpiries` in App
+    /// Group defaults is JSON `[conversationId: ms]`, `Int64.max` meaning forever.
+    /// The older `relay.mutedConversationIds` array is also honoured.
     public static func isConversationMuted(_ conversationId: String, defaults: UserDefaults?) -> Bool {
         guard !conversationId.isEmpty, let defaults else { return false }
         if let data = defaults.data(forKey: "relay.muteExpiries"),

@@ -1,5 +1,5 @@
 // Command turnload runs on the TURN box and reports whether it is close to its
-// limits, so relayd can move new calls to the backup TURN service *before*
+// limits, so relayd can move new calls to the backup TURN service before
 // coturn or the host is overwhelmed.
 //
 // It samples /proc every second: inbound bandwidth and packet rate on the
@@ -10,15 +10,14 @@
 //
 // It also keeps this month's data total (saved in -state-dir, so it survives
 // restarts) and reports overloaded once it reaches -monthly-threshold of
-// -monthly-limit-gb, until the month rolls over — so calls move to the backup
+// -monthly-limit-gb, until the month rolls over, so calls move to the backup
 // TURN instead of running into the host's transfer allowance.
 //
-// GET /status → {"overloaded":bool,"reason":"...","rxMbps":..,"rxPps":..,"cpu":..,
+// GET /status returns {"overloaded":bool,"reason":"...","rxMbps":..,"rxPps":..,"cpu":..,
 //
 //	"monthUsedGB":..,"monthLimitGB":..}
 //
-// Serve it only to the relay host (firewall), it's not sensitive but needn't
-// be public.
+// Expose it only to the relay host; it isn't sensitive but needn't be public.
 package main
 
 import (

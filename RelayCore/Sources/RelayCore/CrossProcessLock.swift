@@ -5,18 +5,16 @@
 
 import Foundation
 
-/// An exclusive `flock` on a file in the App Group container, so the app and
-/// the Notification Service Extension — separate processes sharing one
-/// database — never decrypt at the same time. Two concurrent decrypts from the
-/// same sender would read the same session state and the later write would
-/// clobber the earlier ratchet step, breaking every later message.
+/// An exclusive `flock` in the App Group container that keeps the app and the
+/// NSE from decrypting at the same time. Two concurrent decrypts from one sender
+/// would read the same session state, and the later write would undo the
+/// earlier ratchet step, breaking every message after it.
 public struct CrossProcessLock: Sendable {
     let url: URL
 
     public init(url: URL) { self.url = url }
 
-    /// The shared lock for envelope processing in this App Group, if the
-    /// container is available.
+    /// The envelope-processing lock for this App Group, if the container exists.
     public static func envelopeProcessing(appGroupId: String) -> CrossProcessLock? {
         FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupId)

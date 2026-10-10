@@ -2,13 +2,11 @@
 //  EnvelopeProcessor.swift
 //  RelayCore
 //
-//  The single, shared incoming pipeline. Both the app (over the WebSocket)
-//  and the Notification Service Extension (from the push payload) run an
-//  envelope through here: it claims the envelope exactly once, decrypts it
-//  (advancing the Double Ratchet / applying sender keys in the shared store),
-//  applies the content, and returns what happened. Network side-effects
-//  (receipts, username lookups, group re-sync) are *returned* rather than
-//  performed, so the NSE can ignore them.
+//  The incoming pipeline shared by the app (WebSocket) and the NSE (push).
+//  It claims an envelope exactly once, decrypts it against the shared store,
+//  applies the content, and reports what happened. Network side effects
+//  (receipts, group re-sync) are returned rather than performed, so the NSE
+//  can skip them.
 //
 
 import CryptoCore
@@ -19,7 +17,7 @@ import RelayKit
 import SecureStorage
 import SwiftProtobuf
 
-/// Compact serialisation of a poll stored in the message body after the `__poll__:` prefix.
+/// A poll as stored in the message body after the `__poll__:` prefix.
 public struct PollPayload: Codable, Sendable {
     public let question: String
     public let options: [String]
@@ -49,7 +47,7 @@ public struct EnvelopeSideEffects: Sendable {
     }
 }
 
-/// A user-visible message worth surfacing as a notification.
+/// A user-visible message to surface as a notification.
 public struct NotificationContent: Sendable {
     public let senderAccount: String
     public let conversationId: String
@@ -62,9 +60,9 @@ public enum GroupAction: Sendable, Codable {
     case unknown
 }
 
-/// A group membership/metadata change. The `members` field carries the full
-/// updated roster (present on CREATE/ADD/REMOVE/LEAVE) so recipients can keep
-/// their local copy current without a server round-trip.
+/// A group membership or metadata change. `members` carries the full roster
+/// on CREATE/ADD/REMOVE/LEAVE so recipients stay current without asking
+/// the server.
 public struct GroupUpdateInfo: Sendable, Codable {
     public let groupId: String
     public let action: GroupAction
@@ -78,12 +76,12 @@ public struct GroupUpdateInfo: Sendable, Codable {
     public let members: [String]
     public let admins: [String]
     public let announceOnly: Bool
-    /// New group screenshot-hide state (SET_SCREEN_SECURITY action).
+    /// Group screenshot-hide state for SET_SCREEN_SECURITY.
     public let screenSecurity: Bool
     public let revision: Int64
-    /// The group's sender-key epoch after this change (empty = unchanged).
+    /// The group's sender-key epoch after this change; empty if unchanged.
     public let distributionId: String
-    /// Group invite capability (empty = none/unchanged).
+    /// Group invite capability; empty if none or unchanged.
     public let inviteKey: Data
 
     public init(
@@ -112,8 +110,8 @@ public struct GroupUpdateInfo: Sendable, Codable {
     }
 }
 
-/// The sender took a screenshot in a conversation (sent regardless of the hide
-/// setting). The caller shows an in-chat notice.
+/// The sender took a screenshot (sent whatever the hide setting). The caller
+/// shows an in-chat notice.
 public struct ScreenshotAlertInfo: Sendable, Codable {
     public let conversationId: String
     public let senderAccount: String
@@ -125,8 +123,8 @@ public struct ScreenshotAlertInfo: Sendable, Codable {
     }
 }
 
-/// A 1:1 peer's screenshot-hide preference. The caller stores it as the peer's
-/// side of the OR that decides effective hiding.
+/// A 1:1 peer's screenshot-hide preference: the peer's side of the OR that
+/// decides effective hiding.
 public struct ScreenSecurityInfo: Sendable, Codable {
     public let conversationId: String
     public let senderAccount: String
@@ -140,7 +138,6 @@ public struct ScreenSecurityInfo: Sendable, Codable {
     }
 }
 
-/// An incoming poll message.
 public struct PollInfo: Sendable {
     public let question: String
     public let options: [String]
@@ -159,7 +156,6 @@ public struct PollInfo: Sendable {
     }
 }
 
-/// An incoming poll vote.
 public struct PollVoteInfo: Sendable {
     public let pollAuthor: String
     public let pollTimestamp: Int64
@@ -178,7 +174,7 @@ public struct PollVoteInfo: Sendable {
     }
 }
 
-/// An incoming call signalling message. The caller routes it to CallManager.
+/// A call signalling message, routed by the caller to CallManager.
 public struct CallInfo: Sendable {
     public enum CallType: Sendable, Codable {
         case offer, answer, ice, hangup, busy, ringing
@@ -190,9 +186,9 @@ public struct CallInfo: Sendable {
     public let sdp: String
     public let ice: String
     public let callerAccount: String
-    /// Empty for 1:1 calls; set to the group conversation ID for group calls.
+    /// Empty for 1:1 calls; the group conversation id for group calls.
     public let groupId: String
-    /// For mesh OFFER/ANSWER/ICE: which local account this message targets.
+    /// Mesh OFFER/ANSWER/ICE: the local account this message targets.
     public let targetAccount: String
     /// GROUP_RING: the full participant list.
     public let participants: [String]
@@ -213,8 +209,8 @@ public struct CallInfo: Sendable {
     }
 }
 
-/// A peer's self-set profile. The caller stores it (and downloads the avatar
-/// blob, if any) — kept out of the processor so it stays network-free.
+/// A peer's profile. The caller stores it and fetches any avatar, keeping
+/// the processor network-free.
 public struct ProfileInfo: Sendable, Codable {
     public struct Avatar: Sendable, Codable {
         public let id: String
@@ -299,25 +295,23 @@ public struct ProcessedEnvelope: Sendable {
     }
 }
 
-// @unchecked Sendable: SQLCipher runs in serialized threading mode (thread-safe),
-// and libsignal's session state is advanced serially via the single-envelope
-// processing guarantee at the call site.
 public enum EnvelopeProcessorError: Error, Sendable {
-    /// A sealed-sender envelope arrived but no trust root is configured to
-    /// validate the sender certificate.
+    /// A sealed-sender envelope arrived but no trust root is configured.
     case sealedSenderUnavailable
-    /// The plaintext claimed a sender that doesn't match the sealed-sender
-    /// certificate — a spoof attempt.
+    /// The plaintext's claimed sender doesn't match the sealed-sender
+    /// certificate.
     case senderSpoofed
 }
 
+// @unchecked Sendable: SQLCipher runs in serialized threading mode, and the
+// callers process one envelope at a time, so session state advances serially.
 public struct EnvelopeProcessor: @unchecked Sendable {
     private let storage: SecureStore
     private let engine: CryptoEngine
     private let ownAccountId: String
     private let processLock: CrossProcessLock?
-    /// 33-byte serialized public key of the sealed-sender trust root. Required
-    /// to decrypt sealed messages (empty envelope sender); nil disables them.
+    /// 33-byte serialized sealed-sender trust root. Nil disables sealed messages
+    /// (empty envelope sender).
     private let sealedSenderTrustRoot: Data?
     /// The relay drops queued envelopes after 14 days.
     static let maxQueueAgeMs: Int64 = 14 * 24 * 60 * 60 * 1000
@@ -333,13 +327,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         }
     }
 
-    /// Mirrors `MessagingService.relayOfficialAccount`.
+    /// Must match `MessagingService.relayOfficialAccount`.
     public static let relayOfficialAccount = "relay.official"
 
     private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "envelope")
 
-    /// Body prefix marking a live-location update (mirrors the app's
-    /// `locationPrefix`). These collapse into a single moving bubble per sharer.
+    /// Body prefix of a live-location update (the app's `locationPrefix`).
+    /// Updates collapse into one moving bubble per sharer.
     static let liveLocationPrefix = "__relay_loc__"
 
     public init(
@@ -356,14 +350,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         self.processLock = processLock
     }
 
-    /// - Parameter blockedAccounts: accounts whose messages should be dropped.
-    ///   For sealed-sender messages the sender is only known after decryption,
-    ///   so blocking is enforced here (post-decrypt) rather than at the wire.
+    /// - Parameter blockedAccounts: accounts whose messages are dropped. A sealed
+    ///   message's sender is only known after decryption, so blocking happens here.
     public func process(
         _ envelope: IncomingEnvelope,
         blockedAccounts: Set<String> = []
     ) throws -> ProcessedEnvelope {
-        // Serialize with the other process (app ⇄ NSE) sharing this database.
+        // Serialize with the other process sharing this database.
         guard let processLock else { return try processLocked(envelope, blockedAccounts: blockedAccounts) }
         return try processLock.withLock { try processLocked(envelope, blockedAccounts: blockedAccounts) }
     }
@@ -376,9 +369,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .duplicate, peerAccount: envelope.senderAccount)
         }
 
-        // An empty envelope sender marks a sealed-sender message: the relay
-        // stripped the sender, so we recover it cryptographically from the
-        // sealed blob's certificate instead of trusting a server-stamped field.
+        // An empty envelope sender marks a sealed-sender message. The sender is
+        // recovered from the sealed blob's certificate, not a server-set field.
         let sender: ProtocolAddress
         let plaintext: Data
         var attestedUsername: String?
@@ -386,11 +378,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             guard let trustRoot = sealedSenderTrustRoot else {
                 throw EnvelopeProcessorError.sealedSenderUnavailable
             }
-            // Validate the certificate at the time the relay accepted the
-            // message (its cert was valid then, even if delivery was delayed) —
-            // but that time comes from the relay, so clamp it to the window a
-            // queued message can really be that old (the relay's queue TTL) and
-            // never later than now. A relay can't stretch an expired cert far.
+            // Validate the certificate at the time the relay accepted the message,
+            // since delivery may be delayed. That time comes from the relay, so clamp
+            // it to the queue TTL and to now; a relay can't stretch an expired cert
+            // far.
             let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
             let oldestPlausibleMs = nowMs - Self.maxQueueAgeMs
             let claimedMs = envelope.serverTimestamp > 0 ? envelope.serverTimestamp : nowMs
@@ -410,40 +401,39 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         let content = try Relay_Content_Content(serializedBytes: plaintext)
         let groupId = content.groupID.isEmpty ? nil : content.groupID
 
-        // The sender is whoever's session decrypted this: the certificate-
-        // recovered identity for sealed messages, the session address otherwise.
-        // A sender id inside the plaintext is only a claim — it must agree, or
-        // any contact could pose as anyone (including us, via a fake sync copy).
+        // The sender is whoever's session decrypted this: the certificate identity
+        // for sealed messages, the session address otherwise. A sender id in the
+        // plaintext is only a claim and must agree, or any contact could pose as
+        // anyone, including us via a fake sync copy.
         if !content.senderAccountID.isEmpty, content.senderAccountID != sender.name {
             throw EnvelopeProcessorError.senderSpoofed
         }
         let attestedAccount = sender.name
-        // The official "Relay" notices chat is local-only; nothing arriving
-        // over the network may land in it.
+        // The official "Relay" notices chat is local-only; nothing from the
+        // network may land in it.
         if attestedAccount == Self.relayOfficialAccount {
             throw EnvelopeProcessorError.senderSpoofed
         }
 
-        // Now that we know who really sent this (post-decrypt), drop it if the
-        // sender is blocked. Sealed messages can't be filtered any earlier since
-        // the wire envelope carries no sender.
+        // Drop blocked senders now that the sender is known. Sealed messages
+        // can't be filtered earlier because the wire envelope has no sender.
         if blockedAccounts.contains(attestedAccount) {
             return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
         }
 
-        // The relay-signed certificate names the sender's username, so we
-        // never have to ask the relay who wrote to us (which would tie sender
-        // to recipient). Not from our own devices: their cert names us.
+        // The relay-signed certificate names the sender's username, so we never
+        // have to ask the relay who wrote to us, which would link sender and
+        // recipient. Skip our own devices; their cert names us.
         if let attestedUsername, attestedAccount != ownAccountId {
             recordUsername(attestedUsername, forAccount: attestedAccount)
         }
 
-        // Group content is only accepted from current members of a group we
-        // know. Group updates (handled, with their own authorization, by the
-        // app) and sender-key distributions (harmless to store) are exempt.
+        // Group content is accepted only from current members of a known group.
+        // Group updates (authorized separately by the app) and sender-key
+        // distributions (harmless to store) are exempt.
         if let groupId, !isGroupControl(content) {
-            // We must still be in it too: after leaving (or being removed) we
-            // drop the group's traffic instead of quietly storing it.
+            // We must still be a member; after leaving or removal the group's traffic
+            // is dropped.
             guard let group = try? storage.messages.group(id: groupId),
                   ownAccountId.isEmpty || group.members.contains(ownAccountId),
                   attestedAccount == ownAccountId || group.members.contains(attestedAccount)
@@ -453,18 +443,17 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             }
         }
 
-        // Sync message: sent by own account to own other devices carrying a copy
-        // of a message we sent from another device.
+        // A copy of a message we sent from another of our devices.
         let isSyncMessage = !ownAccountId.isEmpty && attestedAccount == ownAccountId && !content.syncRecipient.isEmpty
 
-        // A chat message lands in the group conversation (keyed by group id)
-        // or the 1:1 conversation with the sender (or sync recipient on sync).
+        // Chat messages go to the group conversation, or the 1:1 conversation with
+        // the sender (the recipient, for a sync copy).
         func chatConversation() throws -> String {
             if isSyncMessage, groupId == nil {
                 return try storage.messages.conversation(withPeer: content.syncRecipient)
             }
             if let groupId {
-                // Never through conversation(withPeer:), which is 1:1-only.
+                // Not conversation(withPeer:), which is 1:1-only.
                 guard let id = try storage.messages.groupConversationId(groupId: groupId) else {
                     throw EnvelopeProcessorError.senderSpoofed
                 }
@@ -473,11 +462,10 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return try storage.messages.conversation(withPeer: attestedAccount)
         }
 
-        // Edits and unsends name their target by timestamp only. Apply them only
-        // to a message this sender actually wrote: their incoming message (in a
-        // group, the one with their sender_account), or — for a sync copy from
-        // our own other device — our outgoing message. Otherwise any peer or
-        // group member could rewrite or delete someone else's message.
+        // Edits and unsends name their target by timestamp only, so apply them
+        // only to a message this sender wrote: their incoming message (in a group,
+        // matching sender_account), or our outgoing one for a sync copy. Otherwise
+        // anyone could rewrite or delete someone else's message.
         func targetIsAuthoredBySender(timestamp: Int64, conversationId: String) -> Bool {
             let rows = (try? storage.database.query(
                 "SELECT is_outgoing, sender_account FROM messages WHERE conversation_id = ? AND timestamp = ?",
@@ -494,9 +482,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         switch content.body {
         case .text(let text):
             let conversationId = try chatConversation()
-            // Live location: collapse every update from one sharer into a single
-            // moving bubble (keyed by conversation + sender) instead of inserting
-            // a fresh bubble each tick. Notify only when the share first appears.
+            // Live location: every update from one sharer updates one bubble keyed by
+            // conversation and sender. Notify only when the share first appears.
             if text.body.hasPrefix(Self.liveLocationPrefix) {
                 let locId = "liveloc:\(conversationId):\(attestedAccount)"
                 let wasInsert = (try? storage.messages.upsertLiveLocation(
@@ -516,9 +503,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             let quote: QuotedMessage? = text.hasQuote
                 ? QuotedMessage(targetTimestamp: text.quote.targetTimestamp, author: text.quote.author, text: text.quote.text)
                 : nil
-            // Relay blob ids are 32 lowercase hex chars. Anything else from a
-            // peer is dropped: the id is later used in a request path and as a
-            // cache file name.
+            // Relay blob ids are 32 lowercase hex chars. Drop anything else; the id is
+            // used in a request path and as a cache file name.
             let attachments = text.attachments.filter { Self.isRelayBlobId($0.id) }.map { p in
                 StoredAttachment(
                     id: p.id, key: p.key, digest: p.digest, contentType: p.contentType,
@@ -526,15 +512,15 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                     width: Int(p.width), height: Int(p.height), isDownloaded: false
                 )
             }
-            // Sync the disappearing-messages timer if the sender set one.
-            // Do this before insertMessage so the new timer applies to this message.
+            // Apply the sender's disappearing-message timer before inserting, so it
+            // covers this message.
             if content.expiresAfterMs > 0 {
                 let secs = content.expiresAfterMs / 1000
                 try? storage.messages.setDisappearingSeconds(conversationId, seconds: secs)
             }
             if isSyncMessage {
-                // Store as outgoing — this is our own message from another device.
-                // Use the envelope id as the local id; duplicates are silently ignored.
+                // Our own message from another device: store as outgoing under the
+                // envelope id, so duplicates are ignored.
                 do {
                     _ = try storage.messages.insertMessage(
                         id: envelope.id, conversationId: conversationId, isOutgoing: true,
@@ -554,8 +540,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             )
             var effects = EnvelopeSideEffects()
             if inserted {
-                // Send a delivery receipt back to the author (in a group the
-                // sender's account; the caller adds the group context).
+                // Receipt goes to the author; the caller adds the group context.
                 effects.deliveryReceiptTimestamp = text.timestamp
             }
             let preview = text.body.isEmpty && !attachments.isEmpty ? "📷 Photo" : text.body
@@ -571,8 +556,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         case .reaction(let reaction):
             let conversationId = try chatConversation()
-            // A sync copy is our own reaction echoed to our other device — store it
-            // as ours (isOutgoing) and never notify.
+            // A sync copy is our own reaction from another device: store it as ours
+            // and don't notify.
             try storage.messages.setReaction(
                 conversationId: conversationId, targetTimestamp: reaction.targetTimestamp,
                 author: attestedAccount, isOutgoing: isSyncMessage,
@@ -588,7 +573,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             let conversationId = try chatConversation()
             let status: MessageStatus = receipt.type == .read ? .read : .delivered
             if groupId != nil {
-                // Group: record this member's state for the author's messages.
+                // Group: record this member's state on the author's message.
                 try storage.messages.recordGroupReceipt(
                     conversationId: conversationId, member: attestedAccount,
                     timestamps: receipt.messageTimestamps, status: status
@@ -623,8 +608,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
 
         case .senderKeyDistribution(let skd):
-            // Store the sender's group sender key so their .senderKey group
-            // messages decrypt from here on.
+            // Store the sender's sender key so their group messages decrypt.
             try engine.processSenderKeyDistribution(skd.data, from: sender)
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount)
 
@@ -659,7 +643,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 conversationId: conversationId,
                 author: attestedAccount
             )
-            // Store as a message with a JSON body so the UI can render question + options.
+            // Stored with a JSON body so the UI can render the question and options.
             let pollPayload = PollPayload(question: poll.question, options: Array(poll.options), multiSelect: poll.multiSelect)
             let body = "__poll__:" + (pollPayload.encode() ?? poll.question)
             do {
@@ -719,7 +703,6 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, profile: info)
 
         case .call(let call):
-            // Release the dedup slot for ephemeral call messages.
             let isNonEphemeral: Bool = switch call.type {
                 case .offer, .hangup, .groupRing, .linkJoinRequest, .linkAdmit, .linkDeny: true
                 default: false
@@ -754,8 +737,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, callInfo: info)
 
         case .typing(let typing):
-            // Ephemeral — release the dedup claim. In a group, report the group's
-            // existing conversation (never create one for a typing frame).
+            // Ephemeral, so release the dedup claim. In a group, report the existing
+            // conversation; never create one for a typing frame.
             try? storage.messages.releaseEnvelope(id: envelope.id)
             let groupConversation = groupId.flatMap { try? storage.messages.groupConversationId(groupId: $0) }
             if groupId != nil && groupConversation == nil {
@@ -768,7 +751,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             )
 
         case .screenshot(let shot):
-            // Non-ephemeral (queues); the caller inserts the in-chat notice.
+            // Queued, not ephemeral. The caller inserts the in-chat notice.
             let conversationId = try chatConversation()
             return ProcessedEnvelope(
                 outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId,
@@ -778,7 +761,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                     timestamp: shot.timestamp))
 
         case .screenSecurityUpdate(let upd):
-            // 1:1 peer preference sync; the caller stores it as the peer's side.
+            // The caller stores it as the peer's side.
             let conversationId = try chatConversation()
             return ProcessedEnvelope(
                 outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId,
@@ -789,8 +772,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                     timestamp: upd.timestamp))
 
         case .deviceInfo(let info):
-            // Only our own devices may label themselves for us; anyone else's
-            // DeviceInfo is ignored. Stored per sender device, newest wins.
+            // Only our own devices may label themselves; anyone else's DeviceInfo is
+            // ignored. Stored per sender device, newest wins.
             guard attestedAccount == ownAccountId, !ownAccountId.isEmpty else {
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
             }
@@ -802,7 +785,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         }
     }
 
-    /// The JSON shape the app's `DeviceLabel` decodes (kv `devinfo:<deviceId>`).
+    /// JSON shape the app's `DeviceLabel` decodes (kv `devinfo:<deviceId>`).
     private struct StoredDeviceLabel: Codable {
         let model: String
         let region: String
@@ -843,8 +826,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         }
     }
 
-    /// Stores a certificate-attested username in the same `un:<account>` cache
-    /// the app reads, and on the 1:1 conversation if there is one.
+    /// Caches a certificate-attested username under `un:<account>`, where the app
+    /// reads it, and on the 1:1 conversation if there is one.
     private func recordUsername(_ username: String, forAccount account: String) {
         try? storage.database.run(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",

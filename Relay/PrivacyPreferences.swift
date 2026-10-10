@@ -38,14 +38,14 @@ nonisolated enum NotificationPreviewSetting: String, CaseIterable, Sendable {
 
 /// App-only privacy toggles (UserDefaults.standard).
 nonisolated enum PrivacyPreferences {
-    /// Index conversation names in Spotlight. Default OFF (opt-in).
+    /// Index conversation names in Spotlight. Off by default.
     static let spotlightIndexingKey = "relay.spotlightIndexing"
-    /// Fetch link previews for links you send. Default ON (incoming previews are
-    /// never fetched automatically regardless of this toggle).
+    /// Fetch link previews for links you send. On by default; incoming previews
+    /// are never fetched automatically.
     static let linkPreviewsKey = "relay.linkPreviews"
-    /// Send typing indicators. Default ON. The service gates sending on this key.
+    /// Send typing indicators. On by default.
     static let sendTypingKey = "relay.sendTyping"
-    /// Ask the keyboard not to learn/store what you type. Default ON.
+    /// Ask the keyboard not to learn what you type. On by default.
     static let incognitoKeyboardKey = "privacy.incognitoKeyboard"
     /// The user explicitly agreed to contact discovery (address-book matching).
     static let contactDiscoveryConsentKey = "relay.contactDiscoveryConsent"

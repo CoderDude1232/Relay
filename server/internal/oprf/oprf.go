@@ -7,8 +7,8 @@
 // E = k·B; the client unblinds to N = r⁻¹·E = k·H1(x) and derives the lookup
 // token t = H2(x, N). The server can compute the same t directly from x (it
 // knows its own users' identifiers) to build the directory index, so lookups
-// match without the server ever seeing the identifiers a client queries — and
-// non-registered identifiers reveal nothing (their token matches nothing).
+// match without the server ever seeing the identifiers a client queries, and
+// unregistered identifiers reveal nothing.
 package oprf
 
 import (
@@ -25,7 +25,7 @@ import (
 	"github.com/gtank/ristretto255"
 )
 
-// Domain-separation tags. Both the server and the client MUST use these exact
+// Domain-separation tags. Both the server and the client must use these exact
 // strings and the same identifier normalization (Normalize) or tokens won't match.
 const (
 	hashToGroupDomain = "Relay-OPRF-v1-h2g"
@@ -113,7 +113,7 @@ func (k *Key) DeriveKey(label string) []byte {
 }
 
 // Token computes the directory token for a plaintext identifier: the same value
-// a client derives obliviously. `identifier` is normalized internally.
+// a client derives obliviously. identifier is normalized internally.
 func (k *Key) Token(identifier string) []byte {
 	x := []byte(Normalize(identifier))
 	n := ristretto255.NewElement().ScalarMult(k.scalar, hashToGroup(x))

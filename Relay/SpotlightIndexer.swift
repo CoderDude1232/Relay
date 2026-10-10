@@ -2,10 +2,9 @@
 //  SpotlightIndexer.swift
 //  Relay
 //
-//  Spotlight indexing of conversation names is OPT-IN (Settings → Privacy →
-//  "Show Chats in Search", default off): the system search index lives outside
-//  Relay's encrypted store. Hidden (panic-mode) conversations are never indexed,
-//  and `deindexAll()` removes everything Relay ever put in the index.
+//  Spotlight indexing of conversation names is opt-in ("Show Chats in Search",
+//  off by default) because the system index lives outside the encrypted store.
+//  Hidden conversations are never indexed.
 //
 
 import CoreSpotlight
@@ -15,9 +14,8 @@ import UIKit
 enum SpotlightIndexer {
     nonisolated private static let domain = "app.relaymsg.conversations"
 
-    /// Precomputed, Sendable input for one conversation. The caller builds these
-    /// cheaply on the main actor (dictionary lookups + cached avatar bytes); the
-    /// expensive image decode/re-encode happens in `index`, off the main thread.
+    /// Sendable input for one conversation, built cheaply on the main actor.
+    /// The image decode/re-encode happens in `index`, off the main thread.
     struct IndexItem: Sendable {
         let id: String
         let name: String
@@ -26,9 +24,8 @@ enum SpotlightIndexer {
 
     nonisolated static var isEnabled: Bool { PrivacyPreferences.spotlightIndexingEnabled }
 
-    /// Builds and submits Spotlight items. `nonisolated` so it can run on a
-    /// background task. A no-op unless the user opted in; hidden conversations
-    /// are filtered out (and removed if they were indexed before being hidden).
+    /// Builds and submits Spotlight items. No-op unless the user opted in;
+    /// hidden conversations are skipped and removed if previously indexed.
     nonisolated static func index(_ items: [IndexItem]) {
         guard isEnabled else { return }
         let hidden = PanicModeManager.hiddenConversationIdsSnapshot()
@@ -55,17 +52,17 @@ enum SpotlightIndexer {
         index.indexSearchableItems(searchable) { _ in }
     }
 
-    /// Removes this conversation from the index (e.g. it was just hidden or deleted).
+    /// Removes this conversation from the index (e.g. hidden or deleted).
     nonisolated static func deindex(conversationId: String) {
         CSSearchableIndex.default().deleteSearchableItems(withIdentifiers: [conversationId]) { _ in }
     }
 
-    /// Removes every Relay item from Spotlight. Call from every wipe / sign-out /
+    /// Removes every Relay item from Spotlight. Call on every wipe, sign-out and
     /// panic path, and when the user turns indexing off.
     nonisolated static func deindexAll() {
         let index = CSSearchableIndex.default()
         index.deleteSearchableItems(withDomainIdentifiers: [domain]) { _ in }
-        // Belt and braces: items indexed by older builds without a domain.
+        // Items indexed by older builds have no domain.
         index.deleteAllSearchableItems { _ in }
     }
 }

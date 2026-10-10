@@ -2,15 +2,9 @@
 //  ChatView.swift
 //  Relay
 //
-//  1:1 chat: date separators, grouped bubbles with tails only on the last
-//  of a run, incoming avatars, and per-message time/status. Liquid Glass
-//  stays on the chrome (compose bar); bubbles are flat fills per the
-//  guidance on limiting glass effects.
-//
-//  Interactions (Signal-inspired): long-press a message for a reaction tray
-//  and actions (reply/copy/delete/info), swipe a bubble to reply, reaction
-//  badges, jumbomoji for all-emoji messages, an emoji picker in the
-//  composer, and live typing indicators.
+//  Conversation view: message list, bubbles, compose bar and the long-press
+//  reaction/action menu. Liquid Glass is used on the compose bar only;
+//  bubbles are flat fills.
 //
 
 import CoreLocation
@@ -28,8 +22,7 @@ struct ChatView: View {
     let service: MessagingService
     let conversationId: String
     var onClose: (() -> Void)? = nil
-    /// A message to land on when the chat opens (e.g. a global search hit)
-    /// instead of the bottom of the thread.
+    /// Message to scroll to on open (e.g. a search hit) instead of the bottom.
     var initialMessageId: String? = nil
 
     @Environment(ChatAppearance.self) private var appearance
@@ -89,8 +82,8 @@ struct ChatView: View {
         return service.peerAvatarData(forAccount: account)
     }
     private var isRelayOfficial: Bool { conversation?.peerAccount == service.relayOfficialAccount }
-    /// The 1:1 peer when the user has blocked them — the composer is replaced
-    /// with an unblock bar, since sends to a blocked peer are dropped.
+    /// The 1:1 peer if blocked. The composer is replaced with an unblock bar,
+    /// since sends to a blocked peer are dropped.
     private var blockedPeer: String? {
         guard let conversation, !conversation.isGroup,
               service.isBlocked(conversation.peerAccount) else { return nil }
@@ -220,8 +213,8 @@ struct ChatView: View {
             .opacity(initialScrollDone ? 1 : 0)
             .onChange(of: service.messagesLoadedConversationId) { _, loaded in
                 guard loaded == conversationId, !initialScrollDone else { return }
-                // Scroll first (queued for next layout pass), then reveal the view
-                // so the user never sees the top-to-bottom jump.
+                // Scroll first (applied on the next layout pass), then reveal the
+                // view so the jump to the bottom isn't visible.
                 DispatchQueue.main.async {
                     if let target = initialMessageId,
                        service.activeMessages.contains(where: { $0.id == target }) {
@@ -315,16 +308,15 @@ struct ChatView: View {
     var body: some View {
         rawScrollView
         // The screenshot-hidden container re-hosts its content in a separate
-        // UIHostingController, which does not inherit this view's environment —
-        // re-inject everything the message rows read, or they trap on a missing
-        // @Environment object.
+        // UIHostingController that doesn't inherit this environment. Re-inject
+        // everything the rows read, or they trap on a missing @Environment object.
         .environment(appearance)
         .environment(callManager)
         .environment(\.openURL, linkOpener)
         .hiddenInScreenshots(service.effectiveScreenHidden(conversationId), fillsProposal: true)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
-            // Only the chat actually on screen reports a screenshot — ChatViews
-            // still alive under a sheet or in another tab must stay quiet.
+            // Only the chat on screen reports a screenshot; ChatViews alive under
+            // a sheet or in another tab stay quiet.
             guard isOnScreen, UIApplication.shared.applicationState == .active else { return }
             service.sendScreenshotAlert(conversationId: conversationId)
         }
@@ -698,7 +690,6 @@ struct ChatView: View {
         .sheet(isPresented: $showingLocationPicker) {
             LocationShareSheet(duration: $locationShareDuration) { duration in
                 locationManager.start(in: conversationId, duration: duration, service: service)
-                // Send first update immediately so the bubble appears
                 Task {
                     try? await Task.sleep(for: .seconds(2))
                     if let loc = locationManager.latestLocation {
@@ -885,7 +876,6 @@ struct ChatView: View {
 
     private func insertMention(_ account: String) {
         let name = service.displayName(forAccount: account)
-        // Replace the trailing @partial with @name
         var words = draft.components(separatedBy: .whitespacesAndNewlines)
         if words.last?.hasPrefix("@") == true {
             words[words.count - 1] = "@\(name)"
@@ -905,8 +895,7 @@ struct ChatView: View {
         }
     }
 
-    /// Whether a message was authored by the local user (drives quote/reply
-    /// attribution).
+    /// Whether the local user wrote the message (for quote/reply attribution).
     private func isOwn(_ message: StoredMessage) -> Bool {
         message.isOutgoing
     }
@@ -1196,12 +1185,11 @@ struct ChatView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(editingMessage == nil ? "Send message" : "Save edit")
-                            // iPad / hardware keyboards: ⌘↩ sends (plain ↩ inserts a newline).
+                            // Hardware keyboards: Cmd-Return sends; Return inserts a newline.
                             .keyboardShortcut(.return, modifiers: .command)
                             .simultaneousGesture(
                                 LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-                                    // Scheduling is text-only: attachments aren't stored with
-                                    // a scheduled message, so don't offer it (and lose them).
+                                    // Scheduled messages are text-only; attachments would be lost.
                                     guard canSend, editingMessage == nil, pendingAttachments.isEmpty,
                                           !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                     else { return }
@@ -1239,7 +1227,7 @@ struct ChatView: View {
         UIImagePickerController.isSourceTypeAvailable(.camera)
     }
 
-    /// Sends a freshly captured photo immediately (no pending/edit stage).
+    /// Sends a captured photo immediately, without a pending stage.
     private func sendCameraPhoto(_ image: UIImage) {
         guard let data = image.jpegData(compressionQuality: 0.85) else { return }
         let photo = MessagingService.PendingAttachment(
@@ -1374,9 +1362,8 @@ struct ChatView: View {
                 height: image.map { Int($0.size.height * $0.scale) } ?? 0
             )
         }
-        // Re-encode rather than forwarding the library's original bytes: that
-        // drops EXIF/GPS and other metadata (where and on what the photo was
-        // taken) and turns HEIC into the JPEG the content type promises.
+        // Re-encode instead of forwarding the original bytes: strips EXIF/GPS
+        // metadata and turns HEIC into the JPEG the content type promises.
         guard let image = UIImage(data: data),
               let clean = image.jpegData(compressionQuality: 0.9) else { return nil }
         return MessagingService.PendingAttachment(
@@ -1388,8 +1375,8 @@ struct ChatView: View {
         )
     }
 
-    /// Reads a document-picker selection into a pending attachment. The picker
-    /// hands back a security-scoped URL we must open before reading.
+    /// Reads a document-picker selection (a security-scoped URL) into a
+    /// pending attachment.
     private func loadPickedFile(_ url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -1412,8 +1399,8 @@ struct ChatView: View {
         }
     }
 
-    /// Stops recording and sends the clip immediately (voice notes have no
-    /// pending/edit stage), matching the tap-to-record, tap-to-send flow.
+    /// Stops recording and sends the clip immediately; voice notes have no
+    /// pending stage.
     private func finishRecording() {
         guard let clip = recorder.finish() else { return }
         Task { await service.sendMessage("", in: conversationId, replyTo: nil, attachments: [clip]) }
@@ -1439,7 +1426,6 @@ struct ChatView: View {
         var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        // Edit mode: update existing message body instead of sending a new one.
         if let target = editingMessage {
             guard !text.isEmpty else { return }
             draft = ""
@@ -1517,7 +1503,6 @@ struct ChatView: View {
                 items.append(.dateSeparator(id: "day-\(message.id)", label: Self.dayLabel(date)))
             }
 
-            // Insert "New Messages" separator before the first unread incoming message.
             if !unreadSeparatorInserted && !message.isOutgoing && message.timestamp > readAt {
                 items.append(.unreadSeparator)
                 unreadSeparatorInserted = true
@@ -1772,8 +1757,7 @@ enum BubblePosition {
     var closesGroup: Bool { self == .single || self == .last }
 }
 
-/// The badge shown next to the peer's name in the chat title. Unverified
-/// peers get no badge (the default, unremarkable state).
+/// Badge next to the peer's name in the title. Unverified peers get none.
 private extension VerificationState {
     var titleSymbol: (name: String, tint: Color)? {
         switch self {
@@ -1853,11 +1837,10 @@ private struct MessageRow: View {
         } else if message.isDeleted {
             bubble
         } else {
-            // Real UIKit context menu (native platter + lifted preview) plus an
-            // interactive reaction bar in sync via the interaction's willDisplay/
-            // willEnd callbacks. The row does the left/right alignment so the
-            // menu's source view is just the bubble — the menu lands on the
-            // message's side, not centered. Double-tap and swipe-to-reply live in
+            // UIKit context menu with a reaction bar kept in sync through the
+            // interaction's willDisplay/willEnd callbacks. The row handles
+            // alignment so the menu's source view is just the bubble and the menu
+            // lands on the message's side. Double-tap and swipe-to-reply live in
             // the UIKit layer so they don't fight the interaction.
             HStack(alignment: .bottom, spacing: 8) {
                 if message.isOutgoing {
@@ -1892,7 +1875,7 @@ private struct MessageRow: View {
                     },
                     onReply: onReply
                 )
-                // Readable line length on iPad / wide windows (no effect on iPhone).
+                // Readable line length on iPad and wide windows.
                 .frame(maxWidth: Self.maxBubbleWidth, alignment: message.isOutgoing ? .trailing : .leading)
 
                 if !message.isOutgoing { Spacer(minLength: 56) }
@@ -1900,7 +1883,7 @@ private struct MessageRow: View {
         }
     }
 
-    // Avatar shown beside incoming bubbles (the hosted core no longer includes it).
+    // Account whose avatar is shown beside incoming bubbles.
     private var rowSenderAccount: String? {
         if isGroup { return message.senderAccount }
         return service.conversations.first { $0.id == conversationId }?.peerAccount
@@ -1912,7 +1895,7 @@ private struct MessageRow: View {
         rowSenderAccount.flatMap { service.peerAvatarData(forAccount: $0) }
     }
 
-    /// The action-menu contents (reactions are the separate bar, not in here).
+    /// Action menu contents; reactions are in the separate bar.
     private var menuActions: [MessageActionSpec] {
         var items: [MessageActionSpec] = []
         if message.isOutgoing && message.status == .failed {
@@ -1963,14 +1946,12 @@ private struct MessageBubble: View {
     let isGroup: Bool
     var isCurrentSearchMatch = false
     var onInfo: () -> Void = {}
-    /// When false, renders only the bubble core (no leading/trailing spacers or
-    /// avatar). Used when the row handles alignment itself so the context-menu
-    /// source view is just the bubble — the native menu then lands on the
-    /// message's side rather than centered.
+    /// When false, renders only the bubble core, without spacers or avatar, so
+    /// the row can align it and use it as the context-menu source view.
     var embedsAlignment: Bool = true
 
     @Environment(ChatAppearance.self) private var appearance
-    /// The chat-level opener (in-app Safari for http/https) — used after the
+    /// Chat-level link opener (in-app Safari for http/https), used after the
     /// user confirms a link from a received message.
     @Environment(\.openURL) private var parentOpenURL
     @State private var reactionDetailEmoji: String?
@@ -2011,7 +1992,7 @@ private struct MessageBubble: View {
                     if message.isOutgoing {
                         Spacer(minLength: 56)
                     } else if position.closesGroup {
-                        // Avatar only on the last bubble of a run, like iMessage.
+                        // Avatar only on the last bubble of a run.
                         AvatarView(name: avatarName, size: 28, imageData: avatarData)
                     } else {
                         Color.clear.frame(width: 28, height: 1)
@@ -2051,9 +2032,8 @@ private struct MessageBubble: View {
             )
             .presentationDetents([.fraction(0.4)])
         }
-        // Links in RECEIVED messages never open directly: markdown lets a
-        // sender show one URL and link another, so the real destination host
-        // is shown for confirmation first. Our own messages open as before.
+        // Links in received messages never open directly: markdown lets a sender
+        // show one URL and link another, so the real host is confirmed first.
         .environment(\.openURL, OpenURLAction { url in
             guard !message.isOutgoing else { return .systemAction }
             pendingLinkURL = url
@@ -2085,8 +2065,7 @@ private struct MessageBubble: View {
         }
     }
 
-    /// The bubble column (optional sender label + bubble + reaction badges),
-    /// without any leading/trailing alignment spacers.
+    /// Sender label, bubble and reaction badges, without alignment spacers.
     private var coreColumn: some View {
         VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 3) {
             if showsSenderLabel {
@@ -2130,7 +2109,7 @@ private struct MessageBubble: View {
                 metadataRow(onBubble: false)
             }
         } else if let locPayload = LocationPayload.decode(message.body) {
-            // Just the map, with live status + time + delivery underneath.
+            // Map only, with live status, time and delivery underneath.
             LocationBubble(payload: locPayload, isOutgoing: message.isOutgoing,
                            footer: AnyView(metadataRow(onBubble: false)))
         } else if message.body.hasPrefix(notepadPrefix) {
@@ -2160,7 +2139,7 @@ private struct MessageBubble: View {
             )
         } else if message.body == MessagingService.stickerMarker, message.attachments.count == 1,
                   let sticker = message.attachments.first, sticker.isImage {
-            // Sticker: the image itself, no bubble, time + status underneath.
+            // Sticker: no bubble, time and status underneath.
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 4) {
                 AttachmentImageView(
                     attachment: sticker, service: service, conversationId: conversationId,
@@ -2171,8 +2150,7 @@ private struct MessageBubble: View {
             }
         } else if !message.attachments.isEmpty && message.body.isEmpty && message.replyTo == nil
                     && message.attachments.allSatisfy(\.isImage) {
-            // Image-only message: show the image(s) with no bubble fill, and the
-            // time + delivery status underneath.
+            // Image-only: no bubble fill, time and status underneath.
             VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 4) {
                 attachmentStack
                 metadataRow(onBubble: false)
@@ -2275,9 +2253,8 @@ private struct MessageBubble: View {
         )
     }
 
-    /// Parsed-body cache. Markdown parsing is expensive and `body` re-runs on
-    /// every scroll/redraw, so we memoize per (username, text). Bounded to avoid
-    /// unbounded growth. Confined to the main actor (all rendering is).
+    /// Parsed-body cache keyed by (username, text). Markdown parsing is expensive
+    /// and `body` re-runs on every scroll. Bounded; main-actor only.
     private static var formattedBodyCache: [String: AttributedString] = [:]
 
     private func formattedBody(_ text: String) -> AttributedString {
@@ -2288,7 +2265,6 @@ private struct MessageBubble: View {
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )) ?? AttributedString(text)
-        // Highlight @mentions of the local user in orange
         if let username = service.username {
             let target = "@\(username)"
             let raw = String(base.characters)
@@ -2373,7 +2349,7 @@ private struct MessageBubble: View {
     }
 }
 
-// MARK: - Long-press menu (reaction bar + action menu, iMessage-style)
+// MARK: - Long-press menu
 
 private struct MessageActionSpec: Identifiable {
     let id = UUID()
@@ -2511,9 +2487,9 @@ private struct NativeMenuBubble: UIViewRepresentable {
     }
 }
 
-/// The interactive reaction bar shown as a small overlay window above the message
-/// while the native context menu is open. Sized to its content so taps outside it
-/// pass through to the menu (which then dismisses, triggering willEnd → hide).
+/// Reaction bar shown in a small overlay window above the message while the
+/// context menu is open. Sized to its content so taps outside it reach the menu,
+/// whose dismissal (willEnd) hides the bar.
 private final class ReactionBarWindowController {
     private var window: UIWindow?
     private var hosting: UIHostingController<ReactionBarView>?
@@ -2531,7 +2507,7 @@ private final class ReactionBarWindowController {
         var x = isOutgoing ? src.maxX - size.width : src.minX
         x = max(12, min(x, screen.width - size.width - 12))
         var y = src.minY - size.height - 12
-        if y < 60 { y = src.maxY + 12 }  // no room above → place below
+        if y < 60 { y = src.maxY + 12 }  // no room above: place below
 
         let w = UIWindow(windowScene: scene)
         w.windowLevel = .alert + 1
@@ -2804,8 +2780,8 @@ private struct ReplyPreviewBar: View {
 
 // MARK: - Attachments
 
-/// Renders an image attachment: downloads the ciphertext on first view,
-/// decrypts it to memory, and displays it. Plaintext never touches disk.
+/// Downloads an image attachment on first view and decrypts it in memory.
+/// Plaintext never touches disk.
 private struct AttachmentImageView: View {
     let attachment: StoredAttachment
     let service: MessagingService
@@ -2941,8 +2917,7 @@ private struct AttachmentImageView: View {
     }
 }
 
-/// A preview of the picked-but-unsent attachment shown above the composer
-/// (image thumbnail, or an icon + name for files).
+/// Preview of an unsent attachment above the composer.
 private struct PendingAttachmentBar: View {
     let attachment: MessagingService.PendingAttachment
     let onPreview: () -> Void
@@ -3096,10 +3071,9 @@ private struct PendingAttachmentPreviewSheet: View {
     }
 }
 
-// MARK: - Typing indicator
+// MARK: - System messages and typing indicator
 
-// Renders system messages. Bodies prefixed with "call:" get a phone SF Symbol;
-// everything else renders as plain caption text.
+// Bodies prefixed with "call:" get a phone symbol; others render as plain caption text.
 private struct SystemMessageView: View {
     let rawBody: String
 
@@ -3317,8 +3291,7 @@ private struct BubbleChrome: ViewModifier {
     }
 }
 
-/// A plain card (white in light mode, black in dark) for content like maps
-/// and polls that reads better without the tinted bubble colour.
+/// Plain card (white in light mode, black in dark) for maps and polls.
 private struct NeutralCard: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -3332,12 +3305,11 @@ private struct NeutralCard: ViewModifier {
     }
 }
 
-// MARK: - LocationBubble
+// MARK: - Location bubble
 
 private struct LocationBubble: View {
     let payload: LocationPayload
     let isOutgoing: Bool
-    /// Time + delivery status, shown at the end of the status line.
     let footer: AnyView
 
     @State private var position: MapCameraPosition
@@ -3366,7 +3338,7 @@ private struct LocationBubble: View {
     }
 
     /// Received locations don't load map tiles until the user asks: fetching
-    /// tiles tells Apple's map servers (with our IP) where the sender is.
+    /// tiles tells Apple's map servers, with our IP, where the sender is.
     @State private var mapRevealed = false
     @State private var showingFullMap = false
 
@@ -3438,7 +3410,7 @@ private struct LocationBubble: View {
     }
 }
 
-/// Interactive full-screen map for a shared (or live) location.
+/// Full-screen map for a shared or live location.
 private struct FullScreenLocationView: View {
     let payload: LocationPayload
     @Environment(\.dismiss) private var dismiss
@@ -3509,7 +3481,7 @@ private struct FullScreenLocationView: View {
     }
 }
 
-// MARK: - NotepadUpdateBubble
+// MARK: - Notepad update bubble
 
 private struct NotepadUpdateBubble: View {
     let isOutgoing: Bool
@@ -3526,7 +3498,7 @@ private struct NotepadUpdateBubble: View {
     }
 }
 
-// MARK: - SummarySheet
+// MARK: - Summary sheet
 
 private struct SummarySheet: View {
     let text: String
@@ -3552,7 +3524,7 @@ private struct SummarySheet: View {
     }
 }
 
-// MARK: - SchedulePickerSheet
+// MARK: - Schedule picker
 
 private struct SchedulePickerSheet: View {
     let draft: String
@@ -3601,7 +3573,7 @@ private struct SchedulePickerSheet: View {
     }
 }
 
-// MARK: - LocationShareSheet
+// MARK: - Location share sheet
 
 private struct LocationShareSheet: View {
     @Binding var duration: TimeInterval
@@ -3661,9 +3633,6 @@ private struct LocationShareSheet: View {
     }
 }
 
-// MARK: - Screenshot prevention (UITextField secure canvas)
-
-/// Renders `content` inside UITextField's private secure canvas layer.
 // MARK: - View-once overlay
 
 private struct ViewOnceOverlay: View {
@@ -3677,7 +3646,7 @@ private struct ViewOnceOverlay: View {
     @State private var unavailable = false
 
     private var tint: Color { isOutgoing ? .white : .primary }
-    /// The attachment row is removed once the recipient has opened it.
+    /// The attachment row is deleted once the recipient has opened it.
     private var alreadyOpened: Bool { !isOutgoing && message.attachments.isEmpty }
 
     var body: some View {
@@ -3689,8 +3658,8 @@ private struct ViewOnceOverlay: View {
                     .frame(maxWidth: 240)
                     .clipShape(.rect(cornerRadius: 12))
             } else if isOutgoing || alreadyOpened || unavailable {
-                // The sender can't open their own view-once photo (that would
-                // destroy their copy), and a recipient only gets one look.
+                // The sender can't open their own view-once photo (it would
+                // destroy their copy); a recipient gets one look.
                 label(
                     icon: alreadyOpened || unavailable ? "eye.slash" : "eye",
                     text: isOutgoing ? "View-once photo" : (unavailable ? "Photo unavailable" : "Opened")
@@ -3732,8 +3701,8 @@ private struct ViewOnceOverlay: View {
         }
         image = ui
         viewed = true
-        // Remove the ciphertext and the attachment row right after display, so
-        // it can't be shown (or re-downloaded) again.
+        // Delete the ciphertext and attachment row right after display so it
+        // can't be shown or re-downloaded again.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             service.deleteViewOnceAttachment(attachment, in: conversationId)
         }

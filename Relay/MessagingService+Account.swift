@@ -2,8 +2,7 @@
 //  MessagingService+Account.swift
 //  Relay
 //
-//  Account-level actions required for App Store review: permanent account
-//  deletion (Guideline 5.1.1(v)) and reporting abusive users (Guideline 1.2).
+//  Account deletion (App Review 5.1.1(v)) and reporting abusive users (1.2).
 //
 
 import Foundation
@@ -15,19 +14,19 @@ extension MessagingService {
     // MARK: - Delete account
 
     /// Permanently deletes this account on the relay (`DELETE /v1/accounts/me`):
-    /// all devices (including other linked devices), keys, queued messages,
-    /// push tokens, directory entries and the username. Callers must then wipe
-    /// local state (`AppModel.signOut()`), since the credentials are now dead.
+    /// all linked devices, keys, queued messages, push tokens, directory entries
+    /// and the username. Callers must then wipe local state with
+    /// `AppModel.signOut()`, since the credentials are dead.
     func deleteAccount(appleAuthorizationCode: String? = nil) async throws {
         try await apiClient.deleteAccount(appleAuthorizationCode: appleAuthorizationCode)
     }
 
-    /// Sets or changes the account password (email recovery + the lock that
-    /// guards new-device sign-ins).
+    /// Sets or changes the account password (email recovery, and the lock on
+    /// new-device sign-ins).
     func setAccountPassword(_ password: String) async throws {
         try await apiClient.setAccountPassword(password)
         UserDefaults.standard.set(true, forKey: Self.hasAccountPasswordKey)
-        // The chat list is kept with the account under this password from now on.
+        // The chat list is kept with the account under this password.
         await setAccountStorageKey(password: password)
         if let stored = try? await apiClient.accountStorage() { accountStorageVersionReset(to: stored.version) }
         await uploadAccountStorage()
@@ -45,15 +44,13 @@ extension MessagingService {
 
     // MARK: - Report
 
-    /// Max number of the peer's recent messages forwarded with a report, and
-    /// only when the user explicitly opts in.
+    /// Max recent messages from the peer forwarded with a report (opt-in only).
     static let reportMessageLimit = 10
 
-    /// Reports `accountId` to the Relay team. When `includeRecentMessages` is
-    /// true, the plaintext of the last ~10 messages *received from* that peer
-    /// in the 1:1 chat is decrypted locally and sent with the report — this is
-    /// the only path by which message content ever reaches the developer, and
-    /// it requires the user's explicit choice.
+    /// Reports `accountId` to the Relay team. With `includeRecentMessages`, the
+    /// last ~10 messages received from that peer in the 1:1 chat are decrypted
+    /// locally and sent with the report. This is the only path by which message
+    /// content reaches the developer, and it needs the user's explicit choice.
     func reportContact(
         accountId: String,
         reason: ReportReason,

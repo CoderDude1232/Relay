@@ -2,8 +2,7 @@
 //  ContactCardView.swift
 //  Relay
 //
-//  Contact info sheet for a 1:1 peer. Layout inspired by modern messaging apps:
-//  hero header → quick-action buttons → settings-style rows.
+//  Contact info sheet for a 1:1 peer.
 //
 
 import RelayKit
@@ -31,8 +30,7 @@ struct ContactCardView: View {
     }
     private var account: String { conversation?.peerAccount ?? "" }
     private var isNoteToSelf: Bool { account == service.noteToSelfAccount }
-    /// Block/Report make no sense for your own Note to Self or the local
-    /// Relay notices account.
+    /// Block/Report don't apply to Note to Self or the local Relay notices account.
     private var canBlockOrReport: Bool {
         !account.isEmpty && !isNoteToSelf && account != service.relayOfficialAccount
     }
@@ -56,7 +54,7 @@ struct ContactCardView: View {
         NavigationStack {
             List {
 
-                // MARK: Hero header
+                // MARK: Header
                 Section {
                     VStack(spacing: 10) {
                         AvatarView(
@@ -170,8 +168,7 @@ struct ContactCardView: View {
                     Section("Links") {
                         ForEach(peerLinks) { link in
                             // Peer-supplied: only open http(s), never tel:,
-                            // sms:, relay:// or other app-scheme links that
-                            // could be disguised behind a label.
+                            // sms:, relay:// or other schemes hidden behind a label.
                             if let url = Self.safeWebURL(link.url) {
                                 Link(destination: url) {
                                     linkRow(label: link.label, url: link.url, tappable: true)
@@ -223,7 +220,7 @@ struct ContactCardView: View {
                     .tint(.primary)
                 }
 
-                // MARK: Block / Report
+                // MARK: Block and report
                 if canBlockOrReport {
                     Section {
                         let blocked = service.isBlocked(account)
@@ -249,7 +246,7 @@ struct ContactCardView: View {
                     }
                 }
 
-                // MARK: Advanced (troubleshooting)
+                // MARK: Advanced
                 if !isNoteToSelf {
                     Section {
                         DisclosureGroup("Troubleshooting") {
@@ -386,8 +383,8 @@ struct ContactCardView: View {
 
 // MARK: - Report sheet
 
-/// Report a contact to the Relay team (App Store Guideline 1.2). Optional
-/// details and — only with explicit opt-in — the last 10 received messages.
+/// Report a contact to the Relay team, with optional details and, only on
+/// explicit opt-in, the last 10 received messages.
 struct ReportContactSheet: View {
     let service: MessagingService
     let account: String

@@ -2,8 +2,8 @@
 //  SecurePasteboard.swift
 //  Relay
 //
-//  Every copy out of Relay is local-only (never synced to the user's other
-//  devices through Universal Clipboard). Secrets additionally expire.
+//  Copies out of Relay are local-only (no Universal Clipboard). Secrets also
+//  expire.
 //
 
 import UIKit

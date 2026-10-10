@@ -2,15 +2,11 @@
 //  LinkDeviceView.swift
 //  Relay
 //
-//  Reversed (Signal-style) linking flow, so every device of an account shares
-//  one identity key:
-//  New device: shows a QR carrying its ephemeral key (via LinkNewDeviceView,
-//    surfaced from OnboardingView) and polls for the encrypted payload.
-//  Primary device: scans that QR (LinkDeviceView below), creates the device,
-//    and seals the shared identity + credentials to the new device's key.
-//
-//  Manage linked devices (list + revoke) lives in LinkedDevicesView,
-//  surfaced from SettingsView.
+//  Reversed (Signal-style) linking, so every device of an account shares one
+//  identity key. The new device shows a QR carrying its ephemeral key
+//  (LinkNewDeviceView) and polls for the encrypted payload; the primary scans
+//  it (LinkDeviceView), creates the device, and seals the shared identity and
+//  credentials to that key. LinkedDevicesView lists and revokes devices.
 //
 
 import AVFoundation
@@ -19,7 +15,7 @@ import RelayKit
 import SecureStorage
 import SwiftUI
 
-// MARK: - Link Device (primary side — scan the new device's QR)
+// MARK: - Link Device (primary)
 
 struct LinkDeviceView: View {
     let service: MessagingService
@@ -246,7 +242,7 @@ struct LinkDeviceView: View {
     }
 }
 
-// MARK: - New device (show QR + poll for provisioning)
+// MARK: - New device
 
 /// Shown on a brand-new device from onboarding. Generates an ephemeral key,
 /// displays a QR for the primary to scan, and waits for the encrypted payload.
@@ -313,8 +309,8 @@ struct LinkNewDeviceView: View {
                 started = true
                 start()
             }
-            // Stop polling the relay for the link payload once the user leaves —
-            // otherwise a late approval could still flip the app into the account.
+            // Stop polling once the user leaves, or a late approval could still flip the
+            // app into the account.
             .onDisappear { linkTask?.cancel() }
         }
     }
@@ -331,9 +327,8 @@ struct LinkNewDeviceView: View {
                 qrImage = makeQRImage(qr)
                 status = "Waiting for your other device…"
                 try await model.completeDeviceLinking(sessionId: sessionId, ephemeral: ephemeral)
-                // On success the model flips phase to .ready and onboarding dismisses.
+                // On success the model moves to .ready and onboarding dismisses.
             } catch is CancellationError {
-                // The user cancelled; nothing to show.
             } catch {
                 guard !Task.isCancelled else { return }
                 // Drop the QR so the error state (and Try Again) is visible.
@@ -356,7 +351,7 @@ struct LinkNewDeviceView: View {
     }
 }
 
-// MARK: - Linked Devices management (settings)
+// MARK: - Linked Devices
 
 struct LinkedDevicesView: View {
     let service: MessagingService
@@ -371,10 +366,9 @@ struct LinkedDevicesView: View {
 
     private static let relinkNudgeDismissedKey = "relay.relinkNudgeDismissed"
 
-    /// A secondary device linked before the shared-identity change still holds a
-    /// self-generated identity, so its safety numbers differ from the account's.
-    /// Nudge the user (once) to re-link it. New provisioned devices set
-    /// `identityProvisionedKey`, so they never see this.
+    /// A secondary linked without the shared identity has a self-generated one,
+    /// so its safety numbers differ from the account's. Nudge the user once to
+    /// re-link it; provisioned devices set `identityProvisionedKey` and skip this.
     private var showRelinkNudge: Bool {
         !relinkNudgeDismissed
             && service.credentials.deviceId != 1
@@ -427,8 +421,8 @@ struct LinkedDevicesView: View {
                         .deleteDisabled(device.deviceId == service.credentials.deviceId)
                     }
                     .onDelete { indexSet in
-                        // Ask first — unlinking signs that device out for good.
-                        // This device leaves via Sign Out instead.
+                        // Unlinking signs that device out for good, so ask first. This device
+                        // leaves via Sign Out instead.
                         pendingUnlink = indexSet.map { devices[$0] }
                             .first { $0.deviceId != service.credentials.deviceId }
                     }
@@ -547,7 +541,7 @@ struct LinkedDevicesView: View {
     }
 }
 
-// MARK: - QR Scanner (AVCapture, inline)
+// MARK: - QR Scanner
 
 private struct LinkQRScannerView: UIViewControllerRepresentable {
     let onScan: (String) -> Void

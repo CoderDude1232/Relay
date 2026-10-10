@@ -28,21 +28,19 @@ struct RelayApp: App {
             ContentView()
                 .environment(model)
                 .environment(appearance)
-                // Use the AppDelegate-owned CallManager so it exists before
-                // any VoIP push can arrive (even from a killed-app launch).
+                // AppDelegate owns the CallManager so it exists before a VoIP
+                // push can arrive on a killed-app launch.
                 .environment(appDelegate.callManager)
                 .task {
                     #if DEBUG
                     PrivacyRedactor.runSelfCheck()
                     #endif
-                    // Spotlight indexing is opt-in: clear anything an older
-                    // (index-by-default) build left in the system index.
+                    // Spotlight indexing is opt-in; clear anything left in the index.
                     if !SpotlightIndexer.isEnabled { SpotlightIndexer.deindexAll() }
                     // Decrypted media left behind by a killed session.
                     TempMediaFiles.sweep()
                     appDelegate.model = model
-                    // Drain any conversationId that arrived via notification tap
-                    // before the model was wired (cold-start path).
+                    // A notification tap may have arrived before the model was wired.
                     if let id = appDelegate.coldStartConversationId {
                         model.pendingNotificationConversationId = id
                         appDelegate.coldStartConversationId = nil
@@ -51,9 +49,8 @@ struct RelayApp: App {
                     if model.isReady {
                         wireCallManager()
                         // Only ask for notification permission once there is an
-                        // account to notify for — never over the Welcome screen.
-                        // For already-registered users this is a no-op prompt-wise
-                        // and re-registers for remote notifications each launch.
+                        // account, never over the Welcome screen. For existing
+                        // users this just re-registers for remote notifications.
                         appDelegate.requestPushAuthorization()
                     }
                 }
@@ -78,7 +75,7 @@ struct RelayApp: App {
                         let frag = url.fragment ?? ""
                         model.pendingGroupInviteToken = frag.isEmpty ? token : "\(token)#\(frag)"
                     } else if url.host == "contact" {
-                        // relay://contact/<token> — one-time contact invite
+                        // relay://contact/<token> (one-time contact invite)
                         let token = url.pathComponents.dropFirst().first ?? ""
                         guard !token.isEmpty else { return }
                         model.pendingContactInviteToken = token
@@ -86,13 +83,13 @@ struct RelayApp: App {
                         // relay://call/<callId>#<hostAccount>.<secret>
                         if let link = CallManager.parseCallLink(url) { model.pendingCallLink = link }
                     } else if url.host == "conversation" {
-                        // relay://conversation/<conversationId> — widget tap deeplink
+                        // relay://conversation/<conversationId> (widget tap)
                         let convId = url.pathComponents.dropFirst().first ?? ""
                         guard !convId.isEmpty else { return }
                         model.pendingNotificationConversationId = convId
                     } else if url.host == "pending-share" {
-                        // relay://pending-share — opened by the Share Extension after
-                        // writing a PendingShare to the shared App Group container.
+                        // relay://pending-share, opened by the Share Extension after
+                        // it writes a PendingShare to the App Group container.
                         guard case .ready(let service) = model.phase else { return }
                         Task {
                             if let convId = await service.processPendingShare() {
@@ -102,13 +99,12 @@ struct RelayApp: App {
                     }
                 }
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
-                    // Spotlight tap → open the indexed conversation
                     guard let convId = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
                           !convId.isEmpty else { return }
                     model.pendingNotificationConversationId = convId
                 }
                 .onContinueUserActivity(NSStringFromClass(INSendMessageIntent.self)) { _ in
-                    // Siri "send via Relay" → processPendingShare already called in enterForeground
+                    // Siri "send via Relay"; enterForeground has already processed the share.
                     guard case .ready(let service) = model.phase else { return }
                     Task {
                         if let convId = await service.processPendingShare() {
@@ -135,7 +131,7 @@ struct RelayApp: App {
                         // https://relaymsg.app/call/<callId>#<hostAccount>.<secret>
                         if let link = CallManager.parseCallLink(url) { model.pendingCallLink = link }
                     } else if kind == "g" {
-                        // https://relaymsg.app/g/<token>#<fragment-key> — encrypted group invite
+                        // https://relaymsg.app/g/<token>#<fragment-key> (encrypted group invite)
                         let frag = url.fragment ?? ""
                         model.pendingGroupInviteToken = frag.isEmpty ? value : "\(value)#\(frag)"
                     }
@@ -147,8 +143,7 @@ struct RelayApp: App {
                             model.enterBackground()
                             appDelegate.scheduleBackgroundRefresh()
                         }
-                        // Refresh the encrypted iCloud backup when leaving the app —
-                        // at most daily unless something changed.
+                        // Refresh the iCloud backup, at most daily unless something changed.
                         if case .ready(let service) = model.phase {
                             Task { await CloudBackupManager.shared.backupIfDue(service: service) }
                         }
@@ -188,9 +183,9 @@ struct RelayApp: App {
             return service.group(for: conv.id)?.members
         }
         callManager.onAwaitingCallOffer = {
-            // A VoIP push woke us for an anonymous call: make sure the socket is
-            // up (no-op if already running) and replay any OFFER the NSE already
-            // decrypted, so the caller can be identified within the wait window.
+            // A VoIP push woke us for an anonymous call: bring the socket up and
+            // replay any OFFER the NSE already decrypted, so the caller can be
+            // identified within the wait window.
             service.start()
             Task { await replayPendingCallOffersDuringWake(service) }
         }
@@ -222,9 +217,8 @@ struct RelayApp: App {
     }
 }
 
-/// Owns the CallManager and PushKitDelegate for the lifetime of the process.
-/// Placing them here ensures they exist before any SwiftUI view renders and
-/// before any VoIP push can arrive on a killed-app launch.
+/// Owns the CallManager and PushKitDelegate for the life of the process, so they
+/// exist before any view renders or a VoIP push arrives on a killed-app launch.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     static let bgRefreshTaskId = "app.relaymsg.bg-refresh"
     private static let log = Logger(subsystem: "app.relaymsg", category: "AppDelegate")
@@ -233,17 +227,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     let pushKitDelegate = PushKitDelegate()
     weak var model: AppModel?
 
-    /// Siri / CarPlay "send a message": handled in the app (launched in the
-    /// background) so it sends now instead of waiting for the next launch.
+    /// Siri/CarPlay "send a message", handled in the app so it sends immediately.
     func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
         intent is INSendMessageIntent ? SiriSendHandler(appDelegate: self) : nil
     }
-    /// Buffer for notification taps that arrive before the model is wired (cold-start).
+    /// Notification tap that arrived before the model was wired (cold start).
     var coldStartConversationId: String?
 
     func scheduleBackgroundRefresh() {
         let request = BGAppRefreshTaskRequest(identifier: Self.bgRefreshTaskId)
-        // Minimum 15 min — iOS decides actual timing based on usage patterns.
+        // A floor only; iOS picks the actual time.
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         try? BGTaskScheduler.shared.submit(request)
     }
@@ -252,9 +245,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Register the background refresh task that drains Siri-queued messages
-        // when the main socket has already closed. Must be registered before
-        // the app finishes launching.
+        // Drains Siri-queued messages when the socket is closed. Must be
+        // registered before launch finishes.
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.bgRefreshTaskId,
             using: nil
@@ -270,9 +262,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         pushKitDelegate.start(callManager: callManager)
         UNUserNotificationCenter.current().delegate = self
-        // Both actions act on the account without opening the app, so they
-        // require the device to be unlocked (Face ID / passcode) first —
-        // otherwise anyone holding a locked phone could reply as the user.
+        // Both actions act on the account without opening the app, so require
+        // an unlocked device; otherwise anyone holding a locked phone could reply.
         let replyAction = UNTextInputNotificationAction(
             identifier: "RELAY_QUICK_REPLY",
             title: "Reply",
@@ -289,8 +280,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             identifier: "RELAY_MESSAGE",
             actions: [replyAction, markReadAction],
             intentIdentifiers: [NSStringFromClass(INSendMessageIntent.self)],
-            // CarPlay shows (and Siri can read out) message notifications, and
-            // Reply works there and on Apple Watch.
             options: [.allowInCarPlay]
         )
         UNUserNotificationCenter.current().setNotificationCategories([msgCategory])
@@ -305,10 +294,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let conversationId = response.notification.request.content.userInfo["conversationId"] as? String ?? ""
         switch response.actionIdentifier {
         case "RELAY_QUICK_REPLY":
-            // Also how Apple Watch and CarPlay replies arrive. If the app was
-            // closed, iOS has just launched it in the background for this:
-            // wait briefly for it to finish starting and send now, rather than
-            // leaving the reply queued until the user next opens Relay.
+            // Also used by Apple Watch and CarPlay. If iOS just launched the app
+            // in the background for this, wait briefly for startup and send now
+            // rather than queueing until the next launch.
             let text = (response as? UNTextInputNotificationResponse)?.userText ?? ""
             guard !text.isEmpty, !conversationId.isEmpty else { break }
             let task = UIApplication.shared.beginBackgroundTask(withName: "relay.quickReply")
@@ -332,7 +320,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             guard !conversationId.isEmpty, let model, case .ready(let service) = model.phase else { break }
             service.markConversationRead(conversationId)
         default:
-            // Default action = notification tap → open conversation.
+            // Notification tap: open the conversation.
             if !conversationId.isEmpty {
                 if let model {
                     model.pendingNotificationConversationId = conversationId
@@ -344,10 +332,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         completionHandler()
     }
 
-    // Deliver notifications even when the app is in the foreground (e.g. a message
-    // arrives while a different conversation is open). The banner lets the user tap
-    // to navigate without leaving the app first. A banner for the conversation the
-    // user is already looking at is suppressed — the message is right there.
+    // Show banners in the foreground too, except for the conversation already on screen.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,

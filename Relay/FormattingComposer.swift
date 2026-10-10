@@ -11,9 +11,8 @@ import UIKit
 
 // MARK: - ComposerContext
 
-/// Shared between the formatting toolbar and the underlying UITextView.
-/// Wraps the selected text range with prefix/suffix markdown markers, or
-/// inserts both markers at the cursor and positions it between them.
+/// Shared by the formatting toolbar and the text view. Wraps the selection in
+/// markdown markers, or inserts both at the cursor and places it between them.
 @Observable
 final class ComposerContext {
     weak var textView: UITextView?
@@ -32,24 +31,23 @@ final class ComposerContext {
 
 // MARK: - FormattingTextEditor
 
-/// A UITextView wrapped for SwiftUI. Drops in where a multiline TextField
-/// would go; drives `text` binding and `isFocused` state, and wires itself
-/// to a `ComposerContext` so the format toolbar can act on the selection.
+/// UITextView-backed replacement for a multiline TextField, registered with a
+/// `ComposerContext` so the toolbar can act on the selection.
 struct FormattingTextEditor: UIViewRepresentable {
     @Binding var text: String
     var placeholder: String = ""
     var maxLines: Int = 8
     var context: ComposerContext
     @Binding var isFocused: Bool
-    /// When true, disables autocorrect/spell-check/smart punctuation so the
-    /// keyboard doesn't learn or suggest from what's typed here ("incognito").
+    /// Disables autocorrect, spell-check and smart punctuation so the keyboard
+    /// doesn't learn from what's typed.
     var incognito: Bool = false
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    /// Wrap text at the width SwiftUI proposes and cap the height at `maxLines`.
-    /// Without this, a non-scrolling UITextView reports its single-line intrinsic
-    /// width, so long text overflowed horizontally instead of wrapping.
+    /// Wraps at the proposed width and caps the height at `maxLines`. A
+    /// non-scrolling UITextView otherwise reports its single-line intrinsic
+    /// width and long text overflows instead of wrapping.
     func sizeThatFits(_ proposal: ProposedViewSize, uiView tv: UITextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0, width < .greatestFiniteMagnitude else { return nil }
         let lineHeight = tv.font?.lineHeight ?? 20
@@ -73,8 +71,7 @@ struct FormattingTextEditor: UIViewRepresentable {
         return tv
     }
 
-    /// Sets the keyboard traits that suppress learning/suggestions. Toggling
-    /// while focused requires reloadInputViews() for the keyboard to pick it up.
+    /// Toggling while focused needs reloadInputViews() to take effect.
     private func applyIncognito(to tv: UITextView) {
         let newType: UITextAutocorrectionType = incognito ? .no : .default
         guard tv.autocorrectionType != newType else { return }
@@ -91,7 +88,6 @@ struct FormattingTextEditor: UIViewRepresentable {
         applyIncognito(to: tv)
         if tv.text != text { tv.text = text }
         ctx.coordinator.updatePlaceholder(in: tv)
-        // Clamp height to maxLines.
         let lineHeight = tv.font?.lineHeight ?? 20
         let maxH = lineHeight * CGFloat(maxLines)
             + tv.textContainerInset.top + tv.textContainerInset.bottom
@@ -100,7 +96,6 @@ struct FormattingTextEditor: UIViewRepresentable {
             tv.isScrollEnabled = needs
             tv.invalidateIntrinsicContentSize()
         }
-        // Drive focus from SwiftUI state.
         if isFocused && !tv.isFirstResponder {
             tv.becomeFirstResponder()
         } else if !isFocused && tv.isFirstResponder {
