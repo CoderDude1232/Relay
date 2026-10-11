@@ -95,6 +95,7 @@ struct PasskeysView: View {
     }
 
     private func remove(_ passkey: PasskeySummary) async {
+        guard await BiometricGate.authenticate(reason: "Confirm it's you to remove this passkey.", requirePasscode: true) else { return }
         do {
             try await service.apiClient.deletePasskey(id: passkey.id)
             if let id = Data(base64URL: passkey.id) { await service.removePasskeySlot(credentialId: id) }

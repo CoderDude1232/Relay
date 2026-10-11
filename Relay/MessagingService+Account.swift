@@ -24,6 +24,11 @@ extension MessagingService {
     /// Sets or changes the account password (email recovery, and the lock on
     /// new-device sign-ins).
     func setAccountPassword(_ password: String) async throws {
+        // The password lets a new device take over the account, so whoever
+        // sets it must be the phone's owner, not just someone holding it unlocked.
+        guard await BiometricGate.authenticate(reason: "Confirm it's you to change your account password.", requirePasscode: true) else {
+            throw OwnerConfirmationError()
+        }
         try await apiClient.setAccountPassword(password)
         UserDefaults.standard.set(true, forKey: Self.hasAccountPasswordKey)
         // Pick up the latest list and passkey slots, then rewrap the password slot.
@@ -32,6 +37,10 @@ extension MessagingService {
         if let stored = try? await apiClient.accountStorage() { accountStorageVersionReset(to: stored.version) }
         await uploadAccountStorage()
         postRelayNotice("Your account password was changed. Signing in on a new device now requires it.")
+    }
+
+    struct OwnerConfirmationError: LocalizedError {
+        var errorDescription: String? { "Confirm with Face ID or your passcode to continue." }
     }
 
     static let hasAccountPasswordKey = "relay.hasAccountPassword"
