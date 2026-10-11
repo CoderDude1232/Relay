@@ -34,7 +34,9 @@ func (s *Store) AccountStorage(accountID string) (blob []byte, version int64, er
 // (0 when there is none yet) and returns the new version.
 func (s *Store) PutAccountStorage(accountID string, blob []byte, baseVersion int64) (int64, error) {
 	ctx := context.Background()
-	now := time.Now().UnixMilli()
+	// Day precision: when someone last changed their chat list isn't ours to
+	// keep (or hand over).
+	now := time.Now().UTC().Truncate(24 * time.Hour).UnixMilli()
 	var version int64
 	if baseVersion == 0 {
 		err := s.db.QueryRow(ctx,

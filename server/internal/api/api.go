@@ -152,29 +152,33 @@ func (s *Server) SetSupabaseServiceKey(key string) {
 	s.supabaseServiceKey = strings.TrimSpace(key)
 }
 
-// deleteSupabaseUser removes a Supabase auth user via the admin API. Best
-// effort: the relay account is already gone, so failures are only logged.
-func (s *Server) deleteSupabaseUser(ctx context.Context, userID string) {
+// deleteSupabaseUser removes a Supabase auth user via the admin API. Account
+// deletion treats it as best effort (the relay account is already gone, so a
+// failure is only logged); email removal fails the request instead. Without a
+// service key configured (development) it does nothing and returns nil.
+func (s *Server) deleteSupabaseUser(ctx context.Context, userID string) error {
 	if s.supabaseURL == "" || s.supabaseServiceKey == "" || userID == "" {
-		return
+		return nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		s.supabaseURL+"/auth/v1/admin/users/"+url.PathEscape(userID), nil)
 	if err != nil {
 		slog.Error("supabase user delete: request", "err", privlog.Error(err))
-		return
+		return err
 	}
 	req.Header.Set("apikey", s.supabaseServiceKey)
 	req.Header.Set("Authorization", "Bearer "+s.supabaseServiceKey)
 	resp, err := supabaseHTTPClient.Do(req)
 	if err != nil {
 		slog.Error("supabase user delete failed", "err", privlog.Error(err))
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotFound {
 		slog.Error("supabase user delete failed", "status", resp.StatusCode)
+		return fmt.Errorf("supabase user delete: HTTP %d", resp.StatusCode)
 	}
+	return nil
 }
 
 // SetSupabaseAuth enables social login against a Supabase project. projectURL
@@ -2195,13 +2199,7 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 	var allowOneTime func(uint32) bool
 	if dev.AccountID != account {
 		allowOneTime = func(deviceID uint32) bool {
-			if preKeyRequesterOTKLimiter.exhausted(dev.AccountID) {
-				return false
-			}
-			if !preKeyTargetOTKLimiter.allow(account + "/" + strconv.FormatUint(uint64(deviceID), 10)) {
-				return false
-			}
-			return preKeyRequesterOTKLimiter.allow(dev.AccountID)
+			return allowOneTimePreKey(dev.AccountID, account, deviceID)
 		}
 	}
 	bundles, err := s.store.TakePreKeyBundles(account, deviceIDs, allowOneTime)
@@ -2258,13 +2256,7 @@ func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
 	// Same one-time prekey budgets as the signed path, keyed by source IP.
 	requester := "ip:" + ip
 	allowOneTime := func(deviceID uint32) bool {
-		if preKeyRequesterOTKLimiter.exhausted(requester) {
-			return false
-		}
-		if !preKeyTargetOTKLimiter.allow(account + "/" + strconv.FormatUint(uint64(deviceID), 10)) {
-			return false
-		}
-		return preKeyRequesterOTKLimiter.allow(requester)
+		return allowOneTimePreKey(requester, account, deviceID)
 	}
 	bundles, err := s.store.TakePreKeyBundles(account, deviceIDs, allowOneTime)
 	if errors.Is(err, store.ErrNotFound) {
@@ -2277,6 +2269,23 @@ func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
 	}
 	// The caller already holds the access key; don't echo it.
 	writeKeyBundles(w, bundles, nil)
+}
+
+// allowOneTimePreKey decides whether a bundle for this target device may carry
+// one-time prekeys. Each requester gets only a few per target per hour (a real
+// sender needs one per new session), so one requester can't spend the
+// target's whole hourly budget and leave real contacts with none.
+func allowOneTimePreKey(requester, account string, deviceID uint32) bool {
+	target := account + "/" + strconv.FormatUint(uint64(deviceID), 10)
+	pair := requester + "|" + target
+	if preKeyRequesterOTKLimiter.exhausted(requester) || preKeyPairOTKLimiter.exhausted(pair) {
+		return false
+	}
+	if !preKeyTargetOTKLimiter.allow(target) {
+		return false
+	}
+	preKeyPairOTKLimiter.allow(pair)
+	return preKeyRequesterOTKLimiter.allow(requester)
 }
 
 // writeKeyBundles writes the GET /v1/keys response body.
@@ -2423,7 +2432,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 		return
 	}
 	s.hub.DisconnectAccount(dev.AccountID, "account deleted")
-	s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID)
+	_ = s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID) // best effort; logged
 	if req.AppleAuthorizationCode != "" && s.appleRevoker != nil {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), appleRevokeTimeout)
 		if err := s.appleRevoker.RevokeAuthorizationCode(ctx, req.AppleAuthorizationCode); err != nil {

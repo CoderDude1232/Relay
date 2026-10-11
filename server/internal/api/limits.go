@@ -254,6 +254,9 @@ var preKeyTargetOTKLimiter = newTokenBucketLimiter(60, time.Hour)
 // Per requesting account (across all targets): 300 OTKs per hour.
 var preKeyRequesterOTKLimiter = newTokenBucketLimiter(300, time.Hour)
 
+// Per (requester, target device): 6 one-time hand-outs per hour.
+var preKeyPairOTKLimiter = newTokenBucketLimiter(6, time.Hour)
+
 // Unauthenticated provisioning-session polls (GET /v1/provisioning-sessions/{id})
 // per source IP bucket: bursts of 120, refilled at 1/s. Comfortably above a
 // new device polling once a second for the session's 10-minute life, far

@@ -461,6 +461,8 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_recovery_key_hash ON accounts (recovery_key_hash) WHERE recovery_key_hash IS NOT NULL`,
 		// The hourly expiry purge filters on created_at alone.
 		`CREATE INDEX IF NOT EXISTS idx_queue_created_at ON message_queue (created_at)`,
+		// Chat-list blobs keep only the day they last changed.
+		`UPDATE account_storage SET updated_at = updated_at - (updated_at % 86400000) WHERE updated_at % 86400000 <> 0`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err

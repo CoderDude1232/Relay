@@ -747,8 +747,12 @@ func (s *Server) handleRemoveEmail(w http.ResponseWriter, r *http.Request, dev *
 		if s.supabaseServiceKey == "" {
 			slog.Warn("email removal: supabase user not deleted (no service key)")
 		}
-		// Logs its own failures; the local unlink goes ahead regardless.
-		s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID)
+		// The policy promises the address is gone from the sign-in provider
+		// too, so a failed delete fails the request (the user can retry).
+		if err := s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID); err != nil {
+			httpError(w, http.StatusBadGateway, "Couldn't remove your email from our sign-in provider. Please try again.")
+			return
+		}
 	}
 	if err := s.store.RemoveAccountEmail(dev.AccountID); errors.Is(err, store.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "no such account")

@@ -3413,6 +3413,14 @@ final class MessagingService {
         if account != credentials.accountId, let known = knownAccessKey(account),
            let anonymous = try await fetchBundlesAnonymously(account, accessKey: known) {
             bundles = anonymous
+        } else if account != credentials.accountId, let username = cachedUsername(account),
+                  (try? await resolveAccount(username: username)) == account,
+                  let fresh = knownAccessKey(account),
+                  let anonymous = try await fetchBundlesAnonymously(account, accessKey: fresh) {
+            // The key was rotated (403): a fresh one from the directory keeps the
+            // fetch anonymous. The signed fetch below names us to the relay, so
+            // it's only for accounts the directory can't resolve.
+            bundles = anonymous
         } else {
             let fetched = try await api.fetchPreKeyBundlesWithAccessKey(account: account)
             bundles = fetched.bundles

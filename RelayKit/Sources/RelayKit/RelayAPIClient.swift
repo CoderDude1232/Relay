@@ -299,7 +299,15 @@ public struct RelayAPIClient: Sendable {
             byBucket[DirectoryBuckets.bucket(for: token), default: []].append(token)
         }
         var matches: [DirectoryMatch] = []
-        let buckets = Array(byBucket.keys)
+        // Pad with random decoy buckets, in random order. A bucket holds few
+        // accounts while Relay is small, so the real one alone would tell the
+        // relay whom we looked up; among hundreds it's one of many. (Bounded so
+        // the response stays small as buckets fill up.)
+        var requested = Set(byBucket.keys)
+        while requested.count < DirectoryBuckets.decoyPaddedRequestSize {
+            requested.insert(UInt16.random(in: .min ... .max))
+        }
+        let buckets = requested.shuffled()
         var start = 0
         while start < buckets.count {
             let chunk = Array(buckets[start..<min(start + DirectoryBuckets.maxBucketsPerRequest, buckets.count)])

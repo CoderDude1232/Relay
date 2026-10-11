@@ -37,6 +37,8 @@ public struct DirectoryBucketEntry: Sendable, Equatable {
 
 public enum DirectoryBuckets {
     static let maxBucketsPerRequest = 1024
+    /// Every lookup asks for at least this many buckets (real plus decoys).
+    static let decoyPaddedRequestSize = 512
 
     /// The 16-bit bucket for a token; the only part the relay sees.
     public static func bucket(for token: Data) -> UInt16 {
