@@ -51,6 +51,10 @@ struct VerificationView: View {
         .navigationTitle("Verify Safety Number")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
+        .task {
+            await service.refreshPeerIdentitiesIfConflicting(conversationId: conversationId)
+            reload()
+        }
         .sheet(isPresented: $showingScanner) {
             ScannerSheet { scanned in
                 showingScanner = false

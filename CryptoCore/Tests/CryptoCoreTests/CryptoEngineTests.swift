@@ -356,17 +356,17 @@ struct CryptoEngineTests {
         let hello = try alice.encrypt(Data("hi".utf8), for: bobAddress)
         _ = try bob.decrypt(hello, from: aliceAddress)
 
-        let aliceView = try #require(try alice.safetyNumber(withPeer: "bob-account-id"))
-        let bobView = try #require(try bob.safetyNumber(withPeer: "alice-account-id"))
+        let aliceView = try #require(try alice.safetyNumber(withPeer: "bob-account-id", deviceId: 1))
+        let bobView = try #require(try bob.safetyNumber(withPeer: "alice-account-id", deviceId: 1))
         #expect(aliceView.numeric.count == 60)
         #expect(aliceView.numeric == bobView.numeric)
 
         // Scanning the peer's QR verifies; the encoding is order-independent.
-        #expect(try alice.verifyScannedSafetyNumber(bobView.scannable, withPeer: "bob-account-id"))
-        #expect(try bob.verifyScannedSafetyNumber(aliceView.scannable, withPeer: "alice-account-id"))
+        #expect(try alice.verifyScannedSafetyNumber(bobView.scannable, withPeer: "bob-account-id", deviceId: 1))
+        #expect(try bob.verifyScannedSafetyNumber(aliceView.scannable, withPeer: "alice-account-id", deviceId: 1))
 
         // No session with this peer yet: nil and false, not a throw.
-        #expect(try alice.safetyNumber(withPeer: "carol-account-id") == nil)
-        #expect(try alice.verifyScannedSafetyNumber(bobView.scannable, withPeer: "carol-account-id") == false)
+        #expect(try alice.safetyNumber(withPeer: "carol-account-id", deviceId: 1) == nil)
+        #expect(try alice.verifyScannedSafetyNumber(bobView.scannable, withPeer: "carol-account-id", deviceId: 1) == false)
     }
 }

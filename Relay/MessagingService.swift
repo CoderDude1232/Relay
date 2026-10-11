@@ -3187,6 +3187,9 @@ final class MessagingService {
             devices.append(PeerDevice(id: bundle.deviceId, mailboxId: bundle.mailboxId, registrationId: bundle.registrationId))
         }
         try storeKnownDevices(devices, ofPeer: account)
+        if account != credentials.accountId, !devices.isEmpty {
+            try storage.signalStore.pruneIdentities(address: account, keepingDeviceIds: Set(devices.map(\.id)))
+        }
         if firstSeenIdentity {
             try acknowledgeCurrentIdentity(forPeer: account)
         }
@@ -3864,7 +3867,8 @@ final class MessagingService {
     func peerVerification(for conversationId: String) -> PeerVerification? {
         guard let peer = resolvedPeerAccount(for: conversationId) else { return nil }
         do {
-            guard let safetyNumber = try engine.safetyNumber(withPeer: peer) else { return nil }
+            guard let deviceId = try storage.signalStore.newestIdentityDeviceId(address: peer),
+                  let safetyNumber = try engine.safetyNumber(withPeer: peer, deviceId: deviceId) else { return nil }
             var state = try storage.signalStore.verificationState(address: peer)
             if state == .unverified, try isIdentityChangeAwaitingAcknowledgement(forPeer: peer) {
                 state = .changed
@@ -3894,12 +3898,22 @@ final class MessagingService {
         }
     }
 
+    /// When a peer's removed devices still have stored keys (which makes the
+    /// safety number look conflicting), re-fetches their current devices so the
+    /// stale keys are dropped.
+    func refreshPeerIdentitiesIfConflicting(conversationId: String) async {
+        guard let peer = resolvedPeerAccount(for: conversationId), hasConflictingIdentityKeys(peer) else { return }
+        try? await refreshSessions(withPeer: peer)
+        refreshConversations()
+    }
+
     /// Marks the peer verified if the scanned encoding matches.
     func verifyScanned(_ encoding: Data, conversationId: String) -> Bool {
         guard let peer = resolvedPeerAccount(for: conversationId) else { return false }
         guard !hasConflictingIdentityKeys(peer) else { return false }
         do {
-            let matches = try engine.verifyScannedSafetyNumber(encoding, withPeer: peer)
+            guard let deviceId = try storage.signalStore.newestIdentityDeviceId(address: peer) else { return false }
+            let matches = try engine.verifyScannedSafetyNumber(encoding, withPeer: peer, deviceId: deviceId)
             if matches {
                 try storage.signalStore.setVerified(true, address: peer)
                 try acknowledgeCurrentIdentity(forPeer: peer)

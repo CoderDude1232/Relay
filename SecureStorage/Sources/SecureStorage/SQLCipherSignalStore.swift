@@ -173,6 +173,23 @@ extension SQLCipherSignalStore: IdentityKeyStore {
         return try IdentityKey(bytes: blob)
     }
 
+    /// The newest device id with a stored identity for account `name`.
+    public func newestIdentityDeviceId(address name: String) throws -> UInt32? {
+        let rows = try db.query(
+            "SELECT MAX(device_id) FROM remote_identities WHERE address = ?", [.text(name)]
+        )
+        return rows.first?.first?.int64.map { UInt32($0) }
+    }
+
+    /// Forgets the identities of an account's devices that no longer exist, so
+    /// a removed device's old key doesn't linger as a conflicting key. A key
+    /// change already recorded on a remaining device is kept.
+    public func pruneIdentities(address name: String, keepingDeviceIds deviceIds: Set<UInt32>) throws {
+        guard !deviceIds.isEmpty else { return }
+        let keep = deviceIds.map { String($0) }.joined(separator: ",")
+        try db.run("DELETE FROM remote_identities WHERE address = ? AND device_id NOT IN (\(keep))", [.text(name)])
+    }
+
     /// Distinct identity keys stored for any device of account `name`, lowest
     /// device id first. More than one means a device presented a different key.
     public func identityKeys(address name: String) throws -> [Data] {

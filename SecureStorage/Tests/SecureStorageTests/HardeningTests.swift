@@ -232,6 +232,31 @@ struct IdentityTrustTests {
         #expect(try store.isTrustedIdentity(rogueKey, for: other, direction: .sending, context: context))
     }
 
+    @Test func signInOnNewDeviceReplacesOldIdentity() throws {
+        let storage = try SecureStore(path: tempPath(), key: .random(), credentials: Credentials())
+        let store = storage.signalStore
+        let context = NullContext()
+        let oldKey = IdentityKeyPair.generate().identityKey
+        let newKey = IdentityKeyPair.generate().identityKey
+
+        // Verified on device 1, then the peer signs in again as device 4.
+        _ = try store.saveIdentity(oldKey, for: try .init(name: "peer", deviceId: 1), context: context)
+        try store.setVerified(true, address: "peer")
+        #expect(try store.saveIdentity(newKey, for: try .init(name: "peer", deviceId: 4), context: context) == .replacedExisting)
+        #expect(try store.identityKeys(address: "peer").count == 2)
+        #expect(try store.newestIdentityDeviceId(address: "peer") == 4)
+
+        // The server now lists only device 4: the old key goes, and the change
+        // still needs re-verifying.
+        try store.pruneIdentities(address: "peer", keepingDeviceIds: [4])
+        #expect(try store.identityKeys(address: "peer") == [newKey.serialize()])
+        #expect(try store.verificationState(address: "peer") == .changed)
+
+        // An empty device list never wipes what's known.
+        try store.pruneIdentities(address: "peer", keepingDeviceIds: [])
+        #expect(try store.identityKeys(address: "peer").count == 1)
+    }
+
     @Test func newDeviceVerificationSemantics() throws {
         let storage = try SecureStore(path: tempPath(), key: .random(), credentials: Credentials())
         let store = storage.signalStore

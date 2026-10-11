@@ -478,10 +478,10 @@ public final class CryptoEngine {
         )
     }
 
-    /// The safety number with a peer from their stored identity key, or nil if
-    /// none is recorded yet.
-    public func safetyNumber(withPeer remoteAccount: String) throws -> SafetyNumber? {
-        guard let fingerprint = try makeFingerprint(withPeer: remoteAccount) else { return nil }
+    /// The safety number with a peer from the identity key stored for one of
+    /// their devices (their newest), or nil if none is recorded yet.
+    public func safetyNumber(withPeer remoteAccount: String, deviceId: UInt32) throws -> SafetyNumber? {
+        guard let fingerprint = try makeFingerprint(withPeer: remoteAccount, deviceId: deviceId) else { return nil }
         return SafetyNumber(
             numeric: fingerprint.displayable.formatted,
             scannable: fingerprint.scannable.encoding
@@ -493,18 +493,19 @@ public final class CryptoEngine {
     /// comparison is order-independent.
     public func verifyScannedSafetyNumber(
         _ scannedEncoding: Data,
-        withPeer remoteAccount: String
+        withPeer remoteAccount: String,
+        deviceId: UInt32
     ) throws -> Bool {
-        guard let fingerprint = try makeFingerprint(withPeer: remoteAccount) else { return false }
+        guard let fingerprint = try makeFingerprint(withPeer: remoteAccount, deviceId: deviceId) else { return false }
         return try fingerprint.scannable.compare(againstEncoding: scannedEncoding)
     }
 
     /// The fingerprint with `remoteAccount` from stored identities, or nil if
     /// the peer's identity is unknown.
-    private func makeFingerprint(withPeer remoteAccount: String) throws -> Fingerprint? {
+    private func makeFingerprint(withPeer remoteAccount: String, deviceId: UInt32) throws -> Fingerprint? {
         // The identity key is per account and shared by all of the peer's
-        // devices, so device 1 holds the canonical copy.
-        let address = try ProtocolAddress(name: remoteAccount, deviceId: 1)
+        // current devices; device ids aren't reused, so device 1 may be gone.
+        let address = try ProtocolAddress(name: remoteAccount, deviceId: deviceId)
         guard let remoteIdentity = try store.identity(for: address, context: context) else { return nil }
         let localIdentity = try store.identityKeyPair(context: context).identityKey
         return try NumericFingerprintGenerator(iterations: Self.fingerprintIterations).create(
