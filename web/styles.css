@@ -533,6 +533,7 @@ a:hover { color: var(--ink); }
 }
 .kv dt { font-weight: 600; color: var(--ink-45); }
 .kv dd { margin: 0; color: var(--ink); }
+.kv-narrow { max-width: 34rem; margin-inline: auto; }
 @media (max-width: 32rem) { .kv div { grid-template-columns: minmax(0, 1fr); gap: 0.15rem; } }
 
 .faq details { border-bottom: 1px solid var(--line); }

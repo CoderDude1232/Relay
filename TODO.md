@@ -156,35 +156,31 @@ Not WebTransport — iOS has no native client API for it.
 
 ## Infrastructure: DDoS protection + origin-IP hiding (deferred)
 
-**Deferred by decision (2026-09-15): keep current Binary Lane infra for now.**
+**Deferred by decision (2026-09-15): keep the current API origin VPS for now.**
 
-**Problem:** The origin is a Binary Lane (AU) VPS. Binary Lane's only DDoS response is
-**null-routing / black-holing** — under attack they drop *all* traffic to the target IP
-upstream (legit included), i.e. you go offline. That's the opposite of scrubbing. The
-origin IP is also public (DNS-only / grey; correct for now — see below).
+**Problem:** The API origin VPS has no volumetric (L3/L4) DDoS scrubbing of its own.
+Revisit once traffic or threat level justifies the cost.
 
-**Why not Cloudflare proxy:** orange-cloud and `cloudflared` both terminate TLS at
-Cloudflare's edge, so Cloudflare would see client IPs, HTTP Basic-auth device passwords,
-recipient-bearing URLs, sealed-send source→dest+timing, and ciphertext — a metadata/creds
-regression for a privacy messenger. They also break the transport: Cloudflare never speaks
-QUIC/HTTP-3 to origin (edge-only), and proxied WebSockets are HTTP/1.1 with a ~100s idle
-timeout (our 25s keepalive only just survives it). Confirmed against CF docs.
+**Why not terminate TLS at a third party:** a TLS-terminating proxy or tunnel would see
+client IPs, HTTP Basic-auth device passwords, recipient-bearing URLs, sealed-send
+source→dest+timing, and ciphertext — a metadata/creds regression for a privacy messenger.
+It can also break the transport: CDN proxies typically don't speak QUIC/HTTP-3 to origin,
+and proxied WebSockets get an idle timeout (our 25s keepalive must stay under it).
 
 **Key insight:** DDoS protection does NOT require TLS termination. Volumetric attacks are an
 L3/L4 (packet) problem, scrubbed without decryption. So we can get scrubbing AND keep zero
 third-party plaintext AND keep end-to-end QUIC/WebSocket.
 
-**Options when we tackle this (AU-latency-sensitive):**
-- **Tier 0 (simplest):** move origin to **OVH Sydney** — free always-on L3/4 scrubbing
-  (~1.3 Tbit/s), sub-10 ms to Sydney/Melbourne, APP-compliant/onshore, keeps our own
-  TLS/QUIC/WS. Caveat: OVH APAC *VPS* plans have a monthly traffic quota (1 TB VPS-1/2,
-  3 TB VPS-3/4, then throttled to 10 Mbps) — size up or use bare-metal (no cap).
-- **Tier 1 (also hide origin IP):** OVH Sydney **edge VPS** doing **L4 passthrough**
-  (`nginx stream` TCP+UDP 443, or WireGuard) to a hidden origin (can stay on Binary Lane,
-  firewalled to accept only the tunnel). Attacks hit the scrubbed edge; the origin's
-  black-hole-prone IP is never targeted. Both in AU → few-ms extra hop. Passthrough → TLS
-  terminates only on origin, nobody sees plaintext, QUIC/WS preserved. SPKI pin is unchanged
-  (origin cert is untouched in passthrough).
+**Options when we tackle this (latency-sensitive — stay close to users):**
+- **Tier 0 (simplest):** move the origin to a host with free always-on L3/4 scrubbing in
+  the same region, keeping our own TLS/QUIC/WS. Check monthly traffic quotas on VPS
+  plans (some throttle hard past the cap) — size up or use bare metal.
+- **Tier 1 (also hide origin IP):** a scrubbed **edge VPS** doing **L4 passthrough**
+  (`nginx stream` TCP+UDP 443, or WireGuard) to a hidden origin (can stay where it is,
+  firewalled to accept only the tunnel). Attacks hit the scrubbed edge; the origin IP is
+  never targeted. Same region → few-ms extra hop. Passthrough → TLS terminates only on
+  origin, nobody sees plaintext, QUIC/WS preserved. SPKI pin is unchanged (origin cert is
+  untouched in passthrough).
 - **Tier 2 (enterprise):** Cloudflare **Magic Transit** (L3 BGP scrubbing, no TLS
   termination) or **Spectrum UDP** — real but needs a /24 + BGP / Enterprise pricing.
 - **App-layer (L7) floods** (hammering the WS handshake or `/v1/messages/sealed`) aren't
@@ -193,5 +189,5 @@ third-party plaintext AND keep end-to-end QUIC/WebSocket.
 - **Optional flair:** a **Tor onion service** as a secondary endpoint has no public IP to
   flood and is censorship-resistant (high latency → fallback, not primary).
 
-**Recommendation when revisited:** Tier 1 (OVH Sydney passthrough edge → hidden Binary Lane
-origin) gets DDoS scrubbing + IP hiding + zero third-party plaintext + full QUIC, onshore.
+**Recommendation when revisited:** Tier 1 (scrubbed passthrough edge → hidden API origin
+VPS) gets DDoS scrubbing + IP hiding + zero third-party plaintext + full QUIC.

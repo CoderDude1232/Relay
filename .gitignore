@@ -34,3 +34,18 @@ android/app/google-services.json
 
 # Local notes
 CLAUDE.md
+
+# Signing material, credentials and local config — never commit
+ExportOptions*.plist
+.env
+*.env
+*.p12
+*.mobileprovision
+*.pem
+*.key
+*.crt
+GoogleService-Info.plist
+*.token
+
+# macOS
+.DS_Store

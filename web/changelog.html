@@ -20,15 +20,7 @@
 <meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
 <link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
-<script>
-/* Applied before first paint so a stored choice never flashes the other theme. */
-(function () {
-  try {
-    var t = localStorage.getItem("relay-theme");
-    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
-  } catch (e) {}
-})();
-</script>
+<script src="theme-init.js"></script>
 </head>
 <body>
 
@@ -107,6 +99,7 @@
         <li>iCloud backups run daily, stored under a name that can't be tied to your Relay account.</li>
         <li>On iPad: easier-to-read message widths, and ⌘↩ to send.</li>
         <li>Clearer error messages, VoiceOver labels on icon-only buttons and the safety-number screen, and a refreshed welcome screen.</li>
+        <li><b>Security and privacy fixes from a full audit.</b> Read and delivery ticks now reach people who were offline. Calls from message requests don't ring, and ended calls can't ring again. Group messages that arrive before their group are kept. The app lock covers open photos and sheets, and hidden chats stay off the Lock Screen. Disappearing messages no longer outlive their timer in backups, previews or notifications. A contact whose safety number changed can't change your groups or settings until you accept the new number.</li>
       </ul>
     </div>
   </section>

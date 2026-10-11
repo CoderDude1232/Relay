@@ -42,15 +42,7 @@
 <meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
 <link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
-<script>
-/* Applied before first paint so a stored choice never flashes the other theme. */
-(function () {
-  try {
-    var t = localStorage.getItem("relay-theme");
-    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
-  } catch (e) {}
-})();
-</script>
+<script src="theme-init.js"></script>
 </head>
 <body>
 
@@ -161,7 +153,7 @@
         <div class="keep">
           <h3>What's on our servers</h3>
           <ul>
-            <li>Your username, and a scrambled token of your email if you use one</li>
+            <li>Your username, and a keyed token of your email if you use one</li>
             <li>Your encrypted message, until your phone collects it</li>
           </ul>
         </div>

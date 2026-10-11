@@ -20,15 +20,7 @@
 <meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
 <link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
-<script>
-/* Applied before first paint so a stored choice never flashes the other theme. */
-(function () {
-  try {
-    var t = localStorage.getItem("relay-theme");
-    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
-  } catch (e) {}
-})();
-</script>
+<script src="theme-init.js"></script>
 </head>
 <body>
 
@@ -64,14 +56,15 @@
 <main id="main" class="shell doc">
 
   <div class="doc-head">
-    <p class="lbl">Effective 11 October 2026 · Version 1.5 · <a href="/privacy-1.4">Previous version</a></p>
+    <p class="lbl">Effective 12 October 2026 · Version 1.6 · <a href="/privacy-1.5">Previous version</a></p>
     <h1>Privacy Policy</h1>
     <p class="doc-lede">
       What Relay collects, what it doesn't, and what could be handed over if we were compelled.
     </p>
     <p class="doc-lede">
-      <b>What changed in 1.5:</b> how proxies work, and what someone running one can see.
-      Version 1.4 added accounts with no email, email removal and the recovery key.
+      <b>What changed in 1.6:</b> clearer limits on what sealed messages hide (timing and
+      network addresses), on what Cloudflare could infer, and on what the email token is.
+      Version 1.5 explained proxies.
     </p>
   </div>
 
@@ -202,7 +195,7 @@
       <ul class="doc-list">
         <li><b>Your address book.</b> Relay only looks at your contacts if you tap Find Contacts, and then only their email addresses, which are blinded on your device before the check — we never see them, and nothing from your address book is stored.</li>
         <li><b>Your message content.</b> Encryption happens on your device, to keys we don't hold. The only exception is messages someone chooses to include in an abuse report.</li>
-        <li><b>Who you talk to.</b> Messages are sealed so our servers can't see who sent them; a waiting message is held only against the recipient's device until it's delivered, and we keep no record of who messages whom.</li>
+        <li><b>Who you talk to.</b> Messages are sealed so they don't say who sent them; a waiting message is held only against the recipient's device until it's delivered, and we keep no record of who messages whom. Like any online service, our servers see the network address each connection comes from and when, so someone watching them closely could try to pair senders and recipients by timing. We don't log that.</li>
         <li><b>Your location.</b> The app asks for location only if you share your live location in a chat or turn on showing your device's region to your own devices. Both travel end-to-end encrypted; our servers never receive your location.</li>
         <li><b>Usage analytics.</b> No analytics SDK, no crash reporter, no attribution framework is bundled in the app.</li>
       </ul>
@@ -235,8 +228,10 @@
         signed requests.
       </p>
       <p>
-        Cloudflare cannot see your messages, who you message, your contacts or your groups —
-        those are encrypted on your device before they leave it. Cloudflare processes connection
+        Cloudflare cannot read your messages, contacts or groups — those are encrypted on your
+        device before they leave it — and nothing it carries names the sender of a message.
+        Because it carries the traffic, though, it could in principle try to match up who is
+        messaging whom from timing and the mailbox each message is addressed to. Cloudflare processes connection
         data under its data-processing terms, doesn't sell it, and keeps logs only briefly; like
         any provider, it can be legally required to disclose what it holds. Its handling is
         governed by <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.
@@ -288,7 +283,9 @@
         records such as the time and IP address of each sign-in. The detailed sign-in log is
         deleted after 24 hours. Beyond that, Supabase keeps the time you last signed in and, while
         you stay signed in, the IP address and device type your current session started from. Relay's own servers keep only a
-        one-way token derived from your email, not the address itself.
+        keyed token derived from your email, not the address itself. It can't be turned back into
+        an address, but with our server's secret key it can be checked against an address someone
+        already has.
       </p>
       <p>
         If you sign in with <b>Google</b>, Google also sends the name on your Google account and a

@@ -20,14 +20,7 @@
      resolve differently depending on the invite URL's depth. -->
 <link rel="preload" href="/fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/styles.css">
-<script>
-(function () {
-  try {
-    var t = localStorage.getItem("relay-theme");
-    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
-  } catch (e) {}
-})();
-</script>
+<script src="/theme-init.js"></script>
 </head>
 <body>
 
@@ -94,19 +87,6 @@
 </footer>
 
 <script src="/site.js"></script>
-<script>
-/* /proxy#<host[:port]>. The address is only in the fragment, so it never
-   reaches this site's server. */
-(function () {
-  var addr = location.hash.replace(/^#/, "").trim().toLowerCase();
-  if (!/^[a-z0-9.-]+\.[a-z0-9-]+(:[0-9]{1,5})?$/.test(addr)) return;
-  var shown = document.getElementById("proxy-address");
-  shown.textContent = "Proxy address: " + addr;
-  shown.hidden = false;
-  var open = document.getElementById("open-link");
-  open.href = "relay://proxy/" + addr;
-  open.hidden = false;
-})();
-</script>
+<script src="/js/proxy.js"></script>
 </body>
 </html>

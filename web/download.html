@@ -20,15 +20,7 @@
 <meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
 <link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
-<script>
-/* Applied before first paint so a stored choice never flashes the other theme. */
-(function () {
-  try {
-    var t = localStorage.getItem("relay-theme");
-    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
-  } catch (e) {}
-})();
-</script>
+<script src="theme-init.js"></script>
 </head>
 <body>
 
@@ -95,7 +87,7 @@
       <div class="mid">
         <h2>Where things stand</h2>
       </div>
-      <dl class="kv" style="max-width:34rem;margin-inline:auto">
+      <dl class="kv kv-narrow">
         <div><dt>App Store</dt><dd>Not submitted</dd></div>
         <div><dt>TestFlight</dt><dd>Coming soon — not open yet</dd></div>
         <div><dt>Waitlist</dt><dd>Open</dd></div>
@@ -136,7 +128,7 @@
       <div class="mid">
         <h2>Requirements</h2>
       </div>
-      <dl class="kv" style="max-width:34rem;margin-inline:auto">
+      <dl class="kv kv-narrow">
         <div><dt>Platform</dt><dd>iOS 26 or later · iPhone and iPad</dd></div>
         <div><dt>Account</dt><dd>An email address. Phone number sign-in is planned.</dd></div>
         <div><dt>Price</dt><dd>Free. No subscription, no in-app purchases, no ads.</dd></div>
