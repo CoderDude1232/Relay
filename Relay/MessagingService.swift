@@ -927,7 +927,7 @@ final class MessagingService {
             if let group = group(for: conversationId) {
                 content.groupID = group.id
                 let data = try content.serializedData()
-                for member in group.members where member != credentials.accountId {
+                for member in group.members where member != credentials.accountId && !isBlocked(member) {
                     try? await sendContent(data, toPeer: member, clientTimestamp: timestamp)
                 }
             } else if let peer = try? peerAccount(for: conversationId),
@@ -1372,6 +1372,8 @@ final class MessagingService {
 
     /// Sends our profile if the peer hasn't received this revision.
     private func sendMyProfileIfNeeded(toPeer account: String) async {
+        // Someone we blocked gets no name, photo or bio, even through a group.
+        if isBlocked(account) { return }
         // A requester gets our name and photo only once we accept, unless we
         // share an accepted group with them.
         if (try? storage.messages.isMessageRequest(peer: account)) == true {
@@ -3079,7 +3081,9 @@ final class MessagingService {
         toPeer account: String,
         groupId: String? = nil
     ) async {
-        // Nothing tells a requester their message arrived or was seen.
+        // Nothing tells a requester (or someone we blocked) their message
+        // arrived or was seen.
+        if isBlocked(account) { return }
         if let groupId {
             if conversations.first(where: { $0.groupId == groupId })?.isRequest == true { return }
         } else if (try? storage.messages.isMessageRequest(peer: account)) == true {
@@ -4186,7 +4190,8 @@ final class MessagingService {
             recipients = group.members.filter { $0 != credentials.accountId && !isBlocked($0) }
             syncPeer = group.id
         } else if let peer = resolvedPeerAccount(for: conversationId),
-                  peer != noteToSelfAccount, peer != relayOfficialAccount {
+                  peer != noteToSelfAccount, peer != relayOfficialAccount,
+                  !(ephemeral && isBlocked(peer)) {
             recipients = [peer]
             syncPeer = peer
         } else {
@@ -4512,7 +4517,9 @@ final class MessagingService {
         let messageStore = storage.messages
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result { try messageStore.conversations() }
-            let unread = (try? result.get())?.reduce(0) { $0 + $1.unreadCount } ?? 0
+            // Chats hidden by Panic Mode don't count toward the badge.
+            let hidden = PanicModeManager.hiddenConversationIdsSnapshot()
+            let unread = (try? result.get())?.reduce(0) { hidden.contains($1.id) ? $0 : $0 + $1.unreadCount } ?? 0
             // Gather Spotlight inputs on the main actor, index off-main so image
             // decoding doesn't hitch the UI.
             let indexItems: [SpotlightIndexer.IndexItem] = await MainActor.run { [weak self] in

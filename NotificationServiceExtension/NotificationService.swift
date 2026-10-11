@@ -84,6 +84,10 @@ class NotificationService: UNNotificationServiceExtension {
         contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
         switch outcome {
+        case .show(_, _, let conversationId, _) where !conversationId.isEmpty
+            && PanicHiddenChats.load().contains(conversationId):
+            // Hidden by Panic Mode: nothing on the lock screen, no Siri donation.
+            contentHandler(UNMutableNotificationContent())
         case .show(let title, let body, let conversationId, let senderAccount):
             // Sender, preview, and the conversation id for tap-to-navigate.
             content.title = title

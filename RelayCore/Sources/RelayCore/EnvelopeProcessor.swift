@@ -646,6 +646,14 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         switch content.body {
         case .text(let text):
+            // Announce-only: only admins post. A modified client could still
+            // send; don't show it. (Legacy groups with no admins are open.)
+            if let groupId, attestedAccount != ownAccountId,
+               let group = try? storage.messages.group(id: groupId),
+               group.isAnnounceOnly, !group.admins.isEmpty, !group.admins.contains(attestedAccount) {
+                log.warning("dropping a non-admin message in an announce-only group")
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            }
             let conversationId = try chatConversation()
             // Live location: every update from one sharer updates one bubble keyed by
             // conversation and sender. Notify only when the share first appears.

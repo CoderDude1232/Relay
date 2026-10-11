@@ -16,6 +16,7 @@ import CryptoKit
 import Foundation
 import Intents
 import Observation
+import RelayCore
 import Security
 
 enum PanicUnlockResult: Equatable {
@@ -92,6 +93,13 @@ final class PanicModeManager {
         ud.removeObject(forKey: Self.legacyHashKey)
 
         lockedOutUntil = Self.currentLockout()
+        syncSharedHiddenIds()
+    }
+
+    /// Mirrors the hidden ids where the notification extension can read them
+    /// (App Group keychain, this device only), only while Panic Mode is on.
+    private func syncSharedHiddenIds() {
+        PanicHiddenChats.save(isEnabled ? hiddenIds : [])
     }
 
     /// Hidden conversation ids, readable from any thread (e.g. the Spotlight
@@ -128,6 +136,7 @@ final class PanicModeManager {
         lockedOutUntil = nil
         UserDefaults.standard.set(true, forKey: Self.enabledKey)
         isEnabled = true
+        syncSharedHiddenIds()
     }
 
     func disable() {
@@ -141,6 +150,7 @@ final class PanicModeManager {
         UserDefaults.standard.set(false, forKey: Self.enabledKey)
         isEnabled = false
         isActive = false
+        syncSharedHiddenIds()
     }
 
     /// Removes every panic-mode secret and the hidden-id list (wipe / sign-out).
@@ -148,6 +158,7 @@ final class PanicModeManager {
         disable()
         hiddenIds = []
         Self.deleteKC(Self.kcHiddenAcct)
+        PanicHiddenChats.save([])
         UserDefaults.standard.removeObject(forKey: Self.legacyHiddenKey)
     }
 
@@ -229,6 +240,7 @@ final class PanicModeManager {
     func hide(_ conversationId: String) {
         hiddenIds.insert(conversationId)
         Self.saveHiddenIds(hiddenIds)
+        syncSharedHiddenIds()
         // Siri/share-sheet suggestions live outside the encrypted store. Older
         // donations carry no per-chat group id, so clear all of Relay's; they refill
         // as the user sends.
@@ -238,6 +250,7 @@ final class PanicModeManager {
     func unhide(_ conversationId: String) {
         hiddenIds.remove(conversationId)
         Self.saveHiddenIds(hiddenIds)
+        syncSharedHiddenIds()
     }
 
     func isHidden(_ conversationId: String) -> Bool {
