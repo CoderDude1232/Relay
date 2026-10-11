@@ -78,7 +78,7 @@
       <ul class="doc-list">
         <li>Messages, photos, voice notes, calls and group chats are end-to-end encrypted with the Signal Protocol. Only the devices in the conversation hold the keys.</li>
         <li>Our servers can't see who sent a message, can't read it, and delete it as soon as the recipient's phone confirms it arrived.</li>
-        <li>No phone number. An account is a username and an email address.</li>
+        <li>No phone number, and no email unless you want one. An account can be just a username and a passkey.</li>
         <li>When you look someone up, the username or email you search for is blinded on your phone first, so our servers never see it.</li>
         <li>The server keeps no record of your groups — not their names, not their members.</li>
       </ul>
@@ -111,9 +111,16 @@
     <h2>Your account</h2>
     <div>
       <p>
-        You sign up with Apple, Google, or an email address — there's no phone number anywhere in
-        it. Sign-in itself is handled by Supabase, our authentication provider. Relay's own servers
-        keep a one-way, keyed token derived from your email rather than the address itself.
+        You sign up with Apple, Google, an email address, or nothing but a passkey — there's no
+        phone number anywhere in it. Email sign-in is handled by Supabase, our authentication
+        provider. Relay's own servers keep a one-way, keyed token derived from your email rather
+        than the address itself, and you can remove the email entirely once you have a passkey.
+      </p>
+      <p>
+        <strong>Passkeys</strong> are checked by Relay's own servers, never Supabase. Signing in
+        with one on a new phone also unlocks your chat list, using a secret only the passkey can
+        produce. A <strong>recovery key</strong> made on your phone does the same if you lose your
+        passkey; our servers keep only a one-way hash of it.
       </p>
       <p>
         People can't find you by email unless you turn on <strong>Find Me by Email</strong>; it's
@@ -123,6 +130,32 @@
         You can set an <strong>account password</strong>. Once it's set, signing in to your account
         on a new phone needs it — so someone who gets into your email still can't take over your
         Relay account. Signing in on a new phone also signs out your old one.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Message requests</h2>
+    <div>
+      <p>
+        When someone you've never chatted with messages you, or adds you to a group, it arrives as
+        a request. Until you accept, they don't get read receipts or your typing, name or photo,
+        their photos and videos aren't downloaded, and the notification never shows what they wrote.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Where Relay is blocked</h2>
+    <div>
+      <p>
+        You can connect through a <strong>proxy</strong> someone shares with you. Your phone talks
+        to Relay through it inside an encrypted connection, so the proxy can't read anything or
+        see who you are on Relay — but whoever runs it can see your IP address and that you use
+        Relay, so only use one you trust. Relay checks the proxy before using it, keeps checking it,
+        and warns you if it's blocking you, slowing you down or fails a security check. It never
+        quietly falls back to connecting directly. The proxy software is open source and anyone can
+        run it.
       </p>
     </div>
   </section>
@@ -270,7 +303,9 @@
     <h2>What our servers hold</h2>
     <div>
       <ul class="doc-list">
-        <li>Your username, and a keyed one-way token derived from your email.</li>
+        <li>Your username, and a keyed one-way token derived from your email if you have one.</li>
+        <li>Your passkeys' public keys, and a one-way hash of your recovery key if you've made one.</li>
+        <li>Your chat list (who your chats are with, not messages), encrypted so only your account password, passkeys or recovery key can open it.</li>
         <li>Your devices, each with a hashed password, and a hashed account password if you set one.</li>
         <li>Push tokens, so your devices can be woken.</li>
         <li>Your public keys, so people can start encrypted chats with you.</li>
