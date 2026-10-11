@@ -64,15 +64,15 @@
 <main id="main" class="shell doc">
 
   <div class="doc-head">
-    <p class="lbl">Effective 10 October 2026 · Version 1.2 · <a href="/privacy-1.1">Previous version</a></p>
+    <p class="lbl">Effective 11 October 2026 · Version 1.3 · <a href="/privacy-1.2">Previous version</a></p>
     <h1>Privacy Policy</h1>
     <p class="doc-lede">
       What Relay collects, what it doesn't, and what could be handed over if we were compelled.
     </p>
     <p class="doc-lede">
-      <b>What changed in 1.2:</b> we now spell out what Google sign-in shares, what happens to
-      messages you include in an abuse report, and exactly what a legal demand could produce.
-      Nothing new is collected.
+      <b>What changed in 1.3:</b> the name and profile photo Google shares at sign-in are no
+      longer stored, and passkey sign-in is described. Version 1.2 spelled out abuse reports and
+      exactly what a legal demand could produce.
     </p>
   </div>
 
@@ -80,7 +80,7 @@
     <h2>The short version</h2>
     <div>
       <ul class="doc-list">
-        <li>An account is a username and an email address. No phone number, and no real name unless you sign in with Google.</li>
+        <li>An account is a username and an email address. No real name, no phone number.</li>
         <li>Our servers never see your messages in readable form, and keep no record of who you exchanged them with.</li>
         <li>Compelled to hand over everything we hold about a user, we could produce their username and email address, when they signed up and signed in, how many devices they use, and any undelivered message as data we can't read. Not a contact list, not a history, not a single readable word of their chats — unless someone chose to include messages in an abuse report.</li>
         <li>The waitlist on this website is the one list we keep, and we delete it after launch.</li>
@@ -257,10 +257,15 @@
         one-way token derived from your email, not the address itself.
       </p>
       <p>
-        If you sign in with <b>Google</b>, Google also passes Supabase the name on your Google
-        account and a link to its profile photo, and Supabase stores them. Relay doesn't use them.
-        Sign in with Apple can share your name too, but that stays on your phone and is only used
-        to suggest a display name.
+        If you sign in with <b>Google</b>, Google also sends the name on your Google account and a
+        link to its profile photo. They're discarded before they're saved, so neither Supabase nor
+        Relay keeps them. Sign in with Apple can share your name too, but that stays on your phone
+        and is only used to suggest a display name.
+      </p>
+      <p>
+        <b>Passkeys</b> are checked by Relay's own servers, not Supabase. We store each passkey's
+        public key, a name for it (such as "iPhone") and the day it was added. A passkey sign-in
+        sends nothing to Supabase.
       </p>
       <p>
         Your sign-in details and your Relay account are linked — that's what lets you sign back in

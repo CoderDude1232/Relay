@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="robots" content="noindex">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay — Privacy Policy</title>
+<meta name="description" content="What Relay collects, what it doesn't, and what we could hand over if compelled. Written to be read, not to be survived.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://relaymsg.app/privacy">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Relay">
+<meta property="og:title" content="Relay — Privacy Policy">
+<meta property="og:description" content="What Relay collects, what it doesn't, and what we could hand over if compelled. Written to be read, not to be survived.">
+<meta property="og:url" content="https://relaymsg.app/privacy">
+<meta property="og:image" content="https://relaymsg.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#FFFFFF" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12090F" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/schibsted-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+/* Applied before first paint so a stored choice never flashes the other theme. */
+(function () {
+  try {
+    var t = localStorage.getItem("relay-theme");
+    if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="shell nav-inner">
+    <a class="brand" href="/">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#features">Features</a>
+      <a href="/#storage">What we store</a>
+      <a href="/#limits">Limits</a>
+      <a href="/security">How it works</a>
+      <a href="/download">Download</a>
+    </nav>
+    <button class="theme-toggle" type="button" id="theme-toggle" aria-label="Switch theme">
+      <svg class="i-light" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="3.1" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.95 3.05l-1.13 1.13M4.18 11.82l-1.13 1.13M12.95 12.95l-1.13-1.13M4.18 4.18L3.05 3.05"
+              stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg class="i-dark" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M13.8 9.9A6.2 6.2 0 0 1 6.1 2.2a6.2 6.2 0 1 0 7.7 7.7Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main id="main" class="shell doc">
+
+  <div class="doc-head">
+    <p class="lbl">Effective 10 October 2026 · Version 1.2 · <a href="/privacy">Superseded by the current policy</a></p>
+    <h1>Privacy Policy</h1>
+    <p class="doc-lede">
+      What Relay collects, what it doesn't, and what could be handed over if we were compelled.
+    </p>
+    <p class="doc-lede">
+      <b>What changed in 1.2:</b> we now spell out what Google sign-in shares, what happens to
+      messages you include in an abuse report, and exactly what a legal demand could produce.
+      Nothing new is collected.
+    </p>
+  </div>
+
+  <section class="doc-section">
+    <h2>The short version</h2>
+    <div>
+      <ul class="doc-list">
+        <li>An account is a username and an email address. No phone number, and no real name unless you sign in with Google.</li>
+        <li>Our servers never see your messages in readable form, and keep no record of who you exchanged them with.</li>
+        <li>Compelled to hand over everything we hold about a user, we could produce their username and email address, when they signed up and signed in, how many devices they use, and any undelivered message as data we can't read. Not a contact list, not a history, not a single readable word of their chats — unless someone chose to include messages in an abuse report.</li>
+        <li>The waitlist on this website is the one list we keep, and we delete it after launch.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Who we are</h2>
+    <div>
+      <p>
+        Relay is operated by <strong>Morgan Daly</strong>, in <strong>Queensland, Australia</strong>.
+        For anything in this policy, including a request about your data, write to
+        <a href="mailto:privacy@relaymsg.app">privacy@relaymsg.app</a> — that address reaches a
+        person, not a ticketing queue.
+      </p>
+      <p>
+        We're responsible for the account email and the waitlist. For messages sent through the app
+        we're a conduit: we carry encrypted data we can't read and don't keep.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Your account</h2>
+    <div>
+      <p>
+        An account is a username, an email address, and a password. We store the username and the
+        address. The password is stored only as a hash — we never see it, and we can't recover it
+        for you.
+      </p>
+      <p>
+        <strong>Your username is public.</strong> It's how people add you, and it appears in
+        invite links you share. Pick it with that in mind.
+      </p>
+      <p>
+        Your email address isn't public, and we don't send marketing to it. Use any address you
+        like — a forwarding alias works as well as your everyday one, and we'd rather you did that
+        than hand us something you care about. Nothing in Relay checks who you really are.
+      </p>
+      <p>
+        People can't find you by your email address unless you turn on <b>Find Me by Email</b>
+        in the app — it's off by default. Even then, lookups are blinded, so our servers never see
+        the addresses being searched.
+      </p>
+      <p>
+        If you set an account password, we also keep an encrypted copy of your chat list
+        (who your chats and groups are with, not your messages) with your account, so signing back
+        in brings your chats back. It's encrypted on your phone with a key made from your account
+        password, so we can't read it.
+      </p>
+      <p>
+        We also hold a push token for each of your devices, issued by Apple, so we can wake the
+        device when something arrives for it. It's tied to your account and goes when the account
+        does.
+      </p>
+      <p>
+        Phone number sign-in is planned. When it arrives this policy will be updated before it
+        ships, and the change called out at the top of this page.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Your messages</h2>
+    <div>
+      <p>
+        Messages are encrypted on your device with the <strong>Signal Protocol</strong> — a
+        post-quantum key exchange, then the Double Ratchet — to keys held only on the devices in
+        the conversation. Your keys are generated on your phone and never reach us — they leave it only
+        end-to-end encrypted, to your own devices when you link one — which is also why we
+        can't recover anything for you.
+      </p>
+      <p>
+        While a message is in transit our servers hold an encrypted payload and the public key
+        material needed to deliver it. Once your phone collects it, the payload is deleted. There
+        is no message history on our side to keep, search, or surrender.
+      </p>
+      <p>
+        Attachments work slightly differently: a file has to stay available long enough for the
+        other device to fetch it, so attachment data is held — encrypted, and unreadable to us —
+        for up to 14 days, then purged whether it was collected or not.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Reporting abuse</h2>
+    <div>
+      <p>
+        If you report someone, you choose a reason and can add details. You can also choose to
+        include their most recent messages to you (up to the last ten in your one-to-one chat).
+        Those are decrypted on your phone and sent to us readable, so we can act on the report —
+        it's the one way message content ever reaches us, and only if you choose it. Nothing else
+        from the chat is shared, and the person you reported isn't told.
+      </p>
+      <p>
+        A report is linked to both accounts and kept for 180 days, then deleted. Reports you filed
+        are deleted sooner if you delete your account.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>What we never receive</h2>
+    <div>
+      <ul class="doc-list">
+        <li><b>Your address book.</b> Relay only looks at your contacts if you tap Find Contacts, and then only their email addresses, which are blinded on your device before the check — we never see them, and nothing from your address book is stored.</li>
+        <li><b>Your message content.</b> Encryption happens on your device, to keys we don't hold. The only exception is messages someone chooses to include in an abuse report.</li>
+        <li><b>Who you talk to.</b> Messages are sealed so our servers can't see who sent them; a waiting message is held only against the recipient's device until it's delivered, and we keep no record of who messages whom.</li>
+        <li><b>Your location.</b> The app asks for location only if you share your live location in a chat or turn on showing your device's region to your own devices. Both travel end-to-end encrypted; our servers never receive your location.</li>
+        <li><b>Usage analytics.</b> No analytics SDK, no crash reporter, no attribution framework is bundled in the app.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Notifications</h2>
+    <div>
+      <p>
+        Push notifications route through Apple, which is unavoidable on iOS. We send Apple a
+        content-free wake-up signal — no sender, no preview, no conversation reference. Your device
+        fetches and decrypts the message itself, then draws the notification.
+      </p>
+      <p>
+        Apple can observe that a device received a push. Apple's handling of that is governed by
+        <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>, not ours.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Network protection</h2>
+    <div>
+      <p>
+        Connections to Relay's servers pass through <b>Cloudflare</b>, which shields them from
+        attacks that could take the service offline. To do that, Cloudflare handles our traffic
+        on our behalf and can see connection details: your IP address, when a request was made,
+        which part of the service it was for, and the account identifier the app attaches to
+        signed requests.
+      </p>
+      <p>
+        Cloudflare cannot see your messages, who you message, your contacts or your groups —
+        those are encrypted on your device before they leave it. Cloudflare processes connection
+        data under its data-processing terms, doesn't sell it, and keeps logs only briefly; like
+        any provider, it can be legally required to disclose what it holds. Its handling is
+        governed by <a href="https://www.cloudflare.com/privacypolicy/">Cloudflare's privacy policy</a>.
+      </p>
+      <p>
+        For privacy, calls are relayed through our own server instead of connecting your phone
+        directly to the other person's. That server sees the IP addresses taking part in a call,
+        never what's said, and it isn't routed through Cloudflare.
+      </p>
+      <p>
+        If our call server is down or close to overloaded — for example during an attack — new
+        calls are relayed through Cloudflare's call relay instead, until ours recovers. While that
+        happens Cloudflare sees the same thing our server would: the IP addresses taking part in a
+        call and how much data passes between them. Calls stay end-to-end encrypted, so Cloudflare
+        can't hear or see them, and we don't tell Cloudflare who you are.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Signing in</h2>
+    <div>
+      <p>
+        Signing in — with an email and password, Apple, or Google — is handled by
+        <b>Supabase</b>, our authentication provider. It stores your email address, a securely
+        hashed password if you created one, which sign-in method you use, and basic sign-in
+        records such as the time and IP address of each sign-in. The detailed sign-in log is
+        deleted after 24 hours. Beyond that, Supabase keeps the time you last signed in and, while
+        you stay signed in, the IP address and device type your current session started from. Relay's own servers keep only a
+        one-way token derived from your email, not the address itself.
+      </p>
+      <p>
+        If you sign in with <b>Google</b>, Google also passes Supabase the name on your Google
+        account and a link to its profile photo, and Supabase stores them. Relay doesn't use them.
+        Sign in with Apple can share your name too, but that stays on your phone and is only used
+        to suggest a display name.
+      </p>
+      <p>
+        Your sign-in details and your Relay account are linked — that's what lets you sign back in
+        on a new phone. So together, Supabase and our servers can tell which Relay username belongs
+        to an email address, and when it signed in. Neither can tell anyone what you've said or who
+        you've talked to.
+      </p>
+      <p>
+        Supabase may host this data outside Australia, and its handling is governed by
+        <a href="https://supabase.com/privacy">Supabase's privacy policy</a>.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Where your data is</h2>
+    <div>
+      <p>
+        Some of what Relay depends on runs outside Australia. Apple's push infrastructure is
+        global, Cloudflare's network operates worldwide, and the service that sends the waitlist
+        email may be hosted overseas.
+      </p>
+      <p>
+        Where that happens, everything in this policy still applies. Your messages stay encrypted
+        end to end throughout, so a provider carrying or hosting them cannot read them — which is
+        the point of encrypting before anything leaves your phone rather than trusting the
+        infrastructure in between.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Keeping it safe</h2>
+    <div>
+      <p>
+        Connections between the app and our servers are encrypted in transit, and the message
+        payloads they carry are separately encrypted end to end. Access to our infrastructure is
+        limited to the people who need it to run the service.
+      </p>
+      <p>
+        On your device, the message database is encrypted with <strong>SQLCipher</strong>, so the
+        history sitting on your phone isn't readable by anything that manages to get at the file.
+      </p>
+      <p>
+        The strongest protection here isn't a policy commitment — it's that we don't hold the
+        material in the first place. A breach of our servers exposes ciphertext we can't read
+        ourselves.
+      </p>
+      <p>
+        If a breach ever did occur that was likely to cause you serious harm, we'll notify you and
+        the Office of the Australian Information Commissioner, as the Notifiable Data Breaches
+        scheme requires — promptly, and without waiting to have every detail.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>This website</h2>
+    <div>
+      <p>
+        No cookies, no analytics, no tracking pixel, no session identifier, no advertising tag.
+        Fonts are served from this site, so loading a page here sends nothing to Google or any
+        other third party.
+      </p>
+      <p>
+        Our host keeps short-lived access logs for operational and abuse-prevention purposes.
+        These contain IP addresses and are retained for <strong>30 days</strong>, then deleted.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>The waitlist</h2>
+    <div>
+      <p>
+        If you enter an email address on this site, we store that address and the date you
+        submitted it. We use it for exactly one thing: a single message telling you Relay is
+        available.
+      </p>
+      <p>
+        No newsletter, no sharing, no profile. <strong>Within 30 days of launch, the entire list is
+        deleted.</strong> You can have your address removed sooner by writing to
+        <a href="mailto:privacy@relaymsg.app">privacy@relaymsg.app</a> — no verification loop, no
+        retention offer.
+      </p>
+      <p>
+        The lawful basis is your consent, given by submitting the form, and you may withdraw it at
+        any time.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Legal requests</h2>
+    <div>
+      <p>
+        We respond to valid legal process, and we can only produce what exists. For a Relay user
+        that's their username and email address, their sign-in records held by Supabase (the
+        time of their last sign-in, the IP address their current session started from, and the
+        time and IP address of any sign-in in the past 24 hours), the day their account and each of their devices was created, abuse reports
+        they filed or were named in, and any undelivered message as encrypted data we can't read.
+        There's no message history or contact list to disclose.
+      </p>
+      <p>
+        Where we're legally permitted to tell you your data was requested, we will.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Your rights</h2>
+    <div>
+      <p>
+        You can ask what we hold about you, ask us to correct it, and ask us to delete it. Write to
+        <a href="mailto:privacy@relaymsg.app">privacy@relaymsg.app</a> and we'll act within 30
+        days. For the app these requests are largely moot — beyond the account email there is
+        nothing tied to you.
+      </p>
+      <p>
+        In Australia the Australian Privacy Principles set those rights out. In the UK or EU the
+        equivalents are the UK GDPR and GDPR.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Complaints</h2>
+    <div>
+      <p>
+        If you think we've handled your data badly, tell us first at
+        <a href="mailto:privacy@relaymsg.app">privacy@relaymsg.app</a>. We'll acknowledge within
+        five working days and give you a considered answer within 30.
+      </p>
+      <p>
+        If that answer doesn't satisfy you, you can take it to the
+        <a href="https://www.oaic.gov.au/">Office of the Australian Information Commissioner</a>,
+        or to your national data protection authority if you're in the UK or EU. You don't need our
+        permission, and you don't have to come to us first.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Children</h2>
+    <div>
+      <p>
+        Relay isn't directed at children under 13, and we don't knowingly collect their data. Since
+        we collect no identifying data beyond an email address, we have no mechanism to determine a
+        user's age, and we don't attempt to build one.
+      </p>
+    </div>
+  </section>
+
+  <section class="doc-section">
+    <h2>Changes</h2>
+    <div>
+      <p>
+        If this policy changes in a way that affects what we collect, we'll say so plainly at the
+        top of this page and in the app before the change takes effect. Previous versions stay
+        available so you can see what changed.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="shell foot-inner">
+    <p class="foot-brand">
+      <img class="logo-on-light" src="images/relay-logo-dark-ink.png" alt="Relay" width="280" height="128">
+      <img class="logo-on-dark" src="images/relay-logo-light-ink.png" alt="Relay" width="280" height="128">
+    </p>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="/privacy" aria-current="page">Privacy policy</a>
+      <a href="/terms">Terms</a>
+      <a href="/security">Security</a>
+      <a href="/source">Source</a>
+      <a href="/compare">Compare</a>
+      <a href="/changelog">What's new</a>
+      <a href="/support">Support</a>
+      <a href="mailto:hello@relaymsg.app">hello@relaymsg.app</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
