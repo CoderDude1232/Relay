@@ -298,6 +298,15 @@ class NotificationService: UNNotificationServiceExtension {
         appGroupId: String,
         account: RelayAccount
     ) -> DecryptOutcome? {
+        // An unsend or edit: drop the chat's banners that show the old text.
+        if result.removesNotifications, let conversationId = result.conversationId {
+            let center = UNUserNotificationCenter.current()
+            center.getDeliveredNotifications { delivered in
+                let stale = delivered.filter { $0.request.content.threadIdentifier == conversationId }
+                    .map(\.request.identifier)
+                if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
+            }
+        }
         // HANGUP means the caller gave up before we answered: show a missed call.
         // Other signalling goes through VoIP push and CallKit; suppress it here.
         if let callInfo = result.callInfo {

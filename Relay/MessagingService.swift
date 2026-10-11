@@ -428,6 +428,7 @@ final class MessagingService {
     /// Stops for good: the account is being signed out or wiped.
     func shutDown() {
         isShutDown = true
+        LocationShareManager.shared.stopAll()
         siriPreviewTask?.cancel()
         siriPreviewTask = nil
         stop()
@@ -450,11 +451,32 @@ final class MessagingService {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 await MainActor.run {
-                    _ = try? self?.storage.messages.deleteExpiredMessages()
-                    self?.refreshConversations()
+                    guard let self else { return }
+                    // Notifications of expired messages go too.
+                    let now = Int64(Date().timeIntervalSince1970 * 1000)
+                    let affected = Set(((try? self.storage.database.query(
+                        "SELECT DISTINCT conversation_id FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                        [.integer(now)]
+                    )) ?? []).compactMap { $0.first?.string })
+                    _ = try? self.storage.messages.deleteExpiredMessages(now: now)
+                    self.removeDeliveredNotifications(forConversations: affected)
+                    self.refreshConversations()
                 }
                 await self?.flushDueScheduledMessages()
             }
+        }
+    }
+
+    /// Removes delivered notifications for these chats (their threads), so a
+    /// message that expired, was unsent or edited doesn't linger on the lock
+    /// screen with its old text.
+    func removeDeliveredNotifications(forConversations ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { delivered in
+            let stale = delivered.filter { ids.contains($0.request.content.threadIdentifier) }
+                .map(\.request.identifier)
+            if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
         }
     }
 
@@ -658,6 +680,9 @@ final class MessagingService {
     }
 
     private func applyProcessed(_ result: ProcessedEnvelope, outerSender: String) async {
+        if result.removesNotifications, let conversationId = result.conversationId {
+            removeDeliveredNotifications(forConversations: [conversationId])
+        }
         do {
             if let timestamp = result.sideEffects.deliveryReceiptTimestamp {
                 let groupId = result.conversationId.flatMap { group(for: $0)?.id }
@@ -2419,6 +2444,10 @@ final class MessagingService {
 
     func leaveGroup(_ groupId: String) async throws {
         guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        // Stop sharing our location with a group we're leaving.
+        if let convId = try? storage.messages.groupConversationId(groupId: groupId) {
+            LocationShareManager.shared.stop(in: convId)
+        }
         let remaining = existing.members.filter { $0 != credentials.accountId }
         let announce = StoredGroup(
             id: existing.id, name: existing.name, distributionId: existing.distributionId,
@@ -3745,6 +3774,7 @@ final class MessagingService {
 
     func deleteConversation(_ conversationId: String) {
         if activeConversationId == conversationId { closeConversation(id: conversationId) }
+        LocationShareManager.shared.stop(in: conversationId)
         do {
             try storage.messages.deleteConversation(id: conversationId)
             refreshConversations()
@@ -3946,6 +3976,9 @@ final class MessagingService {
     }
 
     func blockAccount(_ account: String) {
+        if let convId = conversations.first(where: { !$0.isGroup && $0.peerAccount == account })?.id {
+            LocationShareManager.shared.stop(in: convId)
+        }
         blockedAccounts.insert(account)
         saveBlockedAccounts()
         refreshConversations()

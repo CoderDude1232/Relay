@@ -263,6 +263,8 @@ public struct ProcessedEnvelope: Sendable {
     public let pollVoteInfo: PollVoteInfo?
     public let screenshotAlert: ScreenshotAlertInfo?
     public let screenSecurityUpdate: ScreenSecurityInfo?
+    /// An unsend or edit: the chat's delivered notifications show stale text.
+    public var removesNotifications = false
 
     public init(
         outcome: Outcome,
@@ -766,7 +768,9 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount, conversationId: conversationId)
             }
             try storage.messages.markDeleted(id: targetId)
-            return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
+            var result = ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
+            result.removesNotifications = true
+            return result
 
         case .edit(let edit):
             let conversationId = try chatConversation()
@@ -776,7 +780,9 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount, conversationId: conversationId)
             }
             try storage.messages.editMessage(id: targetId, newBody: edit.newBody)
-            return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
+            var result = ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
+            result.removesNotifications = true
+            return result
 
         case .senderKeyDistribution(let skd):
             // Store the sender's sender key so their group messages decrypt.

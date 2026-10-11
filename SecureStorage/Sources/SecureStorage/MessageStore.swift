@@ -864,23 +864,29 @@ public final class MessageStore: @unchecked Sendable {
         let status = (isOutgoing ? MessageStatus.sent : MessageStatus.received).rawValue
         let wasInsert: Bool = try db.transaction {
             let exists = try !db.query("SELECT 1 FROM messages WHERE id = ?", [.text(id)]).isEmpty
+            // In a disappearing chat the last position expires like a message,
+            // counted from the latest update.
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            let ttl = try disappearingSeconds(conversationId: conversationId)
+            let expiresAt: SQLValue = ttl > 0 ? .integer(now.addingClamped(ttl.multipliedClamped(by: 1000))) : .null
             if exists {
                 try db.run(
-                    "UPDATE messages SET body = ?, timestamp = ?, status = ? WHERE id = ?",
-                    [.text(body), .integer(timestamp), .text(status), .text(id)]
+                    "UPDATE messages SET body = ?, timestamp = ?, status = ?, expires_at = ? WHERE id = ?",
+                    [.text(body), .integer(timestamp), .text(status), expiresAt, .text(id)]
                 )
             } else {
                 try db.run(
                     """
                     INSERT INTO messages
                         (id, conversation_id, is_outgoing, body, timestamp, status, created_at, sender_account, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         .text(id), .text(conversationId), .integer(isOutgoing ? 1 : 0),
                         .text(body), .integer(timestamp), .text(status),
-                        .integer(Int64(Date().timeIntervalSince1970 * 1000)),
+                        .integer(now),
                         senderAccount.map { .text($0) } ?? .null,
+                        expiresAt,
                     ]
                 )
             }

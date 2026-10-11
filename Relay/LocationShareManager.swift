@@ -89,6 +89,11 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
         teardown()
     }
 
+    /// Sign-out or wipe: stop GPS and the background session without sending.
+    func stopAll() {
+        teardown()
+    }
+
     private func teardown() {
         clManager.stopUpdatingLocation()
         clManager.allowsBackgroundLocationUpdates = false
