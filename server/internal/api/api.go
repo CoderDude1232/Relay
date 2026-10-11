@@ -481,7 +481,8 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		// client-supplied email is never accepted, since it would let anyone
 		// pre-claim someone else's address for later recovery or OAuth adoption.
 		SupabaseAccessToken string `json:"supabaseAccessToken"`
-		AccountPassword     string `json:"accountPassword"`
+		AccountPassword     string `json:"accountPassword"`    // raw (older clients)
+		AccountPasswordKey  string `json:"accountPasswordKey"` // derived on the device
 		Email               string `json:"email"` // rejected; see above
 	}
 	if err := decodeJSON(r, &req); err != nil ||
@@ -494,7 +495,8 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "email is not accepted; pass supabaseAccessToken to link a verified email")
 		return
 	}
-	if req.AccountPassword != "" && (len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes) {
+	accountPassword, ok := accountPasswordFrom(req.AccountPasswordKey, req.AccountPassword, true)
+	if !ok {
 		httpError(w, http.StatusBadRequest, "accountPassword must be 8–1024 chars")
 		return
 	}
@@ -515,7 +517,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 			emailToken = s.emailToken(user.Email)
 		}
 	}
-	accountID, deviceID, err := s.store.CreateAccount(req.Username, emailToken, supabaseUserID, req.Password, req.AccountPassword)
+	accountID, deviceID, err := s.store.CreateAccount(req.Username, emailToken, supabaseUserID, req.Password, accountPassword)
 	if errors.Is(err, store.ErrUsernameTaken) {
 		httpError(w, http.StatusConflict, "username already taken")
 		return
@@ -564,8 +566,9 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AccessToken     string `json:"accessToken"`
 		Username        string `json:"username"`
-		Password        string `json:"password"`
-		AccountPassword string `json:"accountPassword"`
+		Password           string `json:"password"`
+		AccountPassword    string `json:"accountPassword"`
+		AccountPasswordKey string `json:"accountPasswordKey"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.AccessToken == "" ||
 		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
@@ -576,7 +579,8 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "username must be 1–64 alphanumeric/._- characters")
 		return
 	}
-	if req.AccountPassword != "" && (len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes) {
+	accountPassword, ok := accountPasswordFrom(req.AccountPasswordKey, req.AccountPassword, false)
+	if !ok {
 		httpError(w, http.StatusBadRequest, "accountPassword must be 8–1024 chars")
 		return
 	}
@@ -595,7 +599,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	// an account password must present it (it replaces every device). Wrong
 	// guesses back off exponentially per account (recoveryLockout).
 	dev, created, err := s.store.ProvisionOAuthAccount(
-		user.ID, emailToken, req.Username, req.Password, req.AccountPassword,
+		user.ID, emailToken, req.Username, req.Password, accountPassword,
 		func(accountID string) bool { return recoveryLockout.attempt(registrationLockKey(accountID)) })
 	switch {
 	case errors.Is(err, store.ErrAccountPasswordLocked):
@@ -603,6 +607,9 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, store.ErrAccountPasswordRequired):
 		httpError(w, http.StatusLocked, "account password required")
+		return
+	case errors.Is(err, store.ErrAccountPasswordUpgradeRequired):
+		httpError(w, http.StatusPreconditionRequired, errAccountPasswordUpgrade)
 		return
 	case errors.Is(err, store.ErrAccountPasswordIncorrect):
 		// Already charged by attempt.
@@ -626,7 +633,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !created && req.AccountPassword != "" {
+	if !created && !accountPassword.Empty() {
 		recoveryLockout.succeed(registrationLockKey(dev.AccountID))
 	}
 	status := http.StatusOK
@@ -1168,12 +1175,16 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		AccessToken     string `json:"accessToken"`
-		AccountPassword string `json:"accountPassword"`
-		Password        string `json:"password"`
+		AccessToken        string `json:"accessToken"`
+		AccountPassword    string `json:"accountPassword"`
+		AccountPasswordKey string `json:"accountPasswordKey"`
+		Password           string `json:"password"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.AccessToken == "" ||
-		len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes ||
+	newPassword, ok := store.AccountPassword{}, false
+	if err := decodeJSON(r, &req); err == nil {
+		newPassword, ok = accountPasswordFrom(req.AccountPasswordKey, req.AccountPassword, true)
+	}
+	if !ok || newPassword.Empty() || req.AccessToken == "" ||
 		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
 		httpError(w, http.StatusBadRequest, "accessToken, accountPassword (8–1024) and password (8–1024) required")
 		return
@@ -1191,7 +1202,7 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "a fresh password-recovery code is required")
 		return
 	}
-	dev, err := s.store.ResetAccountPassword(user.ID, s.emailToken(user.Email), req.AccountPassword, req.Password)
+	dev, err := s.store.ResetAccountPassword(user.ID, s.emailToken(user.Email), newPassword, req.Password)
 	switch {
 	case errors.Is(err, store.ErrAccountNotFound):
 		httpError(w, http.StatusNotFound, "no Relay account for this email")
@@ -1279,11 +1290,15 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Email           string `json:"email"`
-		AccountPassword string `json:"accountPassword"`
+		Email              string `json:"email"`
+		AccountPassword    string `json:"accountPassword"`
+		AccountPasswordKey string `json:"accountPasswordKey"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.Email == "" || req.AccountPassword == "" ||
-		len(req.AccountPassword) > maxPasswordBytes {
+	presented, ok := store.AccountPassword{}, false
+	if err := decodeJSON(r, &req); err == nil {
+		presented, ok = accountPasswordFrom(req.AccountPasswordKey, req.AccountPassword, false)
+	}
+	if !ok || req.Email == "" || presented.Empty() {
 		httpError(w, http.StatusBadRequest, "email and accountPassword required")
 		return
 	}
@@ -1297,8 +1312,11 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusTooManyRequests, "too many recovery attempts; try again later")
 		return
 	}
-	dev, devicePassword, err := s.store.RecoverAccount(token, req.AccountPassword)
+	dev, devicePassword, err := s.store.RecoverAccount(token, presented)
 	switch {
+	case errors.Is(err, store.ErrAccountPasswordUpgradeRequired):
+		httpError(w, http.StatusPreconditionRequired, errAccountPasswordUpgrade)
+		return
 	case errors.Is(err, store.ErrAuthFailed):
 		// Already charged by attempt.
 		httpError(w, http.StatusUnauthorized, "recovery failed")
@@ -1375,6 +1393,26 @@ func (s *Server) handleSetDiscoverability(w http.ResponseWriter, r *http.Request
 // hour (each is a bcrypt).
 var accountPasswordLimiter = newTokenBucketLimiter(10, time.Hour)
 
+const errAccountPasswordUpgrade = "account password upgrade required"
+
+// accountPasswordFrom reads the account password a client sent: the key it
+// derived on the device, and/or the raw password (older clients; or, next to
+// the key, the one-time upgrade of an account stored before keys). A new
+// password (setting=true) must be 8+ characters when raw. ok is false for
+// malformed input; both empty is ok (no password).
+func accountPasswordFrom(key, legacy string, setting bool) (store.AccountPassword, bool) {
+	if len(key) > 128 || len(legacy) > maxPasswordBytes {
+		return store.AccountPassword{}, false
+	}
+	if key != "" && len(key) < 32 {
+		return store.AccountPassword{}, false
+	}
+	if setting && key == "" && legacy != "" && len(legacy) < 8 {
+		return store.AccountPassword{}, false
+	}
+	return store.AccountPassword{Key: key, Legacy: legacy}, true
+}
+
 // handleSetAccountPassword sets or changes the account password, which guards
 // email recovery and the sign-in registration lock. Any signed device of the
 // account may set it.
@@ -1383,10 +1421,14 @@ func (s *Server) handleSetAccountPassword(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req struct {
-		AccountPassword string `json:"accountPassword"`
+		AccountPassword    string `json:"accountPassword"`
+		AccountPasswordKey string `json:"accountPasswordKey"`
 	}
-	if err := decodeJSON(r, &req); err != nil ||
-		len(req.AccountPassword) < 8 || len(req.AccountPassword) > maxPasswordBytes {
+	newPassword, ok := store.AccountPassword{}, false
+	if err := decodeJSON(r, &req); err == nil {
+		newPassword, ok = accountPasswordFrom(req.AccountPasswordKey, req.AccountPassword, true)
+	}
+	if !ok || newPassword.Empty() {
 		httpError(w, http.StatusBadRequest, "accountPassword (8–1024 chars) required")
 		return
 	}
@@ -1394,7 +1436,7 @@ func (s *Server) handleSetAccountPassword(w http.ResponseWriter, r *http.Request
 		httpError(w, http.StatusTooManyRequests, "too many account password changes; try again later")
 		return
 	}
-	if err := s.store.SetAccountPassword(dev.AccountID, req.AccountPassword); err != nil {
+	if err := s.store.SetAccountPassword(dev.AccountID, newPassword); err != nil {
 		internalError(w, err)
 		return
 	}

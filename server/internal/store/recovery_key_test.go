@@ -60,7 +60,7 @@ func TestCreatePasskeyAccount(t *testing.T) {
 func TestSignInMethodsAndRemoveEmail(t *testing.T) {
 	s := openTestStore(t)
 	token := []byte(uniqueName("email-token"))
-	acct, _, err := s.CreateAccount(uniqueName("rm-email"), token, uniqueName("supa"), "device-pw-1", "account-pw-1")
+	acct, _, err := s.CreateAccount(uniqueName("rm-email"), token, uniqueName("supa"), "device-pw-1", LegacyPassword("account-pw-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestSignInMethodsAndRemoveEmail(t *testing.T) {
 	}
 
 	// A Supabase link alone counts as an email.
-	linked, _, err := s.CreateAccount(uniqueName("rm-email-link"), nil, uniqueName("supa"), "device-pw-1", "")
+	linked, _, err := s.CreateAccount(uniqueName("rm-email-link"), nil, uniqueName("supa"), "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,11 +113,11 @@ func TestSignInMethodsAndRemoveEmail(t *testing.T) {
 
 func TestRecoveryKeyHash(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("rk"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("rk"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, _, err := s.CreateAccount(uniqueName("rk-other"), nil, "", "device-pw-2", "")
+	other, _, err := s.CreateAccount(uniqueName("rk-other"), nil, "", "device-pw-2", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestRecoveryKeyHash(t *testing.T) {
 func TestProvisionReplacementDevice(t *testing.T) {
 	s := openTestStore(t)
 	// The registration lock doesn't apply: the caller verified a stand-in.
-	acct, oldDevice, err := s.CreateAccount(uniqueName("replace"), nil, "", "device-pw-1", "account-pw-1")
+	acct, oldDevice, err := s.CreateAccount(uniqueName("replace"), nil, "", "device-pw-1", LegacyPassword("account-pw-1"))
 	if err != nil {
 		t.Fatal(err)
 	}

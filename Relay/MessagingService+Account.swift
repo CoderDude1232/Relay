@@ -29,7 +29,7 @@ extension MessagingService {
         guard await BiometricGate.authenticate(reason: "Confirm it's you to change your account password.", requirePasscode: true) else {
             throw OwnerConfirmationError()
         }
-        try await apiClient.setAccountPassword(password)
+        try await apiClient.setAccountPassword(AccountPasswordKey.proof(for: password))
         UserDefaults.standard.set(true, forKey: Self.hasAccountPasswordKey)
         // Pick up the latest list and passkey slots, then rewrap the password slot.
         await restoreAccountStorage()

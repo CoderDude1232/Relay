@@ -572,17 +572,14 @@ type DeviceLinkClaim struct {
 // Usernames are unique case-insensitively. Returns ErrUsernameTaken when the
 // username is in use, ErrIdentityInUse when the email token or Supabase user id
 // already belongs to another account.
-func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID, devicePassword, accountPassword string) (accountID string, deviceID uint32, err error) {
+func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID, devicePassword string, accountPassword AccountPassword) (accountID string, deviceID uint32, err error) {
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
 		return "", 0, err
 	}
-	var accountHash []byte
-	if accountPassword != "" {
-		accountHash, err = bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
-		if err != nil {
-			return "", 0, err
-		}
+	accountHash, err := accountPassword.hash()
+	if err != nil {
+		return "", 0, err
 	}
 	accountID = newUUID()
 	mailboxID, err := newMailboxID()
@@ -863,7 +860,7 @@ func addDeviceTx(ctx context.Context, tx pgx.Tx, accountID string, deviceHash []
 // after one bcrypt comparison, so neither the result nor its timing reveals
 // whether the email is registered. ErrDeviceLimit is only reachable with the
 // right password.
-func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev AddedDevice, devicePassword string, err error) {
+func (s *Store) RecoverAccount(emailToken []byte, accountPassword AccountPassword) (dev AddedDevice, devicePassword string, err error) {
 	ctx := context.Background()
 
 	var accountHash []byte
@@ -871,13 +868,17 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 		`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
 	).Scan(&dev.AccountID, &dev.Username, &accountHash)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && len(accountHash) == 0) {
-		burnRecoveryBcrypt(accountPassword)
+		accountPassword.burn()
 		return AddedDevice{}, "", ErrAuthFailed
 	}
 	if err != nil {
 		return AddedDevice{}, "", err
 	}
-	if bcrypt.CompareHashAndPassword(accountHash, []byte(accountPassword)) != nil {
+	ok, upgraded, err := accountPassword.verify(accountHash)
+	if err != nil {
+		return AddedDevice{}, "", err
+	}
+	if !ok {
 		return AddedDevice{}, "", ErrAuthFailed
 	}
 
@@ -896,6 +897,11 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 		return AddedDevice{}, "", err
 	}
 	defer tx.Rollback(ctx)
+	if upgraded != nil {
+		if _, err = tx.Exec(ctx, `UPDATE accounts SET account_password_hash = $1 WHERE id = $2`, upgraded, dev.AccountID); err != nil {
+			return AddedDevice{}, "", err
+		}
+	}
 	if dev.ReplacedDevices, err = replaceDevicesTx(ctx, tx, dev.AccountID); err != nil {
 		return AddedDevice{}, "", err
 	}
@@ -911,8 +917,8 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword string) (dev A
 
 // SetAccountPassword sets (or replaces) the account password: the bcrypt hash
 // that both email recovery and the sign-in registration lock check.
-func (s *Store) SetAccountPassword(accountID, accountPassword string) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
+func (s *Store) SetAccountPassword(accountID string, accountPassword AccountPassword) error {
+	hash, err := accountPassword.hash()
 	if err != nil {
 		return err
 	}
@@ -932,9 +938,9 @@ func (s *Store) SetAccountPassword(accountID, accountPassword string) error {
 // It finds the account by Supabase user id, then by email token, sets the new
 // password and replaces the account's devices with one new device. Returns
 // ErrAccountNotFound if no account matches.
-func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, accountPassword, devicePassword string) (dev AddedDevice, err error) {
+func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, accountPassword AccountPassword, devicePassword string) (dev AddedDevice, err error) {
 	ctx := context.Background()
-	accountHash, err := bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
+	accountHash, err := accountPassword.hash()
 	if err != nil {
 		return AddedDevice{}, err
 	}
@@ -1023,7 +1029,7 @@ func (s *Store) SetAccountEmailToken(accountID string, emailToken []byte) error 
 // whether a lock is set.
 //
 // created reports whether a new account was made.
-func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword, accountPassword string, lockPermit func(accountID string) bool) (dev AddedDevice, created bool, err error) {
+func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword string, accountPassword AccountPassword, lockPermit func(accountID string) bool) (dev AddedDevice, created bool, err error) {
 	ctx := context.Background()
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -1054,17 +1060,26 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 			locked := AddedDevice{AccountID: dev.AccountID}
 			// The client first asks without a password to learn whether one
 			// is needed; only real guesses go through the lockout.
-			if accountPassword == "" {
+			if accountPassword.Empty() {
 				return locked, false, ErrAccountPasswordRequired
 			}
 			if lockPermit != nil && !lockPermit(dev.AccountID) {
 				return locked, false, ErrAccountPasswordLocked
 			}
-			if bcrypt.CompareHashAndPassword(lockHash, []byte(accountPassword)) != nil {
+			ok, upgraded, e := accountPassword.verify(lockHash)
+			if e != nil {
+				return locked, false, e
+			}
+			if !ok {
 				return locked, false, ErrAccountPasswordIncorrect
 			}
-		} else if accountPassword != "" {
-			burnRecoveryBcrypt(accountPassword)
+			if upgraded != nil {
+				if _, e := tx.Exec(ctx, `UPDATE accounts SET account_password_hash = $1 WHERE id = $2`, upgraded, dev.AccountID); e != nil {
+					return AddedDevice{}, false, e
+				}
+			}
+		} else if !accountPassword.Empty() {
+			accountPassword.burn()
 		}
 		if adoptedByEmail {
 			// Back-fill only an empty link; never overwrite another Supabase
@@ -1099,12 +1114,9 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		}
 		dev.AccountID = newUUID()
 		dev.Username = requestedUsername
-		var accountHash []byte
-		if accountPassword != "" {
-			accountHash, err = bcrypt.GenerateFromPassword([]byte(accountPassword), bcrypt.DefaultCost)
-			if err != nil {
-				return AddedDevice{}, false, err
-			}
+		accountHash, err := accountPassword.hash()
+		if err != nil {
+			return AddedDevice{}, false, err
 		}
 		now := coarseDayMillis()
 		if _, e := tx.Exec(ctx,

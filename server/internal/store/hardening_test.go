@@ -28,7 +28,7 @@ func testKeys(t *testing.T, s *Store, account string, device uint32) {
 // with it, and its id is never handed out again.
 func TestRemoveDeviceWithPrekeysAndNoIDReuse(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("rm"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("rm"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestRemoveDeviceWithPrekeysAndNoIDReuse(t *testing.T) {
 
 func TestDeviceCapOnEveryAddPath(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("cap"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("cap"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestDeviceCapOnEveryAddPath(t *testing.T) {
 
 func TestLinkTokenStoresNoPassword(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("link"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("link"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestLinkTokenStoresNoPassword(t *testing.T) {
 
 func TestQueuePaging(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("page"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("page"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestQueuePaging(t *testing.T) {
 
 func TestPurgeExpiredAndCoarseTimestamps(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("purge"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("purge"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestPurgeExpiredAndCoarseTimestamps(t *testing.T) {
 // device specifically, or an account with no keyed device at all, is still 404.
 func TestBundlesSkipKeylessDevice(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("keyless"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("keyless"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestBundlesSkipKeylessDevice(t *testing.T) {
 // sign-out removes itself, whichever id it has).
 func TestRemoveDeviceOne(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("rm1"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("rm1"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,14 +238,14 @@ func TestRemoveDeviceOne(t *testing.T) {
 func TestResetAccountPassword(t *testing.T) {
 	s := openTestStore(t)
 	token := []byte(uniqueName("tok"))
-	acct, _, err := s.CreateAccount(uniqueName("reset"), token, "", "device-pw-1", "old-account-pw")
+	acct, _, err := s.CreateAccount(uniqueName("reset"), token, "", "device-pw-1", LegacyPassword("old-account-pw"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResetAccountPassword("nobody-"+uniqueName("x"), []byte("unknown"), "new-account-pw", "dpw"); !errors.Is(err, ErrAccountNotFound) {
+	if _, err := s.ResetAccountPassword("nobody-"+uniqueName("x"), []byte("unknown"), LegacyPassword("new-account-pw"), "dpw"); !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("unknown account: err = %v", err)
 	}
-	dev, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, "new-account-pw", "device-pw-2")
+	dev, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("new-account-pw"), "device-pw-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,30 +253,54 @@ func TestResetAccountPassword(t *testing.T) {
 		t.Fatalf("reset = %+v", dev)
 	}
 	// The new password works for recovery; the old one doesn't.
-	if _, _, err := s.RecoverAccount(token, "old-account-pw"); !errors.Is(err, ErrAuthFailed) {
+	if _, _, err := s.RecoverAccount(token, LegacyPassword("old-account-pw")); !errors.Is(err, ErrAuthFailed) {
 		t.Fatalf("old password still accepted: %v", err)
 	}
-	if _, _, err := s.RecoverAccount(token, "new-account-pw"); err != nil {
+	if _, _, err := s.RecoverAccount(token, LegacyPassword("new-account-pw")); err != nil {
 		t.Fatalf("new password rejected: %v", err)
 	}
 	// With a recovery key, the email inbox alone can't reset the account.
 	if err := s.SetRecoveryKeyHash(acct, []byte(uniqueName("rk-hash-32-bytes-long-enough!!"))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, "another-pw-1", "device-pw-3"); !errors.Is(err, ErrStrongerSignInRequired) {
+	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("another-pw-1"), "device-pw-3"); !errors.Is(err, ErrStrongerSignInRequired) {
 		t.Fatalf("reset with a recovery key: err = %v, want ErrStrongerSignInRequired", err)
+	}
+}
+
+// Recovery with a derived key upgrades a raw-password account once.
+func TestRecoverAccountUpgradesToKey(t *testing.T) {
+	s := openTestStore(t)
+	token := []byte(uniqueName("tok"))
+	if _, _, err := s.CreateAccount(uniqueName("up"), token, "", "device-pw-1", LegacyPassword("old-account-pw")); err != nil {
+		t.Fatal(err)
+	}
+	key := AccountPassword{Key: "derived-key-0123456789abcdef0123456789abcdef"}
+	if _, _, err := s.RecoverAccount(token, key); !errors.Is(err, ErrAccountPasswordUpgradeRequired) {
+		t.Fatalf("key only: err = %v", err)
+	}
+	both := key
+	both.Legacy = "old-account-pw"
+	if _, _, err := s.RecoverAccount(token, both); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if _, _, err := s.RecoverAccount(token, key); err != nil {
+		t.Fatalf("key after upgrade: %v", err)
+	}
+	if _, _, err := s.RecoverAccount(token, LegacyPassword("old-account-pw")); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("raw password after upgrade: err = %v", err)
 	}
 }
 
 // Email change: the token moves; a token another account holds is refused.
 func TestSetAccountEmailToken(t *testing.T) {
 	s := openTestStore(t)
-	a, _, err := s.CreateAccount(uniqueName("ea"), []byte(uniqueName("ta")), "", "pw-a-123456", "")
+	a, _, err := s.CreateAccount(uniqueName("ea"), []byte(uniqueName("ta")), "", "pw-a-123456", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	taken := []byte(uniqueName("tb"))
-	if _, _, err := s.CreateAccount(uniqueName("eb"), taken, "", "pw-b-123456", ""); err != nil {
+	if _, _, err := s.CreateAccount(uniqueName("eb"), taken, "", "pw-b-123456", AccountPassword{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetAccountEmailToken(a, []byte(uniqueName("tc"))); err != nil {

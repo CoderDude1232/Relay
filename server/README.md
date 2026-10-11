@@ -197,6 +197,20 @@ Basic only for the first `PUT /v1/devices/auth-key` — see Authentication);
 `none` = unauthenticated.
 Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 
+### Account password on the wire
+
+Current clients never send the account password. They send
+`accountPasswordKey`: base64url of Argon2id(password, salt =
+SHA-256("relay-account-password-key-v1")[0..16], opslimit moderate, memlimit
+interactive, 32 bytes). The chat-list blob's password slot uses a different
+derivation (salted with the account id), so the relay can't open it with what
+it receives. Wherever this table says `accountPassword`, a request may carry
+`accountPasswordKey` instead; older clients still send the raw password as
+`accountPassword`. The stored hash records which it is (`k2$` + bcrypt for a
+key). When a key is checked against a hash of a raw password, the relay answers
+`428 "account password upgrade required"`; the client repeats the request once
+with both fields, and on success the hash is replaced by one of the key.
+
 ### Accounts
 
 | Method & path | Auth | Request → Response |

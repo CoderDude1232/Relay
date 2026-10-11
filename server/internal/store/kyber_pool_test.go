@@ -9,7 +9,7 @@ import (
 // lasts, then fall back to the last-resort key; replacing the pool clears it.
 func TestOneTimeKyberPool(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("kyberpool"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("kyberpool"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}

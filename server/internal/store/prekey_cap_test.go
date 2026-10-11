@@ -18,7 +18,7 @@ func otkBatch(from, n int) []OneTimePreKey {
 // re-uploading existing ids and replacing the pool still work.
 func TestOneTimePreKeyPoolCap(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("otkcap"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("otkcap"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -54,6 +54,29 @@ public enum RelayAPIError: Error, LocalizedError {
     }
 }
 
+/// The account password as sent to the relay. `key` is derived from the
+/// password on the device (see the app's AccountPasswordKey), so the relay never
+/// sees the password itself. `legacy` is the raw password, sent only once, next
+/// to the key, when the relay answers 428 for an account whose hash predates
+/// keys; it then stores a hash of the key instead.
+public struct AccountPasswordProof: Sendable {
+    public let key: String
+    public var legacy: String?
+
+    public init(key: String, legacy: String? = nil) {
+        self.key = key
+        self.legacy = legacy
+    }
+
+    /// 428: the account's password needs its one-time upgrade (send `legacy` too).
+    public static let upgradeRequiredStatus = 428
+
+    func addFields(to body: inout [String: String]) {
+        body["accountPasswordKey"] = key
+        if let legacy, !legacy.isEmpty { body["accountPassword"] = legacy }
+    }
+}
+
 /// Result of a Supabase social-login provisioning call.
 public enum OAuthProvisionOutcome: Sendable {
     /// New device credentials, the account's username, and whether this call
@@ -101,14 +124,14 @@ public struct RelayAPIClient: Sendable {
     /// Throws `.http(409, ...)` if the username is taken or the sign-in identity
     /// already has an account.
     public func register(username: String, supabaseAccessToken: String? = nil, password: String,
-                         accountPassword: String? = nil) async throws -> RelayCredentials {
+                         accountPassword: AccountPasswordProof? = nil) async throws -> RelayCredentials {
         struct Response: Decodable {
             let accountId: String
             let deviceId: UInt32
         }
         var body: [String: String] = ["username": username, "password": password]
         if let supabaseAccessToken, !supabaseAccessToken.isEmpty { body["supabaseAccessToken"] = supabaseAccessToken }
-        if let accountPassword, !accountPassword.isEmpty { body["accountPassword"] = accountPassword }
+        accountPassword?.addFields(to: &body)
         let response: Response = try await request(
             "POST", "v1/accounts",
             body: body,
@@ -168,17 +191,17 @@ public struct RelayAPIClient: Sendable {
         return (r.demo, r.peers)
     }
 
-    public func recoverAccount(email: String, accountPassword: String) async throws -> (credentials: RelayCredentials, username: String) {
+    public func recoverAccount(email: String, accountPassword: AccountPasswordProof) async throws -> (credentials: RelayCredentials, username: String) {
         struct Response: Decodable {
             let accountId: String
             let username: String
             let deviceId: UInt32
             let devicePassword: String
         }
+        var body = ["email": email]
+        accountPassword.addFields(to: &body)
         let response: Response = try await request(
-            "POST", "v1/accounts/recover",
-            body: ["email": email, "accountPassword": accountPassword],
-            authenticated: false
+            "POST", "v1/accounts/recover", body: body, authenticated: false
         )
         let creds = RelayCredentials(
             accountId: response.accountId,
@@ -191,14 +214,13 @@ public struct RelayAPIClient: Sendable {
     /// Forgot password: with a Supabase session from a recovery code, sets a new
     /// account password and provisions this device, replacing the account's
     /// other devices like any fresh sign-in.
-    public func resetPassword(supabaseAccessToken: String, newAccountPassword: String,
+    public func resetPassword(supabaseAccessToken: String, newAccountPassword: AccountPasswordProof,
                               devicePassword: String) async throws -> (credentials: RelayCredentials, username: String) {
         struct Response: Decodable { let accountId: String; let username: String; let deviceId: UInt32 }
+        var body = ["accessToken": supabaseAccessToken, "password": devicePassword]
+        newAccountPassword.addFields(to: &body)
         let response: Response = try await request(
-            "POST", "v1/accounts/password-reset",
-            body: ["accessToken": supabaseAccessToken, "accountPassword": newAccountPassword,
-                   "password": devicePassword],
-            authenticated: false
+            "POST", "v1/accounts/password-reset", body: body, authenticated: false
         )
         return (RelayCredentials(accountId: response.accountId, deviceId: response.deviceId,
                                  password: devicePassword), response.username)
@@ -220,7 +242,7 @@ public struct RelayAPIClient: Sendable {
     /// exists, the server returns 404 and this returns `.usernameRequired`.
     /// `devicePassword` is the client-chosen password for the new device.
     public func provisionOAuth(
-        accessToken: String, username: String?, devicePassword: String, accountPassword: String? = nil
+        accessToken: String, username: String?, devicePassword: String, accountPassword: AccountPasswordProof? = nil
     ) async throws -> OAuthProvisionOutcome {
         struct Response: Decodable {
             let accountId: String
@@ -230,7 +252,7 @@ public struct RelayAPIClient: Sendable {
         }
         var body: [String: String] = ["accessToken": accessToken, "password": devicePassword]
         if let username, !username.isEmpty { body["username"] = username }
-        if let accountPassword, !accountPassword.isEmpty { body["accountPassword"] = accountPassword }
+        accountPassword?.addFields(to: &body)
         do {
             let response: Response = try await request(
                 "POST", "v1/accounts/oauth", body: body, authenticated: false
@@ -250,9 +272,10 @@ public struct RelayAPIClient: Sendable {
 
     /// Sets the account password, used for email recovery and as the registration
     /// lock on new-device sign-ins (`PUT /v1/accounts/me/account-password`).
-    public func setAccountPassword(_ password: String) async throws {
-        try await requestExpectingNoContent(
-            "PUT", "v1/accounts/me/account-password", body: ["accountPassword": password])
+    public func setAccountPassword(_ password: AccountPasswordProof) async throws {
+        var body: [String: String] = [:]
+        password.addFields(to: &body)
+        try await requestExpectingNoContent("PUT", "v1/accounts/me/account-password", body: body)
     }
 
     /// Opts in or out of email discovery in blinded discovery. Off by default

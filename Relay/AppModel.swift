@@ -399,10 +399,18 @@ final class AppModel {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
         let outcome: OAuthProvisionOutcome
         do {
-            outcome = try await api.provisionOAuth(
-                accessToken: accessToken, username: username,
-                devicePassword: password, accountPassword: accountPassword
-            )
+            if let accountPassword, !accountPassword.isEmpty {
+                outcome = try await AccountPasswordKey.checking(accountPassword) { proof in
+                    try await api.provisionOAuth(
+                        accessToken: accessToken, username: username,
+                        devicePassword: password, accountPassword: proof
+                    )
+                }
+            } else {
+                outcome = try await api.provisionOAuth(
+                    accessToken: accessToken, username: username, devicePassword: password
+                )
+            }
         } catch {
             throw SetupError(step: "Create relay account (\(serverURL.host ?? serverURL.absoluteString))", underlying: error)
         }
@@ -726,7 +734,12 @@ final class AppModel {
         do {
             // The relay takes the email only from a Supabase-verified token,
             // never from the client, so nobody can register someone else's.
-            credentials = try await api.register(username: username, supabaseAccessToken: supabaseAccessToken, password: password, accountPassword: accountPassword)
+            let proof: AccountPasswordProof? = if let accountPassword, !accountPassword.isEmpty {
+                try await AccountPasswordKey.proof(for: accountPassword)
+            } else {
+                nil
+            }
+            credentials = try await api.register(username: username, supabaseAccessToken: supabaseAccessToken, password: password, accountPassword: proof)
         } catch RelayAPIError.http(status: 409, _) {
             struct TakenError: LocalizedError {
                 let name: String
@@ -778,7 +791,9 @@ final class AppModel {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
         let (credentials, username): (RelayCredentials, String)
         do {
-            (credentials, username) = try await api.recoverAccount(email: email, accountPassword: accountPassword)
+            (credentials, username) = try await AccountPasswordKey.checking(accountPassword) { proof in
+                try await api.recoverAccount(email: email, accountPassword: proof)
+            }
         } catch RelayAPIError.http(status: 404, _) {
             struct RecoverError: LocalizedError {
                 var errorDescription: String? { "No account found with that email address." }
@@ -887,7 +902,7 @@ final class AppModel {
         do {
             (credentials, username) = try await api.resetPassword(
                 supabaseAccessToken: supabase.accessToken,
-                newAccountPassword: newPassword,
+                newAccountPassword: try await AccountPasswordKey.proof(for: newPassword),
                 devicePassword: Self.generateRandomPassword()
             )
         } catch RelayAPIError.http(status: 404, _) {

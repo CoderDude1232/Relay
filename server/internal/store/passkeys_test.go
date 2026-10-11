@@ -9,11 +9,11 @@ import (
 
 func TestPasskeyCRUD(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("pk"), nil, "", "device-pw-1", "")
+	acct, _, err := s.CreateAccount(uniqueName("pk"), nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, _, err := s.CreateAccount(uniqueName("pk-other"), nil, "", "device-pw-2", "")
+	other, _, err := s.CreateAccount(uniqueName("pk-other"), nil, "", "device-pw-2", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestPasskeyCRUD(t *testing.T) {
 func TestProvisionPasskeyDevice(t *testing.T) {
 	s := openTestStore(t)
 	// A registration lock doesn't apply: the verified passkey stands in for it.
-	acct, oldDevice, err := s.CreateAccount(uniqueName("pk-prov"), nil, "", "device-pw-1", "account-pw-1")
+	acct, oldDevice, err := s.CreateAccount(uniqueName("pk-prov"), nil, "", "device-pw-1", LegacyPassword("account-pw-1"))
 	if err != nil {
 		t.Fatal(err)
 	}

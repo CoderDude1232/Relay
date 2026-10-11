@@ -77,6 +77,11 @@ must agree on. The wire contract itself is `proto/` plus `server/README.md`.
   the relay then deletes the Supabase user and the email token.
 - The recovery key is generated on the device; the relay stores only
   SHA-256("relay-recovery-key-v1|" + normalised key).
+- The account password never goes to the relay: the client sends an Argon2id
+  derivation of it under a fixed salt of its own, and the chat list's password
+  slot uses a different derivation (salted with the account id), so the relay
+  can't open the slot with what it receives. Accounts whose stored hash predates
+  this upgrade once, at their next password check (the relay answers 428).
 - The chat list kept with the account ("RAS2") is encrypted under a random
   content key, wrapped in slots: one for the account password (Argon2id), one
   per passkey (WebAuthn PRF output through HKDF), one for the recovery key.

@@ -15,11 +15,11 @@ func TestUsernameReuseCooldown(t *testing.T) {
 	ctx := context.Background()
 
 	old := uniqueName("cool")
-	alice, _, err := s.CreateAccount(old, nil, "", "device-pw-1", "")
+	alice, _, err := s.CreateAccount(old, nil, "", "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, _, err := s.CreateAccount(uniqueName("cool-bob"), nil, "", "device-pw-2", "")
+	bob, _, err := s.CreateAccount(uniqueName("cool-bob"), nil, "", "device-pw-2", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,10 +44,10 @@ func TestUsernameReuseCooldown(t *testing.T) {
 	if err := s.UpdateUsername(bob, old); !errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("other account renaming into the cooldown: %v", err)
 	}
-	if _, _, err := s.CreateAccount(strings.ToUpper(old), nil, "", "device-pw-3", ""); !errors.Is(err, ErrUsernameTaken) {
+	if _, _, err := s.CreateAccount(strings.ToUpper(old), nil, "", "device-pw-3", AccountPassword{}); !errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("registering a cooling name: %v", err)
 	}
-	if _, _, err := s.ProvisionOAuthAccount(uniqueName("sb"), nil, old, "device-pw-4", "", nil); !errors.Is(err, ErrUsernameTaken) {
+	if _, _, err := s.ProvisionOAuthAccount(uniqueName("sb"), nil, old, "device-pw-4", AccountPassword{}, nil); !errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("oauth sign-up with a cooling name: %v", err)
 	}
 

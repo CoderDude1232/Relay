@@ -228,7 +228,7 @@ func TestSignInMethodsEndToEnd(t *testing.T) {
 	env.doJSON("POST", "/v1/accounts/recovery-key/signin", "", "", map[string]string{"key": key, "password": "device-pw-4"}, http.StatusUnauthorized, nil)
 
 	// Email removal on an account with a verified email and Supabase link.
-	acct, _, err := env.api.store.CreateAccount(uniqueUsername("rm-email"), []byte(uniqueUsername("tok")), uniqueUsername("supa"), "device-pw-1", "")
+	acct, _, err := env.api.store.CreateAccount(uniqueUsername("rm-email"), []byte(uniqueUsername("tok")), uniqueUsername("supa"), "device-pw-1", store.AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
