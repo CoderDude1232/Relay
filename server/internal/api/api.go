@@ -74,6 +74,8 @@ type Server struct {
 	// directory holds this many bytes, allocations and uploads get 507 until
 	// GC frees space. 0 means unlimited.
 	attachDiskCap int64
+	// attachInFlight is the bytes reserved by uploads still in progress.
+	attachInFlight attachmentInFlight
 
 	// appleRevoker, if non-nil, revokes the user's Sign in with Apple grant on
 	// account deletion.
@@ -109,7 +111,7 @@ func (s *Server) SetAttachmentDiskCap(bytes int64) { s.attachDiskCap = bytes }
 
 // attachmentDiskFull reports whether the blob directory is at its watermark.
 func (s *Server) attachmentDiskFull() bool {
-	return s.attachDiskCap > 0 && s.blobs.Usage() >= s.attachDiskCap
+	return s.attachDiskCap > 0 && s.blobs.Usage()+s.attachInFlight.load() >= s.attachDiskCap
 }
 
 // sealedIssuer holds the server certificate (signed by the trust root) and its
@@ -590,7 +592,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	// guesses back off exponentially per account (recoveryLockout).
 	dev, created, err := s.store.ProvisionOAuthAccount(
 		user.ID, emailToken, req.Username, req.Password, req.AccountPassword,
-		func(accountID string) bool { return recoveryLockout.permit(registrationLockKey(accountID)) })
+		func(accountID string) bool { return recoveryLockout.attempt(registrationLockKey(accountID)) })
 	switch {
 	case errors.Is(err, store.ErrAccountPasswordLocked):
 		httpError(w, http.StatusTooManyRequests, "too many account password attempts; try again later")
@@ -599,7 +601,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusLocked, "account password required")
 		return
 	case errors.Is(err, store.ErrAccountPasswordIncorrect):
-		recoveryLockout.fail(registrationLockKey(dev.AccountID))
+		// Already charged by attempt.
 		httpError(w, http.StatusLocked, "account password incorrect")
 		return
 	case errors.Is(err, store.ErrUsernameRequired):
@@ -1195,6 +1197,9 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrDemoAccount):
 		httpError(w, http.StatusForbidden, demoForbiddenMessage)
 		return
+	case errors.Is(err, store.ErrStrongerSignInRequired):
+		httpError(w, http.StatusForbidden, "This account has a passkey or recovery key. Sign in with one of those instead.")
+		return
 	case err != nil:
 		internalError(w, err)
 		return
@@ -1283,14 +1288,14 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lockKey := hex.EncodeToString(token)
-	if !recoveryLockout.permit(lockKey) {
+	if !recoveryLockout.attempt(lockKey) {
 		httpError(w, http.StatusTooManyRequests, "too many recovery attempts; try again later")
 		return
 	}
 	dev, devicePassword, err := s.store.RecoverAccount(token, req.AccountPassword)
 	switch {
 	case errors.Is(err, store.ErrAuthFailed):
-		recoveryLockout.fail(lockKey)
+		// Already charged by attempt.
 		httpError(w, http.StatusUnauthorized, "recovery failed")
 		return
 	case errors.Is(err, store.ErrDeviceLimit):
@@ -1920,8 +1925,11 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // handleUploadAttachment stores the ciphertext for a reserved id. It is
 // unauthenticated (the 128-bit id is the capability) so the upload can't be
 // tied to an account. An id that was never allocated, has expired, or was
-// already written gets 404. Bytes are charged to the allocating account via
-// the in-memory allocation record.
+// already written gets 404. Before anything is written the upload reserves its
+// maximum size from the allocating account's byte budget (via the in-memory
+// allocation record; ids allocated before a restart share one "unknown owner"
+// budget) and from the disk watermark, so parallel uploads can't overrun
+// either; the unused part is refunded afterwards.
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	if !attachmentIPLimiter.allow(clientIP(r)) {
 		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
@@ -1935,10 +1943,21 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 	id := r.PathValue("id")
 	owner, known := s.attachQuota.ownerKey(id, "")
-	if known && !s.attachQuota.uploadAllowed(owner) {
+	if !known {
+		owner = unknownAttachmentOwner
+	}
+	reserved := attachmentUploadReservation(r)
+	if !s.attachInFlight.reserve(reserved, s.blobs.Usage(), s.attachDiskCap) {
+		httpError(w, http.StatusInsufficientStorage, "attachment storage is full; try again later")
+		return
+	}
+	defer s.attachInFlight.release(reserved)
+	if !s.attachQuota.reserveUpload(owner, reserved) {
 		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
 		return
 	}
+	var stored int64
+	defer func() { s.attachQuota.settleUpload(id, owner, reserved, stored) }()
 	if err := s.blobs.Claim(id); err != nil {
 		if errors.Is(err, blob.ErrNotFound) {
 			httpError(w, http.StatusNotFound, "unknown or already-used attachment id")
@@ -1949,8 +1968,8 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 	body := &countingReader{r: r.Body}
 	err := s.blobs.Put(id, body)
-	if known && body.n > 0 {
-		s.attachQuota.charge(id, owner, body.n)
+	if err == nil {
+		stored = body.n
 	}
 	switch {
 	case errors.Is(err, blob.ErrTooLarge):
@@ -2591,9 +2610,13 @@ const turnTTL = 3600 // seconds
 // handleTurnCredentials issues time-limited TURN credentials using coturn's
 // REST API format: username "{expiry}:{random}", password HMAC-SHA1. It
 // returns 404 if TURN is not configured.
-func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+func (s *Server) handleTurnCredentials(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if len(s.turnURLs) == 0 || s.turnSecret == "" {
 		httpError(w, http.StatusNotFound, "TURN not configured on this server")
+		return
+	}
+	if !turnCredentialLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many requests")
 		return
 	}
 	expiry := time.Now().Unix() + turnTTL
@@ -2684,45 +2707,24 @@ func (l *slidingWindowLimiter) allow(key string) bool {
 // PruneStaleLimiterKeys removes limiter entries with no activity within their
 // window. Call it periodically so one-off keys don't accumulate.
 func (s *Server) PruneStaleLimiterKeys() {
-	s.pruneTokenBuckets()
+	for _, l := range allLimiters {
+		l.prune()
+	}
+	if s.attachQuota != nil {
+		s.attachQuota.prune()
+	}
 	recoveryLockout.prune()
 	oprfBudget.prune()
-	for _, l := range []*slidingWindowLimiter{
-		accountCreationLimiter,
-		preKeyFetchLimiter,
-		groupCreateLimiter,
-		inviteClaimIPLimiter,
-		attachmentIPLimiter,
-		callRingIPLimiter,
-		callRingMailboxLimiter,
-		usernameLookupLimiter,
-		keyUploadLimiter,
-		sealedSendIPLimiter,
-		sealedSendMailboxLimiter,
-		directoryLimiter,
-		directoryIPLimiter,
-		provisioningLimiter,
-		reportLimiter,
-		passkeyOptionsIPLimiter,
-		passkeyLoginIPLimiter,
-		recoveryKeyIPLimiter,
-	} {
-		now := time.Now()
-		l.mu.Lock()
-		cutoff := now.Add(-l.window)
-		for key, times := range l.windows {
-			allExpired := true
-			for _, t := range times {
-				if t.After(cutoff) {
-					allExpired = false
-					break
-				}
-			}
-			if allExpired {
-				delete(l.windows, key)
-			}
+}
+
+func (l *slidingWindowLimiter) prune() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-l.window)
+	for key, times := range l.windows {
+		if len(times) == 0 || !times[len(times)-1].After(cutoff) {
+			delete(l.windows, key)
 		}
-		l.mu.Unlock()
 	}
 }
 
@@ -2764,6 +2766,10 @@ var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 
 // Call rings are unauthenticated, so they are bounded per IP and per
 // destination mailbox.
+// turnCredentialLimiter bounds TURN credential requests per account: 240 an
+// hour covers back-to-back calls with reconnects.
+var turnCredentialLimiter = newSlidingWindowLimiter(240, time.Hour)
+
 var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
 var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
 

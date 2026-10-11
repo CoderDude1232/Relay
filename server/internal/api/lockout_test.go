@@ -5,6 +5,23 @@ import (
 	"time"
 )
 
+func TestAttemptChargesBeforeTheCheck(t *testing.T) {
+	l := newFailureLockout()
+	allowed := 0
+	for i := 0; i < 50; i++ { // a burst of concurrent guesses, none finished yet
+		if l.attempt("k") {
+			allowed++
+		}
+	}
+	if allowed != lockoutFreeFailures+1 {
+		t.Fatalf("burst allowed %d guesses, want %d", allowed, lockoutFreeFailures+1)
+	}
+	l.succeed("k")
+	if !l.attempt("k") {
+		t.Fatal("success should clear the charge")
+	}
+}
+
 func TestFailureLockoutBacksOff(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	l := newFailureLockout()

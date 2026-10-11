@@ -138,6 +138,11 @@ func (h *TURNHealth) CheckNow() bool {
 		return h.lastCheckOK
 	}
 	ok, why := h.check()
+	if !ok {
+		// One lost UDP probe isn't an outage; a client reporting a failure
+		// shouldn't move every new call to Cloudflare on its own.
+		ok, why = h.check()
+	}
 	h.lastCheckAt, h.lastCheckOK = time.Now(), ok
 	if !ok && h.Healthy() {
 		h.unhealthy.Store(true)
@@ -185,9 +190,34 @@ type CloudflareTURN struct {
 	Client   *http.Client
 	// Endpoint overrides the API base (tests). Empty = Cloudflare.
 	Endpoint string
+
+	// One credential is reused for a while, so a client looping on
+	// /v1/turn-credentials during failover can't spend the API quota or put
+	// a Cloudflare round trip on every request.
+	mu       sync.Mutex
+	cached   iceServer
+	cachedAt time.Time
 }
 
+// cfCredentialReuse is how long a minted credential is handed out again. It's
+// minted with the full TTL, so every copy has at least TTL minus this left.
+const cfCredentialReuse = 10 * time.Minute
+
 func (c *CloudflareTURN) generate(ctx context.Context, ttl int) (iceServer, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.cached.URLs) > 0 && time.Since(c.cachedAt) < cfCredentialReuse {
+		return c.cached, nil
+	}
+	ice, err := c.mint(ctx, ttl+int(cfCredentialReuse/time.Second))
+	if err != nil {
+		return iceServer{}, err
+	}
+	c.cached, c.cachedAt = ice, time.Now()
+	return ice, nil
+}
+
+func (c *CloudflareTURN) mint(ctx context.Context, ttl int) (iceServer, error) {
 	base := c.Endpoint
 	if base == "" {
 		base = "https://rtc.live.cloudflare.com"

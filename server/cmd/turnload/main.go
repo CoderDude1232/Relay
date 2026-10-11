@@ -119,11 +119,11 @@ func main() {
 				var delta uint64
 				switch *count {
 				case "tx":
-					delta = next.txBytes - prev.txBytes
+					delta = grew(prev.txBytes, next.txBytes)
 				case "rx":
-					delta = next.rxBytes - prev.rxBytes
+					delta = grew(prev.rxBytes, next.rxBytes)
 				default:
-					delta = (next.rxBytes - prev.rxBytes) + (next.txBytes - prev.txBytes)
+					delta = grew(prev.rxBytes, next.rxBytes) + grew(prev.txBytes, next.txBytes)
 				}
 				if m := thisMonth(); m != usage.Month {
 					log.Printf("turnload: new month %s (last month used %.1f GB)", m, float64(usage.Bytes)/1e9)
@@ -136,8 +136,8 @@ func main() {
 					lastSave = time.Now()
 				}
 			}
-			mbps := float64(next.rxBytes-prev.rxBytes) * 8 / 1e6
-			pps := float64(next.rxPackets - prev.rxPackets)
+			mbps := float64(grew(prev.rxBytes, next.rxBytes)) * 8 / 1e6
+			pps := float64(grew(prev.rxPackets, next.rxPackets))
 			cpu := 0.0
 			if dt := next.cpuTotal - prev.cpuTotal; dt > 0 {
 				cpu = 100 * float64(next.cpuBusy-prev.cpuBusy) / float64(dt)
@@ -254,4 +254,14 @@ func read(iface string) (sample, error) {
 		}
 	}
 	return s, nil
+}
+
+// grew is how much a NIC counter rose. A counter that went backwards (driver
+// reload, interface re-created, 32-bit wrap) counts as zero rather than an
+// unsigned underflow that would read as exabytes and pin failover for the month.
+func grew(prev, next uint64) uint64 {
+	if next < prev {
+		return 0
+	}
+	return next - prev
 }

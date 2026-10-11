@@ -43,6 +43,7 @@ var (
 	ErrDeviceLimit               = errors.New("store: linked device limit reached")
 	ErrIdentityInUse             = errors.New("store: email or social-login identity already linked to an account")
 	ErrPreKeyPoolFull            = errors.New("store: one-time prekey pool full")
+	ErrStrongerSignInRequired    = errors.New("store: account has a passkey or recovery key")
 	ErrAccountPasswordRequired   = errors.New("store: account password required")
 	ErrAccountPasswordIncorrect  = errors.New("store: account password incorrect")
 	ErrAccountPasswordLocked     = errors.New("store: too many account password attempts")
@@ -106,6 +107,17 @@ func Open(dsn string) (*Store, error) {
 	}
 	cfg.MaxConns = 20
 	cfg.MinConns = 2
+	// No request context reaches the store, so bound queries and lock waits
+	// server-side: a stuck one can't hold a pool connection forever.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	if _, set := cfg.ConnConfig.RuntimeParams["statement_timeout"]; !set {
+		cfg.ConnConfig.RuntimeParams["statement_timeout"] = "15000"
+	}
+	if _, set := cfg.ConnConfig.RuntimeParams["lock_timeout"]; !set {
+		cfg.ConnConfig.RuntimeParams["lock_timeout"] = "10000"
+	}
 	if !strings.Contains(dsn, "sslmode") && !isLocalDBHost(cfg.ConnConfig.Host) {
 		// pgx's default (sslmode=prefer) silently falls back to plaintext, and
 		// this connection carries every routing row and queued envelope.
@@ -447,6 +459,8 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// Recovery key (store/recovery_key.go): only its SHA-256 is stored.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS recovery_key_hash BYTEA`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_recovery_key_hash ON accounts (recovery_key_hash) WHERE recovery_key_hash IS NOT NULL`,
+		// The hourly expiry purge filters on created_at alone.
+		`CREATE INDEX IF NOT EXISTS idx_queue_created_at ON message_queue (created_at)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -932,14 +946,18 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	}
 	defer tx.Rollback(ctx)
 
-	var demo bool
-	err = tx.QueryRow(ctx,
-		`SELECT id, username, is_demo FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
-	).Scan(&dev.AccountID, &dev.Username, &demo)
+	// FOR UPDATE: a passkey or recovery key added concurrently must not slip
+	// past the check below.
+	var demo, stronger bool
+	const pick = `SELECT id, username, is_demo,
+	        recovery_key_hash IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.account_id = accounts.id)
+	   FROM accounts `
+	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1 FOR UPDATE`, supabaseUserID).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		err = tx.QueryRow(ctx,
-			`SELECT id, username, is_demo FROM accounts WHERE email_token = $1`, emailToken,
-		).Scan(&dev.AccountID, &dev.Username, &demo)
+		// By email only when the account isn't linked to another sign-in user.
+		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1 AND (supabase_user_id IS NULL OR supabase_user_id = '') FOR UPDATE`,
+			emailToken,
+		).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AddedDevice{}, ErrAccountNotFound
@@ -949,6 +967,11 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	}
 	if demo {
 		return AddedDevice{}, ErrDemoAccount // locked credentials
+	}
+	if stronger {
+		// The email inbox alone must not be able to take over an account that
+		// has a passkey or a recovery key; those are how it signs in instead.
+		return AddedDevice{}, ErrStrongerSignInRequired
 	}
 	if _, err = tx.Exec(ctx,
 		`UPDATE accounts SET account_password_hash = $1,
@@ -1020,8 +1043,10 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		`SELECT id, username, account_password_hash FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
 	).Scan(&dev.AccountID, &dev.Username, &lockHash)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
+		// Adopt by email only an account not linked to another sign-in user.
 		err = tx.QueryRow(ctx,
-			`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
+			`SELECT id, username, account_password_hash FROM accounts
+			  WHERE email_token = $1 AND (supabase_user_id IS NULL OR supabase_user_id = '')`, emailToken,
 		).Scan(&dev.AccountID, &dev.Username, &lockHash)
 		adoptedByEmail = err == nil
 	}
@@ -1030,11 +1055,13 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		// Registration lock, checked before anything is written.
 		if len(lockHash) > 0 {
 			locked := AddedDevice{AccountID: dev.AccountID}
-			if lockPermit != nil && !lockPermit(dev.AccountID) {
-				return locked, false, ErrAccountPasswordLocked
-			}
+			// The client first asks without a password to learn whether one
+			// is needed; only real guesses go through the lockout.
 			if accountPassword == "" {
 				return locked, false, ErrAccountPasswordRequired
+			}
+			if lockPermit != nil && !lockPermit(dev.AccountID) {
+				return locked, false, ErrAccountPasswordLocked
 			}
 			if bcrypt.CompareHashAndPassword(lockHash, []byte(accountPassword)) != nil {
 				return locked, false, ErrAccountPasswordIncorrect
@@ -2254,11 +2281,13 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 			return allowed
 		}
 
+		// FOR UPDATE SKIP LOCKED: concurrent fetchers must never be handed the
+		// same one-time key (the second session would fail to decrypt).
 		var otk OneTimePreKey
 		err = tx.QueryRow(ctx, `
 			SELECT key_id, public_key FROM one_time_prekeys
 			WHERE account_id = $1 AND device_id = $2
-			ORDER BY key_id LIMIT 1`,
+			ORDER BY key_id LIMIT 1 FOR UPDATE SKIP LOCKED`,
 			accountID, devID).Scan(&otk.KeyID, &otk.PublicKey)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -2281,7 +2310,7 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 		err = tx.QueryRow(ctx, `
 			SELECT key_id, public_key, signature FROM one_time_kyber_prekeys
 			WHERE account_id = $1 AND device_id = $2
-			ORDER BY key_id LIMIT 1`,
+			ORDER BY key_id LIMIT 1 FOR UPDATE SKIP LOCKED`,
 			accountID, devID).Scan(&kyberID, &kyberKey.PublicKey, &kyberKey.Signature)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):

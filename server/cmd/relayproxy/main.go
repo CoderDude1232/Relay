@@ -41,14 +41,21 @@ func main() {
 	keyFile := flag.String("key", "", "TLS key (instead of -domain)")
 	allow := flag.String("allow", defaultAllow, "comma-separated host:port targets clients may reach")
 	maxConns := flag.Int("max-conns", 4000, "maximum concurrent tunnels")
+	perIP := flag.Int("max-conns-per-ip", 64, "maximum concurrent tunnels from one address")
 	flag.Parse()
 
 	p := newProxy(*allow, *maxConns)
+	p.perIP = *perIP
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           p,
 		ReadHeaderTimeout: 10 * time.Second,
-		ErrorLog:          log.New(io.Discard, "", 0), // TLS handshake noise includes client addresses
+		// Connections with no request in flight (a keep-alive after a 404, an
+		// idle HTTP/2 connection) are closed instead of held forever.
+		IdleTimeout: 2 * time.Minute,
+		// One connection can't open hundreds of tunnels at once.
+		HTTP2:    &http.HTTP2Config{MaxConcurrentStreams: 16},
+		ErrorLog: log.New(io.Discard, "", 0), // TLS handshake noise includes client addresses
 	}
 
 	switch {
@@ -74,12 +81,19 @@ type proxy struct {
 	allowed map[string]bool
 	slots   chan struct{}
 	dial    func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// perIP caps concurrent tunnels per client address so one client can't
+	// take every slot. The counts live in memory only and are never logged.
+	perIP  int
+	mu     sync.Mutex
+	active map[string]int
 }
 
 func newProxy(allow string, maxConns int) *proxy {
 	p := &proxy{
 		allowed: map[string]bool{},
 		slots:   make(chan struct{}, maxConns),
+		active:  map[string]int{},
 		dial:    (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 	}
 	for _, target := range strings.Split(allow, ",") {
@@ -100,13 +114,11 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	select {
-	case p.slots <- struct{}{}:
-		defer func() { <-p.slots }()
-	default:
+	if !p.acquire(r.RemoteAddr) {
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 		return
 	}
+	defer p.release(r.RemoteAddr)
 	upstream, err := p.dial(r.Context(), "tcp", target)
 	if err != nil {
 		http.Error(w, "unreachable", http.StatusBadGateway)
@@ -118,6 +130,48 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.tunnelHTTP1(w, upstream)
 	} else {
 		p.tunnelHTTP2(w, r, upstream)
+	}
+}
+
+func clientHost(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
+func (p *proxy) acquire(remoteAddr string) bool {
+	host := clientHost(remoteAddr)
+	p.mu.Lock()
+	if p.perIP > 0 && p.active[host] >= p.perIP {
+		p.mu.Unlock()
+		return false
+	}
+	p.active[host]++
+	p.mu.Unlock()
+	select {
+	case p.slots <- struct{}{}:
+		return true
+	default:
+		p.mu.Lock()
+		p.decrement(host)
+		p.mu.Unlock()
+		return false
+	}
+}
+
+func (p *proxy) release(remoteAddr string) {
+	<-p.slots
+	p.mu.Lock()
+	p.decrement(clientHost(remoteAddr))
+	p.mu.Unlock()
+}
+
+func (p *proxy) decrement(host string) {
+	if p.active[host] <= 1 {
+		delete(p.active, host)
+	} else {
+		p.active[host]--
 	}
 }
 

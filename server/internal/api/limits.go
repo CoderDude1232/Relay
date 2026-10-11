@@ -29,6 +29,13 @@ var trustedProxies []netip.Prefix
 // carries the real client. The header is honoured only when the TCP peer is a
 // trusted proxy; anyone else could set it to dodge or poison rate limits.
 func sourceAddr(r *http.Request) string {
+	if addr, ok := r.Context().Value(sourceAddrKey{}).(string); ok {
+		return addr
+	}
+	return forwardedSourceAddr(r)
+}
+
+func forwardedSourceAddr(r *http.Request) string {
 	if len(trustedProxies) == 0 {
 		return r.RemoteAddr
 	}
@@ -126,7 +133,10 @@ func (l *tokenBucketLimiter) reset() {
 
 // allLimiters holds every package limiter so tests, which all share one
 // process and source IP, can start each case from empty buckets.
-var allLimiters []interface{ reset() }
+var allLimiters []interface {
+	reset()
+	prune()
+}
 
 // refill returns the (refilled) bucket for an already-hashed key. Caller holds mu.
 func (l *tokenBucketLimiter) refill(hk string, now time.Time) *tokenBucket {
@@ -180,6 +190,19 @@ func (l *tokenBucketLimiter) consume(key string, n float64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.refill(hk, time.Now()).tokens -= n
+}
+
+// refund returns n tokens to the key, capped at the bucket capacity. Used to
+// give back the unused part of a reservation taken with allowN.
+func (l *tokenBucketLimiter) refund(key string, n float64) {
+	hk := limitkey.Hash(key)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.refill(hk, time.Now())
+	b.tokens += n
+	if b.tokens > l.burst {
+		b.tokens = l.burst
+	}
 }
 
 // prune drops buckets that have refilled to capacity (indistinguishable from a
@@ -315,15 +338,24 @@ func (q *attachmentQuota) ownerKey(id, fallbackAccount string) (key string, ok b
 	return "", false
 }
 
-// uploadAllowed reports whether the owner still has byte budget left today.
-func (q *attachmentQuota) uploadAllowed(ownerKey string) bool {
-	return !q.bytes.exhausted(ownerKey)
+// unknownAttachmentOwner is the budget key for uploads to ids whose allocation
+// record was lost (allocated before a restart). All such uploads share one
+// account-sized daily byte budget.
+var unknownAttachmentOwner = limitkey.Hash("attach-unknown")
+
+// reserveUpload takes n bytes from the owner's daily budget before an upload
+// starts, so parallel uploads can't overrun it. Returns false (taking
+// nothing) when fewer than n bytes are left.
+func (q *attachmentQuota) reserveUpload(ownerKey string, n int64) bool {
+	return q.bytes.allowN(ownerKey, float64(n))
 }
 
-// charge records n uploaded bytes against the owner and forgets the
-// allocation (a blob id is uploaded once).
-func (q *attachmentQuota) charge(id, ownerKey string, n int64) {
-	q.bytes.consume(ownerKey, float64(n))
+// settleUpload refunds the unused part of a reservation (all of it when
+// nothing was stored) and forgets the allocation (a blob id is uploaded once).
+func (q *attachmentQuota) settleUpload(id, ownerKey string, reserved, used int64) {
+	if used < reserved {
+		q.bytes.refund(ownerKey, float64(reserved-used))
+	}
 	q.mu.Lock()
 	delete(q.owners, id)
 	q.mu.Unlock()
@@ -340,25 +372,4 @@ func (q *attachmentQuota) prune() {
 		}
 	}
 	q.mu.Unlock()
-}
-
-func (s *Server) pruneTokenBuckets() {
-	for _, l := range []*tokenBucketLimiter{
-		authFailIPLimiter,
-		authFailDeviceLimiter,
-		basicAuthSuccessLimiter,
-		wsSendLimiter,
-		preKeyTargetOTKLimiter,
-		preKeyRequesterOTKLimiter,
-		provisioningPollIPLimiter,
-		linkClaimIPLimiter,
-		contactInviteLimiter,
-		usernameChangeLimiter,
-		accountPasswordLimiter,
-	} {
-		l.prune()
-	}
-	if s.attachQuota != nil {
-		s.attachQuota.prune()
-	}
 }

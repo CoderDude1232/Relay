@@ -40,6 +40,10 @@ func newFailureLockout() *failureLockout {
 func (l *failureLockout) permit(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.permitLocked(key)
+}
+
+func (l *failureLockout) permitLocked(key string) bool {
 	e := l.entries[key]
 	if e == nil {
 		return true
@@ -52,10 +56,28 @@ func (l *failureLockout) permit(key string) bool {
 	return !now.Before(e.lockedUntil)
 }
 
+// attempt is permit plus fail in one step: the attempt is charged as a failure
+// before the password is checked, and succeed clears it. Checking first and
+// charging after the (slow) bcrypt would let a burst of concurrent guesses all
+// pass the check before any of them counted.
+func (l *failureLockout) attempt(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.permitLocked(key) {
+		return false
+	}
+	l.failLocked(key)
+	return true
+}
+
 // fail records a failed attempt and (past the free allowance) extends the lock.
 func (l *failureLockout) fail(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.failLocked(key)
+}
+
+func (l *failureLockout) failLocked(key string) {
 	now := l.now()
 	e := l.entries[key]
 	if e == nil || now.Sub(e.lastFailure) > lockoutForget {

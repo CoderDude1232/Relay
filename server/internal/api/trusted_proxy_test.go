@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -43,5 +44,28 @@ func TestSourceAddrTrustsOnlyConfiguredProxies(t *testing.T) {
 	}
 	if err := SetTrustedProxies("10.0.0.0/8, bogus"); err == nil {
 		t.Fatal("expected an error for a bad CIDR")
+	}
+}
+
+// The privacy middleware strips CF-Connecting-IP before handlers run; limits
+// must still see the forwarded client, or everyone behind one edge shares them.
+func TestSourceAddrSurvivesHeaderStripping(t *testing.T) {
+	t.Cleanup(func() { _ = SetTrustedProxies("") })
+	if err := SetTrustedProxies("cloudflare"); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	h := stripVisitorIPHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("CF-Connecting-IP") != "" {
+			t.Fatal("header not stripped")
+		}
+		got = clientIP(r)
+	}))
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "172.70.1.2:4000"
+	r.Header.Set("CF-Connecting-IP", "203.0.113.9")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	if got != "203.0.113.9" {
+		t.Fatalf("clientIP after stripping = %q, want the forwarded client", got)
 	}
 }

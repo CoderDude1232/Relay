@@ -52,6 +52,8 @@ type wsSession struct {
 	// writerDone is closed when writePump exits (write error / timeout), so a
 	// blocked sendBlocking can't wait forever on a dead connection.
 	writerDone chan struct{}
+	// overflow is signalled when a live frame was dropped on a full buffer.
+	overflow chan struct{}
 }
 
 func (s *wsSession) Send(frame *relaypb.ServerFrame) bool {
@@ -61,7 +63,14 @@ func (s *wsSession) Send(frame *relaypb.ServerFrame) bool {
 	case <-s.done:
 		return false
 	default:
-		return false // buffer full; queued envelopes survive in the store
+		// Buffer full. The envelope is still queued in the store; ask the
+		// session to drain the queue again so it isn't stranded until the next
+		// reconnect.
+		select {
+		case s.overflow <- struct{}{}:
+		default:
+		}
+		return false
 	}
 }
 
@@ -100,6 +109,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		out:        make(chan *relaypb.ServerFrame, sendBufferSize),
 		done:       make(chan struct{}),
 		writerDone: make(chan struct{}),
+		overflow:   make(chan struct{}, 1),
 	}
 
 	s.hub.Register(dev.AccountID, dev.DeviceID, sess)
@@ -114,8 +124,6 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	if _, err := s.store.DeviceByID(dev.AccountID, dev.DeviceID); err != nil {
 		return
 	}
-
-	go sess.writePump()
 
 	// If a nuke was issued while this device was offline, deliver it directly
 	// and then close; the client wipes itself and there is nothing to drain.
@@ -148,6 +156,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 		return
 	}
 
+	// Started only now: the nuke path above writes to conn directly, and
+	// gorilla allows one concurrent writer.
+	go sess.writePump()
+
 	// Drain the offline queue page by page, then mark it empty. These go
 	// through the same buffered channel as live traffic to keep ordering, but
 	// with backpressure (sendBlocking): nothing is dropped when the buffer is
@@ -158,6 +170,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	if !sess.sendBlocking(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_QueueEmpty{QueueEmpty: &relaypb.QueueEmpty{}}}) {
 		return
 	}
+	go s.redrainOnOverflow(dev, sess)
 
 	conn.SetReadLimit(maxFrameSize)
 	conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -202,6 +215,30 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 			if err := s.hub.Ack(dev.AccountID, dev.DeviceID, p.Ack.EnvelopeId); err != nil {
 				slog.Error("ws: ack failed", "err", privlog.Error(err))
 			}
+		}
+	}
+}
+
+// redrainOnOverflow re-sends the queue after live frames were dropped on a
+// full buffer. Envelopes already delivered but not yet acked may arrive
+// twice; clients de-duplicate by envelope id.
+func (s *Server) redrainOnOverflow(dev *store.Device, sess *wsSession) {
+	for {
+		select {
+		case <-sess.overflow:
+		case <-sess.done:
+			return
+		case <-sess.writerDone:
+			return
+		}
+		// Let the writer catch up so the drain itself doesn't overflow.
+		select {
+		case <-time.After(time.Second):
+		case <-sess.done:
+			return
+		}
+		if !s.drainQueue(dev, sess) {
+			return
 		}
 	}
 }

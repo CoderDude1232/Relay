@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/relayapp/relay-server/internal/store"
 )
 
 func TestParseCloudflareICE(t *testing.T) {
@@ -110,7 +112,7 @@ func TestTurnCredentialsFailover(t *testing.T) {
 	}
 	get := func() resp {
 		w := httptest.NewRecorder()
-		s.handleTurnCredentials(w, httptest.NewRequest("GET", "/v1/turn-credentials", nil), nil)
+		s.handleTurnCredentials(w, httptest.NewRequest("GET", "/v1/turn-credentials", nil), &store.Device{AccountID: "acct"})
 		var r resp
 		if err := json.Unmarshal(w.Body.Bytes(), &r); err != nil {
 			t.Fatal(err)
@@ -131,6 +133,7 @@ func TestTurnCredentialsFailover(t *testing.T) {
 
 	// Cloudflare failing: still hand out our own server.
 	s.cfTURN.APIToken = "wrong"
+	s.cfTURN.cached = iceServer{} // expire the reused credential
 	r = get()
 	if len(r.ICEServers) != 1 || r.URLs[0] != "turn:turn.example:3478" {
 		t.Fatalf("cloudflare down: should fall back to own TURN: %+v", r)
@@ -149,7 +152,7 @@ func TestCheckNowFailsOverImmediately(t *testing.T) {
 	s.SetTURNFailover(live, &CloudflareTURN{KeyID: "kid", APIToken: "tok", Endpoint: cf.URL})
 	get := func(q string) string {
 		w := httptest.NewRecorder()
-		s.handleTurnCredentials(w, httptest.NewRequest("GET", "/v1/turn-credentials"+q, nil), nil)
+		s.handleTurnCredentials(w, httptest.NewRequest("GET", "/v1/turn-credentials"+q, nil), &store.Device{AccountID: "acct"})
 		var r struct {
 			Username string `json:"username"`
 		}

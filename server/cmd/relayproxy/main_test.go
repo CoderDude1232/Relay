@@ -97,3 +97,24 @@ func TestBusyWhenFull(t *testing.T) {
 		t.Fatalf("status %d, want 503", rec.Code)
 	}
 }
+
+func TestPerIPCap(t *testing.T) {
+	p := newProxy("api.relaymsg.app:443", 10)
+	p.perIP = 2
+	if !p.acquire("192.0.2.1:1000") || !p.acquire("192.0.2.1:1001") {
+		t.Fatal("first two tunnels refused")
+	}
+	if p.acquire("192.0.2.1:1002") {
+		t.Fatal("third tunnel from the same address allowed")
+	}
+	if !p.acquire("192.0.2.2:1000") {
+		t.Fatal("another address refused")
+	}
+	p.release("192.0.2.1:1000")
+	if !p.acquire("192.0.2.1:1003") {
+		t.Fatal("slot not returned on release")
+	}
+	if len(p.slots) != 3 {
+		t.Fatalf("global slots in use = %d, want 3", len(p.slots))
+	}
+}

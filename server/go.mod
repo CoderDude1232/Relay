@@ -1,6 +1,6 @@
 module github.com/relayapp/relay-server
 
-go 1.26.5
+go 1.26.9
 
 require (
 	filippo.io/edwards25519 v1.2.0
@@ -27,7 +27,7 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

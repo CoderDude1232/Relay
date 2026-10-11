@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -20,8 +21,15 @@ var visitorIPHeaders = []string{
 	"Forwarded",
 }
 
+type sourceAddrKey struct{}
+
+// stripVisitorIPHeaders removes the client-address headers so no handler can
+// log or store them. The address rate limits key on is read first and kept in
+// the request context (see sourceAddr); without that, every client behind one
+// Cloudflare edge would share a single set of limits.
 func stripVisitorIPHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), sourceAddrKey{}, forwardedSourceAddr(r)))
 		for _, header := range visitorIPHeaders {
 			r.Header.Del(header)
 		}
