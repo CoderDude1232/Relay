@@ -19,6 +19,8 @@ struct ContentView: View {
     @State private var backgroundedAt: Date? = nil
     @State private var isAuthenticating = false
     @State private var foundBackup: CloudBackupManager.FoundBackup?
+    @State private var showingPasskeyOffer = false
+    @State private var passkeyError: String?
 
     @AppStorage("relay.screenLockEnabled") private var screenLockEnabled = false
     @AppStorage("relay.screenLockTimeout") private var screenLockTimeout = 60
@@ -50,6 +52,34 @@ struct ContentView: View {
                         Button("Start Fresh", role: .cancel) {}
                     } message: { found in
                         Text("An iCloud backup from \(found.updatedAt.formatted(date: .abbreviated, time: .shortened)) was found for this account.")
+                    }
+                    .task(id: model.shouldOfferPasskey) {
+                        guard model.shouldOfferPasskey else { return }
+                        // After the iCloud restore offer, which is looked up first.
+                        try? await Task.sleep(for: .seconds(3))
+                        while foundBackup != nil { try? await Task.sleep(for: .milliseconds(500)) }
+                        showingPasskeyOffer = model.shouldOfferPasskey
+                    }
+                    .alert("Sign In Faster Next Time?", isPresented: $showingPasskeyOffer) {
+                        Button("Create Passkey") {
+                            Task {
+                                do { try await model.createPasskey() } catch PasskeyError.canceled {
+                                } catch { passkeyError = FriendlyError.message(for: error) }
+                            }
+                        }
+                        Button("Not Now", role: .cancel) {
+                            model.shouldOfferPasskey = false
+                            UserDefaults.standard.set(true, forKey: AppModel.passkeyPromptDismissedKey)
+                        }
+                    } message: {
+                        Text("A passkey signs you in with Face ID on a new iPhone, and brings your chat list back — no password or email code needed.")
+                    }
+                    .alert("Couldn't Create Passkey", isPresented: Binding(
+                        get: { passkeyError != nil }, set: { if !$0 { passkeyError = nil } }
+                    )) {
+                        Button("OK", role: .cancel) {}
+                    } message: {
+                        Text(passkeyError ?? "")
                     }
             case .failed(let message):
                 StorageUnavailableView(message: message)

@@ -123,6 +123,8 @@ func main() {
 	supabaseServiceKeyFile := flag.String("supabase-service-key-file", "", "path to a file holding the Supabase service-role key (enables deleting the Supabase auth user on account deletion)")
 	sealedKey := flag.String("sealed-sender-trust-key", "", "path to the sealed-sender trust-root private key (hex, 32 bytes); generated if absent, enables GET /v1/certificate/delivery")
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
+	passkeyRPID := flag.String("passkey-rp-id", api.DefaultPasskeyRPID, "WebAuthn relying party ID for passkey sign-in")
+	passkeyOrigins := flag.String("passkey-origins", api.DefaultPasskeyOrigin, "comma-separated origins accepted in passkey clientDataJSON")
 	flag.Parse()
 
 	level, err := parseLogLevel(*logLevel)
@@ -204,6 +206,16 @@ func main() {
 			KeyID: *cfTURNKeyID, APIToken: strings.TrimSpace(string(token)),
 		})
 		slog.Info("turn failover to cloudflare enabled", "probe", probeAddr, "status", *turnStatusURL)
+	}
+	var origins []string
+	for _, o := range strings.Split(*passkeyOrigins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			origins = append(origins, o)
+		}
+	}
+	if err := apiServer.SetPasskeyRP(*passkeyRPID, origins); err != nil {
+		slog.Error("invalid passkey config", "err", err)
+		os.Exit(1)
 	}
 	apiServer.SetAttachmentQuota(*attachDailyBytes, *attachDailyCount)
 	apiServer.SetAttachmentDiskCap(*attachDiskCap)

@@ -2,9 +2,11 @@
 //  AccountStorage.swift
 //  Relay
 //
-//  Keeps the chat and group list (not message history) with the account. The
-//  list is encrypted with an Argon2id key derived from the account password and
-//  stored on the relay as a padded, opaque blob.
+//  Keeps the chat and group list (not message history) with the account as a
+//  padded, opaque blob on the relay. The list is encrypted under a random
+//  content key, and that key is stored in slots: one wrapped by an Argon2id key
+//  from the account password, and one per passkey wrapped by a key from the
+//  passkey's PRF output. Either can unlock the list on a new device.
 //
 
 import Clibsodium
@@ -14,8 +16,26 @@ import RelayKit
 import SecureStorage
 
 enum AccountStorageCrypto {
-    private static let magic = Data("RAS1".utf8)
+    private static let legacyMagic = Data("RAS1".utf8)
+    private static let magic = Data("RAS2".utf8)
     private static let padBlock = 4096
+
+    enum SlotKind: UInt8 {
+        case password = 1
+        case passkey = 2
+    }
+
+    /// A copy of the content key, wrapped for one way of unlocking.
+    struct Slot: Equatable {
+        let kind: SlotKind
+        /// Empty for the password slot; the credential id for a passkey slot.
+        let id: Data
+        /// AES-GCM(content key), nonce | ciphertext | tag.
+        let wrapped: Data
+    }
+
+    /// Salt for the passkey PRF, the same for every account.
+    static let prfSalt = Data(SHA256.hash(data: Data("relay-account-storage-prf-v1".utf8)))
 
     /// Argon2id(password, salt = SHA-256("relay-account-storage-v1|" + account)[0..16]).
     /// Deliberately slow (~1 s); call off the main thread.
@@ -31,76 +51,247 @@ enum AccountStorageCrypto {
         return rc == 0 ? Data(key) : nil
     }
 
-    /// "RAS1" | AES-GCM(len(UInt32 BE) | plaintext | zero padding to 4 KiB).
-    nonisolated static func seal(_ plaintext: Data, key: Data) throws -> Data {
+    /// Slot key for a passkey, from its PRF output.
+    nonisolated static func passkeySlotKey(prfOutput: Data) -> Data {
+        let key = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: prfOutput),
+            info: Data("relay-account-storage-passkey-slot".utf8),
+            outputByteCount: 32
+        )
+        return key.withUnsafeBytes { Data($0) }
+    }
+
+    nonisolated static func newContentKey() -> Data {
+        SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+    }
+
+    private static func slotAD(_ kind: SlotKind, _ id: Data) -> Data {
+        Data("RAS2-slot".utf8) + [kind.rawValue] + id
+    }
+
+    nonisolated static func makeSlot(kind: SlotKind, id: Data = Data(), contentKey: Data, slotKey: Data) -> Slot? {
+        guard let box = try? AES.GCM.seal(contentKey, using: SymmetricKey(data: slotKey), authenticating: slotAD(kind, id)),
+              let combined = box.combined
+        else { return nil }
+        return Slot(kind: kind, id: id, wrapped: combined)
+    }
+
+    nonisolated static func unwrap(_ slot: Slot, slotKey: Data) -> Data? {
+        guard let box = try? AES.GCM.SealedBox(combined: slot.wrapped),
+              let key = try? AES.GCM.open(box, using: SymmetricKey(data: slotKey), authenticating: slotAD(slot.kind, slot.id)),
+              key.count == 32
+        else { return nil }
+        return key
+    }
+
+    /// slot count | per slot: kind | id length | id | wrapped length | wrapped.
+    nonisolated static func encodeSlots(_ slots: [Slot]) -> Data {
+        var out = Data([UInt8(slots.count)])
+        for slot in slots {
+            out.append(slot.kind.rawValue)
+            out.append(UInt8(slot.id.count)); out.append(slot.id)
+            out.append(UInt8(slot.wrapped.count)); out.append(slot.wrapped)
+        }
+        return out
+    }
+
+    /// Parses a slot table, returning the slots and the bytes it used.
+    nonisolated static func decodeSlots(_ data: Data) -> (slots: [Slot], length: Int)? {
+        let bytes = [UInt8](data)
+        guard let count = bytes.first else { return nil }
+        var i = 1
+        var slots: [Slot] = []
+        func take(_ n: Int) -> [UInt8]? {
+            guard i + n <= bytes.count else { return nil }
+            defer { i += n }
+            return Array(bytes[i..<(i + n)])
+        }
+        for _ in 0..<count {
+            guard let kindByte = take(1)?.first, let kind = SlotKind(rawValue: kindByte),
+                  let idLen = take(1)?.first, let id = take(Int(idLen)),
+                  let wrappedLen = take(1)?.first, let wrapped = take(Int(wrappedLen))
+            else { return nil }
+            slots.append(Slot(kind: kind, id: Data(id), wrapped: Data(wrapped)))
+        }
+        return (slots, i)
+    }
+
+    private static func pad(_ plaintext: Data) -> Data {
         var body = Data()
         withUnsafeBytes(of: UInt32(plaintext.count).bigEndian) { body.append(contentsOf: $0) }
         body.append(plaintext)
         let padded = ((body.count + padBlock - 1) / padBlock) * padBlock
         body.append(Data(count: padded - body.count))
-        let box = try AES.GCM.seal(body, using: SymmetricKey(data: key), authenticating: magic)
-        return magic + box.combined!
+        return body
     }
 
-    nonisolated static func open(_ blob: Data, key: Data) -> Data? {
-        guard blob.prefix(4) == magic,
-              let box = try? AES.GCM.SealedBox(combined: blob.dropFirst(4)),
-              let body = try? AES.GCM.open(box, using: SymmetricKey(data: key), authenticating: magic),
-              body.count >= 4
-        else { return nil }
+    private static func unpad(_ body: Data) -> Data? {
+        guard body.count >= 4 else { return nil }
         let length = Int(body.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) })
         guard 4 + length <= body.count else { return nil }
         return body.subdata(in: 4..<(4 + length))
     }
+
+    /// "RAS2" | slots | AES-GCM(padded plaintext), with magic and slots as AD.
+    nonisolated static func seal(_ plaintext: Data, contentKey: Data, slots: [Slot]) throws -> Data {
+        let header = magic + encodeSlots(slots)
+        let box = try AES.GCM.seal(pad(plaintext), using: SymmetricKey(data: contentKey), authenticating: header)
+        return header + box.combined!
+    }
+
+    /// The slot table of a RAS2 blob.
+    nonisolated static func slots(in blob: Data) -> [Slot]? {
+        guard blob.prefix(4) == magic else { return nil }
+        return decodeSlots(blob.dropFirst(4))?.slots
+    }
+
+    nonisolated static func isLegacy(_ blob: Data) -> Bool { blob.prefix(4) == legacyMagic }
+
+    nonisolated static func open(_ blob: Data, contentKey: Data) -> Data? {
+        guard blob.prefix(4) == magic, let (_, length) = decodeSlots(blob.dropFirst(4)) else { return nil }
+        let header = blob.prefix(4 + length)
+        guard let box = try? AES.GCM.SealedBox(combined: blob.dropFirst(4 + length)),
+              let body = try? AES.GCM.open(box, using: SymmetricKey(data: contentKey), authenticating: header)
+        else { return nil }
+        return unpad(body)
+    }
+
+    /// "RAS1" | AES-GCM(padded plaintext) under the password key; read-only.
+    nonisolated static func openLegacy(_ blob: Data, passwordKey: Data) -> Data? {
+        guard blob.prefix(4) == legacyMagic,
+              let box = try? AES.GCM.SealedBox(combined: blob.dropFirst(4)),
+              let body = try? AES.GCM.open(box, using: SymmetricKey(data: passwordKey), authenticating: legacyMagic)
+        else { return nil }
+        return unpad(body)
+    }
 }
 
 extension MessagingService {
-    private static let storageKeyKV = "me:accountStorageKey"
+    /// Argon2id key from the account password (wraps the password slot).
+    private static let passwordKeyKV = "me:accountStorageKey"
+    private static let contentKeyKV = "me:accountStorageContentKey"
+    private static let slotsKV = "me:accountStorageSlots"
     private static let storageVersionKV = "me:accountStorageVersion"
 
-    private var accountStorageKey: Data? {
-        ((try? storage.database.query("SELECT value FROM kv WHERE key = ?", [.text(Self.storageKeyKV)])
-            .first?.first?.data) ?? nil).flatMap { $0.count == 32 ? $0 : nil }
+    private func kvData(_ key: String) -> Data? {
+        (try? storage.database.query("SELECT value FROM kv WHERE key = ?", [.text(key)]).first?.first?.data) ?? nil
+    }
+
+    private func setKV(_ key: String, _ value: Data?) {
+        if let value {
+            try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(value)])
+        } else {
+            try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
+        }
+    }
+
+    private var passwordKey: Data? { kvData(Self.passwordKeyKV).flatMap { $0.count == 32 ? $0 : nil } }
+    private var contentKey: Data? { kvData(Self.contentKeyKV).flatMap { $0.count == 32 ? $0 : nil } }
+
+    private var slots: [AccountStorageCrypto.Slot] {
+        get { kvData(Self.slotsKV).flatMap { AccountStorageCrypto.decodeSlots($0)?.slots } ?? [] }
+        set { setKV(Self.slotsKV, AccountStorageCrypto.encodeSlots(newValue)) }
     }
 
     private var accountStorageVersion: Int64 {
-        get {
-            ((try? storage.database.query("SELECT value FROM kv WHERE key = ?", [.text(Self.storageVersionKV)])
-                .first?.first?.data) ?? nil).flatMap { Int64(String(decoding: $0, as: UTF8.self)) } ?? 0
-        }
-        set {
-            try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
-                                      [.text(Self.storageVersionKV), .blob(Data(String(newValue).utf8))])
-        }
+        get { kvData(Self.storageVersionKV).flatMap { Int64(String(decoding: $0, as: UTF8.self)) } ?? 0 }
+        set { setKV(Self.storageVersionKV, Data(String(newValue).utf8)) }
     }
 
-    /// Re-bases on the server's version without reading the blob (used after a
-    /// password change, when the old blob can't be decrypted any more).
+    /// Re-bases on the server's version without reading the blob.
     func accountStorageVersionReset(to version: Int64) { accountStorageVersion = version }
 
-    /// Whether this device can keep the chat list with the account (it knows
-    /// the key, i.e. the account password was entered or set here).
-    var keepsChatListWithAccount: Bool { accountStorageKey != nil }
+    /// Whether this device can keep the chat list with the account (it can
+    /// unlock it with the account password or a passkey).
+    var keepsChatListWithAccount: Bool { contentKey != nil || passwordKey != nil }
 
-    /// Derives and remembers the storage key from the account password.
+    /// Remembers the key from the account password. If the content key is known
+    /// (password change), the password slot is rewrapped so passkeys keep working.
     func setAccountStorageKey(password: String) async {
         let account = credentials.accountId
         guard let key = await Task.detached(priority: .userInitiated, operation: {
             AccountStorageCrypto.deriveKey(password: password, accountId: account)
         }).value else { return }
-        try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
-                                  [.text(Self.storageKeyKV), .blob(key)])
+        setKV(Self.passwordKeyKV, key)
+        if let contentKey { replacePasswordSlot(contentKey: contentKey, passwordKey: key) }
     }
 
-    /// Restores the chat and group list after sign-in. A blob that can't be
-    /// opened (password reset) is overwritten by the next upload.
+    private func replacePasswordSlot(contentKey: Data, passwordKey: Data) {
+        guard let slot = AccountStorageCrypto.makeSlot(kind: .password, contentKey: contentKey, slotKey: passwordKey) else { return }
+        slots = [slot] + slots.filter { $0.kind != .password }
+    }
+
+    /// The content key and slots to seal with, creating them on first use (or
+    /// when converting a RAS1 list).
+    private func ensureContentKey() -> Data {
+        if let contentKey { return contentKey }
+        let key = AccountStorageCrypto.newContentKey()
+        setKV(Self.contentKeyKV, key)
+        slots = []
+        if let passwordKey { replacePasswordSlot(contentKey: key, passwordKey: passwordKey) }
+        return key
+    }
+
+    /// Restores the chat and group list after sign-in, and picks up slots other
+    /// devices added. A list this device can't open (password reset) is
+    /// replaced by the next upload.
     func restoreAccountStorage() async {
-        guard let key = accountStorageKey, let stored = try? await apiClient.accountStorage() else { return }
+        guard keepsChatListWithAccount, let stored = try? await apiClient.accountStorage() else { return }
         accountStorageVersion = stored.version
-        guard let plaintext = AccountStorageCrypto.open(stored.blob, key: key),
+        guard let plaintext = openStored(stored.blob),
               let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext)
         else { return }
         importBackupSnapshot(snapshot)
+    }
+
+    private func openStored(_ blob: Data) -> Data? {
+        if AccountStorageCrypto.isLegacy(blob) {
+            return passwordKey.flatMap { AccountStorageCrypto.openLegacy(blob, passwordKey: $0) }
+        }
+        guard let serverSlots = AccountStorageCrypto.slots(in: blob) else { return nil }
+        var key = contentKey
+        if key == nil, let passwordKey, let slot = serverSlots.first(where: { $0.kind == .password }) {
+            key = AccountStorageCrypto.unwrap(slot, slotKey: passwordKey)
+        }
+        guard let key, let plaintext = AccountStorageCrypto.open(blob, contentKey: key) else { return nil }
+        setKV(Self.contentKeyKV, key)
+        slots = serverSlots
+        return plaintext
+    }
+
+    /// Unlocks the chat list with a passkey after a passkey sign-in.
+    func restoreAccountStorage(passkeyCredentialId: Data, prfOutput: Data) async {
+        guard let stored = try? await apiClient.accountStorage() else { return }
+        accountStorageVersion = stored.version
+        guard let serverSlots = AccountStorageCrypto.slots(in: stored.blob),
+              let slot = serverSlots.first(where: { $0.kind == .passkey && $0.id == passkeyCredentialId }),
+              let key = AccountStorageCrypto.unwrap(slot, slotKey: AccountStorageCrypto.passkeySlotKey(prfOutput: prfOutput)),
+              let plaintext = AccountStorageCrypto.open(stored.blob, contentKey: key),
+              let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext)
+        else { return }
+        setKV(Self.contentKeyKV, key)
+        slots = serverSlots
+        importBackupSnapshot(snapshot)
+    }
+
+    /// Lets a new passkey unlock the chat list, then uploads.
+    func addPasskeySlot(credentialId: Data, prfOutput: Data) async {
+        guard !isDemoAccount else { return }
+        await restoreAccountStorage()
+        let key = ensureContentKey()
+        guard let slot = AccountStorageCrypto.makeSlot(
+            kind: .passkey, id: credentialId, contentKey: key,
+            slotKey: AccountStorageCrypto.passkeySlotKey(prfOutput: prfOutput)
+        ) else { return }
+        slots = slots.filter { !($0.kind == .passkey && $0.id == credentialId) } + [slot]
+        await uploadAccountStorage()
+    }
+
+    func removePasskeySlot(credentialId: Data) async {
+        guard contentKey != nil else { return }
+        await restoreAccountStorage()
+        slots = slots.filter { !($0.kind == .passkey && $0.id == credentialId) }
+        await uploadAccountStorage()
     }
 
     /// The chat and group list, without messages.
@@ -144,17 +335,19 @@ extension MessagingService {
     }
 
     /// Encrypts and uploads the chat list. On a version conflict (another
-    /// device wrote first) it merges in that device's list and retries once.
+    /// device wrote first) it merges in that device's list and slots, and
+    /// retries once.
     func uploadAccountStorage() async {
-        guard let key = accountStorageKey, !isDemoAccount else { return }
+        guard keepsChatListWithAccount, !isDemoAccount else { return }
         for _ in 0..<2 {
+            let key = ensureContentKey()
             guard let json = try? JSONEncoder().encode(chatListSnapshot()),
-                  let blob = try? AccountStorageCrypto.seal(json, key: key) else { return }
+                  let blob = try? AccountStorageCrypto.seal(json, contentKey: key, slots: slots) else { return }
             do {
                 accountStorageVersion = try await apiClient.putAccountStorage(blob, baseVersion: accountStorageVersion)
                 return
             } catch RelayAPIError.http(status: 409, _) {
-                await restoreAccountStorage() // merge the newer list, then retry
+                await restoreAccountStorage()
             } catch {
                 return
             }

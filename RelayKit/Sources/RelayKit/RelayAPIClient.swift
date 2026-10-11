@@ -948,6 +948,114 @@ public struct RelayAPIClient: Sendable {
     }
 }
 
+// MARK: - Passkeys
+
+/// A passkey on the account, as listed by `GET /v1/passkeys`.
+public struct PasskeySummary: Decodable, Sendable, Identifiable, Hashable {
+    /// Base64url credential id.
+    public let id: String
+    public let name: String
+    /// Milliseconds since 1970, rounded to the day by the relay.
+    public let createdAt: Int64
+}
+
+/// Server challenge for adding a passkey.
+public struct PasskeyRegistrationOptions: Sendable {
+    public let challenge: Data
+    public let userId: Data
+    public let userName: String
+    public let excludeCredentialIds: [Data]
+}
+
+extension RelayAPIClient {
+    public func passkeyRegistrationOptions() async throws -> PasskeyRegistrationOptions {
+        struct Response: Decodable {
+            let challenge: String
+            let userId: String
+            let userName: String
+            let excludeCredentialIds: [String]?
+        }
+        let r: Response = try await request("POST", "v1/passkeys/register/options", body: [String: String]())
+        guard let challenge = Data(base64URL: r.challenge), let userId = Data(base64URL: r.userId) else {
+            throw RelayAPIError.malformedResponse
+        }
+        return PasskeyRegistrationOptions(
+            challenge: challenge, userId: userId, userName: r.userName,
+            excludeCredentialIds: (r.excludeCredentialIds ?? []).compactMap { Data(base64URL: $0) }
+        )
+    }
+
+    /// Stores a newly created passkey (`POST /v1/passkeys/register`).
+    public func registerPasskey(
+        credentialId: Data, clientDataJSON: Data, attestationObject: Data, name: String
+    ) async throws {
+        try await requestExpectingNoContent("POST", "v1/passkeys/register", body: [
+            "credentialId": credentialId.base64URLEncoded,
+            "clientDataJSON": clientDataJSON.base64URLEncoded,
+            "attestationObject": attestationObject.base64URLEncoded,
+            "name": name,
+        ])
+    }
+
+    public func passkeys() async throws -> [PasskeySummary] {
+        struct Response: Decodable { let passkeys: [PasskeySummary] }
+        let r: Response = try await request("GET", "v1/passkeys", body: Optional<[String: String]>.none)
+        return r.passkeys
+    }
+
+    public func deletePasskey(id: String) async throws {
+        _ = try await send(makeRequest("DELETE", "v1/passkeys/\(id)"), authenticated: true)
+    }
+
+    /// Challenge for a passkey sign-in (`POST /v1/passkeys/login/options`).
+    public func passkeyLoginOptions() async throws -> (challenge: Data, sessionId: String) {
+        struct Response: Decodable { let challenge: String; let sessionId: String }
+        let r: Response = try await request(
+            "POST", "v1/passkeys/login/options", body: [String: String](), authenticated: false
+        )
+        guard let challenge = Data(base64URL: r.challenge) else { throw RelayAPIError.malformedResponse }
+        return (challenge, r.sessionId)
+    }
+
+    /// Signs in with a passkey assertion and provisions a new device. A
+    /// verified passkey satisfies registration lock, so no account password.
+    public func signInWithPasskey(
+        sessionId: String, credentialId: Data, clientDataJSON: Data, authenticatorData: Data,
+        signature: Data, userHandle: Data, devicePassword: String
+    ) async throws -> (credentials: RelayCredentials, username: String) {
+        struct Response: Decodable {
+            let accountId: String
+            let deviceId: UInt32
+            let username: String
+        }
+        let r: Response = try await request("POST", "v1/passkeys/login", body: [
+            "sessionId": sessionId,
+            "credentialId": credentialId.base64URLEncoded,
+            "clientDataJSON": clientDataJSON.base64URLEncoded,
+            "authenticatorData": authenticatorData.base64URLEncoded,
+            "signature": signature.base64URLEncoded,
+            "userHandle": userHandle.base64URLEncoded,
+            "password": devicePassword,
+        ], authenticated: false)
+        return (RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword), r.username)
+    }
+}
+
+extension Data {
+    public init?(base64URL string: String) {
+        var s = string.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        s += String(repeating: "=", count: (4 - s.count % 4) % 4)
+        self.init(base64Encoded: s)
+    }
+
+    public var base64URLEncoded: String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
 // MARK: - Reports
 
 /// Abuse-report categories accepted by `POST /v1/reports`.

@@ -360,10 +360,16 @@ private struct AccountSettingsView: View {
                     }
                 }
                 .tint(.primary)
+                NavigationLink(destination: PasskeysView(service: service)) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "person.badge.key.fill", color: .green)
+                        Text("Passkeys")
+                    }
+                }
             } footer: {
                 Text(service.keepsChatListWithAccount
-                     ? "Used to recover your account by email, and required to sign in on a new device — which signs out your other devices. Your chat list (not messages) is kept with your account, encrypted with this password, so signing back in brings your chats back."
-                     : "Used to recover your account by email, and required to sign in on a new device — which signs out your other devices. Set or re-enter it here to keep your chat list (not messages) with your account, encrypted with this password, so signing out doesn't lose your chats.")
+                     ? "Used to recover your account by email, and required to sign in on a new device unless you use a passkey. Signing in signs out your other devices. Your chat list (not messages) is kept with your account, encrypted so only this password or your passkeys can open it, so signing back in brings your chats back."
+                     : "Used to recover your account by email, and required to sign in on a new device unless you use a passkey. Signing in signs out your other devices. Set or re-enter it here, or create a passkey, to keep your chat list (not messages) with your account, encrypted, so signing out doesn't lose your chats.")
             }
 
             Section {

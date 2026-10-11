@@ -820,6 +820,11 @@ private struct EmailCodeView: View {
     }
 
     var body: some View {
+        content
+            .modifier(PasskeyAutoFill(enabled: !codeSent, errorMessage: $errorMessage))
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(spacing: 16) {
                 HStack {
@@ -865,7 +870,7 @@ private struct EmailCodeView: View {
                     } else {
                         AuthField(icon: "envelope", placeholder: "Email address",
                                   text: $email, focused: $focused, field: .email,
-                                  contentType: .emailAddress, keyboard: .emailAddress)
+                                  contentType: .username, keyboard: .emailAddress)
                     }
                 }
                 .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
@@ -974,6 +979,11 @@ private struct RecoveryView: View {
     }
 
     var body: some View {
+        content
+            .modifier(PasskeyAutoFill(enabled: true, errorMessage: $errorMessage))
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(spacing: 0) {
                 HStack {
@@ -1011,7 +1021,7 @@ private struct RecoveryView: View {
                             .frame(width: 24)
                         TextField("Email address", text: $email)
                             .focused($focused, equals: .email)
-                            .textContentType(.emailAddress)
+                            .textContentType(.username)
                             .keyboardType(.emailAddress)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
@@ -1333,6 +1343,30 @@ private struct AuthField: View {
         .padding(.vertical, 16)
         .contentShape(.rect)
         .onTapGesture { focused.wrappedValue = field }
+    }
+}
+
+/// Offers saved passkeys in the keyboard's suggestions on a sign-in screen's
+/// email field; picking one signs in without anything else.
+private struct PasskeyAutoFill: ViewModifier {
+    let enabled: Bool
+    @Binding var errorMessage: String?
+    @Environment(AppModel.self) private var model
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: enabled) {
+                guard enabled else { return }
+                do {
+                    try await model.signInWithPasskey(autoFill: true)
+                } catch PasskeyError.canceled, PasskeyError.unsupported {
+                } catch is CancellationError {
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
+            .onChange(of: enabled) { _, on in if !on { model.cancelPasskeyAutoFill() } }
+            .onDisappear { model.cancelPasskeyAutoFill() }
     }
 }
 

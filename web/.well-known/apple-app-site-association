@@ -2,14 +2,29 @@
   "applinks": {
     "details": [
       {
-        "appIDs": ["HK396F3767.app.relaymsg"],
+        "appIDs": [
+          "HK396F3767.app.relaymsg"
+        ],
         "components": [
-          { "/": "/add/*" },
-          { "/": "/c/*" },
-          { "/": "/g/*" },
-          { "/": "/call/*" }
+          {
+            "/": "/add/*"
+          },
+          {
+            "/": "/c/*"
+          },
+          {
+            "/": "/g/*"
+          },
+          {
+            "/": "/call/*"
+          }
         ]
       }
+    ]
+  },
+  "webcredentials": {
+    "apps": [
+      "HK396F3767.app.relaymsg"
     ]
   }
 }

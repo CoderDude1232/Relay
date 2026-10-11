@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/hub"
@@ -77,6 +78,11 @@ type Server struct {
 	// appleRevoker, if non-nil, revokes the user's Sign in with Apple grant on
 	// account deletion.
 	appleRevoker AppleRevoker
+
+	// Passkeys (passkeys.go). webauthn is nil until SetPasskeyRP succeeds.
+	webauthn     *webauthn.WebAuthn
+	passkeyReg   *passkeySessions // keyed by account id
+	passkeyLogin *passkeySessions // keyed by random session id
 }
 
 // AppleRevoker exchanges a Sign in with Apple authorization code for the
@@ -120,8 +126,12 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 	}
 	s := &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret,
 		attachQuota:   newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount),
-		attachDiskCap: DefaultAttachmentDiskCap}
+		attachDiskCap: DefaultAttachmentDiskCap,
+		passkeyReg:    newPasskeySessions(), passkeyLogin: newPasskeySessions()}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
+	if err := s.SetPasskeyRP(DefaultPasskeyRPID, []string{DefaultPasskeyOrigin}); err != nil {
+		panic("api: default passkey config: " + err.Error())
+	}
 	return s
 }
 
@@ -319,6 +329,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
 	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
 	mux.HandleFunc("GET /v1/devices/{id}/auth-key", s.auth(s.handleGetDeviceAuthKey))
+	mux.HandleFunc("POST /v1/passkeys/register/options", s.auth(s.handlePasskeyRegisterOptions))
+	mux.HandleFunc("POST /v1/passkeys/register", s.auth(s.handlePasskeyRegister))
+	mux.HandleFunc("GET /v1/passkeys", s.auth(s.handleListPasskeys))
+	mux.HandleFunc("DELETE /v1/passkeys/{id}", s.auth(s.handleDeletePasskey))
+	mux.HandleFunc("POST /v1/passkeys/login/options", s.handlePasskeyLoginOptions) // unauthenticated, per-IP limited
+	mux.HandleFunc("POST /v1/passkeys/login", s.handlePasskeyLogin)                // unauthenticated, per-IP limited
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability

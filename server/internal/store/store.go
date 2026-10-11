@@ -432,6 +432,18 @@ CREATE TABLE IF NOT EXISTS group_invites (
     released_at BIGINT NOT NULL
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_released_usernames_released_at ON released_usernames (released_at)`,
+		// Passkeys (store/passkeys.go). The WebAuthn user handle is random per
+		// account, never the account id.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS passkey_user_handle BYTEA`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_passkey_user_handle ON accounts (passkey_user_handle) WHERE passkey_user_handle IS NOT NULL`,
+		`CREATE TABLE IF NOT EXISTS passkeys (
+    credential_id BYTEA PRIMARY KEY,
+    account_id    TEXT NOT NULL REFERENCES accounts(id),
+    credential    JSONB NOT NULL,
+    name          TEXT NOT NULL DEFAULT '',
+    created_at    BIGINT NOT NULL
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_passkeys_account ON passkeys (account_id)`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err
@@ -1593,8 +1605,8 @@ func (s *Store) SupabaseUserID(accountID string) (string, error) {
 
 // DeleteAccount removes an account and everything keyed to it in one
 // transaction: prekeys, queued envelopes, devices, link tokens, contact
-// invites, directory rows, nuke commands, reports it filed, and the account
-// row. The username enters the reuse cooldown for everyone. Reports filed
+// invites, directory rows, nuke commands, reports it filed, passkeys, and the
+// account row. The username enters the reuse cooldown for everyone. Reports filed
 // against the account are kept. Returns ErrNotFound if the account does not
 // exist.
 //
@@ -1636,6 +1648,7 @@ func (s *Store) DeleteAccount(accountID string) error {
 		`DELETE FROM nuke_commands WHERE account_id = $1`,
 		`DELETE FROM reports WHERE reporter_account = $1`,
 		`DELETE FROM account_storage WHERE account_id = $1`,
+		`DELETE FROM passkeys WHERE account_id = $1`,
 		`DELETE FROM accounts WHERE id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, stmt, accountID); err != nil {

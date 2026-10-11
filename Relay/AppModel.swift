@@ -16,6 +16,7 @@ import Observation
 import OSLog
 import RelayCore
 import RelayKit
+import UIKit
 import SecureStorage
 import Security
 import UIKit
@@ -44,6 +45,9 @@ final class AppModel {
     /// Set when an existing account signs in on this device; the main screen
     /// then offers an iCloud backup if one exists, and clears this.
     var shouldOfferBackupRestore = false
+    /// Show the one-time "create a passkey" prompt after a non-passkey sign-in.
+    var shouldOfferPasskey = false
+    @ObservationIgnored private let passkeys = PasskeyAuthenticator()
     /// relay://add/<username>
     var pendingDeepLinkUsername: String?
     /// relay://join/<token> invite link.
@@ -390,6 +394,7 @@ final class AppModel {
                 shouldOfferBackupRestore = true
                 service.noteSignedIn(username: resolvedUsername)
             }
+            offerPasskeyIfNeeded(service)
             uploadPushTokenIfReady()
             publishDeviceAuthorizationKeyIfReady()
             publishAccessKeyIfReady()
@@ -399,6 +404,85 @@ final class AppModel {
                 try? await service.publishInitialKeys()
             }
         }
+    }
+
+    // MARK: Passkeys
+
+    static let passkeyPromptDismissedKey = "relay.passkeyPromptDismissed"
+
+    /// Signs in with a passkey. With `autoFill`, waits for the user to pick one
+    /// from the keyboard suggestions on a sign-in field; cancel with
+    /// `cancelPasskeyAutoFill()`. A passkey satisfies registration lock, and its
+    /// PRF output unlocks the chat list kept with the account.
+    func signInWithPasskey(autoFill: Bool) async throws {
+        let serverURL = RelayConfig.serverURL
+        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
+        let options = try await api.passkeyLoginOptions()
+        let assertion = try await passkeys.assert(challenge: options.challenge, autoFill: autoFill)
+        let password = Self.generateRandomPassword()
+        let signedIn: (credentials: RelayCredentials, username: String)
+        do {
+            signedIn = try await api.signInWithPasskey(
+                sessionId: options.sessionId, credentialId: assertion.credentialId,
+                clientDataJSON: assertion.clientDataJSON, authenticatorData: assertion.authenticatorData,
+                signature: assertion.signature, userHandle: assertion.userHandle, devicePassword: password
+            )
+        } catch RelayAPIError.http(401, _) {
+            throw PasskeyError.failed("That passkey isn't linked to a Relay account any more.")
+        } catch RelayAPIError.http(409, _) {
+            throw PasskeyError.failed("This account has reached its device limit. Unlink a device first.")
+        }
+        let service = try await makeService(credentials: signedIn.credentials, serverURL: serverURL, username: signedIn.username)
+        let saved = SavedAccount(
+            accountId: signedIn.credentials.accountId, deviceId: signedIn.credentials.deviceId,
+            password: password, serverURL: serverURL, username: signedIn.username,
+            email: nil, supabaseUserId: nil
+        )
+        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        service.start()
+        phase = .ready(service)
+        shouldOfferBackupRestore = true
+        service.noteSignedIn(username: signedIn.username)
+        if let prf = assertion.prfOutput {
+            Task { await service.restoreAccountStorage(passkeyCredentialId: assertion.credentialId, prfOutput: prf) }
+        }
+        uploadPushTokenIfReady()
+        publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
+        Task { try? await service.publishInitialKeys() }
+    }
+
+    func cancelPasskeyAutoFill() { passkeys.cancel() }
+
+    /// Creates a passkey for this account and lets it unlock the chat list.
+    func createPasskey() async throws {
+        guard case .ready(let service) = phase else { return }
+        let options = try await service.apiClient.passkeyRegistrationOptions()
+        let created = try await passkeys.register(
+            challenge: options.challenge, userId: options.userId,
+            userName: options.userName, excluding: options.excludeCredentialIds
+        )
+        try await service.apiClient.registerPasskey(
+            credentialId: created.credentialId, clientDataJSON: created.clientDataJSON,
+            attestationObject: created.attestationObject, name: UIDevice.current.model
+        )
+        UserDefaults.standard.set(true, forKey: Self.passkeyPromptDismissedKey)
+        shouldOfferPasskey = false
+        // Some providers return PRF only on use; ask once more if needed.
+        var prf = created.prfOutput
+        if prf == nil, let challenge = try? await service.apiClient.passkeyLoginOptions().challenge,
+           let assertion = try? await passkeys.assert(challenge: challenge, credentialId: created.credentialId) {
+            prf = assertion.prfOutput
+        }
+        if let prf {
+            await service.addPasskeySlot(credentialId: created.credentialId, prfOutput: prf)
+        }
+    }
+
+    /// Offers a passkey once, after a sign-in that didn't use one.
+    private func offerPasskeyIfNeeded(_ service: MessagingService) {
+        guard !UserDefaults.standard.bool(forKey: Self.passkeyPromptDismissedKey), !service.isDemoAccount else { return }
+        shouldOfferPasskey = true
     }
 
     func changeUsername(_ newUsername: String) async throws {
