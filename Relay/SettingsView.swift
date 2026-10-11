@@ -174,7 +174,8 @@ struct SettingsView: View {
             }
             .onAppear { avatarData = service.myAvatarData }
             .sheet(isPresented: $showingQR) {
-                MyQRCodeView(username: service.username ?? "", createInviteLink: {
+                MyQRCodeView(username: service.username ?? "", displayName: service.myDisplayName,
+                             avatarData: service.myAvatarData, createInviteLink: {
                     try await service.createContactInviteLink()
                 })
             }
@@ -393,7 +394,8 @@ private struct AccountSettingsView: View {
             Text("Without an email, a passkey is how you sign in. Create one in Passkeys, save your recovery key, then remove your email.")
         }
         .sheet(isPresented: $showingQR) {
-            MyQRCodeView(username: username, createInviteLink: {
+            MyQRCodeView(username: username, displayName: service.myDisplayName,
+                         avatarData: service.myAvatarData, createInviteLink: {
                 try await service.createContactInviteLink()
             })
         }

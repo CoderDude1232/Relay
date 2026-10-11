@@ -39,64 +39,61 @@ private struct QRPreset: Identifiable, Equatable, Sendable {
 
 struct MyQRCodeView: View {
     let username: String
+    var displayName: String? = nil
+    var avatarData: Data? = nil
     /// Optional generator for a one-time, single-use contact invite link.
     var createInviteLink: (() async throws -> URL)? = nil
 
     @Environment(\.dismiss) private var dismiss
-    private let preset = QRPreset.all[0]
+    @AppStorage("qr.preset") private var presetId = QRPreset.all[0].id
     @State private var qrImage: UIImage?
     @State private var shareCard: UIImage?
     @State private var showingShare = false
+    @State private var linkCopied = false
     @State private var inviteLink: URL?
     @State private var showingInviteShare = false
     @State private var generatingInvite = false
     @State private var inviteError: String?
 
+    private var preset: QRPreset { QRPreset.all.first { $0.id == presetId } ?? QRPreset.all[0] }
+    private var link: String { "https://relaymsg.app/add/\(username)" }
+    private var name: String { (displayName?.isEmpty == false ? displayName : nil) ?? "@\(username)" }
+
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .top) {
-                cardView
-                    .frame(maxWidth: 340)
-                    .padding(.top, 24)
+            ZStack {
+                LinearGradient(colors: [preset.topColor, preset.botColor], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea()
+                    .animation(.easeInOut(duration: 0.3), value: presetId)
 
-                // The controls are hidden from screenshots so only the card is
-                // captured.
-                VStack(spacing: 14) {
-                    Spacer()
-
-                    Text("relaymsg.app/add/\(username)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-
-                    actionButtons
-                        .hiddenInScreenshots()
+                ScrollView {
+                    VStack(spacing: 26) {
+                        cardView
+                            .padding(.top, 48)
+                        // Controls are hidden from screenshots so only the card is captured.
+                        controls
+                            .hiddenInScreenshots()
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 24)
+                    .frame(maxWidth: 420)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.bottom, 10)
+                .scrollBounceBehavior(.basedOnSize)
             }
-            .padding(.horizontal, 32)
             .navigationTitle("My QR Code")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showingShare = true } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .accessibilityLabel("Share QR Code")
-                    .disabled(shareCard == nil)
-                }
             }
             .sheet(isPresented: $showingShare) {
-                if let card = shareCard,
-                   let link = URL(string: "https://relaymsg.app/add/\(username)") {
-                    ActivitySheet(items: [card, link])
+                if let card = shareCard, let url = URL(string: link) {
+                    ActivitySheet(items: [card, url])
                         .presentationDetents([.medium, .large])
                 }
-            }
-            .task {
-                await regenerate()
             }
             .sheet(isPresented: $showingInviteShare) {
                 if let inviteLink {
@@ -104,6 +101,7 @@ struct MyQRCodeView: View {
                         .presentationDetents([.medium])
                 }
             }
+            .task(id: presetId) { await regenerate() }
             .alert("Invite Link", isPresented: Binding(
                 get: { inviteError != nil },
                 set: { if !$0 { inviteError = nil } }
@@ -115,45 +113,90 @@ struct MyQRCodeView: View {
         }
     }
 
-    // The gradient card (QR and username), the only part visible in screenshots.
+    /// White card: photo on the top edge, name, username and the code.
     private var cardView: some View {
-        VStack(spacing: 18) {
-            Group {
+        VStack(spacing: 4) {
+            Text(name)
+                .font(.title2.bold())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .padding(.top, 50)
+            if displayName?.isEmpty == false {
+                Text("@\(username)")
+                    .font(.subheadline)
+                    .foregroundStyle(Color.black.opacity(0.5))
+            }
+            ZStack {
                 if let image = qrImage {
                     Image(uiImage: image)
                         .interpolation(.none)
                         .resizable()
                         .scaledToFit()
-                        .accessibilityLabel("QR code for \(username)")
+                    RelayOfficialAvatar(size: 46)
+                        .padding(4)
+                        .background(.white, in: .circle)
+                        .accessibilityHidden(true)
                 } else {
                     ProgressView()
-                        .tint(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: 220)
-                        .accessibilityLabel("Generating QR code")
+                        .frame(maxWidth: .infinity, minHeight: 240)
                 }
             }
-            .padding(18)
-            .background(.white, in: .rect(cornerRadius: 16, style: .continuous))
-
-            Text("@\(username)")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.bottom, 2)
+            .padding(.top, 16)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("QR code for @\(username)")
+            Text("Scan to message me on Relay")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(Color.black.opacity(0.45))
+                .padding(.top, 14)
         }
-        .padding(24)
-        .background(
-            LinearGradient(
-                colors: [preset.topColor, preset.botColor],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: .rect(cornerRadius: 32, style: .continuous)
-        )
+        .foregroundStyle(.black)
+        .padding(.horizontal, 26)
+        .padding(.bottom, 24)
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .fill(.white)
+                .shadow(color: .black.opacity(0.25), radius: 30, y: 14)
+        }
+        .overlay(alignment: .top) {
+            AvatarView(name: displayName ?? username, size: 84, imageData: avatarData)
+                .padding(5)
+                .background(.white, in: .circle)
+                .offset(y: -42)
+                .accessibilityHidden(true)
+        }
     }
 
-    @ViewBuilder
-    private var actionButtons: some View {
-        VStack(spacing: 10) {
+    private var controls: some View {
+        VStack(spacing: 18) {
+            HStack(spacing: 14) {
+                ForEach(QRPreset.all) { option in
+                    Button {
+                        presetId = option.id
+                    } label: {
+                        Circle()
+                            .fill(LinearGradient(colors: [option.topColor, option.botColor],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 30, height: 30)
+                            .overlay(Circle().strokeBorder(.white, lineWidth: option.id == presetId ? 3 : 1)
+                                .opacity(option.id == presetId ? 1 : 0.5))
+                    }
+                    .accessibilityLabel(option.id.capitalized)
+                    .accessibilityAddTraits(option.id == presetId ? .isSelected : [])
+                }
+            }
+
+            HStack(spacing: 12) {
+                actionButton(title: "Share", systemImage: "square.and.arrow.up") { showingShare = true }
+                    .disabled(shareCard == nil)
+                actionButton(title: linkCopied ? "Copied" : "Copy Link",
+                             systemImage: linkCopied ? "checkmark" : "link") {
+                    SecurePasteboard.copy(link)
+                    linkCopied = true
+                    Task { try? await Task.sleep(for: .seconds(2)); linkCopied = false }
+                }
+            }
+
             if let createInviteLink {
                 Button {
                     generatingInvite = true
@@ -167,31 +210,44 @@ struct MyQRCodeView: View {
                         }
                     }
                 } label: {
-                    if generatingInvite {
-                        ProgressView()
-                    } else {
-                        Label("Create One-Time Invite Link", systemImage: "link.badge.plus")
+                    HStack(spacing: 6) {
+                        if generatingInvite { ProgressView().tint(.white) }
+                        Text("Create a one-time invite link")
                     }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.85))
                 }
-                .buttonStyle(.bordered)
                 .disabled(generatingInvite)
             }
         }
     }
 
+    private func actionButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .glassCompat(in: .capsule)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func regenerate() async {
-        let name = username
-        let p    = preset
-        qrImage  = nil
-        let qr   = await Task.detached(priority: .userInitiated) {
-            makeQRImage(username: name, size: 900, modR: p.mR, modG: p.mG, modB: p.mB)
+        let user = username
+        let p = preset
+        let title = name
+        let subtitle = displayName?.isEmpty == false ? "@\(username)" : nil
+        let avatar = avatarData.flatMap { DecodedImageCache.image(for: $0) }
+        let qr = await Task.detached(priority: .userInitiated) {
+            makeQRImage(username: user, size: 900, modR: p.mR, modG: p.mG, modB: p.mB)
         }.value
-        qrImage  = qr
+        qrImage = qr
         shareCard = await Task.detached(priority: .userInitiated) {
-            renderShareCard(username: name, qrImage: qr,
+            renderShareCard(title: title, subtitle: subtitle, avatar: avatar, qrImage: qr,
                             topR: p.tR, topG: p.tG, topB: p.tB,
-                            botR: p.bR, botG: p.bG, botB: p.bB,
-                            modR: p.mR, modG: p.mG, modB: p.mB)
+                            botR: p.bR, botG: p.bG, botB: p.bB)
         }.value
     }
 }
@@ -205,7 +261,8 @@ nonisolated private func makeQRImage(
     let context = CIContext()
     let filter  = CIFilter.qrCodeGenerator()
     filter.message         = Data("https://relaymsg.app/add/\(username)".utf8)
-    filter.correctionLevel = "M"
+    // High correction, so the logo in the middle doesn't stop it scanning.
+    filter.correctionLevel = "H"
 
     guard let output = filter.outputImage else { return nil }
 
@@ -227,63 +284,90 @@ nonisolated private func makeQRImage(
 
 // MARK: - Share card rendering
 
-// Renders the in-app card as a standalone image for the share sheet.
+// Renders the on-screen card over its gradient as one image for sharing.
 nonisolated private func renderShareCard(
-    username: String, qrImage: UIImage?,
+    title: String, subtitle: String?, avatar: UIImage?, qrImage: UIImage?,
     topR: Double, topG: Double, topB: Double,
-    botR: Double, botG: Double, botB: Double,
-    modR: Double, modG: Double, modB: Double
+    botR: Double, botG: Double, botB: Double
 ) -> UIImage? {
-    let cardW: CGFloat   = 680
-    let inset: CGFloat   = 40          // padding inside the card
-    let qrBg: CGFloat    = 16          // white QR background padding
-    let qrSize           = cardW - inset * 2 - qrBg * 2
-    let qrBgSize         = qrSize + qrBg * 2
-    let nameH: CGFloat   = 60
-    let linkH: CGFloat   = 36
-    let cardH            = inset + qrBgSize + 16 + nameH + 16 + linkH + inset
+    let width: CGFloat = 1080
+    let margin: CGFloat = 90
+    let cardW = width - margin * 2
+    let pad: CGFloat = 70
+    let avatarD: CGFloat = 200
+    let qrSize = cardW - pad * 2
+    let titleY: CGFloat = margin + avatarD / 2 + 130
+    let cardTop = margin + avatarD / 2
+    let subtitleH: CGFloat = subtitle == nil ? 0 : 50
+    let qrY = titleY + 70 + subtitleH + 30
+    let captionY = qrY + qrSize + 34
+    let cardBottom = captionY + 40 + 60
+    let height = cardBottom + margin
 
-    let renderer = UIGraphicsImageRenderer(size: CGSize(width: cardW, height: cardH))
-    return renderer.image { ctx in
-        let fullRect = CGRect(x: 0, y: 0, width: cardW, height: cardH)
-        let cgCtx    = ctx.cgContext
-
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { ctx in
+        let cg = ctx.cgContext
         let colors = [
             UIColor(red: topR, green: topG, blue: topB, alpha: 1).cgColor,
             UIColor(red: botR, green: botG, blue: botB, alpha: 1).cgColor,
         ] as CFArray
-        let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                              colors: colors, locations: [0.0, 1.0])!
-        UIBezierPath(roundedRect: fullRect, cornerRadius: 56).addClip()
-        cgCtx.drawLinearGradient(grad, start: .zero,
-                                 end: CGPoint(x: cardW, y: cardH), options: [])
+        let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1])!
+        cg.drawLinearGradient(grad, start: .zero, end: CGPoint(x: 0, y: height), options: [])
 
-        let qrBgRect = CGRect(x: inset, y: inset, width: qrBgSize, height: qrBgSize)
+        let card = CGRect(x: margin, y: cardTop, width: cardW, height: cardBottom - cardTop)
         UIColor.white.setFill()
-        UIBezierPath(roundedRect: qrBgRect, cornerRadius: 20).fill()
+        UIBezierPath(roundedRect: card, cornerRadius: 80).fill()
 
-        let qrRect = qrBgRect.insetBy(dx: qrBg, dy: qrBg)
+        // Photo on the card's top edge, in a white ring.
+        let ring = CGRect(x: (width - avatarD - 24) / 2, y: margin - 12, width: avatarD + 24, height: avatarD + 24)
+        UIBezierPath(ovalIn: ring).fill()
+        let avatarRect = ring.insetBy(dx: 12, dy: 12)
+        cg.saveGState()
+        UIBezierPath(ovalIn: avatarRect).addClip()
+        if let avatar {
+            let scale = max(avatarRect.width / avatar.size.width, avatarRect.height / avatar.size.height)
+            let size = CGSize(width: avatar.size.width * scale, height: avatar.size.height * scale)
+            avatar.draw(in: CGRect(x: avatarRect.midX - size.width / 2, y: avatarRect.midY - size.height / 2,
+                                   width: size.width, height: size.height))
+        } else {
+            UIColor(red: topR, green: topG, blue: topB, alpha: 1).setFill()
+            UIBezierPath(ovalIn: avatarRect).fill()
+            let initial = String(title.trimmingCharacters(in: CharacterSet(charactersIn: "@")).prefix(1)).uppercased() as NSString
+            let attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 90, weight: .semibold), .foregroundColor: UIColor.white]
+            let sz = initial.size(withAttributes: attrs)
+            initial.draw(at: CGPoint(x: avatarRect.midX - sz.width / 2, y: avatarRect.midY - sz.height / 2), withAttributes: attrs)
+        }
+        cg.restoreGState()
+
+        func centered(_ text: String, y: CGFloat, font: UIFont, color: UIColor) {
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+            let size = (text as NSString).size(withAttributes: attrs)
+            (text as NSString).draw(at: CGPoint(x: (width - size.width) / 2, y: y), withAttributes: attrs)
+        }
+        centered(title, y: titleY, font: .systemFont(ofSize: 60, weight: .bold), color: .black)
+        if let subtitle {
+            centered(subtitle, y: titleY + 76, font: .systemFont(ofSize: 38), color: UIColor.black.withAlphaComponent(0.5))
+        }
+
+        let qrRect = CGRect(x: (width - qrSize) / 2, y: qrY, width: qrSize, height: qrSize)
         qrImage?.draw(in: qrRect)
+        // Relay mark in the middle of the code.
+        let markD = qrSize * 0.2
+        let markRing = CGRect(x: qrRect.midX - markD / 2 - 10, y: qrRect.midY - markD / 2 - 10, width: markD + 20, height: markD + 20)
+        UIColor.white.setFill()
+        UIBezierPath(ovalIn: markRing).fill()
+        let mark = markRing.insetBy(dx: 10, dy: 10)
+        UIColor(red: 0xF6 / 255, green: 0x3B / 255, blue: 1, alpha: 1).setFill()
+        UIBezierPath(ovalIn: mark).fill()
+        if let symbol = UIImage(systemName: "antenna.radiowaves.left.and.right",
+                                withConfiguration: UIImage.SymbolConfiguration(pointSize: markD * 0.42, weight: .semibold))?
+            .withTintColor(.white, renderingMode: .alwaysOriginal) {
+            symbol.draw(at: CGPoint(x: mark.midX - symbol.size.width / 2, y: mark.midY - symbol.size.height / 2))
+        }
 
-        let nameAttrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 38, weight: .bold),
-            .foregroundColor: UIColor.white,
-        ]
-        let nameStr  = "@\(username)" as NSString
-        let nameSize = nameStr.size(withAttributes: nameAttrs)
-        let nameY    = inset + qrBgSize + 16 + (nameH - nameSize.height) / 2
-        nameStr.draw(at: CGPoint(x: (cardW - nameSize.width) / 2, y: nameY),
-                     withAttributes: nameAttrs)
-
-        let linkAttrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 24, weight: .regular),
-            .foregroundColor: UIColor.white.withAlphaComponent(0.55),
-        ]
-        let linkStr  = "relaymsg.app/add/\(username)" as NSString
-        let linkSize = linkStr.size(withAttributes: linkAttrs)
-        let linkY    = inset + qrBgSize + 16 + nameH + 16
-        linkStr.draw(at: CGPoint(x: (cardW - linkSize.width) / 2, y: linkY),
-                     withAttributes: linkAttrs)
+        centered("Scan to message me on Relay", y: captionY, font: .systemFont(ofSize: 34, weight: .medium),
+                 color: UIColor.black.withAlphaComponent(0.45))
     }
 }
 
