@@ -13,7 +13,6 @@
 import CoreLocation
 import Foundation
 import Observation
-import SecureStorage
 
 let locationPrefix = "__relay_loc__"
 
@@ -74,26 +73,15 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
         guard sharingConversationId == nil else { return }
         self.service = service
         sharingConversationId = conversationId
-        let expiry = Date().addingTimeInterval(duration)
-        expiresAt = expiry
+        expiresAt = Date().addingTimeInterval(duration)
         clManager.requestWhenInUseAuthorization()
         backgroundSession = CLBackgroundActivitySession()
         clManager.allowsBackgroundLocationUpdates = true
         clManager.showsBackgroundLocationIndicator = true
         clManager.startUpdatingLocation()
         scheduleUpdates()
-        let name = PanicModeManager.shared.isHidden(conversationId)
-            ? "a chat"
-            : service.conversations.first { $0.id == conversationId }
-                .map { $0.groupId.map { service.displayName(forAccount: $0) } ?? service.displayName(forAccount: $0.peerAccount) }
-                ?? "a chat"
-        LiveLocationActivity.start(recipientName: name, expiresAt: expiry)
     }
 
-    /// Stops whatever share is running (the Live Activity's Stop button).
-    func stopCurrent() {
-        if let id = sharingConversationId { stop(in: id) }
-    }
 
     func stop(in conversationId: String) {
         guard sharingConversationId == conversationId else { return }
@@ -106,7 +94,6 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
         clManager.allowsBackgroundLocationUpdates = false
         backgroundSession?.invalidate()
         backgroundSession = nil
-        LiveLocationActivity.end()
         updateTask?.cancel()
         updateTask = nil
         sharingConversationId = nil

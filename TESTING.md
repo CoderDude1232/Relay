@@ -27,7 +27,7 @@ Not yet verified: everything marked ☐ below.
 - ☐ Passkey sign-in on a second iPhone restores the chat list.
 
 ## Messaging
-- ☐ Message requests: C (never chatted with A) messages A. A sees "Message
+- ✅ Message requests: C (never chatted with A) messages A. A sees "Message
   Requests", the lock screen says "Sent you a message request", photos show
   "Accept to view", C gets no read receipts. Accept, Delete, Block and
   Block and Report each behave.
@@ -50,8 +50,8 @@ Not yet verified: everything marked ☐ below.
   `relay-vps-deploy` memory for the commands).
 
 ## Location
-- ☐ Live location: Lock Screen / Dynamic Island Live Activity counts down,
-  Stop works, and B keeps getting updates while A's phone is locked.
+- ☐ Live location: B keeps getting updates while A's phone is locked (blue
+  location indicator shows), and sharing stops when it expires.
 
 ## Siri, notifications, Watch
 - ☐ Siri send: one Relay card at each step, recent messages, chat theme.

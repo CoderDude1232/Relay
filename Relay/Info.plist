@@ -42,7 +42,5 @@
 		<string>audio</string>
 		<string>location</string>
 	</array>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 </dict>
 </plist>
