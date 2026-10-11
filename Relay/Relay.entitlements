@@ -12,6 +12,8 @@
 	<array>
 		<string>applinks:relaymsg.app</string>
 		<string>webcredentials:relaymsg.app</string>
+		<string>webcredentials:relaymsg.app?mode=developer</string>
+		<string>applinks:relaymsg.app?mode=developer</string>
 	</array>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
