@@ -15,10 +15,16 @@ import SecureStorage
 import UserNotifications
 
 class NotificationService: UNNotificationServiceExtension {
+    /// A 1:1 OFFER or a GROUP_RING the NSE decrypted, kept for the app to
+    /// replay after the VoIP push wakes it.
     private struct PendingCallOffer: Codable {
         let callId: String
         let callerAccount: String
         let sdp: String
+        var isGroupRing: Bool? = nil
+        var groupId: String? = nil
+        var ice: String? = nil
+        var participants: [String]? = nil
     }
 
     private static let pendingCallOfferPrefix = "pending-call-offer:"
@@ -274,7 +280,7 @@ class NotificationService: UNNotificationServiceExtension {
         // HANGUP means the caller gave up before we answered: show a missed call.
         // Other signalling goes through VoIP push and CallKit; suppress it here.
         if let callInfo = result.callInfo {
-            if callInfo.type == .offer {
+            if callInfo.type == .offer || callInfo.type == .groupRing {
                 savePendingCallOffer(callInfo, in: storage)
             }
             if callInfo.type == .linkJoinRequest {
@@ -372,10 +378,15 @@ class NotificationService: UNNotificationServiceExtension {
     }
 
     private func savePendingCallOffer(_ callInfo: CallInfo, in storage: SecureStore) {
+        let isGroupRing = callInfo.type == .groupRing
         let pending = PendingCallOffer(
             callId: callInfo.callId,
             callerAccount: callInfo.callerAccount,
-            sdp: callInfo.sdp
+            sdp: callInfo.sdp,
+            isGroupRing: isGroupRing ? true : nil,
+            groupId: isGroupRing ? callInfo.groupId : nil,
+            ice: isGroupRing ? callInfo.ice : nil,
+            participants: isGroupRing ? callInfo.participants : nil
         )
         guard let data = try? JSONEncoder().encode(pending) else { return }
         try? storage.database.run(

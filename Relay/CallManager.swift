@@ -418,10 +418,19 @@ final class CallManager: NSObject {
     /// report is a generic "Relay" call. The encrypted OFFER with the same id
     /// reveals the caller; without one within `offerWaitSeconds` the call ends.
     func reportIncomingPushCall(callId: String, pushCompletion: @escaping () -> Void) {
-        // Group calls never use VoIP pushes, and a call already registered over the
-        // WebSocket needs no second report.
+        // A group ring already reported over the WebSocket needs no second report.
         if isInGroupCall {
-            reportAndEndRejectedPushCall(completion: pushCompletion)
+            if groupCallId == callId, let uuid = groupCallUUID {
+                // PushKit needs a report for every push; re-reporting the ring's
+                // own call is a harmless duplicate.
+                let update = CXCallUpdate()
+                update.remoteHandle = Self.opaqueHandle()
+                update.localizedCallerName = callKitCallerName(groupRingInfo?.callerName ?? groupCallDisplayName)
+                update.hasVideo = groupCallKind == .video
+                provider.reportNewIncomingCall(with: uuid, update: update) { _ in pushCompletion() }
+            } else {
+                reportAndEndRejectedPushCall(completion: pushCompletion)
+            }
             return
         }
         if case .incoming(let existingId, _, _) = state, existingId == callId {
@@ -473,6 +482,37 @@ final class CallManager: NSObject {
     /// True while an anonymous VoIP-reported call is still waiting for its OFFER.
     private var isAwaitingCallerIdentity: Bool {
         wasIncomingCall && storedCallId != nil && storedCallPeer?.isEmpty != false
+    }
+
+    /// Hands an anonymous VoIP-reported call over to a group ring with the same
+    /// id: clears the 1:1 placeholder but keeps its CallKit call. Returns that
+    /// call's UUID and whether the user already answered it.
+    private func takeOverPushCallForGroupRing() -> (uuid: UUID, answered: Bool)? {
+        guard hasCallKitReport, let uuid = activeCallUUID else { return nil }
+        let answered = hasAnsweredCall
+        offerWaitTask?.cancel()
+        offerWaitTask = nil
+        callTimeoutTask?.cancel()
+        callTimeoutTask = nil
+        stopVideoCapture()
+        peerConnection?.close()
+        peerConnection = nil
+        activeCallUUID = nil
+        hasCallKitReport = false
+        pendingOffer = nil
+        pendingRemoteCandidates.removeAll()
+        hasRemoteDescription = false
+        storedCallPeer = nil
+        storedCallId = nil
+        storedCallStartedAt = nil
+        storedCallConnectedAt = nil
+        storedCallKind = .audio
+        storedPeerName = nil
+        hasAnsweredCall = false
+        wasIncomingCall = false
+        resetDiagnostics()
+        state = .idle
+        return (uuid, answered)
     }
 
     /// Ends an anonymous call whose caller never identified themselves (no OFFER,
@@ -1702,10 +1742,18 @@ final class CallManager: NSObject {
         ring.participants = participants
         ring.ice = Self.metadataJSON(kind: kind)
         await onSendGroupCallMessage?(ring, participants)
-        // No VoIP pushes for group calls: GROUP_RING is queued and delivered over the
-        // WebSocket or regular APNs. A VoIP push would put the call into .incoming
-        // via reportIncomingCall and block the GROUP_RING path.
+        // Wake members whose app isn't running, like a 1:1 call. The push carries
+        // only the call id; the queued GROUP_RING says who's calling. Capped so a
+        // large group stays within the relay's ring rate limit.
+        let toRing = Array(groupCallMembers.prefix(Self.maxGroupRingPushes))
+        await withTaskGroup(of: Void.self) { tasks in
+            for member in toRing {
+                tasks.addTask { await self.onTriggerPush?(member, callId) }
+            }
+        }
     }
+
+    private static let maxGroupRingPushes = 40
 
     /// Accepts an incoming group call ring. `fromCallKit` is set when the user
     /// answered on a system screen, so CallKit already knows.
@@ -1789,10 +1837,14 @@ final class CallManager: NSObject {
                 log.warning("ignoring GROUP_RING from a non-member or unknown group")
                 return
             }
-            // An anonymous VoIP push with this call id was never a real 1:1 call; drop
-            // the placeholder and ring as a group.
-            if case .incoming(let existingId, _, _) = state, existingId == msg.callID, isAwaitingCallerIdentity {
-                endUnverifiedCall()
+            // The VoIP push for this ring already put a "Relay" call on screen:
+            // keep that CallKit call and turn it into the group ring.
+            var pushCall: (uuid: UUID, answered: Bool)?
+            if storedCallId == msg.callID, isAwaitingCallerIdentity {
+                switch state {
+                case .incoming, .connecting: pushCall = takeOverPushCallForGroupRing()
+                default: break
+                }
             }
             guard !isInGroupCall, case .idle = state else { return }
             let displayName = nameResolver?(account) ?? "Unknown"
@@ -1807,7 +1859,21 @@ final class CallManager: NSObject {
                 // Use our roster, not the ringer's participant list.
                 participants: Array(groupCallMembers), kind: groupCallKind
             )
-            reportIncomingGroupRing(callerName: displayName, kind: groupCallKind)
+            if let pushCall {
+                groupCallUUID = pushCall.uuid
+                let update = CXCallUpdate()
+                update.localizedCallerName = callKitCallerName(displayName)
+                update.hasVideo = groupCallKind == .video
+                provider.reportCall(with: pushCall.uuid, updated: update)
+                if pushCall.answered {
+                    // Answered on the lock screen before the ring arrived.
+                    await joinGroupCall(fromCallKit: true)
+                } else {
+                    scheduleGroupRingTimeout(pushCall.uuid)
+                }
+            } else {
+                reportIncomingGroupRing(callerName: displayName, kind: groupCallKind)
+            }
 
         case .groupJoin:
             guard isFromCurrentGroupCallMember(msg, account: account),
@@ -1959,15 +2025,7 @@ final class CallManager: NSObject {
         update.localizedCallerName = callKitCallerName(callerName)
         update.hasVideo = kind == .video
         provider.configuration = makeProviderConfiguration()
-        // CallKit rings until told otherwise; give up like a 1:1 call does.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(45))
-            guard let self, self.groupCallUUID == uuid, self.groupRingInfo != nil else { return }
-            self.provider.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
-            self.groupCallUUID = nil
-            self.groupRingInfo = nil
-            self.endGroupCallCleanup(reportToCallKit: false)
-        }
+        scheduleGroupRingTimeout(uuid)
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self, log] error in
             guard let error else { return }
             // Do Not Disturb, or another call: CallKit refused, so drop the ring.
@@ -1977,6 +2035,18 @@ final class CallManager: NSObject {
                 self.groupCallUUID = nil
                 self.declineGroupCall()
             }
+        }
+    }
+
+    /// CallKit rings until told otherwise; give up like a 1:1 call does.
+    private func scheduleGroupRingTimeout(_ uuid: UUID) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(45))
+            guard let self, self.groupCallUUID == uuid, self.groupRingInfo != nil else { return }
+            self.provider.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
+            self.groupCallUUID = nil
+            self.groupRingInfo = nil
+            self.endGroupCallCleanup(reportToCallKit: false)
         }
     }
 

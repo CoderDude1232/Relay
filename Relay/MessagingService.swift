@@ -219,10 +219,16 @@ final class MessagingService {
 
     // MARK: - Lifecycle
 
+    /// A 1:1 OFFER or a GROUP_RING the NSE decrypted, kept for the app to
+    /// replay after the VoIP push wakes it.
     private struct PendingCallOffer: Codable {
         let callId: String
         let callerAccount: String
         let sdp: String
+        var isGroupRing: Bool? = nil
+        var groupId: String? = nil
+        var ice: String? = nil
+        var participants: [String]? = nil
     }
 
     private static let pendingCallOfferPrefix = "pending-call-offer:"
@@ -344,12 +350,15 @@ final class MessagingService {
                   let offer = try? JSONDecoder().decode(PendingCallOffer.self, from: data)
             else { continue }
 
+            let isGroupRing = offer.isGroupRing == true
             await onCallMessage?(CallInfo(
                 callId: offer.callId,
-                type: .offer,
+                type: isGroupRing ? .groupRing : .offer,
                 sdp: offer.sdp,
-                ice: "",
-                callerAccount: offer.callerAccount
+                ice: offer.ice ?? "",
+                callerAccount: offer.callerAccount,
+                groupId: offer.groupId ?? "",
+                participants: offer.participants ?? []
             ))
             try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
         }
