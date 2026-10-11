@@ -24,6 +24,8 @@ struct ContactCardView: View {
     @State private var confirmResetSession = false
     @State private var confirmBlock = false
     @State private var showingReport = false
+    @State private var photoExpanded = false
+    @Namespace private var photoNamespace
 
     private var conversation: Conversation? {
         service.conversations.first { $0.id == conversationId }
@@ -36,7 +38,6 @@ struct ContactCardView: View {
     }
     private var displayName: String { service.displayName(forAccount: account) }
     private var username: String? { service.username(forAccount: account) }
-    private var peerStatus: String { service.peerStatus(forAccount: account) }
     private var peerBio: String { service.peerBio(forAccount: account) }
     private var mutualGroups: [(id: String, name: String)] {
         isNoteToSelf ? [] : service.mutualGroups(with: account)
@@ -51,27 +52,53 @@ struct ContactCardView: View {
     }
 
     var body: some View {
+        cardBody
+            .overlay {
+                if photoExpanded {
+                    ExpandedPhoto(
+                        name: displayName,
+                        imageData: service.peerAvatarData(forAccount: account),
+                        namespace: photoNamespace
+                    ) {
+                        withAnimation(.spring(duration: 0.35, bounce: 0.1)) { photoExpanded = false }
+                    }
+                }
+            }
+    }
+
+    private var cardBody: some View {
         NavigationStack {
             List {
 
                 // MARK: Header
                 Section {
                     VStack(spacing: 10) {
-                        AvatarView(
-                            name: displayName, size: 82,
-                            imageData: service.peerAvatarData(forAccount: account)
-                        )
+                        Button {
+                            withAnimation(.spring(duration: 0.4, bounce: 0.2)) { photoExpanded = true }
+                        } label: {
+                            AvatarView(
+                                name: displayName, size: 82,
+                                imageData: service.peerAvatarData(forAccount: account)
+                            )
+                            .matchedGeometryEffect(id: "photo", in: photoNamespace, isSource: !photoExpanded)
+                            .opacity(photoExpanded ? 0 : 1)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(displayName)'s photo")
+                        .accessibilityHint("Shows it larger")
                         Text(displayName).font(.title2.bold())
                         if let username {
                             Text("@\(username)")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
-                        if !peerStatus.isEmpty {
-                            Text(peerStatus)
+                        if !peerBio.isEmpty {
+                            Text(peerBio)
                                 .font(.callout)
-                                .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
+                                .textSelection(.enabled)
+                                .padding(.top, 4)
+                                .padding(.horizontal, 12)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -113,16 +140,6 @@ struct ContactCardView: View {
                 }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-
-                // MARK: Bio
-                if !peerBio.isEmpty {
-                    Section("Bio") {
-                        Text(peerBio)
-                            .font(.callout)
-                            .foregroundStyle(.primary)
-                            .textSelection(.enabled)
-                    }
-                }
 
                 // MARK: Conversation settings
                 Section {
@@ -378,6 +395,52 @@ struct ContactCardView: View {
               scheme == "http" || scheme == "https",
               let host = url.host(), !host.isEmpty else { return nil }
         return url
+    }
+}
+
+/// A contact's photo blown up to fill the width; tap or swipe down to close.
+private struct ExpandedPhoto: View {
+    let name: String
+    let imageData: Data?
+    let namespace: Namespace.ID
+    let onClose: () -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height) - 32
+            ZStack {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                VStack(spacing: 16) {
+                    Group {
+                        if let data = imageData, let image = DecodedImageCache.image(for: data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: side, height: side)
+                                .clipShape(.rect(cornerRadius: 28, style: .continuous))
+                        } else {
+                            AvatarView(name: name, size: side * 0.8)
+                        }
+                    }
+                    .matchedGeometryEffect(id: "photo", in: namespace)
+                    .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
+                    Text(name)
+                        .font(.title2.bold())
+                        .transition(.opacity)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .contentShape(.rect)
+            .onTapGesture(perform: onClose)
+            .gesture(DragGesture(minimumDistance: 20).onEnded { if $0.translation.height > 60 { onClose() } })
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("\(name)'s photo")
+            .accessibilityHint("Closes")
+        }
     }
 }
 

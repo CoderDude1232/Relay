@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var showingPanicSettings = false
     @State private var versionTapCount = 0
     @State private var showingInvite = false
+    @State private var showingQR = false
 
     private var displayName: String {
         let name = service.myDisplayName ?? service.username
@@ -61,6 +62,15 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .tint(.primary)
+                    if !service.isDemoAccount, service.username != nil {
+                        Button { showingQR = true } label: {
+                            HStack(spacing: 14) {
+                                SettingsIcon(systemName: "qrcode", color: .accentColor)
+                                Text("My QR Code").foregroundStyle(.primary)
+                            }
+                        }
+                        .tint(.primary)
+                    }
                 }
 
                 // MARK: Categories
@@ -163,6 +173,11 @@ struct SettingsView: View {
                 }
             }
             .onAppear { avatarData = service.myAvatarData }
+            .sheet(isPresented: $showingQR) {
+                MyQRCodeView(username: service.username ?? "", createInviteLink: {
+                    try await service.createContactInviteLink()
+                })
+            }
             .sheet(isPresented: $showingEditProfile) {
                 EditProfileSheet(service: service) { avatarData = service.myAvatarData }
             }
@@ -932,7 +947,6 @@ private struct EditProfileSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var displayNameDraft: String
     @State private var bioDraft: String
-    @State private var statusDraft: String
     @State private var linkDrafts: [ProfileLink]
     @State private var avatarData: Data?
     @State private var avatarChanged = false
@@ -946,7 +960,6 @@ private struct EditProfileSheet: View {
         _displayNameDraft = State(initialValue: service.myDisplayName ?? "")
         _avatarData = State(initialValue: service.myAvatarData)
         _bioDraft = State(initialValue: UserDefaults.standard.string(forKey: "my.profile.bio") ?? "")
-        _statusDraft = State(initialValue: UserDefaults.standard.string(forKey: "my.profile.status") ?? "")
         _linkDrafts = State(initialValue: service.myLinks)
     }
 
@@ -995,16 +1008,6 @@ private struct EditProfileSheet: View {
                     }
                     .tint(.primary)
                     .disabled(service.isDemoAccount) // demo login is fixed
-                }
-
-                Section {
-                    TextField("About (optional)", text: $statusDraft)
-                        .autocorrectionDisabled()
-                        .submitLabel(.next)
-                } header: {
-                    Text("Status")
-                } footer: {
-                    Text("A short message shown under your name.")
                 }
 
                 Section {
@@ -1087,7 +1090,7 @@ private struct EditProfileSheet: View {
         }
         // Sent to peers over the E2EE profile channel; the revision only bumps if
         // something changed.
-        service.setMyProfileText(status: statusDraft, bio: bioDraft, links: linkDrafts)
+        service.setMyProfileText(status: "", bio: bioDraft, links: linkDrafts)
         onDone()
         dismiss()
     }

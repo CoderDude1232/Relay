@@ -1259,7 +1259,6 @@ final class MessagingService {
             var content = Relay_Content_Content()
             content.profile.displayName = myDisplayName ?? ""
             content.profile.timestamp = rev
-            content.profile.status = myStatus
             content.profile.bio = myBio
             content.profile.links = myLinks.map {
                 var l = Relay_Content_ProfileLink()
@@ -1349,7 +1348,7 @@ final class MessagingService {
     }
 
     func peerStatus(forAccount account: String) -> String {
-        if account == credentials.accountId { return myStatus }
+        if account == credentials.accountId { return "" }
         return ((try? storage.messages.peerProfile(account: account)) ?? nil)?.status ?? ""
     }
 
