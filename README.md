@@ -50,7 +50,7 @@ protocol and the code that speaks it never drift apart.
 | `CryptoCore/` `SecureStorage/` `RelayKit/` `RelayCore/` | Swift packages: libsignal, the encrypted database and Keychain, networking, and message processing. |
 | [`docs/`](docs) | [Architecture](docs/ARCHITECTURE.md), the [device test checklist](docs/TESTING.md) and other notes. |
 
-An Android client is in development in a separate repository.
+The Android client is in development in [Relay-Android](https://github.com/CoderDude1232/Relay-Android).
 
 ## Building
 
