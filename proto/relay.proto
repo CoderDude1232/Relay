@@ -55,6 +55,9 @@ message SendRequest {
   // Ephemeral payloads (typing indicators) are delivered only to currently
   // connected devices and are never queued for offline delivery.
   bool ephemeral = 4;
+  // Silent payloads (receipts) are queued like any message but never trigger
+  // a push: the recipient gets them the next time it connects.
+  bool silent = 5;
 }
 
 message DeviceMessage {

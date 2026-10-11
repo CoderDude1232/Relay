@@ -767,6 +767,7 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		Content   string `json:"content"`   // base64 sealed blob
 		AccessKey string `json:"accessKey"` // base64, recipient's access key
 		Ephemeral bool   `json:"ephemeral"`
+		Silent    bool   `json:"silent"` // queue without a push (receipts)
 	}
 	if err := decodeJSON(r, &req); err != nil || req.MailboxID == "" {
 		httpError(w, http.StatusBadRequest, "mailboxId and content required")
@@ -803,7 +804,7 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		Ephemeral:       req.Ephemeral,
 	}
 	// Queue fairness for an anonymous sender is keyed by its source-IP bucket.
-	if err := s.hub.DeliverFrom("ip:"+ip, dest.AccountID, dest.DeviceID, env); err != nil {
+	if err := s.hub.DeliverFrom("ip:"+ip, dest.AccountID, dest.DeviceID, env, !req.Silent); err != nil {
 		if errors.Is(err, hub.ErrSenderQuota) || errors.Is(err, store.ErrQueueFull) {
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 			return

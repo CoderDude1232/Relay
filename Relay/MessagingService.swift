@@ -3094,7 +3094,7 @@ final class MessagingService {
                 try content.serializedData(),
                 toPeer: account,
                 clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
-                ephemeral: true
+                silent: true
             )
         } catch {
             log.warning("receipt send failed: \(PrivacyRedactor.error(error))")
@@ -3106,9 +3106,12 @@ final class MessagingService {
         _ plaintext: Data,
         toPeer account: String,
         clientTimestamp: Int64,
-        ephemeral: Bool = false
+        ephemeral: Bool = false,
+        silent: Bool = false
     ) async throws {
-        if !ephemeral {
+        // Receipts (silent) and typing (ephemeral) carry nothing; they may go
+        // out while a safety-number change is pending.
+        if !ephemeral && !silent {
             try requireAcknowledgedIdentity(forPeer: account)
         }
         // Pad ephemeral frames too, so size doesn't reveal the message kind.
@@ -3121,7 +3124,7 @@ final class MessagingService {
             }
             try await sendContentSealed(
                 payloadPlaintext, toPeer: account,
-                clientTimestamp: clientTimestamp, ephemeral: ephemeral
+                clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent
             )
             return
         }
@@ -3134,11 +3137,12 @@ final class MessagingService {
         var outcome = try await sendMailboxPayloads(
             payloads,
             clientTimestamp: clientTimestamp,
-            ephemeral: ephemeral
+            ephemeral: ephemeral,
+            silent: silent
         )
         if case .mismatchedDevices(let missing, _, let stale) = outcome {
             try await refreshSessions(withPeer: account)
-            if !ephemeral {
+            if !ephemeral && !silent {
                 try requireAcknowledgedIdentity(forPeer: account)
             }
             devices = try await knownMailboxDevices(ofPeer: account)
@@ -3151,7 +3155,8 @@ final class MessagingService {
                 outcome = try await sendMailboxPayloads(
                     payloads,
                     clientTimestamp: clientTimestamp,
-                    ephemeral: ephemeral
+                    ephemeral: ephemeral,
+                    silent: silent
                 )
                 // Remaining missing/stale devices that were all addressed count as success.
                 if case .mismatchedDevices(let m2, let e2, let s2) = outcome, e2.isEmpty {
@@ -3183,7 +3188,8 @@ final class MessagingService {
         _ plaintext: Data,
         toPeer account: String,
         clientTimestamp: Int64,
-        ephemeral: Bool
+        ephemeral: Bool,
+        silent: Bool = false
     ) async throws {
         let certificate = try await senderCertificate()
         if knownAccessKey(account) == nil {
@@ -3198,7 +3204,7 @@ final class MessagingService {
         let devices = try await knownMailboxDevices(ofPeer: account)
         var failed = try await sealedSendPass(
             plaintext, toPeer: account, devices: devices, certificate: certificate,
-            clientTimestamp: clientTimestamp, ephemeral: ephemeral
+            clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent
         )
         guard !failed.isEmpty else { return }
 
@@ -3208,7 +3214,7 @@ final class MessagingService {
         let retryDevices = refreshedDevices.filter { failedIds.contains($0.id) }
         failed = try await sealedSendPass(
             plaintext, toPeer: account, devices: retryDevices, certificate: certificate,
-            clientTimestamp: clientTimestamp, ephemeral: ephemeral
+            clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent
         )
         if !failed.isEmpty {
             throw RelayAPIError.http(status: 403, message: "sealed delivery rejected")
@@ -3222,7 +3228,8 @@ final class MessagingService {
         devices: [PeerDevice],
         certificate: Data,
         clientTimestamp: Int64,
-        ephemeral: Bool
+        ephemeral: Bool,
+        silent: Bool = false
     ) async throws -> [PeerDevice] {
         // Re-read each pass so a refresh in between takes effect.
         guard let accessKey = knownAccessKey(account) else { return devices }
@@ -3241,6 +3248,7 @@ final class MessagingService {
                     content: sealed,
                     accessKey: accessKey,
                     ephemeral: ephemeral,
+                    silent: silent,
                     clientTimestamp: clientTimestamp
                 )
             } catch let RelayAPIError.http(status, _) where status == 403 {
@@ -3387,7 +3395,8 @@ final class MessagingService {
     private func sendMailboxPayloads(
         _ payloads: [(mailboxId: String, payload: DeviceMessagePayload)],
         clientTimestamp: Int64,
-        ephemeral: Bool = false
+        ephemeral: Bool = false,
+        silent: Bool = false
     ) async throws -> SendOutcome {
         guard let socket else { throw RelayWebSocketError.notConnected }
         var missing: [UInt32] = []
@@ -3398,7 +3407,8 @@ final class MessagingService {
                 to: entry.mailboxId,
                 messages: [entry.payload],
                 clientTimestamp: clientTimestamp,
-                ephemeral: ephemeral
+                ephemeral: ephemeral,
+                silent: silent
             )
             switch outcome {
             case .ok:

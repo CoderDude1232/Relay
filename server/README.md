@@ -268,7 +268,7 @@ cooldown ends.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `POST /v1/messages/sealed` | **none** | `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral}` → `200 {serverTimestamp}`. Verifies `accessKey` matches the destination account (one mailbox+key query, constant-time compare) without learning the sender, delivers an envelope with **empty sender fields**. **No client clock on the wire**: the envelope's `client_timestamp` and `server_timestamp` are both the relay's receive time (timestamps that matter live in the encrypted content). `403` for *any* failure (unknown mailbox and wrong key are indistinguishable). 600/IP-bucket/min, 120/mailbox/min. `429` also when this source-IP bucket already holds 200 unacked envelopes in the destination device's queue, or that queue is full (500 envelopes / 50 MB). |
+| `POST /v1/messages/sealed` | **none** | `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral, silent}` → `200 {serverTimestamp}`. `silent` (receipts) queues without a push. Verifies `accessKey` matches the destination account (one mailbox+key query, constant-time compare) without learning the sender, delivers an envelope with **empty sender fields**. **No client clock on the wire**: the envelope's `client_timestamp` and `server_timestamp` are both the relay's receive time (timestamps that matter live in the encrypted content). `403` for *any* failure (unknown mailbox and wrong key are indistinguishable). 600/IP-bucket/min, 120/mailbox/min. `429` also when this source-IP bucket already holds 200 unacked envelopes in the destination device's queue, or that queue is full (500 envelopes / 50 MB). |
 | `GET /v1/queue[?limit=N][&cursor=C]` | sig | → `{envelopes:[base64 serialized Envelope], more: bool, cursor?: string}`. **Paged**: at most `limit` envelopes (1–100, default 100) and at most 4 MiB of ciphertext per page (always ≥1 envelope when any remain). When `more` is true, pass the returned opaque `cursor` back to get the next page; `cursor` is omitted when `more` is false. Does **not** dequeue (ack independently). `400` bad limit/cursor. HTTP/3-capable QUIC fallback for receiving when the TCP WebSocket can't connect. |
 | `POST /v1/messages/ack` | sig | `{envelopeId}` → `204`. REST equivalent of the WebSocket ack. |
 | `POST /v1/calls/ring` | **none** | `{destinationMailbox, accessKey (base64), callId}` → `204`. Rings **all** devices of the account owning `destinationMailbox` (PushKit VoIP on iOS, high-priority FCM data on Android). Authorised exactly like a sealed send (same access-key check, identical `403` for unknown mailbox / wrong key); `callId` `^[A-Za-z0-9-]{1,64}$`. The push payload is only `{"call_id": "<id>"}` (FCM adds `"type":"call"` for routing) — **no caller account, name or call kind**; the callee learns who is calling only from the E2E-encrypted offer. 60/IP/min, 20/mailbox/min. |
@@ -376,7 +376,8 @@ remaining frames; a stale `registration_id` yields `stale_devices`. Self-sends
 
 Delivery is at-least-once: envelopes stay in the queue until the client
 acks them (`AckRequest{envelope_id}`); clients must deduplicate by envelope
-id. `ephemeral` envelopes (typing indicators) skip the queue entirely. When a
+id. `ephemeral` envelopes (typing indicators) skip the queue entirely; `silent`
+ones (receipts) are queued but never pushed, so they wait for the next connect. When a
 destination device is offline (or its socket is backlogged) the server fires a
 push (APNs or FCM per the device's registered kind) to wake it.
 

@@ -263,7 +263,7 @@ func (h *Hub) DisconnectDevice(accountID string, deviceID uint32, reason string)
 // Deliver routes one envelope to one device without per-sender queue
 // accounting. Prefer DeliverFrom.
 func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) error {
-	return h.DeliverFrom("", accountID, deviceID, env)
+	return h.DeliverFrom("", accountID, deviceID, env, true)
 }
 
 // DeliverFrom routes one envelope to one device. Non-ephemeral envelopes are
@@ -274,7 +274,10 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 // only ever used hashed. If that sender already holds maxQueuedPerSender
 // unacked envelopes in this device's queue, ErrSenderQuota is returned and
 // nothing is queued or pushed.
-func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relaypb.Envelope) error {
+//
+// push=false (silent sends such as receipts) queues without waking an offline
+// device; it gets the envelope the next time it connects.
+func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relaypb.Envelope, push bool) error {
 	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}}
 	devKey := key(accountID, deviceID)
 
@@ -309,7 +312,7 @@ func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relayp
 			// The envelope is already queued; push as well so the device wakes
 			// now instead of after the 60s pong timeout and a reconnect.
 			slog.Debug("hub: session backlogged, also pushing")
-			if !env.Ephemeral {
+			if !env.Ephemeral && push {
 				h.notifyOffline(accountID, deviceID, env, blob)
 			}
 		}
@@ -317,7 +320,7 @@ func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relayp
 	}
 
 	// Offline: wake the device (APNs/FCM) so it fetches the envelope.
-	if !env.Ephemeral {
+	if !env.Ephemeral && push {
 		h.notifyOffline(accountID, deviceID, env, blob)
 	}
 	return nil

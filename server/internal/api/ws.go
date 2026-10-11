@@ -354,7 +354,7 @@ func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *rel
 		ServerTimestamp: now,
 		Ephemeral:       req.Ephemeral,
 	}
-	if err := s.hub.DeliverFrom(sender.AccountID, destination.AccountID, destination.DeviceID, env); err != nil {
+	if err := s.hub.DeliverFrom(sender.AccountID, destination.AccountID, destination.DeviceID, env, !req.Silent); err != nil {
 		if errors.Is(err, hub.ErrSenderQuota) || errors.Is(err, store.ErrQueueFull) {
 			// This sender's share of the recipient's queue (or the whole
 			// queue) is full; retry later.

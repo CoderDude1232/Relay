@@ -114,7 +114,8 @@ public actor RelayWebSocket {
         to destinationMailbox: String,
         messages: [DeviceMessagePayload],
         clientTimestamp: Int64,
-        ephemeral: Bool = false
+        ephemeral: Bool = false,
+        silent: Bool = false
     ) async throws -> SendOutcome {
         guard let task else { throw RelayWebSocketError.notConnected }
 
@@ -127,6 +128,7 @@ public actor RelayWebSocket {
         send.messages = messages.map(\.proto)
         send.clientTimestamp = clientTimestamp
         send.ephemeral = ephemeral
+        send.silent = silent
         frame.send = send
 
         let data = try frame.serializedData()

@@ -405,7 +405,8 @@ public struct RelayAPIClient: Sendable {
         type: MessageKind,
         content: Data,
         accessKey: Data,
-        ephemeral: Bool
+        ephemeral: Bool,
+        silent: Bool = false
     ) async throws -> Int64 {
         struct Req: Encodable {
             let mailboxId: String
@@ -413,6 +414,7 @@ public struct RelayAPIClient: Sendable {
             let content: String
             let accessKey: String
             let ephemeral: Bool
+            let silent: Bool
         }
         struct Response: Decodable { let serverTimestamp: Int64 }
         let r: Response = try await request(
@@ -422,7 +424,8 @@ public struct RelayAPIClient: Sendable {
                 type: Int(type.wireType.rawValue),
                 content: content.base64EncodedString(),
                 accessKey: accessKey.base64EncodedString(),
-                ephemeral: ephemeral
+                ephemeral: ephemeral,
+                silent: silent
             ),
             authenticated: false
         )
@@ -437,10 +440,11 @@ public struct RelayAPIClient: Sendable {
         content: Data,
         accessKey: Data,
         ephemeral: Bool,
+        silent: Bool = false,
         clientTimestamp: Int64
     ) async throws -> Int64 {
         try await sendSealed(mailboxId: mailboxId, type: type, content: content,
-                             accessKey: accessKey, ephemeral: ephemeral)
+                             accessKey: accessKey, ephemeral: ephemeral, silent: silent)
     }
 
     /// Fetches queued envelopes over REST (HTTP/3), for when the TCP WebSocket

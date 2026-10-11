@@ -8,16 +8,16 @@
 // For information on using the generated types, please see the documentation:
 //   https://github.com/apple/swift-protobuf/
 
-// relay.proto — server-visible wire format for the Relay messenger.
+// Server-visible wire format for the Relay messenger.
 //
 // Everything in this file is metadata the relay is allowed to see for
-// routing and delivery. Message plaintext NEVER appears here: the
-// `content` bytes of an Envelope/DeviceMessage are always libsignal
+// routing and delivery. Message plaintext never appears here: the
+// content bytes of an Envelope or DeviceMessage are always libsignal
 // ciphertext whose decrypted form is a relay.content.Content message
 // (see content.proto), which only clients can parse.
 //
 // Transport framing: each WebSocket binary message is exactly one
-// serialized ClientFrame (client -> server) or ServerFrame (server -> client).
+// serialized ClientFrame (from the client) or ServerFrame (from the server).
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -42,13 +42,13 @@ public nonisolated enum Relay_V1_CiphertextType: SwiftProtobuf.Enum, Swift.CaseI
   public typealias RawValue = Int
   case unspecified // = 0
 
-  /// PreKeySignalMessage: first message of a session, carries X3DH material.
+  /// PreKeySignalMessage: first message of a session, carries PQXDH material.
   case prekeyMessage // = 1
 
   /// SignalMessage: normal Double Ratchet message in an established session.
   case message // = 2
 
-  /// SenderKeyMessage: group message encrypted with a sender key (Phase: groups).
+  /// SenderKeyMessage: group message encrypted with a sender key.
   case senderKeyMessage // = 3
   case UNRECOGNIZED(Int)
 
@@ -173,17 +173,16 @@ public nonisolated struct Relay_V1_ClientFrame: Sendable {
   public init() {}
 }
 
-/// Mailbox send: new clients place one opaque destination mailbox id in the
-/// legacy destination_account field and send exactly one DeviceMessage for that
-/// mailbox. The sender still encrypts separately for every recipient device, but
-/// sends those envelopes as separate mailbox-addressed frames.
+/// A send to one mailbox: destination_account holds an opaque mailbox id and
+/// messages holds exactly one DeviceMessage. A sender encrypts separately for
+/// each recipient device and sends one frame per mailbox.
 public nonisolated struct Relay_V1_SendRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Legacy field name retained for wire compatibility. New clients put a
-  /// random opaque mailbox id here, not an account id.
+  /// A random opaque mailbox id, not an account id. The field name is kept
+  /// for wire compatibility.
   public var destinationAccount: String = String()
 
   public var messages: [Relay_V1_DeviceMessage] = []
@@ -195,6 +194,10 @@ public nonisolated struct Relay_V1_SendRequest: Sendable {
   /// Ephemeral payloads (typing indicators) are delivered only to currently
   /// connected devices and are never queued for offline delivery.
   public var ephemeral: Bool = false
+
+  /// Silent payloads (receipts) are queued like any message but never trigger
+  /// a push: the recipient gets them the next time it connects.
+  public var silent: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -283,7 +286,8 @@ public nonisolated struct Relay_V1_ServerFrame: Sendable {
   }
 
   /// Tells connected devices that the account's device list changed so they
-  /// can refresh without polling. No E2EE needed — the account owns all devices.
+  /// can refresh without polling. Not end-to-end encrypted: the account owns
+  /// all of its devices.
   public var deviceListChanged: Relay_V1_DeviceListChanged {
     get {
       if case .deviceListChanged(let v)? = payload {return v}
@@ -305,7 +309,8 @@ public nonisolated struct Relay_V1_ServerFrame: Sendable {
     /// signature before deleting local storage. Stored for offline devices.
     case nuke(Relay_V1_NukeCommand)
     /// Tells connected devices that the account's device list changed so they
-    /// can refresh without polling. No E2EE needed — the account owns all devices.
+    /// can refresh without polling. Not end-to-end encrypted: the account owns
+    /// all of its devices.
     case deviceListChanged(Relay_V1_DeviceListChanged)
 
   }
@@ -324,7 +329,7 @@ public nonisolated struct Relay_V1_NukeCommand: Sendable {
 
   public var accountID: String = String()
 
-  /// UUID; replay prevention — server rejects duplicates
+  /// UUID; the server rejects duplicates
   public var commandID: String = String()
 
   /// sender clock; server rejects if >5 minutes old
@@ -543,7 +548,7 @@ nonisolated extension Relay_V1_ClientFrame: SwiftProtobuf.Message, SwiftProtobuf
 
 nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".SendRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}destination_account\0\u{1}messages\0\u{3}client_timestamp\0\u{1}ephemeral\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}destination_account\0\u{1}messages\0\u{3}client_timestamp\0\u{1}ephemeral\0\u{1}silent\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -555,6 +560,7 @@ nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf
       case 2: try { try decoder.decodeRepeatedMessageField(value: &self.messages) }()
       case 3: try { try decoder.decodeSingularInt64Field(value: &self.clientTimestamp) }()
       case 4: try { try decoder.decodeSingularBoolField(value: &self.ephemeral) }()
+      case 5: try { try decoder.decodeSingularBoolField(value: &self.silent) }()
       default: break
       }
     }
@@ -573,6 +579,9 @@ nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf
     if self.ephemeral != false {
       try visitor.visitSingularBoolField(value: self.ephemeral, fieldNumber: 4)
     }
+    if self.silent != false {
+      try visitor.visitSingularBoolField(value: self.silent, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -581,6 +590,7 @@ nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf
     if lhs.messages != rhs.messages {return false}
     if lhs.clientTimestamp != rhs.clientTimestamp {return false}
     if lhs.ephemeral != rhs.ephemeral {return false}
+    if lhs.silent != rhs.silent {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
