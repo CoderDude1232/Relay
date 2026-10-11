@@ -378,6 +378,10 @@ final class CallManager: NSObject {
             return
         }
         try? await pc.setLocalDescription(offer)
+        // Trickled ICE candidates are ephemeral, so a callee whose app is closed
+        // never gets them and can't connect after answering from the lock screen.
+        // Carry ours in the OFFER, which is queued, instead.
+        await waitForIceGathering(pc)
         guard stillOurs() else {
             log.info("startCall: call ended before the invite was sent")
             return
@@ -387,7 +391,7 @@ final class CallManager: NSObject {
         var msg = Relay_Content_CallMessage()
         msg.type = .offer
         msg.callID = callId
-        msg.sdp = Self.sanitizeSDP(offer.sdp)
+        msg.sdp = Self.sanitizeSDP(pc.localDescription?.sdp ?? offer.sdp)
         msg.ice = Self.metadataJSON(kind: kind)
         guard await (onSendCallMessage?(msg, peerAccount) ?? false) else {
             failCall("Couldn’t send the call invite.", notifyPeer: false)
@@ -405,6 +409,15 @@ final class CallManager: NSObject {
                 self.failCall("No answer.", notifyPeer: true)
                 return
             }
+        }
+    }
+
+    /// Waits (up to ~3 s) for candidate gathering, so the local description
+    /// includes them. Relay-only gathering usually finishes in about a second.
+    private func waitForIceGathering(_ pc: RTCPeerConnection) async {
+        for _ in 0..<60 {
+            if pc.iceGatheringState == .complete { return }
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 

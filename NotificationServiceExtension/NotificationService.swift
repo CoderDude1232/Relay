@@ -29,6 +29,23 @@ class NotificationService: UNNotificationServiceExtension {
 
     private static let pendingCallOfferPrefix = "pending-call-offer:"
 
+    /// Every call signal the NSE decrypted (OFFER, ICE, GROUP_RING, mesh
+    /// messages...), kept in arrival order for the app to replay. Without the
+    /// ICE candidates a call answered from the lock screen can't connect.
+    private struct PendingCallMessage: Codable {
+        let callId: String
+        let type: CallInfo.CallType
+        let sdp: String
+        let ice: String
+        let callerAccount: String
+        let groupId: String
+        let targetAccount: String
+        let participants: [String]
+        let receivedAt: Int64
+    }
+
+    private static let pendingCallMessagePrefix = "pending-call-msg:"
+
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttemptContent: UNMutableNotificationContent?
 
@@ -280,9 +297,7 @@ class NotificationService: UNNotificationServiceExtension {
         // HANGUP means the caller gave up before we answered: show a missed call.
         // Other signalling goes through VoIP push and CallKit; suppress it here.
         if let callInfo = result.callInfo {
-            if callInfo.type == .offer || callInfo.type == .groupRing {
-                savePendingCallOffer(callInfo, in: storage)
-            }
+            savePendingCallMessage(callInfo, in: storage)
             if callInfo.type == .linkJoinRequest {
                 // Only for a link we created, with the right secret, so nobody can spam
                 // this banner. The app picks the request up via PendingControlStore.
@@ -375,6 +390,19 @@ class NotificationService: UNNotificationServiceExtension {
                 senderAccount: notification.senderAccount
             )
         }
+    }
+
+    private func savePendingCallMessage(_ callInfo: CallInfo, in storage: SecureStore) {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let message = PendingCallMessage(
+            callId: callInfo.callId, type: callInfo.type, sdp: callInfo.sdp, ice: callInfo.ice,
+            callerAccount: callInfo.callerAccount, groupId: callInfo.groupId,
+            targetAccount: callInfo.targetAccount, participants: callInfo.participants, receivedAt: now
+        )
+        guard let data = try? JSONEncoder().encode(message) else { return }
+        // Zero-padded time first, so keys sort in arrival order.
+        let key = Self.pendingCallMessagePrefix + String(format: "%015lld-", now) + UUID().uuidString
+        try? storage.database.run("INSERT INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(data)])
     }
 
     private func savePendingCallOffer(_ callInfo: CallInfo, in storage: SecureStore) {

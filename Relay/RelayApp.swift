@@ -209,9 +209,20 @@ struct RelayApp: App {
         appDelegate.pushKitDelegate.wire(apiClient: service.apiClient)
     }
 
+    /// Replays call signals the NSE took off the queue: for 10 s after a wake,
+    /// then for as long as a call is still being set up (up to a minute), since
+    /// the caller's ICE candidates keep arriving after the OFFER.
     private func replayPendingCallOffersDuringWake(_ service: MessagingService) async {
-        for _ in 0..<20 {
+        let callManager = appDelegate.callManager
+        for tick in 0..<120 {
             await service.replayPendingCallOffers()
+            if tick >= 20 {
+                switch callManager.state {
+                case .incoming, .outgoing, .connecting: break
+                default: if !callManager.isInGroupCall { return }
+                }
+                if case .active = callManager.state { return }
+            }
             try? await Task.sleep(for: .milliseconds(500))
         }
     }

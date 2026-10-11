@@ -233,6 +233,23 @@ final class MessagingService {
 
     private static let pendingCallOfferPrefix = "pending-call-offer:"
 
+    /// Every call signal the NSE decrypted (OFFER, ICE, GROUP_RING, mesh
+    /// messages...), kept in arrival order for the app to replay. Without the
+    /// ICE candidates a call answered from the lock screen can't connect.
+    private struct PendingCallMessage: Codable {
+        let callId: String
+        let type: CallInfo.CallType
+        let sdp: String
+        let ice: String
+        let callerAccount: String
+        let groupId: String
+        let targetAccount: String
+        let participants: [String]
+        let receivedAt: Int64
+    }
+
+    private static let pendingCallMessagePrefix = "pending-call-msg:"
+
     /// For PushKitDelegate's VoIP token registration.
     var apiClient: RelayAPIClient { api }
 
@@ -361,6 +378,25 @@ final class MessagingService {
                 participants: offer.participants ?? []
             ))
             try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
+        }
+
+        // Then every other signal, in the order the NSE received it.
+        let messages = (try? storage.database.query(
+            "SELECT key, value FROM kv WHERE key LIKE ? ORDER BY key",
+            [.text(Self.pendingCallMessagePrefix + "%")]
+        )) ?? []
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        for row in messages {
+            guard let key = row.first?.string else { continue }
+            try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
+            guard let data = row.dropFirst().first?.data,
+                  let m = try? JSONDecoder().decode(PendingCallMessage.self, from: data),
+                  now - m.receivedAt < 120_000   // a call signal older than this is moot
+            else { continue }
+            await onCallMessage?(CallInfo(
+                callId: m.callId, type: m.type, sdp: m.sdp, ice: m.ice, callerAccount: m.callerAccount,
+                groupId: m.groupId, targetAccount: m.targetAccount, participants: m.participants
+            ))
         }
     }
 
