@@ -45,7 +45,9 @@ struct MyQRCodeView: View {
     var createInviteLink: (() async throws -> URL)? = nil
 
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("qr.preset") private var presetId = QRPreset.all[0].id
+    /// "photo", a preset id, or empty for the default (photo if there is one).
+    @AppStorage("qr.preset") private var presetId = ""
+    @State private var photoColor: (r: Double, g: Double, b: Double)?
     @State private var qrImage: UIImage?
     @State private var shareCard: UIImage?
     @State private var showingShare = false
@@ -55,16 +57,23 @@ struct MyQRCodeView: View {
     @State private var generatingInvite = false
     @State private var inviteError: String?
 
+    private var photo: UIImage? { avatarData.flatMap { DecodedImageCache.image(for: $0) } }
+    private var usesPhoto: Bool { photo != nil && (presetId == "photo" || presetId.isEmpty) }
+    private var selectedId: String { usesPhoto ? "photo" : preset.id }
     private var preset: QRPreset { QRPreset.all.first { $0.id == presetId } ?? QRPreset.all[0] }
+    /// QR module colour: a dark shade of the photo when it's the background.
+    private var moduleColor: (r: Double, g: Double, b: Double) {
+        usesPhoto ? (photoColor ?? (preset.mR, preset.mG, preset.mB)) : (preset.mR, preset.mG, preset.mB)
+    }
     private var link: String { "https://relaymsg.app/add/\(username)" }
     private var name: String { (displayName?.isEmpty == false ? displayName : nil) ?? "@\(username)" }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                LinearGradient(colors: [preset.topColor, preset.botColor], startPoint: .top, endPoint: .bottom)
+                backdrop
                     .ignoresSafeArea()
-                    .animation(.easeInOut(duration: 0.3), value: presetId)
+                    .animation(.easeInOut(duration: 0.3), value: selectedId)
 
                 ScrollView {
                     VStack(spacing: 26) {
@@ -101,7 +110,7 @@ struct MyQRCodeView: View {
                         .presentationDetents([.medium])
                 }
             }
-            .task(id: presetId) { await regenerate() }
+            .task(id: selectedId) { await regenerate() }
             .alert("Invite Link", isPresented: Binding(
                 get: { inviteError != nil },
                 set: { if !$0 { inviteError = nil } }
@@ -110,6 +119,25 @@ struct MyQRCodeView: View {
             } message: {
                 Text(inviteError ?? "")
             }
+        }
+    }
+
+    /// The profile photo blurred like the call screens, or the chosen gradient.
+    @ViewBuilder
+    private var backdrop: some View {
+        if usesPhoto, let photo {
+            ZStack {
+                Color.black
+                Image(uiImage: photo)
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: 80, opaque: true)
+                    .saturation(2.2)
+                    .brightness(-0.05)
+                    .overlay(Color.black.opacity(0.38))
+            }
+        } else {
+            LinearGradient(colors: [preset.topColor, preset.botColor], startPoint: .top, endPoint: .bottom)
         }
     }
 
@@ -166,6 +194,21 @@ struct MyQRCodeView: View {
     private var controls: some View {
         VStack(spacing: 18) {
             HStack(spacing: 14) {
+                if let photo {
+                    Button {
+                        presetId = "photo"
+                    } label: {
+                        Image(uiImage: photo)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 30, height: 30)
+                            .clipShape(.circle)
+                            .overlay(Circle().strokeBorder(.white, lineWidth: usesPhoto ? 3 : 1)
+                                .opacity(usesPhoto ? 1 : 0.5))
+                    }
+                    .accessibilityLabel("Profile photo")
+                    .accessibilityAddTraits(usesPhoto ? .isSelected : [])
+                }
                 ForEach(QRPreset.all) { option in
                     Button {
                         presetId = option.id
@@ -174,11 +217,11 @@ struct MyQRCodeView: View {
                             .fill(LinearGradient(colors: [option.topColor, option.botColor],
                                                  startPoint: .topLeading, endPoint: .bottomTrailing))
                             .frame(width: 30, height: 30)
-                            .overlay(Circle().strokeBorder(.white, lineWidth: option.id == presetId ? 3 : 1)
-                                .opacity(option.id == presetId ? 1 : 0.5))
+                            .overlay(Circle().strokeBorder(.white, lineWidth: option.id == selectedId ? 3 : 1)
+                                .opacity(option.id == selectedId ? 1 : 0.5))
                     }
                     .accessibilityLabel(option.id.capitalized)
-                    .accessibilityAddTraits(option.id == presetId ? .isSelected : [])
+                    .accessibilityAddTraits(option.id == selectedId ? .isSelected : [])
                 }
             }
 
@@ -235,13 +278,19 @@ struct MyQRCodeView: View {
         let p = preset
         let title = name
         let subtitle = displayName?.isEmpty == false ? "@\(username)" : nil
-        let avatar = avatarData.flatMap { DecodedImageCache.image(for: $0) }
+        let avatar = photo
+        let withPhoto = usesPhoto
+        if withPhoto, photoColor == nil, let avatar {
+            photoColor = await Task.detached(priority: .userInitiated) { qrModuleColor(from: avatar) }.value
+        }
+        let m = moduleColor
         let qr = await Task.detached(priority: .userInitiated) {
-            makeQRImage(username: user, size: 900, modR: p.mR, modG: p.mG, modB: p.mB)
+            makeQRImage(username: user, size: 900, modR: m.r, modG: m.g, modB: m.b)
         }.value
         qrImage = qr
         shareCard = await Task.detached(priority: .userInitiated) {
             renderShareCard(title: title, subtitle: subtitle, avatar: avatar, qrImage: qr,
+                            backdrop: withPhoto ? avatar : nil,
                             topR: p.tR, topG: p.tG, topB: p.tB,
                             botR: p.bR, botG: p.bG, botB: p.bB)
         }.value
@@ -277,11 +326,52 @@ nonisolated private func makeQRImage(
     return UIImage(cgImage: cgImage)
 }
 
+// MARK: - Photo colour
+
+/// A dark, saturated shade of the photo's average colour: dark enough to scan
+/// on white, close enough to read as the photo's colour.
+nonisolated private func qrModuleColor(from image: UIImage) -> (r: Double, g: Double, b: Double)? {
+    guard let input = CIImage(image: image) else { return nil }
+    let filter = CIFilter.areaAverage()
+    filter.inputImage = input
+    filter.extent = input.extent
+    guard let output = filter.outputImage else { return nil }
+    var pixel = [UInt8](repeating: 0, count: 4)
+    CIContext().render(output, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                       format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+    var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    UIColor(red: CGFloat(pixel[0]) / 255, green: CGFloat(pixel[1]) / 255, blue: CGFloat(pixel[2]) / 255, alpha: 1)
+        .getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+    let shade = UIColor(hue: h, saturation: s < 0.15 ? s : max(s, 0.65), brightness: 0.3, alpha: 1)
+    var r: CGFloat = 0, g: CGFloat = 0, bl: CGFloat = 0
+    shade.getRed(&r, green: &g, blue: &bl, alpha: &a)
+    return (Double(r), Double(g), Double(bl))
+}
+
+/// The photo blurred and darkened like the call screens, for the share image.
+nonisolated private func blurredBackdrop(_ image: UIImage, size: CGSize) -> UIImage? {
+    guard let input = CIImage(image: image) else { return nil }
+    let scale = max(size.width / input.extent.width, size.height / input.extent.height)
+    let scaled = input.transformed(by: CGAffineTransform(scaleX: scale, y: scale)).clampedToExtent()
+    let blur = CIFilter.gaussianBlur()
+    blur.inputImage = scaled
+    blur.radius = 60
+    let controls = CIFilter.colorControls()
+    controls.inputImage = blur.outputImage
+    controls.saturation = 2.2
+    controls.brightness = -0.05
+    guard let output = controls.outputImage else { return nil }
+    let w = input.extent.width * scale, h = input.extent.height * scale
+    let crop = CGRect(x: (w - size.width) / 2, y: (h - size.height) / 2, width: size.width, height: size.height)
+    guard let cg = CIContext().createCGImage(output, from: crop) else { return nil }
+    return UIImage(cgImage: cg)
+}
+
 // MARK: - Share card rendering
 
 // Renders the on-screen card over its gradient as one image for sharing.
 nonisolated private func renderShareCard(
-    title: String, subtitle: String?, avatar: UIImage?, qrImage: UIImage?,
+    title: String, subtitle: String?, avatar: UIImage?, qrImage: UIImage?, backdrop: UIImage?,
     topR: Double, topG: Double, topB: Double,
     botR: Double, botG: Double, botB: Double
 ) -> UIImage? {
@@ -308,7 +398,13 @@ nonisolated private func renderShareCard(
             UIColor(red: botR, green: botG, blue: botB, alpha: 1).cgColor,
         ] as CFArray
         let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0, 1])!
-        cg.drawLinearGradient(grad, start: .zero, end: CGPoint(x: 0, y: height), options: [])
+        if let backdrop, let blurred = blurredBackdrop(backdrop, size: CGSize(width: width, height: height)) {
+            blurred.draw(in: CGRect(x: 0, y: 0, width: width, height: height))
+            UIColor.black.withAlphaComponent(0.38).setFill()
+            cg.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        } else {
+            cg.drawLinearGradient(grad, start: .zero, end: CGPoint(x: 0, y: height), options: [])
+        }
 
         let card = CGRect(x: margin, y: cardTop, width: cardW, height: cardBottom - cardTop)
         UIColor.white.setFill()
