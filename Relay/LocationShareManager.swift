@@ -13,6 +13,7 @@
 import CoreLocation
 import Foundation
 import Observation
+import SecureStorage
 
 let locationPrefix = "__relay_loc__"
 
@@ -55,6 +56,9 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
     private(set) var peerLocations: [String: LocationPayload] = [:]
 
     private let clManager = CLLocationManager()
+    /// Keeps updates flowing (with the blue indicator) while Relay is in the
+    /// background, for as long as a share is running.
+    private var backgroundSession: CLBackgroundActivitySession?
     private var updateTask: Task<Void, Never>?
     private weak var service: MessagingService?
 
@@ -70,10 +74,25 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
         guard sharingConversationId == nil else { return }
         self.service = service
         sharingConversationId = conversationId
-        expiresAt = Date().addingTimeInterval(duration)
+        let expiry = Date().addingTimeInterval(duration)
+        expiresAt = expiry
         clManager.requestWhenInUseAuthorization()
+        backgroundSession = CLBackgroundActivitySession()
+        clManager.allowsBackgroundLocationUpdates = true
+        clManager.showsBackgroundLocationIndicator = true
         clManager.startUpdatingLocation()
         scheduleUpdates()
+        let name = PanicModeManager.shared.isHidden(conversationId)
+            ? "a chat"
+            : service.conversations.first { $0.id == conversationId }
+                .map { $0.groupId.map { service.displayName(forAccount: $0) } ?? service.displayName(forAccount: $0.peerAccount) }
+                ?? "a chat"
+        LiveLocationActivity.start(recipientName: name, expiresAt: expiry)
+    }
+
+    /// Stops whatever share is running (the Live Activity's Stop button).
+    func stopCurrent() {
+        if let id = sharingConversationId { stop(in: id) }
     }
 
     func stop(in conversationId: String) {
@@ -84,6 +103,10 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
 
     private func teardown() {
         clManager.stopUpdatingLocation()
+        clManager.allowsBackgroundLocationUpdates = false
+        backgroundSession?.invalidate()
+        backgroundSession = nil
+        LiveLocationActivity.end()
         updateTask?.cancel()
         updateTask = nil
         sharingConversationId = nil

@@ -12,5 +12,6 @@ import SwiftUI
 struct RelayWidgetExtensionBundle: WidgetBundle {
     var body: some Widget {
         RelayWidgetExtension()
+        LiveLocationLiveActivity()
     }
 }

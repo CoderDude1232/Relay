@@ -40,6 +40,9 @@
 		<string>remote-notification</string>
 		<string>voip</string>
 		<string>audio</string>
+		<string>location</string>
 	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 </dict>
 </plist>
