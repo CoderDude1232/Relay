@@ -1,53 +1,73 @@
 # Relay
 
-Relay is an end-to-end-encrypted messenger. This repository holds the wire
-protocol, the Go relay server, and the iOS app; they're versioned together so
-the protocol and the code that speaks it never drift apart.
+Relay is an end-to-end encrypted messenger for iPhone. Messages, calls, photos,
+voice notes and group chats are encrypted with the Signal Protocol and a
+post-quantum key exchange, and our servers delete each message as soon as it's
+delivered.
 
-Related repositories:
+**Website:** [relaymsg.app](https://relaymsg.app) ·
+**How it works:** [relaymsg.app/security](https://relaymsg.app/security) ·
+**Privacy policy:** [relaymsg.app/privacy](https://relaymsg.app/privacy)
 
-- [Relay-Android](https://github.com/CoderDude1232/Relay-Android) — the Android
-  client (in development). It copies `proto/` and must match it byte for byte.
+This repository contains the wire protocol, the relay server and the iOS app.
+They're versioned together so the protocol and the code that speaks it never
+drift apart.
 
-## Layout
+## What's here
 
-| Path | What it is |
+| Path | Contents |
 |---|---|
-| `proto/` | **Source of truth for the wire protocol.** `relay.proto` (server-visible envelopes + WS frames) and `content.proto` (client-only plaintext, encrypted before it hits the wire). The server and every client generate code from it. |
-| `server/` | The Go relay (`relayd`), plus `relayproxy` and `turnload`. Store-and-forward, prekeys, sealed sender, blinded discovery, push, TURN failover. API contract in `server/README.md`. |
-| iOS (repo root) | The iOS app, its extensions and Swift packages, kept at the root because the Xcode project's file-system-synchronized group is rooted here. See below. |
-| `docs/` | Architecture notes, the device test checklist, App Review and TestFlight notes, open work, and the sign-in email templates. |
-| `scripts/` | `setup-libsignal.sh`, which recreates `third_party/`. |
+| [`proto/`](proto) | The wire protocol: `relay.proto` (what the server sees) and `content.proto` (what's inside the encryption). The server and every client generate code from these. |
+| [`server/`](server) | The relay (`relayd`) in Go, plus `relayproxy` and `turnload`. The full API is documented in [`server/README.md`](server/README.md). |
+| `Relay/` and the other folders at the root | The iOS app, its extensions, the Apple Watch app, and four Swift packages: `CryptoCore` (libsignal), `SecureStorage` (SQLCipher and the Keychain), `RelayKit` (networking) and `RelayCore` (message processing). |
+| [`docs/`](docs) | [Architecture](docs/ARCHITECTURE.md), the [device test checklist](docs/TESTING.md) and other notes. |
 
-### iOS layout (at the repo root)
+The Android client is in development in a separate repository.
 
-The iOS client is **not** under an `ios/` folder — its Xcode project
-(`Relay.xcodeproj`) and file-system-synchronized group are rooted at the repo
-top level, and moving them would break the project. Its pieces:
+## Building
 
-- `Relay/` — the app target's source root (synced group).
-- `NotificationServiceExtension/`, `RelayShareExtension/`, `RelayWidgetExtension/`,
-  `RelayNotificationContent/`, `RelaySiriUI/`, `RelayIntents/`, `RelayBroadcastUpload/`
-  — app extensions; `RelayWatch Watch App/` — the Apple Watch app.
-- `CryptoCore/`, `SecureStorage/`, `RelayKit/`, `RelayCore/` — local Swift packages.
-- `third_party/` — git-ignored; vendored libsignal, recreated by `scripts/setup-libsignal.sh`.
+### iOS
 
-## Cross-cutting
+You need Xcode 27 or later; the app runs on iOS 26 and watchOS 26.
 
-- **Protocol is authoritative.** Any client change that affects the wire must be
-  reflected in `proto/` and `server/README.md`, and every client must match.
-- **Shared design decisions** (crypto choices, delivery semantics, auth, calls)
-  are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-- **Ongoing work:** [`docs/TODO.md`](docs/TODO.md); on-device verification
-  checklist: [`docs/TESTING.md`](docs/TESTING.md).
+```sh
+scripts/setup-libsignal.sh
+open Relay.xcodeproj
+```
+
+The script checks out [libsignal](https://github.com/signalapp/libsignal) into
+`third_party/` and downloads its prebuilt library, verifying the checksum.
+Package tests run on a simulator, for example:
+
+```sh
+cd SecureStorage && xcodebuild test -scheme SecureStorage -destination "platform=iOS Simulator,name=iPhone 17"
+```
+
+### Server
+
+You need Go 1.26.9 or later and PostgreSQL.
+
+```sh
+cd server
+go test ./...
+go run ./cmd/relayd -addr :8080 -dsn 'postgres:///relay?host=/var/run/postgresql'
+```
+
+Tests that need a database run when `RELAY_TEST_DSN` is set and are skipped
+otherwise. See [`server/README.md`](server/README.md) for every flag.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please report security issues privately,
+as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Relay is free software, licensed under the **GNU Affero General Public License
-v3.0** (see [`LICENSE`](LICENSE)). It's built on
-[libsignal](https://github.com/signalapp/libsignal), which is AGPL-3.0 too;
-other components keep their own licences (listed in the app under Profile →
-Privacy → Acknowledgements, and at https://relaymsg.app/source).
+Copyright © 2026 the Relay authors.
 
-Security issues: please email security@relaymsg.app rather than opening a
-public issue.
+Relay is free software, licensed under the
+[GNU Affero General Public License v3.0](LICENSE). It's built on
+[libsignal](https://github.com/signalapp/libsignal), which is also AGPL-3.0.
+Other components keep their own licenses; they're listed in the app under
+Profile → Privacy → Acknowledgements, and at
+[relaymsg.app/source](https://relaymsg.app/source).
