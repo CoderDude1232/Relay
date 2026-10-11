@@ -1193,7 +1193,32 @@ final class MessagingService {
 
     /// Best-effort. Bypasses sendContent to exclude this device and skip the
     /// identity acknowledgement check (own devices are trusted).
+    /// Runs `work` after a random delay, under a background task so the delay
+    /// can't strand it. Receipts and sync copies sent the instant a message
+    /// arrives or leaves would let anyone watching the relay pair the two
+    /// sealed sends by timing; the jitter blurs that link. Returns at once.
+    private func afterTimingJitter(seconds range: ClosedRange<Double>, _ work: @escaping @MainActor () async -> Void) {
+        let delay = Double.random(in: range)
+        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "relay-jitter")
+        Task { @MainActor [weak self] in
+            defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !self.isShutDown else { return }
+            await work()
+        }
+    }
+
     private func sendSyncToOwnDevices(
+        content: Relay_Content_Content,
+        peer: String,
+        timestamp: Int64
+    ) async {
+        afterTimingJitter(seconds: 2...12) { [weak self] in
+            await self?.sendSyncToOwnDevicesNow(content: content, peer: peer, timestamp: timestamp)
+        }
+    }
+
+    private func sendSyncToOwnDevicesNow(
         content: Relay_Content_Content,
         peer: String,
         timestamp: Int64
@@ -3194,15 +3219,19 @@ final class MessagingService {
         content.receipt.type = type
         content.receipt.messageTimestamps = timestamps
         if let groupId { content.groupID = groupId }
-        do {
-            try await sendContent(
-                try content.serializedData(),
-                toPeer: account,
-                clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
-                silent: true
-            )
-        } catch {
-            log.warning("receipt send failed: \(PrivacyRedactor.error(error))")
+        // Not the instant the message arrived (see afterTimingJitter).
+        afterTimingJitter(seconds: 1...6) { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.sendContent(
+                    try content.serializedData(),
+                    toPeer: account,
+                    clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                    silent: true
+                )
+            } catch {
+                self.log.warning("receipt send failed: \(PrivacyRedactor.error(error))")
+            }
         }
     }
 

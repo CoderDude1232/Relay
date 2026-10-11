@@ -217,22 +217,39 @@ class NotificationService: UNNotificationServiceExtension {
             engine: engine,
             ownAccountId: account.accountId,
             sealedSenderTrustRoot: RelaySealedSender.trustRoot,
-            processLock: .envelopeProcessing(appGroupId: appGroupId)
+            processLock: .envelopeProcessing(appGroupId: appGroupId, timeout: Self.lockTimeout)
         )
         // Blocked senders are still decrypted to keep the ratchet in sync; the
         // processor drops them before storing, as in the app.
         let blocked = RelayStore.blockedAccounts(in: storage)
         // The ratchet advances and the app can't decrypt this again, so the
         // control payloads for the app are saved in the same transaction.
-        guard let result = try? processor.process(envelope, blockedAccounts: blocked, persist: {
-            PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
-        }) else { return .suppress }
+        let result: ProcessedEnvelope
+        do {
+            result = try processor.process(envelope, blockedAccounts: blocked, persist: {
+                PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
+            })
+        } catch is CrossProcessLock.Timeout {
+            // The app has the lock; it will process the (still queued) envelope.
+            return Self.pendingMessageOutcome
+        } catch {
+            return .suppress
+        }
         return outcome(for: result, storage: storage, appGroupId: appGroupId, account: account)
     }
 
     // Contentless push: the payload carries no message data at all, only a
     // wake. Fetch this device's queued envelopes, decrypt and store them, and
     // ack each one so the server dequeues it.
+    /// How long to wait for the app's envelope lock before leaving the work to it.
+    private static let lockTimeout: TimeInterval = 8
+
+    /// Shown when the app holds the lock: something arrived, but it's the app's
+    /// to decrypt. Names nobody.
+    private static let pendingMessageOutcome = DecryptOutcome.show(
+        title: "Relay", body: "New message", conversationId: "", senderAccount: ""
+    )
+
     private func fetchAndDecrypt() async -> DecryptOutcome? {
         let appGroupId = RelayStore.appGroupId
         guard
@@ -265,7 +282,7 @@ class NotificationService: UNNotificationServiceExtension {
             engine: engine,
             ownAccountId: account.accountId,
             sealedSenderTrustRoot: RelaySealedSender.trustRoot,
-            processLock: .envelopeProcessing(appGroupId: appGroupId)
+            processLock: .envelopeProcessing(appGroupId: appGroupId, timeout: Self.lockTimeout)
         )
 
         // Blocked senders are still decrypted to keep the ratchet in sync; the
@@ -276,9 +293,19 @@ class NotificationService: UNNotificationServiceExtension {
         for envelope in envelopes {
             // The ratchet advances and the app can't decrypt this again, so the
             // control payloads for the app are saved in the same transaction.
-            let result = try? processor.process(envelope, blockedAccounts: blocked, persist: {
-                PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
-            })
+            let result: ProcessedEnvelope?
+            do {
+                result = try processor.process(envelope, blockedAccounts: blocked, persist: {
+                    PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
+                })
+            } catch is CrossProcessLock.Timeout {
+                // The app is processing (or is suspended holding the lock).
+                // Leave this and the rest queued, unacked, for it.
+                if latest == nil { latest = Self.pendingMessageOutcome }
+                break
+            } catch {
+                result = nil
+            }
             // Ack stored and poison messages alike, as the app does. Ephemeral
             // envelopes never queue.
             try? await api.ackMessage(envelopeId: envelope.id)
