@@ -3,11 +3,14 @@
 //  RelayWatch Watch App
 //
 //  Receives recent chats from the iPhone and asks it to send replies and start
-//  calls. Nothing is encrypted or decrypted here; the iPhone does all of that.
+//  calls. Messages are never decrypted here (the iPhone does that); the local
+//  copy of the chat list is sealed with a key in this watch's keychain.
 //
 
+import CryptoKit
 import Foundation
 import Observation
+import Security
 import UIKit
 import WatchConnectivity
 
@@ -36,7 +39,7 @@ final class WatchSession: NSObject, WCSessionDelegate {
 
     override init() {
         super.init()
-        if let data = try? Data(contentsOf: Self.cacheURL),
+        if let data = Self.readCache(),
            let cached = try? JSONDecoder().decode(WatchSnapshot.self, from: data) {
             snapshot = cached
             hasReceived = true
@@ -44,6 +47,52 @@ final class WatchSession: NSObject, WCSessionDelegate {
         guard WCSession.isSupported() else { return }
         WCSession.default.delegate = self
         WCSession.default.activate()
+    }
+
+    // MARK: Encrypted cache
+
+    /// The cached chat list holds names and recent message text, so it's
+    /// sealed with a key kept in this watch's keychain (this device only)
+    /// rather than written as plain JSON.
+    private static let keyAccount = "app.relaymsg.watch.cacheKey"
+
+    private static func cacheKey() -> SymmetricKey? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrAccount: keyAccount,
+            kSecReturnData: true,
+        ]
+        var out: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data, data.count == 32 {
+            return SymmetricKey(data: data)
+        }
+        let key = SymmetricKey(size: .bits256)
+        let raw = key.withUnsafeBytes { Data($0) }
+        let add: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrAccount: keyAccount,
+            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData: raw,
+        ]
+        SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrAccount: keyAccount] as CFDictionary)
+        guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { return nil }
+        return key
+    }
+
+    private static func readCache() -> Data? {
+        guard let stored = try? Data(contentsOf: cacheURL) else { return nil }
+        if let key = cacheKey(), let box = try? AES.GCM.SealedBox(combined: stored),
+           let plain = try? AES.GCM.open(box, using: key) {
+            return plain
+        }
+        // An older build's plain JSON, or a key that's gone: start over.
+        try? FileManager.default.removeItem(at: cacheURL)
+        return nil
+    }
+
+    private static func writeCache(_ data: Data) {
+        guard let key = cacheKey(), let sealed = try? AES.GCM.seal(data, using: key).combined else { return }
+        try? sealed.write(to: cacheURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     func open(chatId: String) {
@@ -166,7 +215,7 @@ final class WatchSession: NSObject, WCSessionDelegate {
             try? FileManager.default.createDirectory(
                 at: Self.cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true
             )
-            try? data.write(to: Self.cacheURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            Self.writeCache(data)
         }
     }
 
