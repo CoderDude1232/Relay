@@ -6,3 +6,5 @@
 /g /g/ 200
 /call/* /call/ 200
 /call /call/ 200
+/proxy/* /proxy/ 200
+/proxy /proxy/ 200

@@ -35,11 +35,31 @@ public enum RelayTLS {
         makeEphemeralSession(pins: pins)
     }
 
-    /// Process-wide authenticated session (system trust).
-    public static let sharedSession: URLSession = makeSession()
+    /// Process-wide authenticated session (system trust). Rebuilt when the proxy
+    /// setting changes.
+    public static var sharedSession: URLSession { cached(\.authenticated, make: { makeSession() }) }
 
     /// Process-wide anonymous session (system trust).
-    public static let sharedAnonymousSession: URLSession = makeAnonymousSession()
+    public static var sharedAnonymousSession: URLSession { cached(\.anonymous, make: { makeAnonymousSession() }) }
+
+    private struct Cache {
+        var proxy: RelayProxy.Address?
+        var authenticated: URLSession?
+        var anonymous: URLSession?
+    }
+    nonisolated(unsafe) private static var cache = Cache()
+    private static let cacheLock = NSLock()
+
+    private static func cached(_ slot: WritableKeyPath<Cache, URLSession?>, make: () -> URLSession) -> URLSession {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        let proxy = RelayProxy.active
+        if proxy != cache.proxy { cache = Cache(proxy: proxy) }
+        if let session = cache[keyPath: slot] { return session }
+        let session = make()
+        cache[keyPath: slot] = session
+        return session
+    }
 
     static func ephemeralConfiguration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
@@ -49,6 +69,7 @@ public enum RelayTLS {
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         config.urlCredentialStorage = nil
+        RelayProxy.apply(to: config)
         return config
     }
 

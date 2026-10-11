@@ -555,3 +555,39 @@ letters are dropped, not case-folded). Hash = SHA-256 of the UTF-8 bytes of
 
 The key is deleted with the account row. The lookup is a unique-index match on
 the hash; with ≥20 random characters there is nothing practical to enumerate.
+
+## Proxy (`cmd/relayproxy`)
+
+For people in places that block Relay. Anyone can run `relayproxy` on a VPS with
+a domain name; users enter the domain in **Settings → Privacy → Proxy** (or
+"Can't connect? Use a proxy" on the welcome screen), or open a shared link
+`https://relaymsg.app/proxy#<host[:port]>`. The address lives only in the
+fragment, so relaymsg.app never sees it.
+
+How it works: the app opens TLS to the proxy (an ordinary HTTPS connection to the
+proxy's own domain) and sends `CONNECT api.relaymsg.app:443` inside it (HTTP/1.1
+or HTTP/2). The proxy splices that to the relay and the app speaks TLS to the
+relay end to end, so the proxy sees only encrypted bytes. While a proxy is on the
+app never falls back to a direct connection (`allowFailover = false`); the
+notification extension uses it too. Calls (WebRTC/TURN) are not proxied.
+
+The proxy reaches only the hosts in `-allow` (default: the relay API and the
+Supabase project used for sign-in), so it can't be used as an open proxy. Any
+non-CONNECT request gets a plain 404. Client addresses are never logged.
+
+```
+go build -o relayproxy ./cmd/relayproxy
+# Let's Encrypt on port 443 only (TLS-ALPN-01); point the domain's A record at the VPS first.
+sudo ./relayproxy -domain proxy.example.com
+# or with your own certificate:
+sudo ./relayproxy -cert fullchain.pem -key privkey.pem
+```
+
+| Flag | Default | |
+|---|---|---|
+| `-addr` | `:443` | listen address |
+| `-domain` | | get a certificate for this name automatically |
+| `-cache-dir` | `/var/lib/relayproxy/certs` | certificate cache for `-domain` |
+| `-cert`, `-key` | | TLS certificate and key instead of `-domain` |
+| `-allow` | relay API + Supabase, port 443 | comma-separated `host:port` targets |
+| `-max-conns` | 4000 | concurrent tunnels before new ones get 503 |

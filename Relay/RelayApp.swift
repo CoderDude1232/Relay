@@ -82,6 +82,9 @@ struct RelayApp: App {
                     } else if url.host == "call" {
                         // relay://call/<callId>#<hostAccount>.<secret>
                         if let link = CallManager.parseCallLink(url) { model.pendingCallLink = link }
+                    } else if url.host == "proxy" {
+                        // relay://proxy/<host[:port]>
+                        model.pendingProxy = RelayProxy.parse(url.absoluteString)
                     } else if url.host == "scan" {
                         // relay://scan, from the Scan QR Code control.
                         model.pendingScanQR = true
@@ -119,6 +122,11 @@ struct RelayApp: App {
                     // Universal Links:
                     //   https://relaymsg.app/add/<username>   (permanent username link)
                     //   https://relaymsg.app/c/<token>        (one-time contact invite)
+                    // https://relaymsg.app/proxy#<host[:port]>
+                    if let url = activity.webpageURL, url.host == "relaymsg.app", url.path.hasPrefix("/proxy") {
+                        model.pendingProxy = RelayProxy.parse(url.absoluteString)
+                        return
+                    }
                     guard let url = activity.webpageURL,
                           url.host == "relaymsg.app",
                           url.pathComponents.count >= 3

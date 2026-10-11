@@ -544,6 +544,16 @@ struct PrivacySettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                NavigationLink(destination: ProxySettingsView()) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "network.badge.shield.half.filled", color: .accentColor)
+                        Text("Proxy")
+                        Spacer(minLength: 0)
+                        Text(RelayProxy.isEnabled ? "On" : "Off").foregroundStyle(.secondary)
+                    }
+                }
+            }
             Section("Activity") {
                 SettingsToggleRow(systemName: "ellipsis.bubble.fill", title: "Send Typing Indicators",
                                   info: "When on, people you're chatting with can see when you're typing. When off, you'll still see theirs.",

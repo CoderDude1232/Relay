@@ -345,6 +345,7 @@ private struct WelcomeView: View {
 
     @State private var oauthLoading = false
     @State private var oauthError: String?
+    @State private var showingProxy = false
     @State private var pendingCodeVerifier: String?
     @State private var googleWebSession: ASWebAuthenticationSession?
 
@@ -422,6 +423,25 @@ private struct WelcomeView: View {
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(.white.opacity(0.55))
                         .frame(minHeight: 32)
+                }
+
+                // Where Relay is blocked, sign-in only works through a proxy.
+                Button { showingProxy = true } label: {
+                    Text(RelayProxy.isEnabled ? "Using a proxy" : "Can't connect? Use a proxy")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .frame(minHeight: 32)
+                }
+                .sheet(isPresented: $showingProxy) {
+                    NavigationStack {
+                        ProxySettingsView()
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("Done") { showingProxy = false }
+                                }
+                            }
+                    }
+                    .preferredColorScheme(nil)
                 }
 
                 LegalFooter()

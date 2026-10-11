@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import RelayKit
 import Security
 
 // MARK: - Config
@@ -208,7 +209,7 @@ actor SupabaseAuth {
 
         let (data, resp): (Data, URLResponse)
         do {
-            (data, resp) = try await URLSession.shared.data(for: req)
+            (data, resp) = try await RelayTLS.sharedAnonymousSession.data(for: req)
         } catch let urlErr as URLError {
             switch urlErr.code {
             case .notConnectedToInternet:

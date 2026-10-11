@@ -62,6 +62,17 @@ final class AppModel {
     var pendingNotificationConversationId: String?
     /// relay://scan (the Scan QR Code control): open the scanner.
     var pendingScanQR = false
+    /// A proxy link that was opened, waiting for the user to confirm it.
+    var pendingProxy: RelayProxy.Address?
+
+    /// Reconnects through the current proxy setting: the running service is
+    /// rebuilt so every connection picks up the new route.
+    func applyProxyChange() async {
+        guard case .ready(let service) = phase else { return }
+        service.stop()
+        phase = .loading
+        await boot()
+    }
 
     var isReady: Bool {
         if case .ready = phase { return true }
@@ -71,7 +82,8 @@ final class AppModel {
         configuration: KeychainConfiguration(accessGroup: appGroupId)
     )
     /// Certificate-pinned session shared by every relay connection.
-    private let session = RelayTLS.makeSession()
+    /// Follows the proxy setting (RelayTLS rebuilds it when that changes).
+    private var session: URLSession { RelayTLS.sharedSession }
     /// Latest APNs device token (hex), uploaded once a session exists.
     private var apnsTokenHex: String?
     /// Background task assertion that keeps the WebSocket alive after backgrounding.
