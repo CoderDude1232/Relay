@@ -314,6 +314,13 @@ class NotificationService: UNNotificationServiceExtension {
                 // Missed-call banner, honouring the preview level. An unknown caller is
                 // just "Missed call", never an account id prefix.
                 let callerAccount = result.peerAccount ?? ""
+                // Only from someone we've accepted a chat with: anyone can send a
+                // HANGUP, and calls from requests don't ring in the first place.
+                let accepted = (try? storage.database.query(
+                    "SELECT 1 FROM conversations WHERE peer_account = ? AND group_id IS NULL AND accepted = 1",
+                    [.text(callerAccount)]
+                ))?.isEmpty == false
+                guard accepted else { return .suppress }
                 let showName = Self.previewLevel(defaults: UserDefaults(suiteName: appGroupId)) != "none"
                 let name = showName ? (callerDisplayName(for: callerAccount, in: storage) ?? "Relay") : "Relay"
                 return .show(title: name, body: "Missed call",

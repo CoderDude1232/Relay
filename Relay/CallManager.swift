@@ -106,6 +106,11 @@ final class CallManager: NSObject {
     var onTriggerPush: ((String, String) async -> Void)?
     /// True when calls from this account must be dropped (blocked contact).
     var isBlockedAccount: ((String) -> Bool)?
+    /// Whether this account may ring us: an accepted chat, or a group we share.
+    /// Others (message requests, strangers) get a missed-call note instead.
+    var isCallAllowed: ((String) -> Bool)?
+    /// Records a call we didn't ring for because it came from a request.
+    var onCallFromRequest: ((String) -> Void)?
     /// The locally stored member list for a group id (nil if unknown). Group-call
     /// signals are accepted only from members of that roster.
     var groupMembersResolver: ((String) -> [String]?)?
@@ -227,6 +232,34 @@ final class CallManager: NSObject {
     private var hasAnsweredCall = false
     private var wasIncomingCall = false   // true when we are the callee
     private var callTimeoutTask: Task<Void, Never>?
+    /// Calls that ended here in the last few minutes. A late VoIP push, OFFER
+    /// or NSE replay for one of them must not ring again.
+    private var recentlyEndedCallIds: [String: Date] = [:]
+    /// How long an incoming 1:1 call rings before it's missed.
+    private static let incomingRingSeconds: Double = 60
+
+    private func noteCallEnded(_ callId: String?) {
+        guard let callId, !callId.isEmpty else { return }
+        let now = Date()
+        recentlyEndedCallIds = recentlyEndedCallIds.filter { now.timeIntervalSince($0.value) < 600 }
+        recentlyEndedCallIds[callId] = now
+    }
+
+    private func endedRecently(_ callId: String) -> Bool {
+        recentlyEndedCallIds[callId].map { Date().timeIntervalSince($0) < 600 } ?? false
+    }
+
+    /// Misses an unanswered incoming call after `incomingRingSeconds`, so a call
+    /// whose HANGUP never arrives doesn't ring forever.
+    private func startIncomingRingTimeout(callId: String) {
+        callTimeoutTask?.cancel()
+        callTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.incomingRingSeconds))
+            guard let self, !Task.isCancelled, !self.hasAnsweredCall,
+                  case .incoming(let id, _, _) = self.state, id == callId else { return }
+            self.terminate(fromRemote: true)
+        }
+    }
     private var iceRecoveryTask: Task<Void, Never>?
     /// Mid-call reconnection (1:1): rebuilds ICE with fresh TURN servers.
     private var iceRestartTask: Task<Void, Never>?
@@ -447,10 +480,21 @@ final class CallManager: NSObject {
             return
         }
         if case .incoming(let existingId, _, _) = state, existingId == callId {
-            pushCompletion()
+            // Already ringing from the WebSocket OFFER. PushKit still needs a
+            // report for this push or iOS stops delivering them; re-reporting
+            // the same call is a harmless duplicate.
+            if hasCallKitReport, let uuid = activeCallUUID {
+                let update = CXCallUpdate()
+                update.remoteHandle = Self.opaqueHandle()
+                update.localizedCallerName = callKitCallerName(storedPeerName ?? "Relay")
+                update.hasVideo = storedCallKind == .video
+                provider.reportNewIncomingCall(with: uuid, update: update) { _ in pushCompletion() }
+            } else {
+                reportAndEndRejectedPushCall(completion: pushCompletion)
+            }
             return
         }
-        guard case .idle = state, !callId.isEmpty else {
+        guard case .idle = state, !callId.isEmpty, !endedRecently(callId) else {
             // Busy or malformed push. BUSY can't be sent yet because the caller is
             // unknown; `reportIncomingCall` answers the OFFER with BUSY when it arrives.
             reportAndEndRejectedPushCall(completion: pushCompletion)
@@ -570,6 +614,14 @@ final class CallManager: NSObject {
         offerWaitTask = nil
         if isBlockedAccount?(account) == true {
             log.info("dropping call from a blocked account")
+            noteCallEnded(storedCallId)
+            endUnverifiedCall()
+            return false
+        }
+        if isCallAllowed?(account) == false {
+            log.info("call from a message request; not ringing")
+            onCallFromRequest?(account)
+            noteCallEnded(storedCallId)
             endUnverifiedCall()
             return false
         }
@@ -579,6 +631,7 @@ final class CallManager: NSObject {
         storedCallKind = kind
         if case .incoming(let callId, _, _) = state {
             state = .incoming(callId: callId, callerAccount: account, callerName: name)
+            if !hasAnsweredCall { startIncomingRingTimeout(callId: callId) }
         }
         if hasCallKitReport, let uuid = activeCallUUID {
             let update = CXCallUpdate()
@@ -602,6 +655,13 @@ final class CallManager: NSObject {
         }
         if isInGroupCall { return }
         if case .incoming(let existingId, _, _) = state, existingId == callId { return }
+        if endedRecently(callId) { return }
+        if isCallAllowed?(callerAccount) == false {
+            log.info("call from a message request; not ringing")
+            noteCallEnded(callId)
+            onCallFromRequest?(callerAccount)
+            return
+        }
         guard case .idle = state else {
             Task {
                 var msg = Relay_Content_CallMessage()
@@ -622,6 +682,7 @@ final class CallManager: NSObject {
         wasIncomingCall = true
         resetDiagnostics()
         state = .incoming(callId: callId, callerAccount: callerAccount, callerName: callerName)
+        startIncomingRingTimeout(callId: callId)
 
         // Every call goes through CallKit; only the Mac app, which has no CallKit,
         // rings in-app and activates audio itself in answerCall().
@@ -670,6 +731,8 @@ final class CallManager: NSObject {
         let answerPeer = (storedCallPeer?.isEmpty == false ? storedCallPeer : nil) ?? callerAccount
         hasAnsweredCall = true
         stopRingtone()
+        callTimeoutTask?.cancel()
+        callTimeoutTask = nil
         if storedCallKind == .video {
             await requestCameraAccessIfNeeded()
         }
@@ -835,6 +898,9 @@ final class CallManager: NSObject {
                 return
             }
             guard let pc = peerConnection else { return }
+            // Answered: the no-answer timeout must not fail it while ICE connects.
+            callTimeoutTask?.cancel()
+            callTimeoutTask = nil
             let desc = RTCSessionDescription(type: .answer, sdp: msg.sdp)
             do {
                 try await pc.setRemoteDescription(desc)
@@ -863,6 +929,14 @@ final class CallManager: NSObject {
 
         case .hangup:
             guard isFromCurrentCallPeer(msg, account: account) else {
+                // Possibly ahead of its OFFER (or its push is still ringing as
+                // "Relay"): remember it so the OFFER doesn't ring.
+                if isAwaitingCallerIdentity, storedCallId == msg.callID {
+                    noteCallEnded(msg.callID)
+                    endUnverifiedCall()
+                } else if storedCallId != msg.callID {
+                    noteCallEnded(msg.callID)
+                }
                 log.warning("ignoring HANGUP that doesn't match the current call")
                 return
             }
@@ -1083,6 +1157,7 @@ final class CallManager: NSObject {
     }
 
     private func failCall(_ reason: String, notifyPeer: Bool) {
+        noteCallEnded(storedCallId)
         stopRingtone()
         offerWaitTask?.cancel()
         offerWaitTask = nil
@@ -1141,6 +1216,7 @@ final class CallManager: NSObject {
         reportToCallKit: Bool = true,
         outcomeOverride: StoredCallOutcome? = nil
     ) {
+        noteCallEnded(storedCallId)
         stopRingtone()
         offerWaitTask?.cancel()
         offerWaitTask = nil

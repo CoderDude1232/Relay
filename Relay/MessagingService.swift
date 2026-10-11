@@ -871,6 +871,24 @@ final class MessagingService {
         conversations.contains { !$0.isGroup && $0.peerAccount == account && !$0.isRequest }
     }
 
+    /// Who may ring us: someone we've accepted a chat with, or a member of a
+    /// group we've accepted. Anyone else is a message request.
+    func isCallAllowed(from account: String) -> Bool {
+        if hasAcceptedChat(with: account) { return true }
+        return conversations.contains { conv in
+            conv.isGroup && !conv.isRequest && (group(for: conv.id)?.members.contains(account) ?? false)
+        }
+    }
+
+    /// A call from a message request doesn't ring; it leaves a note in the
+    /// request instead.
+    func noteCallFromRequest(_ account: String) {
+        guard !isBlocked(account),
+              let conversationId = try? storage.messages.conversation(withPeer: account, accepted: false)
+        else { return }
+        insertSystemLine("Missed call. Accept the request to get calls from them.", conversationId: conversationId)
+    }
+
     /// Accepts a request: from now on the sender sees read receipts and typing,
     /// gets our profile, and media and links show.
     func acceptMessageRequest(_ conversationId: String) {

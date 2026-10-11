@@ -191,8 +191,19 @@ struct RelayApp: App {
         callManager.callLinkSecretResolver = { callId in CallLinkStore.shared.link(callId)?.secret }
         callManager.callLinkNameResolver = { callId in CallLinkStore.shared.link(callId)?.name }
         callManager.groupMembersResolver = { groupId in
-            guard let conv = service.conversations.first(where: { $0.groupId == groupId }) else { return nil }
-            return service.group(for: conv.id)?.members
+            // Only groups we're still in and have accepted: a group we left, or
+            // one a stranger added us to, can't ring us.
+            guard let conv = service.conversations.first(where: { $0.groupId == groupId }), !conv.isRequest,
+                  let members = service.group(for: conv.id)?.members,
+                  members.contains(service.credentials.accountId)
+            else { return nil }
+            return members
+        }
+        callManager.isCallAllowed = { account in
+            service.isCallAllowed(from: account)
+        }
+        callManager.onCallFromRequest = { account in
+            service.noteCallFromRequest(account)
         }
         callManager.onAwaitingCallOffer = {
             // A VoIP push woke us for an anonymous call: bring the socket up and
