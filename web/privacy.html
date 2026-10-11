@@ -64,15 +64,15 @@
 <main id="main" class="shell doc">
 
   <div class="doc-head">
-    <p class="lbl">Effective 11 October 2026 · Version 1.3 · <a href="/privacy-1.2">Previous version</a></p>
+    <p class="lbl">Effective 11 October 2026 · Version 1.4 · <a href="/privacy-1.3">Previous version</a></p>
     <h1>Privacy Policy</h1>
     <p class="doc-lede">
       What Relay collects, what it doesn't, and what could be handed over if we were compelled.
     </p>
     <p class="doc-lede">
-      <b>What changed in 1.3:</b> the name and profile photo Google shares at sign-in are no
-      longer stored, and passkey sign-in is described. Version 1.2 spelled out abuse reports and
-      exactly what a legal demand could produce.
+      <b>What changed in 1.4:</b> you can now have an account with no email at all, remove the
+      email from an existing account, and keep a recovery key. Version 1.3 stopped storing the
+      name and photo Google shares at sign-in.
     </p>
   </div>
 
@@ -80,9 +80,9 @@
     <h2>The short version</h2>
     <div>
       <ul class="doc-list">
-        <li>An account is a username and an email address. No real name, no phone number.</li>
+        <li>An account is a username, plus an email address only if you want one. No real name, no phone number.</li>
         <li>Our servers never see your messages in readable form, and keep no record of who you exchanged them with.</li>
-        <li>Compelled to hand over everything we hold about a user, we could produce their username and email address, when they signed up and signed in, how many devices they use, and any undelivered message as data we can't read. Not a contact list, not a history, not a single readable word of their chats — unless someone chose to include messages in an abuse report.</li>
+        <li>Compelled to hand over everything we hold about a user, we could produce their username and email address (if the account has one), when they signed up and signed in, how many devices they use, and any undelivered message as data we can't read. Not a contact list, not a history, not a single readable word of their chats — unless someone chose to include messages in an abuse report.</li>
         <li>The waitlist on this website is the one list we keep, and we delete it after launch.</li>
       </ul>
     </div>
@@ -108,9 +108,22 @@
     <h2>Your account</h2>
     <div>
       <p>
-        An account is a username, an email address, and a password. We store the username and the
-        address. The password is stored only as a hash — we never see it, and we can't recover it
-        for you.
+        An account is a username and a way to sign in: an email address, a passkey, or both. We
+        store the username, and the address if you use one. Passwords are stored only as a hash —
+        we never see them, and we can't recover them for you.
+      </p>
+      <p>
+        <b>You don't have to give us an email.</b> You can sign up with just a username and a
+        passkey, and remove the email from an existing account once it has a passkey. Removing it
+        deletes the address from Relay and from our sign-in provider, so neither could link your
+        account to an email afterwards. The trade-off: there's no "forgot password" by email, so if
+        you lose your passkey and your recovery key, nobody — including us — can get you back in.
+      </p>
+      <p>
+        A <b>recovery key</b> is a random code that signs you in without a password, email code
+        or passkey. It's made on your phone. We keep only a one-way hash of it, which can check a
+        key but can't be turned back into one. Your phone keeps the key itself, and an encrypted
+        copy travels with your chat list (below), so you can view it again on a new phone.
       </p>
       <p>
         <strong>Your username is public.</strong> It's how people add you, and it appears in
@@ -127,10 +140,10 @@
         the addresses being searched.
       </p>
       <p>
-        If you set an account password, we also keep an encrypted copy of your chat list
-        (who your chats and groups are with, not your messages) with your account, so signing back
-        in brings your chats back. It's encrypted on your phone with a key made from your account
-        password, so we can't read it.
+        If you set an account password or create a passkey, we also keep an encrypted copy of your
+        chat list (who your chats and groups are with, not your messages) with your account, so
+        signing back in brings your chats back. It's encrypted on your phone, and only your
+        account password, your passkeys or your recovery key can open it — we can't read it.
       </p>
       <p>
         We also hold a push token for each of your devices, issued by Apple, so we can wake the
@@ -363,10 +376,11 @@
     <div>
       <p>
         We respond to valid legal process, and we can only produce what exists. For a Relay user
-        that's their username and email address, their sign-in records held by Supabase (the
+        that's their username, their email address if the account has one, their sign-in records held by Supabase (the
         time of their last sign-in, the IP address their current session started from, and the
         time and IP address of any sign-in in the past 24 hours), the day their account and each of their devices was created, abuse reports
-        they filed or were named in, and any undelivered message as encrypted data we can't read.
+        they filed or were named in, whether they've set a recovery key (but not the key itself — we
+        only hold a hash of it), and any undelivered message as encrypted data we can't read.
         There's no message history or contact list to disclose.
       </p>
       <p>
