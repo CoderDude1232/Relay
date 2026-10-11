@@ -364,5 +364,19 @@ enum Schema {
             try db.run("ALTER TABLE conversations ADD COLUMN accepted INTEGER NOT NULL DEFAULT 1;")
             try db.run("PRAGMA user_version = 23;")
         }
+        try step(db, to: 24) {
+            // Base keys already used with a last-resort Kyber prekey, so a
+            // replayed first message can't rebuild a session (libsignal leaves
+            // this check to the store).
+            try db.run("""
+                CREATE TABLE IF NOT EXISTS kyber_last_resort_uses (
+                    kyber_id         INTEGER NOT NULL,
+                    signed_prekey_id INTEGER NOT NULL,
+                    base_key         BLOB NOT NULL,
+                    PRIMARY KEY (kyber_id, signed_prekey_id, base_key)
+                );
+                """)
+            try db.run("PRAGMA user_version = 24;")
+        }
     }
 }

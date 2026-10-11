@@ -562,6 +562,7 @@ final class MessagingService {
                         didRepublishKeysThisLaunch = true
                         do {
                             try await maintainer.republishSignedPreKey(api: api, engine: engine, allocator: allocator)
+                            try? storage.signalStore.pruneReplacedPreKeys()
                         } catch {
                             log.warning("signed prekey republish failed: \(PrivacyRedactor.error(error))")
                         }

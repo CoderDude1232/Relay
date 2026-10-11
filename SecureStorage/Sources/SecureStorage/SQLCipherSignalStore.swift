@@ -335,7 +335,51 @@ extension SQLCipherSignalStore: KyberPreKeyStore {
         if id & 0x0080_0000 != 0 {
             try db.run("DELETE FROM kyber_prekeys WHERE id = ?", [.integer(Int64(id))])
         } else {
+            // A last-resort key may be used by many senders, but never twice
+            // with the same base key: that's a replayed first message.
+            let seen = try !db.query(
+                "SELECT 1 FROM kyber_last_resort_uses WHERE kyber_id = ? AND signed_prekey_id = ? AND base_key = ?",
+                [.integer(Int64(id)), .integer(Int64(signedPreKeyId)), .blob(baseKey.serialize())]
+            ).isEmpty
+            if seen { throw StorageError.recordNotFound("kyber prekey \(id) (base key reused)") }
+            try db.run(
+                "INSERT INTO kyber_last_resort_uses (kyber_id, signed_prekey_id, base_key) VALUES (?, ?, ?)",
+                [.integer(Int64(id)), .integer(Int64(signedPreKeyId)), .blob(baseKey.serialize())]
+            )
             try db.run("UPDATE kyber_prekeys SET used = 1 WHERE id = ?", [.integer(Int64(id))])
+        }
+    }
+
+    /// Deletes signed prekeys and last-resort Kyber prekeys that were replaced
+    /// more than `retention` ago. Old private halves would otherwise pile up
+    /// and let a later database theft decrypt the start of sessions recorded
+    /// in transit. A key counts as replaced when the next one was created, so
+    /// everything newer than the newest key older than the cutoff is kept.
+    public func pruneReplacedPreKeys(retention: TimeInterval = 30 * 24 * 3600) throws {
+        let cutoffMs = UInt64(max(0, Date().timeIntervalSince1970 - retention) * 1000)
+        func doomed(_ rows: [(id: Int64, timestamp: UInt64)]) -> [Int64] {
+            let sorted = rows.sorted { $0.timestamp > $1.timestamp }
+            guard let anchor = sorted.firstIndex(where: { $0.timestamp < cutoffMs }) else { return [] }
+            return sorted[(anchor + 1)...].map(\.id)
+        }
+        let signed: [(id: Int64, timestamp: UInt64)] = try db.query("SELECT id, record FROM signed_prekeys").compactMap { row in
+            guard let id = row[0].int64, let blob = row[1].data,
+                  let record = try? SignedPreKeyRecord(bytes: blob) else { return nil }
+            return (id, record.timestamp)
+        }
+        for id in doomed(signed) {
+            try db.run("DELETE FROM signed_prekeys WHERE id = ?", [.integer(id)])
+        }
+        let kyber: [(id: Int64, timestamp: UInt64)] = try db.query(
+            "SELECT id, record FROM kyber_prekeys WHERE id < ?", [.integer(0x0080_0000)]
+        ).compactMap { row in
+            guard let id = row[0].int64, let blob = row[1].data,
+                  let record = try? KyberPreKeyRecord(bytes: blob) else { return nil }
+            return (id, record.timestamp)
+        }
+        for id in doomed(kyber) {
+            try db.run("DELETE FROM kyber_prekeys WHERE id = ?", [.integer(id)])
+            try db.run("DELETE FROM kyber_last_resort_uses WHERE kyber_id = ?", [.integer(id)])
         }
     }
 }
