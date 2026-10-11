@@ -14,18 +14,6 @@ xcuserdata/
 *.xcuserstate
 DerivedData/
 
-# Android / Gradle build artifacts
-android/.gradle/
-android/build/
-android/**/build/
-android/local.properties
-android/.idea/
-android/captures/
-android/*.keystore
-android/app/google-services.json
-*.apk
-*.aab
-
 # Private signing keys (Sign in with Apple, APNs, App Store Connect API) — never commit
 *.p8
 # Local API tokens — never commit

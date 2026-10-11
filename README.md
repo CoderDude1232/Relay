@@ -1,19 +1,23 @@
-# Relay — monorepo
+# Relay
 
-Relay is an end-to-end-encrypted messenger. We own **every layer**: the protobuf
-wire schema, the Go relay server, and the clients. This repository is a
-**monorepo** so the protocol contract and every client stay version-locked
-together — there is no external spec, the source of truth is this repo.
+Relay is an end-to-end-encrypted messenger. This repository holds the wire
+protocol, the Go relay server, and the iOS app; they're versioned together so
+the protocol and the code that speaks it never drift apart.
+
+Related repositories:
+
+- [Relay-Android](https://github.com/CoderDude1232/Relay-Android) — the Android
+  client (in development). It copies `proto/` and must match it byte for byte.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `proto/` | **Source of truth for the wire protocol.** `relay.proto` (server-visible envelopes + WS frames) and `content.proto` (client-only plaintext, encrypted before it hits the wire). Every client and the server codegen from here. |
-| `server/` | The Go relay (`relayd`). Store-and-forward, prekeys, sealed sender, blinded discovery, groups, push. API contract in `server/README.md`. |
-| `web/` | The website (relaymsg.app): static pages, the invite and call-link landing pages, and `.well-known/apple-app-site-association`. Deployed by Cloudflare Pages. |
-| `android/` | **Android client** (Kotlin / Jetpack Compose), in progress. Must interoperate byte-for-byte with the contract in `proto/` + `server/`. |
-| iOS (repo root) | The iOS app + Swift packages, kept at the root because the Xcode project's file-system-synchronized group is rooted here. See below. |
+| `proto/` | **Source of truth for the wire protocol.** `relay.proto` (server-visible envelopes + WS frames) and `content.proto` (client-only plaintext, encrypted before it hits the wire). The server and every client generate code from it. |
+| `server/` | The Go relay (`relayd`), plus `relayproxy` and `turnload`. Store-and-forward, prekeys, sealed sender, blinded discovery, push, TURN failover. API contract in `server/README.md`. |
+| iOS (repo root) | The iOS app, its extensions and Swift packages, kept at the root because the Xcode project's file-system-synchronized group is rooted here. See below. |
+| `docs/` | Architecture notes, the device test checklist, App Review and TestFlight notes, open work, and the sign-in email templates. |
+| `scripts/` | `setup-libsignal.sh`, which recreates `third_party/`. |
 
 ### iOS layout (at the repo root)
 
@@ -23,17 +27,19 @@ top level, and moving them would break the project. Its pieces:
 
 - `Relay/` — the app target's source root (synced group).
 - `NotificationServiceExtension/`, `RelayShareExtension/`, `RelayWidgetExtension/`,
-  `RelayNotificationContent/`, `RelayIntents/`, `RelayBroadcastUpload*/` — app extensions.
+  `RelayNotificationContent/`, `RelaySiriUI/`, `RelayIntents/`, `RelayBroadcastUpload/`
+  — app extensions; `RelayWatch Watch App/` — the Apple Watch app.
 - `CryptoCore/`, `SecureStorage/`, `RelayKit/`, `RelayCore/` — local Swift packages.
 - `third_party/` — git-ignored; vendored libsignal, recreated by `scripts/setup-libsignal.sh`.
 
 ## Cross-cutting
 
 - **Protocol is authoritative.** Any client change that affects the wire must be
-  reflected in `proto/` and `server/README.md`, and both clients must match.
+  reflected in `proto/` and `server/README.md`, and every client must match.
 - **Shared design decisions** (crypto choices, delivery semantics, auth, calls)
   are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-- **Ongoing work:** `TODO.md`, on-device verification checklist: `TESTING.md`.
+- **Ongoing work:** [`docs/TODO.md`](docs/TODO.md); on-device verification
+  checklist: [`docs/TESTING.md`](docs/TESTING.md).
 
 ## License
 
