@@ -97,7 +97,22 @@ message ServerFrame {
     // can refresh without polling. Not end-to-end encrypted: the account owns
     // all of its devices.
     DeviceListChanged device_list_changed = 5;
+    // Something about how the account signs in changed, from another of its
+    // devices (a passkey, the recovery key, the account password, the email).
+    // Stored for offline devices until they next connect, so a device someone
+    // briefly had access to can't quietly add a way back in. Not end-to-end
+    // encrypted: the relay made the change.
+    AccountNotice account_notice = 6;
   }
+}
+
+message AccountNotice {
+  // passkey_added, passkey_removed, recovery_key_set, recovery_key_removed,
+  // account_password_set, email_removed, email_changed. Clients show a generic
+  // notice for kinds they don't know.
+  string kind = 1;
+  // When the change happened (relay clock, ms).
+  int64 time_ms = 2;
 }
 
 // A signed remote-wipe command. The canonical signing payload is:

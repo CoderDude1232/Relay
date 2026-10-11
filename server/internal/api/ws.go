@@ -170,6 +170,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	if !sess.sendBlocking(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_QueueEmpty{QueueEmpty: &relaypb.QueueEmpty{}}}) {
 		return
 	}
+	// Sign-in changes made from another device while this one was away.
+	s.deliverAccountNotices(dev.AccountID, dev.DeviceID, sess.sendBlocking)
 	go s.redrainOnOverflow(dev, sess)
 
 	conn.SetReadLimit(maxFrameSize)

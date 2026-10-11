@@ -461,6 +461,15 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_recovery_key_hash ON accounts (recovery_key_hash) WHERE recovery_key_hash IS NOT NULL`,
 		// The hourly expiry purge filters on created_at alone.
 		`CREATE INDEX IF NOT EXISTS idx_queue_created_at ON message_queue (created_at)`,
+		// Pending sign-in-method notices for a device (account_notices.go).
+		`CREATE TABLE IF NOT EXISTS account_notices (
+    account_id TEXT NOT NULL,
+    device_id  INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    FOREIGN KEY (account_id, device_id) REFERENCES devices(account_id, device_id) ON DELETE CASCADE
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_account_notices_device ON account_notices (account_id, device_id)`,
 		// Chat-list blobs keep only the day they last changed.
 		`UPDATE account_storage SET updated_at = updated_at - (updated_at % 86400000) WHERE updated_at % 86400000 <> 0`,
 	} {
@@ -2468,6 +2477,7 @@ func (s *Store) PurgeExpired() error {
 		arg int64
 	}{
 		{`DELETE FROM message_queue WHERE created_at < $1`, now - queueTTLMillis},
+		{`DELETE FROM account_notices WHERE created_at < $1`, now - accountNoticeRetentionDay*24*60*60*1000},
 		{`DELETE FROM encrypted_group_invites WHERE expires_at < $1`, now},
 		{`DELETE FROM provisioning_sessions WHERE expires_at < $1`, now},
 		{`DELETE FROM device_link_tokens WHERE expires_at < $1`, now},

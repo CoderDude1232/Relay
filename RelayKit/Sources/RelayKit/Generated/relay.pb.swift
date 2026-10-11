@@ -296,6 +296,19 @@ public nonisolated struct Relay_V1_ServerFrame: Sendable {
     set {payload = .deviceListChanged(newValue)}
   }
 
+  /// Something about how the account signs in changed, from another of its
+  /// devices (a passkey, the recovery key, the account password, the email).
+  /// Stored for offline devices until they next connect, so a device someone
+  /// briefly had access to can't quietly add a way back in. Not end-to-end
+  /// encrypted: the relay made the change.
+  public var accountNotice: Relay_V1_AccountNotice {
+    get {
+      if case .accountNotice(let v)? = payload {return v}
+      return Relay_V1_AccountNotice()
+    }
+    set {payload = .accountNotice(newValue)}
+  }
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum OneOf_Payload: Equatable, Sendable {
@@ -312,8 +325,32 @@ public nonisolated struct Relay_V1_ServerFrame: Sendable {
     /// can refresh without polling. Not end-to-end encrypted: the account owns
     /// all of its devices.
     case deviceListChanged(Relay_V1_DeviceListChanged)
+    /// Something about how the account signs in changed, from another of its
+    /// devices (a passkey, the recovery key, the account password, the email).
+    /// Stored for offline devices until they next connect, so a device someone
+    /// briefly had access to can't quietly add a way back in. Not end-to-end
+    /// encrypted: the relay made the change.
+    case accountNotice(Relay_V1_AccountNotice)
 
   }
+
+  public init() {}
+}
+
+public nonisolated struct Relay_V1_AccountNotice: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// passkey_added, passkey_removed, recovery_key_set, recovery_key_removed,
+  /// account_password_set, email_removed, email_changed. Clients show a generic
+  /// notice for kinds they don't know.
+  public var kind: String = String()
+
+  /// When the change happened (relay clock, ms).
+  public var timeMs: Int64 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 }
@@ -673,7 +710,7 @@ nonisolated extension Relay_V1_AckRequest: SwiftProtobuf.Message, SwiftProtobuf.
 
 nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ServerFrame"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}send_response\0\u{1}envelope\0\u{3}queue_empty\0\u{1}nuke\0\u{3}device_list_changed\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}send_response\0\u{1}envelope\0\u{3}queue_empty\0\u{1}nuke\0\u{3}device_list_changed\0\u{3}account_notice\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -746,6 +783,19 @@ nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf
           self.payload = .deviceListChanged(v)
         }
       }()
+      case 6: try {
+        var v: Relay_V1_AccountNotice?
+        var hadOneofValue = false
+        if let current = self.payload {
+          hadOneofValue = true
+          if case .accountNotice(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.payload = .accountNotice(v)
+        }
+      }()
       default: break
       }
     }
@@ -777,6 +827,10 @@ nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf
       guard case .deviceListChanged(let v)? = self.payload else { preconditionFailure() }
       try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
     }()
+    case .accountNotice?: try {
+      guard case .accountNotice(let v)? = self.payload else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
+    }()
     case nil: break
     }
     try unknownFields.traverse(visitor: &visitor)
@@ -784,6 +838,41 @@ nonisolated extension Relay_V1_ServerFrame: SwiftProtobuf.Message, SwiftProtobuf
 
   public static func ==(lhs: Relay_V1_ServerFrame, rhs: Relay_V1_ServerFrame) -> Bool {
     if lhs.payload != rhs.payload {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_V1_AccountNotice: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".AccountNotice"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}kind\0\u{3}time_ms\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.kind) }()
+      case 2: try { try decoder.decodeSingularInt64Field(value: &self.timeMs) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.kind.isEmpty {
+      try visitor.visitSingularStringField(value: self.kind, fieldNumber: 1)
+    }
+    if self.timeMs != 0 {
+      try visitor.visitSingularInt64Field(value: self.timeMs, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_V1_AccountNotice, rhs: Relay_V1_AccountNotice) -> Bool {
+    if lhs.kind != rhs.kind {return false}
+    if lhs.timeMs != rhs.timeMs {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

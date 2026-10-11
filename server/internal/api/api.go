@@ -1275,6 +1275,7 @@ func (s *Server) handleUpdateEmail(w http.ResponseWriter, r *http.Request, dev *
 		return
 	}
 	s.reindexAccount(dev.AccountID)
+	s.noticeAccountChange(dev, store.NoticeEmailChanged)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1440,6 +1441,7 @@ func (s *Server) handleSetAccountPassword(w http.ResponseWriter, r *http.Request
 		internalError(w, err)
 		return
 	}
+	s.noticeAccountChange(dev, store.NoticeAccountPasswordSet)
 	w.WriteHeader(http.StatusNoContent)
 }
 

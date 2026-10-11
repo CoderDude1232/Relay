@@ -22,6 +22,9 @@ public enum RelayEvent: Sendable {
     case nukeCommand(NukeEvent)
     /// The account's device list changed.
     case deviceListChanged(DeviceListChangedEvent)
+    /// How the account signs in changed, from another of its devices
+    /// (`kind` as in relay.proto's AccountNotice).
+    case accountNotice(kind: String, timeMs: Int64)
     /// The connection ended; the stream finishes after this event.
     case disconnected
 }
@@ -182,6 +185,8 @@ public actor RelayWebSocket {
                 eventContinuation?.yield(.nukeCommand(NukeEvent(nuke)))
             case .deviceListChanged(let change):
                 eventContinuation?.yield(.deviceListChanged(DeviceListChangedEvent(change)))
+            case .accountNotice(let notice):
+                eventContinuation?.yield(.accountNotice(kind: notice.kind, timeMs: notice.timeMs))
             case .none:
                 break
             }

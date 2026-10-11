@@ -311,6 +311,7 @@ func (s *Server) handlePasskeyRegister(w http.ResponseWriter, r *http.Request, d
 		internalError(w, err)
 		return
 	}
+	s.noticeAccountChange(dev, store.NoticePasskeyAdded)
 	writeJSON(w, http.StatusCreated, map[string]string{"id": b64URL(cred.ID)})
 }
 
@@ -340,6 +341,7 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request, dev
 		internalError(w, err)
 		return
 	}
+	s.noticeAccountChange(dev, store.NoticePasskeyRemoved)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -761,5 +763,6 @@ func (s *Server) handleRemoveEmail(w http.ResponseWriter, r *http.Request, dev *
 		internalError(w, err)
 		return
 	}
+	s.noticeAccountChange(dev, store.NoticeEmailRemoved)
 	w.WriteHeader(http.StatusNoContent)
 }

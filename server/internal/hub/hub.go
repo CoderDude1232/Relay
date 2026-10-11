@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -415,6 +416,31 @@ func (h *Hub) BroadcastDeviceListChanged(accountID string, exceptDeviceID uint32
 			s.Send(frame)
 		}
 	}
+}
+
+// AccountSession is one live session of an account.
+type AccountSession struct {
+	DeviceID uint32
+	Session  Session
+}
+
+// AccountSessions returns the account's live sessions (a snapshot).
+func (h *Hub) AccountSessions(accountID string) []AccountSession {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	prefix := accountID + "/"
+	var out []AccountSession
+	for k, s := range h.sessions {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		id, err := strconv.ParseUint(strings.TrimPrefix(k, prefix), 10, 32)
+		if err != nil {
+			continue
+		}
+		out = append(out, AccountSession{DeviceID: uint32(id), Session: s})
+	}
+	return out
 }
 
 func (h *Hub) broadcastToAccount(accountID string, frame *relaypb.ServerFrame) {

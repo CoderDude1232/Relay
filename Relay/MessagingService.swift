@@ -595,6 +595,8 @@ final class MessagingService {
                     if change.action == .added {
                         Task { await self.publishDeviceLabel(force: true) }
                     }
+                case .accountNotice(let kind, let timeMs):
+                    noteAccountChange(kind: kind, timeMs: timeMs)
                 case .disconnected:
                     isDrainingQueue = false
                     break

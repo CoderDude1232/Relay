@@ -192,7 +192,7 @@ func (x DeviceListChanged_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use DeviceListChanged_Action.Descriptor instead.
 func (DeviceListChanged_Action) EnumDescriptor() ([]byte, []int) {
-	return file_relay_proto_rawDescGZIP(), []int{6, 0}
+	return file_relay_proto_rawDescGZIP(), []int{7, 0}
 }
 
 type ClientFrame struct {
@@ -502,6 +502,7 @@ type ServerFrame struct {
 	//	*ServerFrame_QueueEmpty
 	//	*ServerFrame_Nuke
 	//	*ServerFrame_DeviceListChanged
+	//	*ServerFrame_AccountNotice
 	Payload       isServerFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -589,6 +590,15 @@ func (x *ServerFrame) GetDeviceListChanged() *DeviceListChanged {
 	return nil
 }
 
+func (x *ServerFrame) GetAccountNotice() *AccountNotice {
+	if x != nil {
+		if x, ok := x.Payload.(*ServerFrame_AccountNotice); ok {
+			return x.AccountNotice
+		}
+	}
+	return nil
+}
+
 type isServerFrame_Payload interface {
 	isServerFrame_Payload()
 }
@@ -621,6 +631,15 @@ type ServerFrame_DeviceListChanged struct {
 	DeviceListChanged *DeviceListChanged `protobuf:"bytes,5,opt,name=device_list_changed,json=deviceListChanged,proto3,oneof"`
 }
 
+type ServerFrame_AccountNotice struct {
+	// Something about how the account signs in changed, from another of its
+	// devices (a passkey, the recovery key, the account password, the email).
+	// Stored for offline devices until they next connect, so a device someone
+	// briefly had access to can't quietly add a way back in. Not end-to-end
+	// encrypted: the relay made the change.
+	AccountNotice *AccountNotice `protobuf:"bytes,6,opt,name=account_notice,json=accountNotice,proto3,oneof"`
+}
+
 func (*ServerFrame_SendResponse) isServerFrame_Payload() {}
 
 func (*ServerFrame_Envelope) isServerFrame_Payload() {}
@@ -630,6 +649,64 @@ func (*ServerFrame_QueueEmpty) isServerFrame_Payload() {}
 func (*ServerFrame_Nuke) isServerFrame_Payload() {}
 
 func (*ServerFrame_DeviceListChanged) isServerFrame_Payload() {}
+
+func (*ServerFrame_AccountNotice) isServerFrame_Payload() {}
+
+type AccountNotice struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// passkey_added, passkey_removed, recovery_key_set, recovery_key_removed,
+	// account_password_set, email_removed, email_changed. Clients show a generic
+	// notice for kinds they don't know.
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// When the change happened (relay clock, ms).
+	TimeMs        int64 `protobuf:"varint,2,opt,name=time_ms,json=timeMs,proto3" json:"time_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccountNotice) Reset() {
+	*x = AccountNotice{}
+	mi := &file_relay_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccountNotice) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccountNotice) ProtoMessage() {}
+
+func (x *AccountNotice) ProtoReflect() protoreflect.Message {
+	mi := &file_relay_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccountNotice.ProtoReflect.Descriptor instead.
+func (*AccountNotice) Descriptor() ([]byte, []int) {
+	return file_relay_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *AccountNotice) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *AccountNotice) GetTimeMs() int64 {
+	if x != nil {
+		return x.TimeMs
+	}
+	return 0
+}
 
 // A signed remote-wipe command. The canonical signing payload is:
 //
@@ -650,7 +727,7 @@ type NukeCommand struct {
 
 func (x *NukeCommand) Reset() {
 	*x = NukeCommand{}
-	mi := &file_relay_proto_msgTypes[5]
+	mi := &file_relay_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -662,7 +739,7 @@ func (x *NukeCommand) String() string {
 func (*NukeCommand) ProtoMessage() {}
 
 func (x *NukeCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_proto_msgTypes[5]
+	mi := &file_relay_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -675,7 +752,7 @@ func (x *NukeCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NukeCommand.ProtoReflect.Descriptor instead.
 func (*NukeCommand) Descriptor() ([]byte, []int) {
-	return file_relay_proto_rawDescGZIP(), []int{5}
+	return file_relay_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *NukeCommand) GetAccountId() string {
@@ -724,7 +801,7 @@ type DeviceListChanged struct {
 
 func (x *DeviceListChanged) Reset() {
 	*x = DeviceListChanged{}
-	mi := &file_relay_proto_msgTypes[6]
+	mi := &file_relay_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -736,7 +813,7 @@ func (x *DeviceListChanged) String() string {
 func (*DeviceListChanged) ProtoMessage() {}
 
 func (x *DeviceListChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_proto_msgTypes[6]
+	mi := &file_relay_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -749,7 +826,7 @@ func (x *DeviceListChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceListChanged.ProtoReflect.Descriptor instead.
 func (*DeviceListChanged) Descriptor() ([]byte, []int) {
-	return file_relay_proto_rawDescGZIP(), []int{6}
+	return file_relay_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *DeviceListChanged) GetAction() DeviceListChanged_Action {
@@ -783,7 +860,7 @@ type SendResponse struct {
 
 func (x *SendResponse) Reset() {
 	*x = SendResponse{}
-	mi := &file_relay_proto_msgTypes[7]
+	mi := &file_relay_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -795,7 +872,7 @@ func (x *SendResponse) String() string {
 func (*SendResponse) ProtoMessage() {}
 
 func (x *SendResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_proto_msgTypes[7]
+	mi := &file_relay_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -808,7 +885,7 @@ func (x *SendResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendResponse.ProtoReflect.Descriptor instead.
 func (*SendResponse) Descriptor() ([]byte, []int) {
-	return file_relay_proto_rawDescGZIP(), []int{7}
+	return file_relay_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SendResponse) GetReplyTo() uint64 {
@@ -871,7 +948,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_relay_proto_msgTypes[8]
+	mi := &file_relay_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -883,7 +960,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_proto_msgTypes[8]
+	mi := &file_relay_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -896,7 +973,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_relay_proto_rawDescGZIP(), []int{8}
+	return file_relay_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Envelope) GetId() string {
@@ -963,7 +1040,7 @@ type QueueEmpty struct {
 
 func (x *QueueEmpty) Reset() {
 	*x = QueueEmpty{}
-	mi := &file_relay_proto_msgTypes[9]
+	mi := &file_relay_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -975,7 +1052,7 @@ func (x *QueueEmpty) String() string {
 func (*QueueEmpty) ProtoMessage() {}
 
 func (x *QueueEmpty) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_proto_msgTypes[9]
+	mi := &file_relay_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -988,7 +1065,7 @@ func (x *QueueEmpty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QueueEmpty.ProtoReflect.Descriptor instead.
 func (*QueueEmpty) Descriptor() ([]byte, []int) {
-	return file_relay_proto_rawDescGZIP(), []int{9}
+	return file_relay_proto_rawDescGZIP(), []int{10}
 }
 
 var File_relay_proto protoreflect.FileDescriptor
@@ -1015,15 +1092,19 @@ const file_relay_proto_rawDesc = "" +
 	"\n" +
 	"AckRequest\x12\x1f\n" +
 	"\venvelope_id\x18\x01 \x01(\tR\n" +
-	"envelopeId\"\xbe\x02\n" +
+	"envelopeId\"\x80\x03\n" +
 	"\vServerFrame\x12=\n" +
 	"\rsend_response\x18\x01 \x01(\v2\x16.relay.v1.SendResponseH\x00R\fsendResponse\x120\n" +
 	"\benvelope\x18\x02 \x01(\v2\x12.relay.v1.EnvelopeH\x00R\benvelope\x127\n" +
 	"\vqueue_empty\x18\x03 \x01(\v2\x14.relay.v1.QueueEmptyH\x00R\n" +
 	"queueEmpty\x12+\n" +
 	"\x04nuke\x18\x04 \x01(\v2\x15.relay.v1.NukeCommandH\x00R\x04nuke\x12M\n" +
-	"\x13device_list_changed\x18\x05 \x01(\v2\x1b.relay.v1.DeviceListChangedH\x00R\x11deviceListChangedB\t\n" +
-	"\apayload\"\xc5\x01\n" +
+	"\x13device_list_changed\x18\x05 \x01(\v2\x1b.relay.v1.DeviceListChangedH\x00R\x11deviceListChanged\x12@\n" +
+	"\x0eaccount_notice\x18\x06 \x01(\v2\x17.relay.v1.AccountNoticeH\x00R\raccountNoticeB\t\n" +
+	"\apayload\"<\n" +
+	"\rAccountNotice\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x17\n" +
+	"\atime_ms\x18\x02 \x01(\x03R\x06timeMs\"\xc5\x01\n" +
 	"\vNukeCommand\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x1d\n" +
@@ -1083,7 +1164,7 @@ func file_relay_proto_rawDescGZIP() []byte {
 }
 
 var file_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_relay_proto_goTypes = []any{
 	(CiphertextType)(0),           // 0: relay.v1.CiphertextType
 	(SendStatus)(0),               // 1: relay.v1.SendStatus
@@ -1093,30 +1174,32 @@ var file_relay_proto_goTypes = []any{
 	(*DeviceMessage)(nil),         // 5: relay.v1.DeviceMessage
 	(*AckRequest)(nil),            // 6: relay.v1.AckRequest
 	(*ServerFrame)(nil),           // 7: relay.v1.ServerFrame
-	(*NukeCommand)(nil),           // 8: relay.v1.NukeCommand
-	(*DeviceListChanged)(nil),     // 9: relay.v1.DeviceListChanged
-	(*SendResponse)(nil),          // 10: relay.v1.SendResponse
-	(*Envelope)(nil),              // 11: relay.v1.Envelope
-	(*QueueEmpty)(nil),            // 12: relay.v1.QueueEmpty
+	(*AccountNotice)(nil),         // 8: relay.v1.AccountNotice
+	(*NukeCommand)(nil),           // 9: relay.v1.NukeCommand
+	(*DeviceListChanged)(nil),     // 10: relay.v1.DeviceListChanged
+	(*SendResponse)(nil),          // 11: relay.v1.SendResponse
+	(*Envelope)(nil),              // 12: relay.v1.Envelope
+	(*QueueEmpty)(nil),            // 13: relay.v1.QueueEmpty
 }
 var file_relay_proto_depIdxs = []int32{
 	4,  // 0: relay.v1.ClientFrame.send:type_name -> relay.v1.SendRequest
 	6,  // 1: relay.v1.ClientFrame.ack:type_name -> relay.v1.AckRequest
 	5,  // 2: relay.v1.SendRequest.messages:type_name -> relay.v1.DeviceMessage
 	0,  // 3: relay.v1.DeviceMessage.type:type_name -> relay.v1.CiphertextType
-	10, // 4: relay.v1.ServerFrame.send_response:type_name -> relay.v1.SendResponse
-	11, // 5: relay.v1.ServerFrame.envelope:type_name -> relay.v1.Envelope
-	12, // 6: relay.v1.ServerFrame.queue_empty:type_name -> relay.v1.QueueEmpty
-	8,  // 7: relay.v1.ServerFrame.nuke:type_name -> relay.v1.NukeCommand
-	9,  // 8: relay.v1.ServerFrame.device_list_changed:type_name -> relay.v1.DeviceListChanged
-	2,  // 9: relay.v1.DeviceListChanged.action:type_name -> relay.v1.DeviceListChanged.Action
-	1,  // 10: relay.v1.SendResponse.status:type_name -> relay.v1.SendStatus
-	0,  // 11: relay.v1.Envelope.type:type_name -> relay.v1.CiphertextType
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	11, // 4: relay.v1.ServerFrame.send_response:type_name -> relay.v1.SendResponse
+	12, // 5: relay.v1.ServerFrame.envelope:type_name -> relay.v1.Envelope
+	13, // 6: relay.v1.ServerFrame.queue_empty:type_name -> relay.v1.QueueEmpty
+	9,  // 7: relay.v1.ServerFrame.nuke:type_name -> relay.v1.NukeCommand
+	10, // 8: relay.v1.ServerFrame.device_list_changed:type_name -> relay.v1.DeviceListChanged
+	8,  // 9: relay.v1.ServerFrame.account_notice:type_name -> relay.v1.AccountNotice
+	2,  // 10: relay.v1.DeviceListChanged.action:type_name -> relay.v1.DeviceListChanged.Action
+	1,  // 11: relay.v1.SendResponse.status:type_name -> relay.v1.SendStatus
+	0,  // 12: relay.v1.Envelope.type:type_name -> relay.v1.CiphertextType
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_relay_proto_init() }
@@ -1134,6 +1217,7 @@ func file_relay_proto_init() {
 		(*ServerFrame_QueueEmpty)(nil),
 		(*ServerFrame_Nuke)(nil),
 		(*ServerFrame_DeviceListChanged)(nil),
+		(*ServerFrame_AccountNotice)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1141,7 +1225,7 @@ func file_relay_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_relay_proto_rawDesc), len(file_relay_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

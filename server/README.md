@@ -197,6 +197,18 @@ Basic only for the first `PUT /v1/devices/auth-key` — see Authentication);
 `none` = unauthenticated.
 Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 
+### Sign-in change notices
+
+When a signed device adds or removes a passkey, sets or removes the recovery
+key, sets the account password, or removes or changes the email, the relay
+records an `AccountNotice{kind, time_ms}` (relay.proto) for each of the
+account's **other** devices. Connected devices get it at once as a WebSocket
+frame; the rest get it right after `QueueEmpty` on their next connection. A
+notice is deleted once sent, when its device is removed, or after 30 days.
+Kinds: `passkey_added`, `passkey_removed`, `recovery_key_set`,
+`recovery_key_removed`, `account_password_set`, `email_removed`,
+`email_changed`.
+
 ### Account password on the wire
 
 Current clients never send the account password. They send

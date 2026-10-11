@@ -91,6 +91,7 @@ func (s *Server) handleSetRecoveryKey(w http.ResponseWriter, r *http.Request, de
 		internalError(w, err)
 		return
 	}
+	s.noticeAccountChange(dev, store.NoticeRecoveryKeySet)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -99,6 +100,7 @@ func (s *Server) handleDeleteRecoveryKey(w http.ResponseWriter, _ *http.Request,
 		internalError(w, err)
 		return
 	}
+	s.noticeAccountChange(dev, store.NoticeRecoveryKeyRemoved)
 	w.WriteHeader(http.StatusNoContent)
 }
 
