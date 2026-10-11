@@ -82,6 +82,9 @@ struct RelayApp: App {
                     } else if url.host == "call" {
                         // relay://call/<callId>#<hostAccount>.<secret>
                         if let link = CallManager.parseCallLink(url) { model.pendingCallLink = link }
+                    } else if url.host == "scan" {
+                        // relay://scan, from the Scan QR Code control.
+                        model.pendingScanQR = true
                     } else if url.host == "conversation" {
                         // relay://conversation/<conversationId> (widget tap)
                         let convId = url.pathComponents.dropFirst().first ?? ""
@@ -148,6 +151,7 @@ struct RelayApp: App {
                             Task { await CloudBackupManager.shared.backupIfDue(service: service) }
                         }
                     case .active:
+                        PanicModeManager.shared.applyControlLockIfRequested()
                         model.enterForeground()
                     default:
                         break
@@ -273,6 +277,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         pushKitDelegate.start(callManager: callManager)
         WatchBridge.shared.activate(appDelegate: self)
+        PanicModeManager.shared.observeControlLock()
         UNUserNotificationCenter.current().delegate = self
         // Both actions act on the account without opening the app, so require
         // an unlocked device; otherwise anyone holding a locked phone could reply.

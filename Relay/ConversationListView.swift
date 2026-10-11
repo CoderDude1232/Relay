@@ -296,6 +296,23 @@ struct ConversationListView: View {
                 )
             }
         }
+        .onChange(of: model.pendingScanQR) { _, requested in
+            guard requested else { return }
+            model.pendingScanQR = false
+            showingQRScanner = true
+        }
+        .onAppear {
+            if model.pendingScanQR {
+                model.pendingScanQR = false
+                showingQRScanner = true
+            }
+        }
+        .onChange(of: panicMode.isActive) { _, active in
+            // Locking (including from the Panic Mode control) closes a hidden chat.
+            if !active, let id = selectedConversationId, panicMode.isHidden(id) {
+                selectedConversationId = nil
+            }
+        }
         .onChange(of: selectedConversationId) { oldId, newId in
             // Open/close here: NavigationSplitView lifecycle ordering is
             // unreliable in compact mode.

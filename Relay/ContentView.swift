@@ -506,6 +506,9 @@ struct MainTabView: View {
             guard id != nil else { return }
             selectedTab = 0
         }
+        .onChange(of: model.pendingScanQR) { _, requested in
+            if requested { selectedTab = 0 }
+        }
         .onChange(of: selectedTab) { _, tab in
             if tab == 1 { markMissedCallsSeen() }
         }

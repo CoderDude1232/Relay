@@ -191,6 +191,39 @@ final class PanicModeManager {
         isActive = false
     }
 
+    // MARK: Panic Mode control (Control Center / Lock Screen)
+
+    /// Set by the control in RelayWidgetExtension (PanicLockSignal).
+    private static let controlLockKey = "panic.lockRequestedAt"
+    private var lastControlLock: TimeInterval = 0
+
+    /// Hides chats straight away when the control fires while Relay is running.
+    func observeControlLock() {
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(), observer,
+            { _, observer, _, _, _ in
+                guard let observer else { return }
+                let manager = Unmanaged<PanicModeManager>.fromOpaque(observer).takeUnretainedValue()
+                Task { @MainActor in manager.applyControlLockIfRequested() }
+            },
+            "app.relaymsg.panic-lock" as CFString, nil, .deliverImmediately
+        )
+        lastControlLock = Self.controlLockRequestedAt
+    }
+
+    /// Catches a control press that happened while Relay was suspended.
+    func applyControlLockIfRequested() {
+        let requested = Self.controlLockRequestedAt
+        guard requested > lastControlLock else { return }
+        lastControlLock = requested
+        deactivate()
+    }
+
+    private static var controlLockRequestedAt: TimeInterval {
+        UserDefaults(suiteName: "group.app.relaymsg")?.double(forKey: controlLockKey) ?? 0
+    }
+
     // MARK: Per-conversation toggling
 
     func hide(_ conversationId: String) {

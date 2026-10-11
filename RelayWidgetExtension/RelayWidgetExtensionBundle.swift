@@ -13,5 +13,7 @@ struct RelayWidgetExtensionBundle: WidgetBundle {
     var body: some Widget {
         RelayWidgetExtension()
         LiveLocationLiveActivity()
+        ScanQRControl()
+        PanicModeControl()
     }
 }

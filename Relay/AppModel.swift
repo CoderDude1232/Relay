@@ -60,6 +60,8 @@ final class AppModel {
     var pendingContactInviteToken: String?
     /// Set when the user taps a message notification.
     var pendingNotificationConversationId: String?
+    /// relay://scan (the Scan QR Code control): open the scanner.
+    var pendingScanQR = false
 
     var isReady: Bool {
         if case .ready = phase { return true }
