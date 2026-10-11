@@ -736,7 +736,9 @@ final class MessagingService {
                 await replayDeferredGroupContent()
             }
             if let profile = result.profile {
-                await applyPeerProfile(profile)
+                // Off the envelope chain: an avatar download (up to 26 MB) must
+                // not hold up the call signals queued behind it.
+                Task { await self.applyPeerProfile(profile) }
             }
             if let callInfo = result.callInfo {
                 await onCallMessage?(callInfo)
@@ -1483,7 +1485,11 @@ final class MessagingService {
             if avatar.id != existing?.avatarId {
                 if let ciphertext = try? await api.downloadAttachment(id: avatar.id),
                    let plaintext = try? AttachmentCipher.open(ciphertext, key: avatar.key, digest: avatar.digest) {
-                    avatarData = plaintext
+                    // Under Communication Safety a flagged photo is never shown,
+                    // so it isn't kept either.
+                    let flagged = SensitiveContent.isRestricted
+                        ? await SensitiveContent.isSensitive(imageData: plaintext) : false
+                    avatarData = flagged ? nil : plaintext
                     avatarId = avatar.id
                 } else {
                     // Don't advance the revision, so the next delivery retries.
@@ -2786,6 +2792,7 @@ final class MessagingService {
                 do {
                     let ciphertext = try await api.downloadAttachment(id: info.avatarId)
                     let data = try AttachmentCipher.open(ciphertext, key: info.avatarKey, digest: info.avatarDigest)
+                    if SensitiveContent.isRestricted, await SensitiveContent.isSensitive(imageData: data) { return }
                     try storage.messages.setGroupAvatar(id: info.groupId, avatarData: data)
                     refreshConversations()
                 } catch { log.warning("group avatar download failed: \(PrivacyRedactor.error(error))") }

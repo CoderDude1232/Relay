@@ -119,6 +119,8 @@ private struct GalleryThumbnail: View {
     @State private var image: UIImage?
 
     @State private var isLoading = false
+    @State private var isSensitive = false
+    @State private var revealed = false
 
     var body: some View {
         Color(.secondarySystemFill)
@@ -128,7 +130,13 @@ private struct GalleryThumbnail: View {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
+                        .blur(radius: isSensitive && !revealed ? 30 : 0)
                         .transition(.opacity)
+                    if isSensitive && !revealed {
+                        SensitiveMediaCover(restricted: SensitiveContent.isRestricted, compact: true) {
+                            revealed = true
+                        }
+                    }
                 } else if isLoading {
                     ProgressView()
                 } else {
@@ -138,7 +146,7 @@ private struct GalleryThumbnail: View {
             }
             .clipShape(.rect)
             .contentShape(.rect)
-            .onTapGesture { if let image { onTap(image) } }
+            .onTapGesture { if let image, !isSensitive || revealed { onTap(image) } }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Photo")
             .accessibilityAddTraits([.isButton, .isImage])
@@ -157,6 +165,7 @@ private struct GalleryThumbnail: View {
             data = service.attachmentPlaintext(attachment)
         }
         if let data, let ui = UIImage(data: data) {
+            isSensitive = await SensitiveContent.isSensitive(image: ui, cacheKey: attachment.id)
             withAnimation { image = ui }
         }
     }

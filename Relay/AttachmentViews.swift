@@ -186,6 +186,9 @@ struct FileAttachmentBubble: View {
     @State private var tempFileURL: URL?
     @State private var busy = false
     @State private var isUnlocked = false
+    /// A flagged file waiting for the adult's "View Anyway".
+    @State private var sensitivePreview: PreviewItem?
+    @State private var showingSensitiveHelp = false
 
     private var tint: Color { isOutgoing ? .white : .primary }
 
@@ -203,11 +206,36 @@ struct FileAttachmentBubble: View {
             .frame(maxWidth: 280)
         }
         .buttonStyle(.plain)
+        .confirmationDialog(
+            "This may be sensitive",
+            isPresented: Binding(get: { sensitivePreview != nil }, set: { if !$0 { sensitivePreview = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("View Anyway") {
+                preview = sensitivePreview
+                sensitivePreview = nil
+            }
+            Button("Cancel", role: .cancel) {
+                sensitivePreview = nil
+                cleanUpPreview()
+            }
+        } message: {
+            Text("This file may show nudity.")
+        }
+        .sheet(isPresented: $showingSensitiveHelp) { SensitiveContentHelpView() }
         .fullScreenCover(item: $preview, onDismiss: cleanUpPreview) { item in
             QuickLookPreview(url: item.url, title: item.title)
                 .ignoresSafeArea()
         }
         .onDisappear { if preview == nil { cleanUpPreview() } }
+    }
+
+    private func isSensitiveFile(_ data: Data, at url: URL) async -> Bool {
+        guard SensitiveContent.isEnabled else { return false }
+        if UIImage(data: data) != nil {
+            return await SensitiveContent.isSensitive(imageData: data, cacheKey: attachment.id)
+        }
+        return await SensitiveContent.isSensitive(videoAt: url, cacheKey: attachment.id)
     }
 
     /// Deletes the decrypted temp file once the preview has closed.
@@ -261,7 +289,19 @@ struct FileAttachmentBubble: View {
             let url = try TempMediaFiles.write(plaintext, originalName: attachment.filename, fallbackExtension: "")
             TempMediaFiles.remove(tempFileURL)
             tempFileURL = url
-            preview = PreviewItem(url: url, title: attachment.filename ?? senderName)
+            let item = PreviewItem(url: url, title: attachment.filename ?? senderName)
+            // A file can be a photo or video under any name or type: check the
+            // bytes, not the declared kind.
+            if await isSensitiveFile(plaintext, at: url) {
+                if SensitiveContent.isRestricted {
+                    cleanUpPreview()
+                    showingSensitiveHelp = true
+                } else {
+                    sensitivePreview = item
+                }
+                return
+            }
+            preview = item
         } catch {
             Logger(subsystem: "app.relaymsg", category: "attachments")
                 .error("openPreview: temp write failed: \(PrivacyRedactor.error(error))")
