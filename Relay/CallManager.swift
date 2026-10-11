@@ -1815,8 +1815,10 @@ final class CallManager: NSObject {
     func leaveGroupCall() {
         guard isInGroupCall else { return }
         stopRingtone()
-        if let callId = groupCallId, let groupId = groupCallGroupId, !groupPeers.isEmpty {
-            let accounts = Array(groupPeers.keys)
+        // Nobody joined: tell everyone we rang, so their phones stop ringing.
+        let recipients = groupPeers.isEmpty ? Array(groupCallMembers) : Array(groupPeers.keys)
+        if let callId = groupCallId, let groupId = groupCallGroupId, !recipients.isEmpty {
+            let accounts = recipients
             var leave = Relay_Content_CallMessage()
             leave.type = .groupLeave
             leave.callID = callId
@@ -1899,9 +1901,25 @@ final class CallManager: NSObject {
 
         case .groupLeave:
             guard isFromCurrentGroupCallMember(msg, account: account) else { return }
+            // The person ringing us gave up before anyone answered: a missed call.
+            if let ring = groupRingInfo, ring.callerAccount == account, groupPeers.isEmpty {
+                if let uuid = groupCallUUID {
+                    provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+                    groupCallUUID = nil
+                }
+                groupRingInfo = nil
+                stopRingtone()
+                endGroupCallCleanup(reportToCallKit: false)
+                return
+            }
             closeGroupPeerConnection(forAccount: account)
             groupPeers.removeValue(forKey: account)
             groupPeerDelegates.removeValue(forKey: account)
+            // Everyone else has gone: end the call rather than sit alone in it.
+            // A call link's host stays, so new people can still be let in.
+            if groupPeers.isEmpty, groupRingInfo == nil, linkHostAccount != ownAccountId {
+                leaveGroupCall()
+            }
 
         case .offer:
             // Mesh OFFER from a group peer; only if addressed to us.
