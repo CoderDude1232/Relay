@@ -98,7 +98,12 @@ public final class Database: @unchecked Sendable {
             } catch {
                 throw StorageError.wrongKey
             }
-            try run("PRAGMA journal_mode = WAL;")
+            // Not WAL: an open WAL connection keeps a lock on the -shm file, and
+            // iOS kills a suspended app holding a lock in a shared container
+            // (0xdead10cc). A rollback journal locks only during a transaction.
+            // Converting an existing WAL database needs no other connection open;
+            // if the other process has it open, this is retried on the next open.
+            _ = try? query("PRAGMA journal_mode = TRUNCATE;")
             try run("PRAGMA foreign_keys = ON;")
         } catch {
             sqlite3_close(handle)
