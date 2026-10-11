@@ -334,6 +334,15 @@ class NotificationService: UNNotificationServiceExtension {
                              : (globalPrivacy == "nameOnly" || convHidePreviews) ? "nameOnly"
                              : "full"
 
+        // A stranger's first messages never show their text on the lock screen.
+        let isRequest = ((try? storage.database.query(
+            "SELECT accepted FROM conversations WHERE id = ?", [.text(notification.conversationId)]
+        ).first?.first?.int64) ?? 1) == 0
+        if isRequest {
+            return .show(title: globalPrivacy == "none" ? "Relay" : title, body: "Sent you a message request",
+                         conversationId: notification.conversationId, senderAccount: notification.senderAccount)
+        }
+
         if !convHidePreviews {
             let text = notification.body.hasPrefix(PendingControlStore.notepadPrefix)
                 ? previewBody

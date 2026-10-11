@@ -92,6 +92,9 @@ struct ChatView: View {
               service.isBlocked(conversation.peerAccount) else { return nil }
         return conversation.peerAccount
     }
+    private var isRequest: Bool { conversation?.isRequest ?? false }
+    @State private var confirmBlockRequest = false
+    @State private var showingRequestReport = false
     private var callControlsDisabled: Bool {
         if case .idle = callManager.state { return false }
         return true
@@ -507,6 +510,7 @@ struct ChatView: View {
                 }
             }
         }
+        .environment(\.relayIsMessageRequest, isRequest)
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
                 if !isAtBottom {
@@ -536,7 +540,7 @@ struct ChatView: View {
                 if !mentionSuggestions.isEmpty {
                     mentionPicker
                 }
-                if !smartReplies.isEmpty {
+                if !smartReplies.isEmpty && !isRequest {
                     smartReplyStrip
                 }
                 if let sender = newMessageBanner {
@@ -564,6 +568,8 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                         .background(.ultraThinMaterial)
+                } else if isRequest, blockedPeer == nil {
+                    messageRequestBar
                 } else if let blockedPeer {
                     HStack(spacing: 12) {
                         Label("You blocked \(peerName)", systemImage: "hand.raised.fill")
@@ -1302,6 +1308,71 @@ struct ChatView: View {
             .glassCompat(in: .capsule)
     }
 
+    /// Replaces the composer for a chat someone else started.
+    private var messageRequestBar: some View {
+        let isGroup = conversation?.isGroup ?? false
+        return VStack(spacing: 12) {
+            Text(isGroup
+                 ? "You were added to this group by someone you haven't chatted with. They won't see your name or photo, or know you've read anything, until you accept."
+                 : "\(peerName) wants to message you. They won't see your name or photo, or know you've read their messages, until you accept.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 10) {
+                if !isGroup {
+                    Button(role: .destructive) { confirmBlockRequest = true } label: {
+                        Text("Block").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Button(role: .destructive) {
+                    if let conversation, let groupId = conversation.groupId {
+                        Task { try? await service.leaveGroup(groupId); service.deleteConversation(conversation.id) }
+                    } else {
+                        service.deleteConversation(conversationId)
+                    }
+                    onClose?()
+                } label: {
+                    Text("Delete").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                Button { service.acceptMessageRequest(conversationId) } label: {
+                    Text("Accept").bold().frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .controlSize(.large)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(.ultraThinMaterial)
+        .confirmationDialog("Block \(peerName)?", isPresented: $confirmBlockRequest, titleVisibility: .visible) {
+            Button("Block", role: .destructive) { blockRequest(report: false) }
+            Button("Block and Report", role: .destructive) { blockRequest(report: true) }
+        } message: {
+            Text("They won't be able to message or call you, and this chat is deleted.")
+        }
+        .sheet(isPresented: $showingRequestReport, onDismiss: {
+            service.deleteConversation(conversationId)
+            onClose?()
+        }) {
+            if let peer = conversation?.peerAccount {
+                ReportContactSheet(service: service, account: peer, displayName: peerName)
+            }
+        }
+    }
+
+    private func blockRequest(report: Bool) {
+        guard let peer = conversation?.peerAccount else { return }
+        service.blockAccount(peer)
+        if report {
+            showingRequestReport = true
+        } else {
+            service.deleteConversation(conversationId)
+            onClose?()
+        }
+    }
+
     private var isAnnounceOnlyBlocked: Bool {
         service.isAnnounceOnly(conversationId: conversationId) && !service.isAdmin(in: conversationId)
     }
@@ -1998,6 +2069,7 @@ private struct MessageRow: View {
 // MARK: - Bubble
 
 private struct MessageBubble: View {
+    @Environment(\.relayIsMessageRequest) private var inRequestChat
     let message: StoredMessage
     let position: BubblePosition
     let peerName: String
@@ -2239,7 +2311,7 @@ private struct MessageBubble: View {
                             .font(.caption2)
                             .foregroundStyle(message.isOutgoing ? .white.opacity(0.65) : .secondary)
                     }
-                    if let url = displayBody.firstURL {
+                    if let url = displayBody.firstURL, message.isOutgoing || !inRequestChat {
                         LinkPreviewView(url: url, isOutgoing: message.isOutgoing)
                     }
                 } else {
@@ -2855,6 +2927,9 @@ private struct AttachmentImageView: View {
     var isOutgoing = false
 
     @State private var image: UIImage?
+    @Environment(\.relayIsMessageRequest) private var inRequest
+    /// A request's media isn't downloaded or shown until it's accepted.
+    private var hiddenForRequest: Bool { inRequest && !isOutgoing }
     @State private var isSensitive = false
     @State private var sensitiveRevealed = false
     @State private var gifData: Data?
@@ -2910,7 +2985,14 @@ private struct AttachmentImageView: View {
             } else {
                 ZStack {
                     Rectangle().fill(.fill.tertiary)
-                    if failed {
+                    if hiddenForRequest {
+                        VStack(spacing: 6) {
+                            Image(systemName: "eye.slash")
+                            Text("Accept to view").font(.caption2)
+                        }
+                        .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .combine)
+                    } else if failed {
                         VStack(spacing: 4) {
                             Image(systemName: "arrow.clockwise")
                             Text("Tap to retry").font(.caption2)
@@ -2938,7 +3020,7 @@ private struct AttachmentImageView: View {
         .accessibilityLabel(accessibilityDescription)
         .accessibilityAddTraits(coversSensitive ? [] : [.isButton, .isImage])
         .accessibilityHint(coversSensitive ? "" : (requiresBiometric && !isUnlocked ? "Unlocks the photo" : "Opens the photo"))
-        .task(id: attachment.id) { await load() }
+        .task(id: "\(attachment.id)-\(hiddenForRequest)") { await load() }
         .fullScreenCover(item: $preview, onDismiss: cleanUpPreviewFile) { item in
             QuickLookPreview(url: item.url, title: senderName)
                 .ignoresSafeArea()
@@ -2954,6 +3036,7 @@ private struct AttachmentImageView: View {
 
     private func load() async {
         failed = false
+        guard !hiddenForRequest else { return }
         if !attachment.isDownloaded {
             await service.downloadAttachment(attachment, in: conversationId)
         }

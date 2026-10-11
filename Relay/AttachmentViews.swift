@@ -286,6 +286,7 @@ struct VideoPlayerBubble: View {
     @State private var sensitiveChecked = false
     @State private var isSensitive = false
     @State private var confirmSensitive = false
+    @Environment(\.relayIsMessageRequest) private var inRequest
 
     private var tint: Color { isOutgoing ? .white : .primary }
 
@@ -307,7 +308,7 @@ struct VideoPlayerBubble: View {
                         Image(systemName: playerURL != nil ? "play.fill" : "arrow.down.circle")
                             .font(.system(size: 32, weight: .semibold))
                             .foregroundStyle(tint)
-                        Text(playerURL != nil ? "Play Video" : (attachment.isDownloaded ? "Open" : "Download"))
+                        Text(inRequest && !isOutgoing ? "Accept to view" : playerURL != nil ? "Play Video" : (attachment.isDownloaded ? "Open" : "Download"))
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(tint.opacity(0.85))
                     }
@@ -338,7 +339,7 @@ struct VideoPlayerBubble: View {
     }
 
     private func load() async {
-        guard !busy, !(isSensitive && SensitiveContent.isRestricted) else { return }
+        guard !busy, !(isSensitive && SensitiveContent.isRestricted), !(inRequest && !isOutgoing) else { return }
         if requiresBiometric && !isUnlocked {
             guard await BiometricGate.authenticate(reason: "Unlock this video in Relay.") else { return }
             isUnlocked = true

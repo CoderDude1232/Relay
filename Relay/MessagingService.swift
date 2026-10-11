@@ -783,8 +783,41 @@ final class MessagingService {
     func startConversation(username: String) async throws -> String {
         let account = try await resolveAccount(username: username)
         let id = try storage.messages.conversation(withPeer: account, username: username)
+        // Starting a chat with someone whose request is waiting accepts it.
+        if conversations.first(where: { $0.id == id })?.isRequest == true { acceptMessageRequest(id) }
         refreshConversations()
         return id
+    }
+
+    // MARK: - Message requests
+
+    /// Unaccepted chats someone else started, newest first.
+    var messageRequests: [Conversation] { conversations.filter { $0.isRequest && !$0.archived } }
+
+    func isMessageRequest(_ conversationId: String) -> Bool {
+        conversations.first { $0.id == conversationId }?.isRequest ?? false
+    }
+
+    /// Whether we've accepted (or started) a 1:1 chat with `account`.
+    private func hasAcceptedChat(with account: String) -> Bool {
+        conversations.contains { !$0.isGroup && $0.peerAccount == account && !$0.isRequest }
+    }
+
+    /// Accepts a request: from now on the sender sees read receipts and typing,
+    /// gets our profile, and media and links show.
+    func acceptMessageRequest(_ conversationId: String) {
+        guard let conv = conversations.first(where: { $0.id == conversationId }), conv.isRequest else { return }
+        try? storage.messages.setConversationAccepted(conversationId, accepted: true)
+        refreshConversations()
+        refreshActiveMessages(ifShowing: conversationId)
+        Task {
+            if let groupId = conv.groupId, let group = try? storage.messages.group(id: groupId) {
+                await distributeProfileToGroupMembersIfNeeded(group: group)
+            } else {
+                await sendMyProfileIfNeeded(toPeer: conv.peerAccount)
+            }
+            if activeConversationId == conversationId { markConversationRead(conversationId) }
+        }
     }
 
     /// Unlike `sendMessage`, updates collapse into one bubble per sharer per
@@ -826,6 +859,7 @@ final class MessagingService {
         replyTo: QuotedMessage? = nil,
         attachments pending: [PendingAttachment] = []
     ) async {
+        if isMessageRequest(conversationId) { acceptMessageRequest(conversationId) }
         let group = try? groupForConversation(conversationId)
         if let group {
             // Announce-only: only admins may send.
@@ -1230,11 +1264,12 @@ final class MessagingService {
 
     /// Sends the updated profile to every DM peer and group member.
     private func distributeProfileUpdate() {
-        let dmPeers = conversations
+        let accepted = conversations.filter { !$0.isRequest }
+        let dmPeers = accepted
             .filter { !$0.isGroup }
             .compactMap { $0.peerAccount.isEmpty ? nil : $0.peerAccount }
         // group_state is keyed by group id, not conversation id.
-        let groupMembers: [String] = conversations
+        let groupMembers: [String] = accepted
             .compactMap { $0.groupId }
             .compactMap { try? storage.messages.group(id: $0) }
             .flatMap { $0.members }
@@ -1251,6 +1286,15 @@ final class MessagingService {
 
     /// Sends our profile if the peer hasn't received this revision.
     private func sendMyProfileIfNeeded(toPeer account: String) async {
+        // A requester gets our name and photo only once we accept, unless we
+        // share an accepted group with them.
+        if (try? storage.messages.isMessageRequest(peer: account)) == true {
+            let inAcceptedGroup = conversations.contains { conv in
+                guard !conv.isRequest, let gid = conv.groupId else { return false }
+                return (try? storage.messages.group(id: gid))?.members.contains(account) == true
+            }
+            if !inAcceptedGroup { return }
+        }
         // Sent at least once (revision 1) even with nothing set: this is how
         // peers learn our username without asking the relay who an account is.
         let rev = max(myProfileRevision, 1)
@@ -2259,6 +2303,7 @@ final class MessagingService {
     }
 
     private func distributeProfileToGroupMembersIfNeeded(group: StoredGroup) async {
+        if conversations.first(where: { $0.groupId == group.id })?.isRequest == true { return }
         let rev = max(myProfileRevision, 1)
         let needsProfile = group.members.filter {
             $0 != credentials.accountId && readKVInt("pfsent:\($0)") < rev
@@ -2639,6 +2684,11 @@ final class MessagingService {
                 revision: max(info.revision, existing?.revision ?? 0),
                 members: newMembers, admins: newAdmins
             )
+            // Added to a new group by someone we've never chatted with: a request.
+            if isBootstrap, actor != credentials.accountId, !hasAcceptedChat(with: actor),
+               let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {
+                try? storage.messages.setConversationAccepted(convoId, accepted: false)
+            }
             refreshConversations()
             if let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {
                 refreshActiveMessages(ifShowing: convoId)
@@ -2924,6 +2974,12 @@ final class MessagingService {
         toPeer account: String,
         groupId: String? = nil
     ) async {
+        // Nothing tells a requester their message arrived or was seen.
+        if let groupId {
+            if conversations.first(where: { $0.groupId == groupId })?.isRequest == true { return }
+        } else if (try? storage.messages.isMessageRequest(peer: account)) == true {
+            return
+        }
         var content = Relay_Content_Content()
         content.receipt.type = type
         content.receipt.messageTimestamps = timestamps
@@ -4158,6 +4214,7 @@ final class MessagingService {
     private var typingStartedSent: Set<String> = []
 
     func sendTyping(_ action: Relay_Content_TypingMessage.Action, in conversationId: String) {
+        if isMessageRequest(conversationId) { return }
         // When typing indicators are off, still send .stopped for a .started
         // that went out before the setting changed.
         if !PrivacyPreferences.sendTypingEnabled {

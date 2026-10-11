@@ -36,6 +36,9 @@ public struct Conversation: Sendable, Equatable, Identifiable {
     public let peerScreenSecurity: Bool
     /// Custom notification sound; nil for the system default.
     public let notificationSound: String?
+    /// False for a message request: a chat someone else started that the user
+    /// hasn't accepted yet.
+    public let accepted: Bool
 
     public init(
         id: String, peerAccount: String, peerUsername: String?,
@@ -45,7 +48,8 @@ public struct Conversation: Sendable, Equatable, Identifiable {
         disappearingSeconds: Int64, mediaRequiresBiometric: Bool,
         requireBiometricChat: Bool, hidePreviews: Bool,
         unreadCount: Int, archived: Bool, label: String?,
-        screenSecurity: Bool, peerScreenSecurity: Bool, notificationSound: String?
+        screenSecurity: Bool, peerScreenSecurity: Bool, notificationSound: String?,
+        accepted: Bool = true
     ) {
         self.id = id; self.peerAccount = peerAccount
         self.peerUsername = peerUsername
@@ -61,9 +65,11 @@ public struct Conversation: Sendable, Equatable, Identifiable {
         self.screenSecurity = screenSecurity
         self.peerScreenSecurity = peerScreenSecurity
         self.notificationSound = notificationSound
+        self.accepted = accepted
     }
 
     public var isGroup: Bool { groupId != nil }
+    public var isRequest: Bool { !accepted }
     public var isPinned: Bool { pinnedAt != nil }
 }
 
@@ -307,8 +313,10 @@ public final class MessageStore: @unchecked Sendable {
     // MARK: - Conversations
 
     /// The conversation with this peer, created if needed.
+    /// The conversation with this peer, created if needed. A new one made for
+    /// an incoming message passes `accepted: false`, which makes it a request.
     @discardableResult
-    public func conversation(withPeer account: String, username: String? = nil) throws -> String {
+    public func conversation(withPeer account: String, username: String? = nil, accepted: Bool = true) throws -> String {
         // 1:1 only. Groups and 1:1 chats share the peer_account key, and real
         // group ids are random UUIDs, so a group whose id equals this account id
         // is forged: a group-create meant to capture that contact's messages and
@@ -334,14 +342,27 @@ public final class MessageStore: @unchecked Sendable {
         let id = UUID().uuidString
         // screen_security defaults on for new chats.
         try db.run(
-            "INSERT INTO conversations (id, peer_account, peer_username, created_at, screen_security) VALUES (?, ?, ?, ?, 1)",
+            "INSERT INTO conversations (id, peer_account, peer_username, created_at, screen_security, accepted) VALUES (?, ?, ?, ?, 1, ?)",
             [
                 .text(id), .text(account),
                 username.map { .text($0) } ?? .null,
                 .integer(Int64(Date().timeIntervalSince1970 * 1000)),
+                .integer(accepted ? 1 : 0),
             ]
         )
         return id
+    }
+
+    public func setConversationAccepted(_ conversationId: String, accepted: Bool) throws {
+        try db.run("UPDATE conversations SET accepted = ? WHERE id = ?", [.integer(accepted ? 1 : 0), .text(conversationId)])
+    }
+
+    /// Whether the 1:1 chat with `account` is a message request. False when
+    /// there's no chat yet.
+    public func isMessageRequest(peer account: String) throws -> Bool {
+        try db.query(
+            "SELECT accepted FROM conversations WHERE peer_account = ? AND group_id IS NULL", [.text(account)]
+        ).first?.first?.int64 == 0
     }
 
     public func conversations() throws -> [Conversation] {
@@ -373,7 +394,8 @@ public final class MessageStore: @unchecked Sendable {
                       AND m.sender_account IS NOT '\(Self.systemSender)'
                       AND m.timestamp > c.read_at),
                    c.archived, c.label,
-                   c.screen_security, c.notification_sound, c.peer_screen_security
+                   c.screen_security, c.notification_sound, c.peer_screen_security,
+                   c.accepted
             FROM conversations c
             ORDER BY c.pinned_at DESC NULLS LAST,
                      c.last_message_at DESC NULLS LAST,
@@ -400,7 +422,8 @@ public final class MessageStore: @unchecked Sendable {
                 label: $0[16].string,
                 screenSecurity: $0[17].int64 != 0,
                 peerScreenSecurity: $0[19].int64 != 0,
-                notificationSound: $0[18].string
+                notificationSound: $0[18].string,
+                accepted: ($0[20].int64 ?? 1) != 0
             )
         }
     }

@@ -31,6 +31,7 @@ struct ConversationListView: View {
     @State private var activeLabel: String? = nil  // nil = All
     @State private var folderStore = ChatFolderStore.shared
     @State private var showingFolderManager = false
+    @State private var showingRequests = false
     /// Chat waiting to go into a folder created from its context menu.
     @State private var newFolderForConversation: String?
     @State private var newFolderName = ""
@@ -54,7 +55,7 @@ struct ConversationListView: View {
 
     private var visibleConversations: [Conversation] {
         service.conversations.filter { c in
-            guard !panicMode.isHidden(c.id) && !c.archived else { return false }
+            guard !panicMode.isHidden(c.id) && !c.archived && !c.isRequest else { return false }
             guard let filter = activeLabel else { return true }
             switch filter {
             case "Unread": return c.unreadCount > 0
@@ -421,6 +422,38 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
 
+            let requests = service.messageRequests.filter { !panicMode.isHidden($0.id) }
+            if activeLabel == nil, !isEditing, !requests.isEmpty {
+                Button { showingRequests = true } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "tray.full.fill")
+                            .font(.title3)
+                            .foregroundStyle(.white)
+                            .frame(width: 54, height: 54)
+                            .background(Color.accentColor.gradient, in: .circle)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Message Requests").font(.headline)
+                            Text(requests.count == 1 ? "1 person wants to message you" : "\(requests.count) people want to message you")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        Text("\(requests.count)")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor, in: .capsule)
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .selectionDisabled()
+                .accessibilityElement(children: .combine)
+            }
+
             if visibleConversations.isEmpty {
                 ContentUnavailableView(
                     "No Conversations",
@@ -571,6 +604,36 @@ struct ConversationListView: View {
             }
         } // end List
         .listStyle(.plain)
+        .sheet(isPresented: $showingRequests) {
+            NavigationStack {
+                List {
+                    Section {
+                        ForEach(service.messageRequests.filter { !panicMode.isHidden($0.id) }) { request in
+                            Button {
+                                showingRequests = false
+                                selectedConversationId = request.id
+                            } label: {
+                                ConversationRow(conversation: request, service: service)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions {
+                                Button("Delete", role: .destructive) { service.deleteConversation(request.id) }
+                            }
+                        }
+                    } footer: {
+                        Text("People you haven't chatted with. They can't see that you've read their messages, or your name and photo, until you accept.")
+                    }
+                }
+                .navigationTitle("Message Requests")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { showingRequests = false }
+                    }
+                }
+                .onChange(of: service.messageRequests.isEmpty) { _, empty in if empty { showingRequests = false } }
+            }
+        }
         .sheet(isPresented: $showingFolderManager) {
             NavigationStack {
                 ChatFoldersView(service: service)

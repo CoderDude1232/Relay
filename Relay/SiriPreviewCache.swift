@@ -21,7 +21,7 @@ enum SiriPreviewCache {
         let defaults = UserDefaults.standard
         let panic = PanicModeManager.shared
         var convs: [RecentChatsSnapshot.Conversation] = []
-        for conv in service.conversations where !conv.archived && !panic.isHidden(conv.id) {
+        for conv in service.conversations where !conv.archived && !conv.isRequest && !panic.isHidden(conv.id) {
             guard convs.count < maxConversations else { break }
             let name = conv.groupId.map { service.displayName(forAccount: $0) }
                 ?? service.displayName(forAccount: conv.peerAccount)

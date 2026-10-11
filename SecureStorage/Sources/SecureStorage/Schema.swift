@@ -358,5 +358,11 @@ enum Schema {
             try db.run("ALTER TABLE group_state ADD COLUMN screen_security INTEGER NOT NULL DEFAULT 1;")
             try db.run("PRAGMA user_version = 22;")
         }
+        try step(db, to: 23) {
+            // Message requests: a 1:1 or group chat someone else started is held
+            // until accepted. Every existing conversation counts as accepted.
+            try db.run("ALTER TABLE conversations ADD COLUMN accepted INTEGER NOT NULL DEFAULT 1;")
+            try db.run("PRAGMA user_version = 23;")
+        }
     }
 }

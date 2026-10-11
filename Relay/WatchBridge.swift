@@ -97,7 +97,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
     private func snapshot(service: MessagingService) -> WatchSnapshot {
         let panic = PanicModeManager.shared
         var chats: [WatchSnapshot.Chat] = []
-        for conv in service.conversations where !conv.archived && !panic.isHidden(conv.id) {
+        for conv in service.conversations where !conv.archived && !conv.isRequest && !panic.isHidden(conv.id) {
             guard chats.count < Self.maxChats else { break }
             let name = conv.groupId.map { service.displayName(forAccount: $0) }
                 ?? service.displayName(forAccount: conv.peerAccount)

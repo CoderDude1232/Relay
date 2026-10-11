@@ -459,7 +459,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 }
                 return id
             }
-            return try storage.messages.conversation(withPeer: attestedAccount)
+            // Someone we've never chatted with starts a message request.
+            return try storage.messages.conversation(withPeer: attestedAccount, accepted: attestedAccount == ownAccountId)
         }
 
         // Edits and unsends name their target by timestamp only, so apply them

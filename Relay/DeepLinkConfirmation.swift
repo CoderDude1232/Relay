@@ -42,6 +42,9 @@ enum PendingLinkAction: Identifiable {
 extension EnvironmentValues {
     /// True while the app-lock screen is covering the UI. Deep links wait for it.
     @Entry var relayAppLocked: Bool = false
+    /// True inside an unaccepted message request: media and link previews
+    /// stay hidden until the user accepts.
+    @Entry var relayIsMessageRequest: Bool = false
 }
 
 struct LinkConfirmationSheet: View {

@@ -370,3 +370,28 @@ struct OwnAccountAndGroupGuardTests {
         #expect(try messages.group(id: groupId)?.members.sorted() == ["bob", "me"])
     }
 }
+
+struct MessageRequestTests {
+    @Test func strangersStartRequestsAndAcceptingClearsThem() throws {
+        let storage = try SecureStore(path: tempPath(), key: .random(), credentials: Credentials())
+        let messages = storage.messages
+
+        // A chat we start is accepted; a stranger's first message makes a request.
+        let mine = try messages.conversation(withPeer: "friend")
+        let theirs = try messages.conversation(withPeer: "stranger", accepted: false)
+        #expect(try !messages.isMessageRequest(peer: "friend"))
+        #expect(try messages.isMessageRequest(peer: "stranger"))
+        #expect(try !messages.isMessageRequest(peer: "nobody"))
+
+        // An incoming message in an existing chat never turns it into a request.
+        #expect(try messages.conversation(withPeer: "friend", accepted: false) == mine)
+        #expect(try !messages.isMessageRequest(peer: "friend"))
+
+        let listed = try messages.conversations()
+        #expect(listed.first { $0.id == theirs }?.isRequest == true)
+        #expect(listed.first { $0.id == mine }?.isRequest == false)
+
+        try messages.setConversationAccepted(theirs, accepted: true)
+        #expect(try !messages.isMessageRequest(peer: "stranger"))
+    }
+}
