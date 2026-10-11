@@ -64,14 +64,36 @@ final class AppModel {
     var pendingScanQR = false
     /// A proxy link that was opened, waiting for the user to confirm it.
     var pendingProxy: RelayProxy.Address?
+    /// The latest check of the proxy in use; nil when there's no proxy.
+    var proxyStatus: ProxyStatus?
+    @ObservationIgnored private var proxyMonitorTask: Task<Void, Never>?
 
     /// Reconnects through the current proxy setting: the running service is
     /// rebuilt so every connection picks up the new route.
     func applyProxyChange() async {
+        startProxyMonitor()
         guard case .ready(let service) = phase else { return }
         service.stop()
         phase = .loading
         await boot()
+    }
+
+    /// Re-checks the proxy now and every 10 minutes while Relay is open, so a
+    /// proxy that starts blocking, slowing or tampering is flagged.
+    func startProxyMonitor() {
+        proxyMonitorTask?.cancel()
+        guard let address = RelayProxy.active else {
+            proxyStatus = nil
+            return
+        }
+        proxyMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let status = await RelayProxy.check(address, relay: RelayConfig.serverURL)
+                guard !Task.isCancelled, RelayProxy.active == address else { return }
+                self?.proxyStatus = status
+                try? await Task.sleep(for: .seconds(600))
+            }
+        }
     }
 
     var isReady: Bool {
@@ -102,6 +124,7 @@ final class AppModel {
     }
 
     func boot() async {
+        if proxyMonitorTask == nil { startProxyMonitor() }
         do {
             guard let data = try keychain.loadSecret(for: Self.accountSecretName) else {
                 phase = .onboarding
@@ -175,6 +198,7 @@ final class AppModel {
     }
 
     func enterForeground() {
+        startProxyMonitor()
         // The socket may still be alive.
         backgroundDisconnectTask?.cancel()
         backgroundDisconnectTask = nil

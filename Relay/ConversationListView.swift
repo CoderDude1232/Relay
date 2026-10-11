@@ -32,6 +32,7 @@ struct ConversationListView: View {
     @State private var folderStore = ChatFolderStore.shared
     @State private var showingFolderManager = false
     @State private var showingRequests = false
+    @State private var showingProxySettings = false
     /// Chat waiting to go into a folder created from its context menu.
     @State private var newFolderForConversation: String?
     @State private var newFolderName = ""
@@ -439,6 +440,23 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
 
+            if let status = model.proxyStatus, status.isProblem, !isEditing {
+                Button { showingProxySettings = true } label: {
+                    HStack(spacing: 12) {
+                        ProxyStatusRow(status: status)
+                        Spacer(minLength: 0)
+                        Text("Review").font(.subheadline.weight(.semibold))
+                    }
+                    .padding(12)
+                    .background(Color.orange.opacity(0.12), in: .rect(cornerRadius: 14, style: .continuous))
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .selectionDisabled()
+                .listRowSeparator(.hidden)
+                .accessibilityHint("Proxy problem. Opens proxy settings.")
+            }
+
             let requests = service.messageRequests.filter { !panicMode.isHidden($0.id) }
             if activeLabel == nil, !isEditing, !requests.isEmpty {
                 Button { showingRequests = true } label: {
@@ -621,6 +639,16 @@ struct ConversationListView: View {
             }
         } // end List
         .listStyle(.plain)
+        .sheet(isPresented: $showingProxySettings) {
+            NavigationStack {
+                ProxySettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingProxySettings = false }
+                        }
+                    }
+            }
+        }
         .sheet(isPresented: $showingRequests) {
             NavigationStack {
                 List {

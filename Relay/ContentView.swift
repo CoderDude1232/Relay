@@ -123,17 +123,18 @@ struct ContentView: View {
             isAuthenticating = false
             if ok { isLocked = false }
         }
-        .alert("Use This Proxy?", isPresented: Binding(
+        // A shared proxy link goes through the same check and trust warning.
+        .sheet(isPresented: Binding(
             get: { model.pendingProxy != nil }, set: { if !$0 { model.pendingProxy = nil } }
-        ), presenting: model.pendingProxy) { proxy in
-            Button("Use Proxy") {
-                RelayProxy.save(proxy, enabled: true)
-                model.pendingProxy = nil
-                Task { await model.applyProxyChange() }
+        )) {
+            NavigationStack {
+                ProxySettingsView(initialAddress: model.pendingProxy)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { model.pendingProxy = nil }
+                        }
+                    }
             }
-            Button("Cancel", role: .cancel) {}
-        } message: { proxy in
-            Text("Relay will connect through \(proxy.display). Only use a proxy from someone you trust. It can't read your messages, but it can see that you use Relay.")
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             isObscured = true
