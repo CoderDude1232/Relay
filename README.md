@@ -26,13 +26,6 @@
   <img src="https://img.shields.io/badge/encryption-Signal%20Protocol%20%2B%20PQXDH-8A2BE2" alt="Signal Protocol + PQXDH">
 </p>
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/screenshot-dark.jpg">
-    <img src=".github/assets/screenshot-light.jpg" alt="A Relay conversation on an iPhone" width="280">
-  </picture>
-</p>
-
 ## Features
 
 - 🔐 **End-to-end encrypted.** The Signal Protocol with a post-quantum key exchange (PQXDH), for chats, groups, calls and media.
