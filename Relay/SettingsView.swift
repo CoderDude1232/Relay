@@ -197,9 +197,14 @@ private struct AccountSettingsView: View {
     @State private var nukeInProgress = false
     @State private var nukeSucceeded = false
     @State private var nukeError: String?
+    @State private var methods: SignInMethods?
+    @State private var showingRemoveEmail = false
+    @State private var showingAddPasskeyFirst = false
 
     private var username: String { service.username ?? "" }
     private var addLink: String { "relaymsg.app/add/\(username)" }
+    /// Assume an email until the relay says otherwise.
+    private var hasEmail: Bool { methods?.email ?? true }
 
     var body: some View {
         List {
@@ -225,15 +230,24 @@ private struct AccountSettingsView: View {
                             Text("@\(username)").foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
-                    Button { showingEmailSheet = true } label: {
+                    if hasEmail {
+                        Button { showingEmailSheet = true } label: {
+                            HStack(spacing: 14) {
+                                SettingsIcon(systemName: "envelope.fill", color: .accentColor)
+                                Text("Email").foregroundStyle(.primary)
+                                Spacer(minLength: 0)
+                                Text(accountEmail ?? "Change")
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                    } else {
                         HStack(spacing: 14) {
                             SettingsIcon(systemName: "envelope.fill", color: .accentColor)
-                            Text("Email").foregroundStyle(.primary)
+                            Text("Email")
                             Spacer(minLength: 0)
-                            Text(accountEmail ?? "Change")
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            Text("None").foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -259,12 +273,29 @@ private struct AccountSettingsView: View {
                     NavigationLink(destination: PasskeysView(service: service)) {
                         SettingsNavRow(systemName: "person.badge.key.fill", color: .green, title: "Passkeys")
                     }
+                    NavigationLink(destination: RecoveryKeyView(service: service, methods: methods)) {
+                        SettingsNavRow(systemName: "key.horizontal.fill", color: .blue, title: "Recovery Key")
+                    }
+                    if hasEmail {
+                        Button {
+                            if (methods?.passkeys ?? 0) > 0 { showingRemoveEmail = true } else { showingAddPasskeyFirst = true }
+                        } label: {
+                            HStack(spacing: 14) {
+                                SettingsIcon(systemName: "envelope.badge.shield.half.filled.fill", color: .gray)
+                                Text("Remove Email").foregroundStyle(.primary)
+                            }
+                        }
+                        .tint(.primary)
+                    }
                 } header: {
                     Text("Sign-In")
                 } footer: {
-                    Text("Signing in on a new device needs your account password or a passkey.")
+                    Text(hasEmail
+                         ? "Signing in on a new device needs your account password, a passkey or your recovery key."
+                         : "No email is linked. Sign in with a passkey or your recovery key.")
                 }
 
+                if hasEmail {
                 Section {
                     Toggle(isOn: Binding(
                         get: { emailDiscoverable },
@@ -288,6 +319,7 @@ private struct AccountSettingsView: View {
                     }
                 } footer: {
                     if let discoverabilityError { Text(discoverabilityError) }
+                }
                 }
             }
 
@@ -332,6 +364,19 @@ private struct AccountSettingsView: View {
             ChangeEmailSheet()
         }
         .onAppear { accountEmail = model.accountEmail }
+        .task { methods = try? await service.apiClient.signInMethods() }
+        .sheet(isPresented: $showingRemoveEmail) {
+            RemoveEmailSheet {
+                accountEmail = nil
+                emailDiscoverable = false
+                Task { methods = try? await service.apiClient.signInMethods() }
+            }
+        }
+        .alert("Add a Passkey First", isPresented: $showingAddPasskeyFirst) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Without an email, a passkey is how you sign in. Create one in Passkeys, save your recovery key, then remove your email.")
+        }
         .sheet(isPresented: $showingQR) {
             MyQRCodeView(username: username, createInviteLink: {
                 try await service.createContactInviteLink()

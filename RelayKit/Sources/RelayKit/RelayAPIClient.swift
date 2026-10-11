@@ -1041,6 +1041,97 @@ extension RelayAPIClient {
     }
 }
 
+/// Which ways an account can sign in (`GET /v1/accounts/me/sign-in-methods`).
+public struct SignInMethods: Decodable, Sendable, Equatable {
+    public let email: Bool
+    public let passkeys: Int
+    public let accountPassword: Bool
+    public let recoveryKey: Bool
+}
+
+/// A passkey sign-up challenge (`POST /v1/passkeys/signup/options`).
+public struct PasskeySignupOptions: Sendable {
+    public let sessionId: String
+    public let challenge: Data
+    public let userId: Data
+    public let userName: String
+}
+
+extension RelayAPIClient {
+    /// Starts an account with no email: a username and a passkey.
+    /// Returns nil if the username is taken.
+    public func passkeySignupOptions(username: String) async throws -> PasskeySignupOptions? {
+        struct Response: Decodable { let sessionId: String; let challenge: String; let userId: String; let userName: String }
+        do {
+            let r: Response = try await request(
+                "POST", "v1/passkeys/signup/options", body: ["username": username], authenticated: false
+            )
+            guard let challenge = Data(base64URL: r.challenge), let userId = Data(base64URL: r.userId) else {
+                throw RelayAPIError.malformedResponse
+            }
+            return PasskeySignupOptions(sessionId: r.sessionId, challenge: challenge, userId: userId, userName: r.userName)
+        } catch RelayAPIError.http(409, _) {
+            return nil
+        }
+    }
+
+    public func signUpWithPasskey(
+        sessionId: String, credentialId: Data, clientDataJSON: Data, attestationObject: Data,
+        name: String, devicePassword: String
+    ) async throws -> (credentials: RelayCredentials, username: String) {
+        struct Response: Decodable { let accountId: String; let deviceId: UInt32; let username: String }
+        let r: Response = try await request("POST", "v1/passkeys/signup", body: [
+            "sessionId": sessionId,
+            "credentialId": credentialId.base64URLEncoded,
+            "clientDataJSON": clientDataJSON.base64URLEncoded,
+            "attestationObject": attestationObject.base64URLEncoded,
+            "name": name,
+            "password": devicePassword,
+        ], authenticated: false)
+        return (RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword), r.username)
+    }
+
+    public func signInMethods() async throws -> SignInMethods {
+        try await request("GET", "v1/accounts/me/sign-in-methods", body: Optional<[String: String]>.none)
+    }
+
+    /// Challenge for confirming email removal with one of this account's passkeys.
+    public func emailRemovalOptions() async throws -> (challenge: Data, credentialIds: [Data]) {
+        struct Response: Decodable { let challenge: String; let credentialIds: [String] }
+        let r: Response = try await request("POST", "v1/accounts/me/email/remove/options", body: [String: String]())
+        guard let challenge = Data(base64URL: r.challenge) else { throw RelayAPIError.malformedResponse }
+        return (challenge, r.credentialIds.compactMap { Data(base64URL: $0) })
+    }
+
+    /// Removes the account's email (and its sign-in record) after a passkey check.
+    public func removeEmail(
+        credentialId: Data, clientDataJSON: Data, authenticatorData: Data, signature: Data, userHandle: Data
+    ) async throws {
+        try await requestExpectingNoContent("POST", "v1/accounts/me/email/remove", body: [
+            "credentialId": credentialId.base64URLEncoded,
+            "clientDataJSON": clientDataJSON.base64URLEncoded,
+            "authenticatorData": authenticatorData.base64URLEncoded,
+            "signature": signature.base64URLEncoded,
+            "userHandle": userHandle.base64URLEncoded,
+        ])
+    }
+
+    /// Registers a recovery key by its hash; the key itself never leaves the device.
+    public func setRecoveryKeyHash(_ hash: Data) async throws {
+        try await requestExpectingNoContent("PUT", "v1/accounts/me/recovery-key", body: ["hash": hash.base64URLEncoded])
+    }
+
+    /// Signs in with a recovery key, replacing the account's devices. Skips
+    /// registration lock and email codes.
+    public func signInWithRecoveryKey(_ key: String, devicePassword: String) async throws -> (credentials: RelayCredentials, username: String) {
+        struct Response: Decodable { let accountId: String; let deviceId: UInt32; let username: String }
+        let r: Response = try await request("POST", "v1/accounts/recovery-key/signin", body: [
+            "key": key, "password": devicePassword,
+        ], authenticated: false)
+        return (RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword), r.username)
+    }
+}
+
 extension Data {
     public init?(base64URL string: String) {
         var s = string.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")

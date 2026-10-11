@@ -80,9 +80,11 @@ type Server struct {
 	appleRevoker AppleRevoker
 
 	// Passkeys (passkeys.go). webauthn is nil until SetPasskeyRP succeeds.
-	webauthn     *webauthn.WebAuthn
-	passkeyReg   *passkeySessions // keyed by account id
-	passkeyLogin *passkeySessions // keyed by random session id
+	webauthn           *webauthn.WebAuthn
+	passkeyReg         *passkeySessions // keyed by account id
+	passkeyLogin       *passkeySessions // keyed by random session id
+	passkeySignup      *passkeySessions // keyed by random session id
+	passkeyEmailRemove *passkeySessions // keyed by account id
 }
 
 // AppleRevoker exchanges a Sign in with Apple authorization code for the
@@ -127,7 +129,8 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 	s := &Server{store: st, hub: h, blobs: blobs, turnURLs: urls, turnSecret: turnSecret,
 		attachQuota:   newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount),
 		attachDiskCap: DefaultAttachmentDiskCap,
-		passkeyReg:    newPasskeySessions(), passkeyLogin: newPasskeySessions()}
+		passkeyReg:    newPasskeySessions(), passkeyLogin: newPasskeySessions(),
+		passkeySignup: newPasskeySessions(), passkeyEmailRemove: newPasskeySessions()}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
 	if err := s.SetPasskeyRP(DefaultPasskeyRPID, []string{DefaultPasskeyOrigin}); err != nil {
 		panic("api: default passkey config: " + err.Error())
@@ -333,8 +336,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/passkeys/register", s.auth(s.handlePasskeyRegister))
 	mux.HandleFunc("GET /v1/passkeys", s.auth(s.handleListPasskeys))
 	mux.HandleFunc("DELETE /v1/passkeys/{id}", s.auth(s.handleDeletePasskey))
-	mux.HandleFunc("POST /v1/passkeys/login/options", s.handlePasskeyLoginOptions) // unauthenticated, per-IP limited
-	mux.HandleFunc("POST /v1/passkeys/login", s.handlePasskeyLogin)                // unauthenticated, per-IP limited
+	mux.HandleFunc("POST /v1/passkeys/login/options", s.handlePasskeyLoginOptions)   // unauthenticated, per-IP limited
+	mux.HandleFunc("POST /v1/passkeys/login", s.handlePasskeyLogin)                  // unauthenticated, per-IP limited
+	mux.HandleFunc("POST /v1/passkeys/signup/options", s.handlePasskeySignupOptions) // unauthenticated, per-IP limited
+	mux.HandleFunc("POST /v1/passkeys/signup", s.handlePasskeySignup)                // unauthenticated, per-IP limited
+	mux.HandleFunc("GET /v1/accounts/me/sign-in-methods", s.auth(s.handleSignInMethods))
+	mux.HandleFunc("POST /v1/accounts/me/email/remove/options", s.auth(s.handleRemoveEmailOptions))
+	mux.HandleFunc("POST /v1/accounts/me/email/remove", s.auth(s.handleRemoveEmail))
+	mux.HandleFunc("PUT /v1/accounts/me/recovery-key", s.auth(s.handleSetRecoveryKey))
+	mux.HandleFunc("DELETE /v1/accounts/me/recovery-key", s.auth(s.handleDeleteRecoveryKey))
+	mux.HandleFunc("POST /v1/accounts/recovery-key/signin", s.handleRecoveryKeySignIn) // unauthenticated, per-IP limited
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
@@ -2684,6 +2695,9 @@ func (s *Server) PruneStaleLimiterKeys() {
 		directoryIPLimiter,
 		provisioningLimiter,
 		reportLimiter,
+		passkeyOptionsIPLimiter,
+		passkeyLoginIPLimiter,
+		recoveryKeyIPLimiter,
 	} {
 		now := time.Now()
 		l.mu.Lock()

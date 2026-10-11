@@ -444,6 +444,9 @@ CREATE TABLE IF NOT EXISTS group_invites (
     created_at    BIGINT NOT NULL
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_passkeys_account ON passkeys (account_id)`,
+		// Recovery key (store/recovery_key.go): only its SHA-256 is stored.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS recovery_key_hash BYTEA`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_recovery_key_hash ON accounts (recovery_key_hash) WHERE recovery_key_hash IS NOT NULL`,
 	} {
 		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
 			return err

@@ -74,6 +74,13 @@ struct ContentView: View {
                     } message: {
                         Text("A passkey signs you in with Face ID on a new iPhone, and brings your chat list back — no password or email code needed.")
                     }
+                    .sheet(isPresented: Binding(
+                        get: { model.newRecoveryKey != nil }, set: { if !$0 { model.newRecoveryKey = nil } }
+                    )) {
+                        if let key = model.newRecoveryKey {
+                            NewRecoveryKeySheet(key: key) { model.newRecoveryKey = nil }
+                        }
+                    }
                     .alert("Couldn't Create Passkey", isPresented: Binding(
                         get: { passkeyError != nil }, set: { if !$0 { passkeyError = nil } }
                     )) {

@@ -178,6 +178,88 @@ func TestPasskeyCeremonyVerification(t *testing.T) {
 	if _, err := register(wrongRP); err == nil {
 		t.Fatal("registration for another RP ID accepted")
 	}
+
+	// Sign-up: a fresh handle and the stored session's username, as
+	// handlePasskeySignup verifies them.
+	signupHandle := make([]byte, 32)
+	rand.Read(signupHandle)
+	signup := func(a *softAuthenticator) (*webauthn.Credential, error) {
+		creation, sd, err := s.beginPasskeyRegistration(&passkeyUser{handle: signupHandle, name: "newbie"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if creation.Response.AuthenticatorSelection.ResidentKey != protocol.ResidentKeyRequirementRequired ||
+			creation.Response.AuthenticatorSelection.UserVerification != protocol.VerificationRequired ||
+			creation.Response.Attestation != protocol.PreferNoAttestation {
+			t.Fatalf("sign-up options: %+v", creation.Response)
+		}
+		if !s.passkeySignup.putNamed("sid", *sd, "newbie") {
+			t.Fatal("put failed")
+		}
+		sess, ok := s.passkeySignup.takeNamed("sid")
+		if !ok || sess.username != "newbie" || !bytes.Equal(sess.UserID, signupHandle) {
+			t.Fatalf("sign-up session: %+v %v", sess, ok)
+		}
+		cd, ao := a.register(creation.Response.Challenge.String(), signupHandle)
+		parsed, err := parseAttestation(a.credID, cd, ao)
+		if err != nil {
+			return nil, err
+		}
+		return s.webauthn.CreateCredential(&passkeyUser{handle: sess.UserID, name: sess.username}, sess.SessionData, parsed)
+	}
+	su := newSoftAuthenticator(t)
+	suCred, err := signup(su)
+	if err != nil || !bytes.Equal(suCred.ID, su.credID) || !suCred.Flags.UserVerified {
+		t.Fatalf("sign-up registration: %v", err)
+	}
+	suNoUV := newSoftAuthenticator(t)
+	suNoUV.flags = flagUP
+	if _, err := signup(suNoUV); err == nil {
+		t.Fatal("sign-up without user verification accepted")
+	}
+
+	// Email removal: a non-discoverable assertion restricted to the account's
+	// own credentials, as handleRemoveEmail verifies it.
+	owner := &passkeyUser{handle: handle, name: "alice", creds: []webauthn.Credential{stored}}
+	removal := func(a *softAuthenticator, u *passkeyUser, mutate func(sig []byte)) (*webauthn.Credential, error) {
+		assertion, sd, err := s.webauthn.BeginLogin(owner, webauthn.WithUserVerification(protocol.VerificationRequired))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(assertion.Response.AllowedCredentials) != 1 || !bytes.Equal(assertion.Response.AllowedCredentials[0].CredentialID, owner.creds[0].ID) {
+			t.Fatalf("allowCredentials: %+v", assertion.Response.AllowedCredentials)
+		}
+		cd, ad, sig := a.assert(assertion.Response.Challenge.String())
+		if mutate != nil {
+			mutate(sig)
+		}
+		parsed, err := parseAssertion(a.credID, cd, ad, sig, a.handle)
+		if err != nil {
+			return nil, err
+		}
+		return s.webauthn.ValidateLogin(u, *sd, parsed)
+	}
+	if got, err := removal(a, owner, nil); err != nil || got.Authenticator.CloneWarning {
+		t.Fatalf("removal assertion: %v", err)
+	}
+	if _, err := removal(a, owner, func(sig []byte) { sig[len(sig)-1] ^= 1 }); err == nil {
+		t.Fatal("removal: tampered signature accepted")
+	}
+	// Another account's passkey (su) can't authorise alice's removal, even
+	// presented as alice's.
+	su.handle = handle
+	if _, err := removal(su, owner, nil); err == nil {
+		t.Fatal("removal: foreign credential accepted")
+	}
+	// A session begun for alice doesn't verify against another user.
+	if _, err := removal(a, &passkeyUser{handle: signupHandle, creds: []webauthn.Credential{stored}}, nil); err == nil {
+		t.Fatal("removal: session accepted for another user")
+	}
+	noUVLogin := *a
+	noUVLogin.flags = flagUP | flagBE | flagBS
+	if _, err := removal(&noUVLogin, owner, nil); err == nil {
+		t.Fatal("removal: assertion without user verification accepted")
+	}
 }
 
 // TestPasskeyRequestValidation covers the checks that run before any store
@@ -258,13 +340,13 @@ func TestPasskeySessions(t *testing.T) {
 		t.Fatal("expired session returned")
 	}
 	for i := 0; i < maxPasskeySessions; i++ {
-		p.m["live-"+strconv.Itoa(i)] = webauthn.SessionData{Expires: time.Now().Add(time.Minute)}
+		p.m["live-"+strconv.Itoa(i)] = passkeySession{SessionData: webauthn.SessionData{Expires: time.Now().Add(time.Minute)}}
 	}
 	if p.put("overflow", webauthn.SessionData{}) {
 		t.Fatal("put beyond the cap succeeded")
 	}
 	for k := range p.m {
-		p.m[k] = webauthn.SessionData{Expires: time.Now().Add(-time.Second)}
+		p.m[k] = passkeySession{SessionData: webauthn.SessionData{Expires: time.Now().Add(-time.Second)}}
 	}
 	if !p.put("overflow", webauthn.SessionData{}) || len(p.m) != 1 {
 		t.Fatalf("expired sessions not pruned at the cap: %d left", len(p.m))

@@ -47,6 +47,8 @@ final class AppModel {
     var shouldOfferBackupRestore = false
     /// Show the one-time "create a passkey" prompt after a non-passkey sign-in.
     var shouldOfferPasskey = false
+    /// A recovery key made at sign-up, shown once so it can be saved.
+    var newRecoveryKey: String?
     @ObservationIgnored private let passkeys = PasskeyAuthenticator()
     /// relay://add/<username>
     var pendingDeepLinkUsername: String?
@@ -453,6 +455,126 @@ final class AppModel {
     }
 
     func cancelPasskeyAutoFill() { passkeys.cancel() }
+
+    struct UsernameTakenError: LocalizedError {
+        let name: String
+        var errorDescription: String? { "@\(name) is already taken." }
+    }
+
+    /// Creates an account with no email: a username and a passkey. A recovery
+    /// key is made straight away and shown once, since there's no email to
+    /// recover with.
+    func signUpWithPasskey(username: String, displayName: String) async throws {
+        let serverURL = RelayConfig.serverURL
+        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
+        guard let options = try await api.passkeySignupOptions(username: username) else {
+            throw UsernameTakenError(name: username)
+        }
+        let created = try await passkeys.register(
+            challenge: options.challenge, userId: options.userId,
+            userName: options.userName, excluding: []
+        )
+        let password = Self.generateRandomPassword()
+        let signedUp = try await api.signUpWithPasskey(
+            sessionId: options.sessionId, credentialId: created.credentialId,
+            clientDataJSON: created.clientDataJSON, attestationObject: created.attestationObject,
+            name: UIDevice.current.model, devicePassword: password
+        )
+        let service = try await makeService(credentials: signedUp.credentials, serverURL: serverURL, username: signedUp.username)
+        if !displayName.isEmpty { service.setMyDisplayName(displayName) }
+        let saved = SavedAccount(
+            accountId: signedUp.credentials.accountId, deviceId: signedUp.credentials.deviceId,
+            password: password, serverURL: serverURL, username: signedUp.username,
+            email: nil, supabaseUserId: nil
+        )
+        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        UserDefaults.standard.set(true, forKey: Self.passkeyPromptDismissedKey)
+        service.start()
+        phase = .ready(service)
+        service.noteAccountCreated(username: signedUp.username)
+        uploadPushTokenIfReady()
+        publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
+        Task { try? await service.publishInitialKeys() }
+        Task {
+            if let prf = created.prfOutput {
+                await service.addPasskeySlot(credentialId: created.credentialId, prfOutput: prf)
+            }
+            if let key = try? await service.createRecoveryKey() { newRecoveryKey = key }
+        }
+    }
+
+    /// Signs in with a recovery key. Skips the account password and email
+    /// codes, replaces the account's other devices, and unlocks the chat list.
+    func signInWithRecoveryKey(_ key: String) async throws {
+        let serverURL = RelayConfig.serverURL
+        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
+        let password = Self.generateRandomPassword()
+        let signedIn: (credentials: RelayCredentials, username: String)
+        do {
+            signedIn = try await api.signInWithRecoveryKey(RecoveryKey.normalize(key), devicePassword: password)
+        } catch RelayAPIError.http(401, _) {
+            throw PasskeyError.failed("That recovery key isn't right. Check it and try again.")
+        } catch RelayAPIError.http(409, _) {
+            throw PasskeyError.failed("This account has reached its device limit. Unlink a device first.")
+        }
+        let service = try await makeService(credentials: signedIn.credentials, serverURL: serverURL, username: signedIn.username)
+        let saved = SavedAccount(
+            accountId: signedIn.credentials.accountId, deviceId: signedIn.credentials.deviceId,
+            password: password, serverURL: serverURL, username: signedIn.username,
+            email: nil, supabaseUserId: nil
+        )
+        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        service.start()
+        phase = .ready(service)
+        shouldOfferBackupRestore = true
+        service.noteSignedIn(username: signedIn.username)
+        Task { await service.restoreAccountStorage(recoveryKey: key) }
+        uploadPushTokenIfReady()
+        publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
+        Task { try? await service.publishInitialKeys() }
+    }
+
+    /// Confirms it's the account owner with Face ID and one of the account's
+    /// passkeys. Throws if there's no passkey or it's cancelled.
+    func confirmWithPasskey() async throws {
+        guard case .ready(let service) = phase else { return }
+        let ids = try await service.apiClient.passkeys().compactMap { Data(base64URL: $0.id) }
+        guard !ids.isEmpty else { throw PasskeyError.failed("This account has no passkeys.") }
+        var challenge = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, challenge.count, &challenge)
+        let assertion = try await passkeys.assert(challenge: Data(challenge))
+        guard ids.contains(assertion.credentialId) else {
+            throw PasskeyError.failed("That passkey belongs to a different account.")
+        }
+    }
+
+    /// Removes the email from the account after a passkey check on the relay.
+    /// The relay deletes the Supabase sign-in record and the email token.
+    func removeEmail() async throws {
+        guard case .ready(let service) = phase else { return }
+        let options = try await service.apiClient.emailRemovalOptions()
+        let assertion = try await passkeys.assert(challenge: options.challenge)
+        guard options.credentialIds.contains(assertion.credentialId) else {
+            throw PasskeyError.failed("That passkey belongs to a different account.")
+        }
+        try await service.apiClient.removeEmail(
+            credentialId: assertion.credentialId, clientDataJSON: assertion.clientDataJSON,
+            authenticatorData: assertion.authenticatorData, signature: assertion.signature,
+            userHandle: assertion.userHandle
+        )
+        SupabaseAuth.shared.signOut()
+        UserDefaults.standard.set(false, forKey: MessagingService.emailDiscoverableKey)
+        if let data = try? keychain.loadSecret(for: Self.accountSecretName),
+           let saved = try? JSONDecoder().decode(SavedAccount.self, from: data) {
+            let updated = SavedAccount(
+                accountId: saved.accountId, deviceId: saved.deviceId, password: saved.password,
+                serverURL: saved.serverURL, username: saved.username, email: nil, supabaseUserId: nil
+            )
+            try? keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
+        }
+    }
 
     /// Creates a passkey for this account and lets it unlock the chat list.
     func createPasskey() async throws {

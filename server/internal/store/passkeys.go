@@ -157,6 +157,42 @@ func (s *Store) ProvisionPasskeyDevice(accountID string, credentialID, credentia
 	if tag.RowsAffected() == 0 {
 		return AddedDevice{}, ErrNotFound
 	}
+	if dev, err = provisionReplacementTx(ctx, tx, accountID, deviceHash); err != nil {
+		return AddedDevice{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return AddedDevice{}, err
+	}
+	return dev, nil
+}
+
+// ProvisionReplacementDevice replaces the account's devices with one new
+// device using devicePassword, in one transaction, without checking the
+// registration lock. The caller must already have verified a credential that
+// stands in for the account password. ErrNotFound if the account is gone,
+// ErrDeviceLimit from the device cap.
+func (s *Store) ProvisionReplacementDevice(accountID, devicePassword string) (AddedDevice, error) {
+	ctx := context.Background()
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	defer tx.Rollback(ctx)
+	dev, err := provisionReplacementTx(ctx, tx, accountID, deviceHash)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return AddedDevice{}, err
+	}
+	return dev, nil
+}
+
+func provisionReplacementTx(ctx context.Context, tx pgx.Tx, accountID string, deviceHash []byte) (dev AddedDevice, err error) {
 	if err = tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1`, accountID).Scan(&dev.Username); errors.Is(err, pgx.ErrNoRows) {
 		return AddedDevice{}, ErrNotFound
 	} else if err != nil {
@@ -167,6 +203,71 @@ func (s *Store) ProvisionPasskeyDevice(accountID string, credentialID, credentia
 		return AddedDevice{}, err
 	}
 	if dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, accountID, deviceHash); err != nil {
+		return AddedDevice{}, err
+	}
+	return dev, nil
+}
+
+// UpdatePasskeyCredential saves a credential record after a verified
+// assertion (sign count, flags). ErrNotFound if the account has no such
+// passkey.
+func (s *Store) UpdatePasskeyCredential(accountID string, credentialID, credential []byte) error {
+	tag, err := s.db.Exec(context.Background(),
+		`UPDATE passkeys SET credential = $3 WHERE credential_id = $1 AND account_id = $2`,
+		credentialID, accountID, credential)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreatePasskeyAccount creates an account with no email, Supabase link or
+// account password, signed in by the given verified passkey: the account row
+// (with passkey user handle), device 1 and the passkeys row, in one
+// transaction. ErrUsernameTaken if the name is unavailable, ErrPasskeyExists
+// if the credential is registered elsewhere.
+func (s *Store) CreatePasskeyAccount(username string, handle, credentialID, credential []byte, credentialName, devicePassword string) (dev AddedDevice, err error) {
+	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	if dev.MailboxID, err = newMailboxID(); err != nil {
+		return AddedDevice{}, err
+	}
+	dev.AccountID, dev.Username, dev.DeviceID = newUUID(), username, 1
+	now := coarseDayMillis()
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return AddedDevice{}, err
+	}
+	defer tx.Rollback(ctx)
+	if taken, err := s.usernameUnavailableTx(ctx, tx, username, ""); err != nil {
+		return AddedDevice{}, err
+	} else if taken {
+		return AddedDevice{}, ErrUsernameTaken
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO accounts (id, username, passkey_user_handle, created_at, next_device_id) VALUES ($1, $2, $3, $4, 1)`,
+		dev.AccountID, username, handle, now); err != nil {
+		return AddedDevice{}, accountInsertError(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
+		dev.AccountID, dev.MailboxID, deviceHash, now); err != nil {
+		return AddedDevice{}, err
+	}
+	if _, err = tx.Exec(ctx,
+		`INSERT INTO passkeys (credential_id, account_id, credential, name, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		credentialID, dev.AccountID, credential, credentialName, now); err != nil {
+		if isUniqueViolation(err) {
+			return AddedDevice{}, ErrPasskeyExists
+		}
+		return AddedDevice{}, err
+	}
+	if err = s.clearReleasedUsernameTx(ctx, tx, username); err != nil {
 		return AddedDevice{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {

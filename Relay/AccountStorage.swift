@@ -23,6 +23,7 @@ enum AccountStorageCrypto {
     enum SlotKind: UInt8 {
         case password = 1
         case passkey = 2
+        case recoveryKey = 3
     }
 
     /// A copy of the content key, wrapped for one way of unlocking.
@@ -171,6 +172,7 @@ extension MessagingService {
     private static let passwordKeyKV = "me:accountStorageKey"
     private static let contentKeyKV = "me:accountStorageContentKey"
     private static let slotsKV = "me:accountStorageSlots"
+    private static let recoveryKeyKV = "me:recoveryKey"
     private static let storageVersionKV = "me:accountStorageVersion"
 
     private func kvData(_ key: String) -> Data? {
@@ -238,10 +240,28 @@ extension MessagingService {
     func restoreAccountStorage() async {
         guard keepsChatListWithAccount, let stored = try? await apiClient.accountStorage() else { return }
         accountStorageVersion = stored.version
-        guard let plaintext = openStored(stored.blob),
-              let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext)
-        else { return }
-        importBackupSnapshot(snapshot)
+        guard let plaintext = openStored(stored.blob) else { return }
+        importStored(plaintext)
+    }
+
+    /// The chat list, plus the recovery key kept alongside it.
+    private func importStored(_ plaintext: Data) {
+        if let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+           let key = object["recoveryKey"] as? String, !key.isEmpty {
+            setKV(Self.recoveryKeyKV, Data(key.utf8))
+        }
+        if let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext) {
+            importBackupSnapshot(snapshot)
+        }
+    }
+
+    private func storedPlaintext() -> Data? {
+        guard let json = try? JSONEncoder().encode(chatListSnapshot()) else { return nil }
+        guard let key = recoveryKey,
+              var object = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
+        else { return json }
+        object["recoveryKey"] = key
+        return try? JSONSerialization.data(withJSONObject: object)
     }
 
     private func openStored(_ blob: Data) -> Data? {
@@ -261,17 +281,51 @@ extension MessagingService {
 
     /// Unlocks the chat list with a passkey after a passkey sign-in.
     func restoreAccountStorage(passkeyCredentialId: Data, prfOutput: Data) async {
+        await restoreAccountStorage(kind: .passkey, id: passkeyCredentialId,
+                                    slotKey: AccountStorageCrypto.passkeySlotKey(prfOutput: prfOutput))
+    }
+
+    /// Unlocks the chat list with the recovery key after a recovery-key sign-in.
+    func restoreAccountStorage(recoveryKey: String) async {
+        setKV(Self.recoveryKeyKV, Data(RecoveryKey.format(recoveryKey).utf8))
+        await restoreAccountStorage(kind: .recoveryKey, id: Data(), slotKey: RecoveryKey.slotKey(recoveryKey))
+    }
+
+    private func restoreAccountStorage(kind: AccountStorageCrypto.SlotKind, id: Data, slotKey: Data) async {
         guard let stored = try? await apiClient.accountStorage() else { return }
         accountStorageVersion = stored.version
         guard let serverSlots = AccountStorageCrypto.slots(in: stored.blob),
-              let slot = serverSlots.first(where: { $0.kind == .passkey && $0.id == passkeyCredentialId }),
-              let key = AccountStorageCrypto.unwrap(slot, slotKey: AccountStorageCrypto.passkeySlotKey(prfOutput: prfOutput)),
-              let plaintext = AccountStorageCrypto.open(stored.blob, contentKey: key),
-              let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext)
+              let slot = serverSlots.first(where: { $0.kind == kind && $0.id == id }),
+              let key = AccountStorageCrypto.unwrap(slot, slotKey: slotKey),
+              let plaintext = AccountStorageCrypto.open(stored.blob, contentKey: key)
         else { return }
         setKV(Self.contentKeyKV, key)
         slots = serverSlots
-        importBackupSnapshot(snapshot)
+        importStored(plaintext)
+    }
+
+    // MARK: Recovery key
+
+    /// The account's recovery key, if this device knows it.
+    var recoveryKey: String? {
+        kvData(Self.recoveryKeyKV).map { String(decoding: $0, as: UTF8.self) }.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Makes a new recovery key (replacing any old one), registers its hash,
+    /// and lets it unlock the chat list. The key is kept on this device and,
+    /// encrypted, with the chat list so it can be viewed again elsewhere.
+    @discardableResult
+    func createRecoveryKey() async throws -> String {
+        let key = RecoveryKey.generate()
+        try await apiClient.setRecoveryKeyHash(RecoveryKey.hash(key))
+        await restoreAccountStorage()
+        setKV(Self.recoveryKeyKV, Data(key.utf8))
+        let content = ensureContentKey()
+        if let slot = AccountStorageCrypto.makeSlot(kind: .recoveryKey, contentKey: content, slotKey: RecoveryKey.slotKey(key)) {
+            slots = slots.filter { $0.kind != .recoveryKey } + [slot]
+        }
+        await uploadAccountStorage()
+        return key
     }
 
     /// Lets a new passkey unlock the chat list, then uploads.
@@ -341,7 +395,7 @@ extension MessagingService {
         guard keepsChatListWithAccount, !isDemoAccount else { return }
         for _ in 0..<2 {
             let key = ensureContentKey()
-            guard let json = try? JSONEncoder().encode(chatListSnapshot()),
+            guard let json = storedPlaintext(),
                   let blob = try? AccountStorageCrypto.seal(json, contentKey: key, slots: slots) else { return }
             do {
                 accountStorageVersion = try await apiClient.putAccountStorage(blob, baseVersion: accountStorageVersion)

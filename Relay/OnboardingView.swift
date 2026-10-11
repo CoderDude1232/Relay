@@ -22,7 +22,7 @@ struct OnboardingView: View {
 
     @Environment(AppModel.self) private var model
 
-    enum Step { case welcome, auth, setup, recovery, emailCode }
+    enum Step { case welcome, auth, setup, recovery, emailCode, passkeyIntro, passkeySetup }
 
     @State private var step: Step = .welcome
     @State private var supabaseSession: SupabaseSession?
@@ -74,10 +74,38 @@ struct OnboardingView: View {
                     withAnimation(.spring(duration: 0.5)) { step = .welcome }
                 }, onUseCode: {
                     withAnimation(.spring(duration: 0.5)) { step = .emailCode }
+                }, onUsePasskey: {
+                    withAnimation(.spring(duration: 0.5)) { step = .passkeyIntro }
                 })
                 .transition(.asymmetric(
                     insertion: .move(edge: .trailing).combined(with: .opacity),
                     removal: .move(edge: .leading).combined(with: .opacity)
+                ))
+            case .passkeyIntro:
+                PasskeySignupIntroView(onContinue: {
+                    withAnimation(.spring(duration: 0.5)) { step = .passkeySetup }
+                }, onBack: {
+                    withAnimation(.spring(duration: 0.5)) { step = .auth }
+                })
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
+            case .passkeySetup:
+                SetupView(
+                    displayName: $displayName,
+                    username: $username,
+                    checkAvailability: { u in await model.checkUsername(u) },
+                    onComplete: {
+                        try await model.signUpWithPasskey(username: username, displayName: displayName)
+                    },
+                    onBack: {
+                        withAnimation(.spring(duration: 0.5)) { step = .passkeyIntro }
+                    }
+                )
+                .transition(.asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .opacity
                 ))
             case .emailCode:
                 EmailCodeView(onSession: { session in
@@ -543,6 +571,7 @@ private struct AuthView: View {
     let onComplete: (SupabaseSession, String) async throws -> Void
     let onBack: () -> Void
     let onUseCode: () -> Void
+    let onUsePasskey: () -> Void
 
     @State private var email = ""
     @State private var password = ""
@@ -737,6 +766,11 @@ private struct AuthView: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white.opacity(0.8))
                     .padding(.top, 16)
+
+                Button("Sign up without an email", action: onUsePasskey)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.top, 12)
 
                 LegalFooter()
                     .padding(.horizontal, 40)
@@ -969,6 +1003,7 @@ private struct RecoveryView: View {
     @State private var errorMessage: String?
     @State private var showingForgotPassword = false
     @State private var showingReviewCode = false
+    @State private var showingRecoveryKey = false
     @FocusState private var focused: RecoveryField?
 
     enum RecoveryField: Hashable { case email, password }
@@ -1092,10 +1127,13 @@ private struct RecoveryView: View {
                     .padding(.horizontal, 40)
                     .padding(.top, 12)
 
-                Button("Sign in with a review code") { showingReviewCode = true }
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.45))
-                    .padding(.top, 20)
+                HStack(spacing: 20) {
+                    Button("Use a recovery key") { showingRecoveryKey = true }
+                    Button("Review code") { showingReviewCode = true }
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white.opacity(0.45))
+                .padding(.top, 20)
 
                 Spacer().frame(height: 40)
             }
@@ -1106,6 +1144,9 @@ private struct RecoveryView: View {
         }
         .sheet(isPresented: $showingReviewCode) {
             ReviewCodeSheet(onComplete: onComplete)
+        }
+        .sheet(isPresented: $showingRecoveryKey) {
+            RecoveryKeySignInSheet()
         }
     }
 

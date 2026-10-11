@@ -171,7 +171,8 @@ reversed to addresses without the server's OPRF key. The email is findable
 through blinded discovery **only if its owner opted in**
 (`PUT /v1/accounts/me/discoverability`; off by default). Source IPs are used
 transiently for rate-limiting and are never logged or persisted. The relay keeps
-no presence or last-seen data at all.
+no presence or last-seen data at all. A recovery key is stored only as its
+SHA-256 hash (see *Recovery key*).
 
 **Rate-limiter state holds no raw identifiers.** Every in-memory limiter key —
 a source-IP bucket (full IPv4 address, or the IPv6 **/64**), an account id, a
@@ -210,7 +211,8 @@ Envelope ids are 32-char hex (16 random bytes), not UUIDs.
 | `PUT /v1/accounts/me/username` | sig | `{username}` → `204`. `409` taken (case-insensitive; changing the case of your own name is allowed). Reindexes the blinded directory. At most **5 completed changes per account per rolling day** (`429`; a `409` costs nothing). The old name enters the **username reuse cooldown** (below); `409` also when the requested name is in another account's cooldown. |
 | `PUT /v1/accounts/me/discoverability` | sig | `{email: bool}` (required) → `204`. **Email discovery is opt-in**: an account's verified email gets a blinded-directory entry only while this is `true` (`accounts.email_discoverable`, default `false` — existing accounts included). Reindexes the account immediately. Username entries are unaffected (always discoverable). `400` when `email` is missing / not a bool. |
 | `PUT /v1/accounts/me/access-key` | sig | `{accessKey}` (base64, **exactly 32 bytes**) → `204`. Sealed-sender access key; returned to session-establishing peers in `GET /v1/keys/{account}`, presented on the unauthenticated delivery path. Rotating revokes old senders. |
-| `DELETE /v1/accounts/me` | sig | Optional body `{appleAuthorizationCode?}` (empty body allowed; malformed JSON → `400` and nothing is deleted) → `204`. When `appleAuthorizationCode` is present and the relay runs with `-siwa-key` (see *Sign in with Apple* below), the relay, after deleting the account, exchanges the code at Apple's `/auth/token` and revokes the resulting refresh token at `/auth/revoke` (App Store guideline 5.1.1(v)) — **best-effort**: Apple failing or timing out (10 s) never fails the deletion, and the code/tokens are never stored or logged. Unconfigured relays ignore the field. The client must obtain a **fresh** code (re-authenticate with Apple; codes expire after 5 minutes and are single-use) right before calling. **Permanently deletes the authenticated account** and everything keyed to it, in one DB transaction: devices (mailbox ids, auth keys, APNs/FCM/VoIP tokens), signed/Kyber/one-time prekeys, queued envelopes for its devices, pending device-link tokens, contact invites it minted, blinded-directory rows, stored nuke commands, reports it **filed**, its passkeys, and the account row (username, email token, Supabase user id, access key, recovery hash, passkey user handle). Then closes all of the account's live WebSockets (close code 1008, "account deleted"). Afterwards its credentials get `401`; the username enters the 7-day reuse cooldown (claimable by **no one** until it ends) and is then free to register again. **Kept:** reports filed *against* the account (moderation records). **Not reachable:** anonymous `provisioning_sessions` / `encrypted_group_invites` (no account column; TTL-reaped), attachment blobs (ownership isn't tracked; reaped by blob GC), and envelopes it sent that sit in *other* accounts' queues (the recipients' data). No extra confirmation signature — clients must confirm with the user before calling. |
+| `DELETE /v1/accounts/me` | sig | Optional body `{appleAuthorizationCode?}` (empty body allowed; malformed JSON → `400` and nothing is deleted) → `204`. When `appleAuthorizationCode` is present and the relay runs with `-siwa-key` (see *Sign in with Apple* below), the relay, after deleting the account, exchanges the code at Apple's `/auth/token` and revokes the resulting refresh token at `/auth/revoke` (App Store guideline 5.1.1(v)) — **best-effort**: Apple failing or timing out (10 s) never fails the deletion, and the code/tokens are never stored or logged. Unconfigured relays ignore the field. The client must obtain a **fresh** code (re-authenticate with Apple; codes expire after 5 minutes and are single-use) right before calling. **Permanently deletes the authenticated account** and everything keyed to it, in one DB transaction: devices (mailbox ids, auth keys, APNs/FCM/VoIP tokens), signed/Kyber/one-time prekeys, queued envelopes for its devices, pending device-link tokens, contact invites it minted, blinded-directory rows, stored nuke commands, reports it **filed**, its passkeys, and the account row (username, email token, Supabase user id, access key, recovery hash, recovery key hash, passkey user handle). Then closes all of the account's live WebSockets (close code 1008, "account deleted"). Afterwards its credentials get `401`; the username enters the 7-day reuse cooldown (claimable by **no one** until it ends) and is then free to register again. **Kept:** reports filed *against* the account (moderation records). **Not reachable:** anonymous `provisioning_sessions` / `encrypted_group_invites` (no account column; TTL-reaped), attachment blobs (ownership isn't tracked; reaped by blob GC), and envelopes it sent that sit in *other* accounts' queues (the recipients' data). No extra confirmation signature — clients must confirm with the user before calling. |
+| `GET /v1/accounts/me/sign-in-methods` | sig | → `200 {email: bool, passkeys: int, accountPassword: bool, recoveryKey: bool}`. `email` is true when the account has an email token **or** a Supabase link; `passkeys` is the passkey count; `accountPassword` / `recoveryKey` whether each is set. Lets the client warn before removing the last way back in. |
 | `POST /v1/accounts/me/nuke` | sig | `{commandId, creationTimeMs, initiatingDeviceId, signature}` → `204`. Signed remote wipe; broadcasts a `Nuke` frame to all live sessions. Signature over `relay-nuke-v1\n…`; rejects >5 min old / >30 s future / duplicate `commandId`. |
 
 **Username reuse cooldown.** Sealed-sender certificates carry the sender's
@@ -488,7 +490,8 @@ clears it.
 ## Passkeys
 
 WebAuthn passkeys sign an existing account in on a fresh install, as an
-alternative to social login. Relying party ID `relaymsg.app` (origin
+alternative to social login, and can create an account with **no email at
+all**; an account that has a passkey can also drop its email. Relying party ID `relaymsg.app` (origin
 `https://relaymsg.app`; `-passkey-rp-id` / `-passkey-origins` override them for
 local testing). Credentials must be discoverable (resident key) and every
 ceremony requires user verification; attestation is `none`. **Binary fields on
@@ -502,6 +505,21 @@ never the account id. `passkeys` stores each credential's public-key record
 only, for 5 minutes, single use (≤10 000 pending per kind; beyond that `503`).
 Passkeys are deleted with the account. Demo accounts can't register passkeys.
 
+**Passkey sign-up** creates the account from the ceremony alone: a fresh
+random user handle, the username held with the pending ceremony, no email
+token, no Supabase link and no account password, device 1 and the passkey row
+in one transaction (`created_at`s day-rounded), then the blinded directory is
+reindexed. Such an account signs in again with its passkey or a recovery key
+(below); email recovery and the email registration lock don't apply.
+
+**Removing the email** requires a fresh passkey assertion from one of the
+account's own passkeys (non-discoverable: `allowCredentials` = its credentials,
+UV required). On success the relay deletes the linked Supabase auth user (best
+effort, like account deletion: a failure is logged and the local removal still
+happens), then in one transaction clears `email_token` and `supabase_user_id`,
+turns `email_discoverable` off and deletes the account's email directory rows
+(kind 1). The username entry stays.
+
 | Method & path | Auth | Request → Response |
 |---|---|---|
 | `POST /v1/passkeys/register/options` | sig | → `200 {challenge, userId, userName, excludeCredentialIds[]}` (`userId` = the user handle, `userName` = the username, `excludeCredentialIds` = the account's existing credential ids). Starts a registration; one pending per account (a new call replaces it). `403 "not available for demo accounts"`, `409 "passkey limit reached"` at 10 passkeys. |
@@ -510,3 +528,30 @@ Passkeys are deleted with the account. Demo accounts can't register passkeys.
 | `DELETE /v1/passkeys/{id}` | sig | `id` = base64url credential id → `204`; `404` if the account has no such passkey. |
 | `POST /v1/passkeys/login/options` | none | → `200 {challenge, sessionId}`. Discoverable login (empty `allowCredentials`), UV required. 60/IP/hour. |
 | `POST /v1/passkeys/login` | none | `{sessionId, credentialId, clientDataJSON, authenticatorData, signature, userHandle, password}` (`password` = the new device's password, 8–1024) → `200 {accountId, deviceId, username, mailboxId, created:false}`, the same shape as `/v1/accounts/oauth`. The user handle resolves the account and the credential must be one of its passkeys; the stored sign count and flags are updated. **Like an OAuth sign-in it replaces all of the account's devices** (`DeviceListChanged(DEVICE_REMOVED)`, sockets closed) and provisions one new device, in one transaction. **A verified passkey satisfies the registration lock**: no `accountPassword` is needed. Every verification failure (unknown/expired session, unknown credential or handle, bad signature, missing UV, a sign count that went backwards) → `401 "passkey sign-in failed"`; failures count toward the per-IP failed-auth lockout. `400` malformed body, `403` demo account, `409` device limit. 30/IP/hour. |
+| `POST /v1/passkeys/signup/options` | none | `{username}` → `200 {sessionId, challenge, userId, userName}` (`userId` = a fresh random 32-byte user handle). `400` invalid username, `409 "username already taken"` (case-insensitive, incl. the reuse cooldown — same check as `POST /v1/accounts`). Discoverable credential, UV required, attestation `none`. The pending sign-up (challenge, handle, username) is held under `sessionId`. 60/IP/hour. |
+| `POST /v1/passkeys/signup` | none | `{sessionId, credentialId, clientDataJSON, attestationObject, password, name?}` (`password` = device 1's password, 8–1024; `name` ≤64 chars) → `201 {accountId, deviceId, username, mailboxId, created:true}`. Verified like `/v1/passkeys/register` (challenge, origin, RP ID hash, UV, credential id matches), consuming the session; unknown/expired session or failed verification → `401 "passkey sign-up failed"`. `400` malformed body; `409 "username already taken"` if the name went meanwhile; `409 "passkey already registered"`. Counts toward the per-IP account creation limit (20/hour). |
+| `POST /v1/accounts/me/email/remove/options` | sig | → `200 {challenge, credentialIds[]}` (the account's passkey ids, to pass as `allowCredentials`). One pending per account (a new call replaces it). `409 "add a passkey first"` if the account has none; `403` demo account. |
+| `POST /v1/accounts/me/email/remove` | sig | `{credentialId, clientDataJSON, authenticatorData, signature, userHandle}` → `204`. Verified against the pending assertion (consumed) and the account's own passkeys; the stored sign count and flags are updated. Every verification failure (no/expired session, a credential not on the account, bad signature, missing UV, a sign count that went backwards) → `401 "passkey check failed"`. `400` malformed body; `403` demo account. Then removes the email as described above. |
+
+## Recovery key
+
+A recovery key is a random key the **client** generates and shows the user
+once. The relay stores only its hash, `accounts.recovery_key_hash` (BYTEA,
+unique where set), and the key signs the account in on a fresh install like a
+passkey. One per account; setting a new one replaces the old.
+
+Normalisation and hash, identical on client and relay: upper-case ASCII
+`a`–`z`, then drop every character that isn't `A`–`Z` or `0`–`9` (non-ASCII
+letters are dropped, not case-folded). Hash = SHA-256 of the UTF-8 bytes of
+`"relay-recovery-key-v1|" + normalized`, sent **base64url**. Test vector:
+`"abcd-efgh ijkl"` → `ABCDEFGHIJKL` →
+`24afe96099424bd806835c7b825f3068652949720dcbc4dfec07a6a3d3d82576`.
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `PUT /v1/accounts/me/recovery-key` | sig | `{hash}` (base64url, exactly 32 bytes) → `204`. Sets or replaces the account's recovery key. `400` not 32 bytes; `409` the hash is already in use (regenerate); `403` demo account. |
+| `DELETE /v1/accounts/me/recovery-key` | sig | → `204`. Removes it (idempotent). |
+| `POST /v1/accounts/recovery-key/signin` | none | `{key, password}` (`key` ≤128 chars as typed; `password` = the new device's password, 8–1024) → `200 {accountId, deviceId, username, mailboxId, created:false}`. The relay normalises and hashes the key; a normalised length outside 20–40 or no matching account → `401 "recovery key sign-in failed"`. **Replaces all of the account's devices** like a passkey sign-in (`DEVICE_REMOVED`, sockets closed) and provisions one new device in one transaction; **a recovery key satisfies the registration lock** (no `accountPassword`). `400` malformed body, `403` demo account, `409` device limit. 10/IP/hour; failures count toward the per-IP failed-auth lockout, and the endpoint answers `429` while that lockout is exhausted. |
+
+The key is deleted with the account row. The lookup is a unique-index match on
+the hash; with ≥20 random characters there is nothing practical to enumerate.
