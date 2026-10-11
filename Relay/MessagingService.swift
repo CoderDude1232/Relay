@@ -639,6 +639,20 @@ final class MessagingService {
     /// overlap; chaining keeps decrypts (and ratchet advances) strictly serial.
     private var envelopeChain: Task<Void, Never>?
 
+    /// Waits (up to `timeout`) for the envelope being processed, if any. The
+    /// processor holds a file lock in the shared container while it works, and
+    /// iOS kills a suspended app holding one (0xdead10cc), so the app waits for
+    /// this before ending its background time.
+    func waitForInFlightProcessing(timeout: Duration = .seconds(3)) async {
+        guard let chain = envelopeChain else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await chain.value }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
     private func handleEnvelope(_ envelope: IncomingEnvelope) async {
         let previous = envelopeChain
         let task = Task { @MainActor [weak self] in

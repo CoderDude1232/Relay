@@ -177,19 +177,33 @@ final class AppModel {
         // the main thread, same as this actor.
         let bgTask = UIApplication.shared.beginBackgroundTask(withName: "relay-keep-alive") { [weak self] in
             guard let self else { return }
-            if case .ready(let service) = self.phase { service.stop() }
             let id = self.keepAliveBackgroundTask
             self.keepAliveBackgroundTask = .invalid
-            UIApplication.shared.endBackgroundTask(id)
+            guard case .ready(let service) = self.phase else {
+                UIApplication.shared.endBackgroundTask(id)
+                return
+            }
+            service.stop()
+            // Briefly let an envelope finish: it holds a lock in the shared
+            // container, and a suspended app holding one is killed (0xdead10cc).
+            Task { @MainActor in
+                await service.waitForInFlightProcessing(timeout: .seconds(2))
+                UIApplication.shared.endBackgroundTask(id)
+            }
         }
         keepAliveBackgroundTask = bgTask
 
         backgroundDisconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(25))
             guard !Task.isCancelled else { return }
+            let service: MessagingService? = await MainActor.run { [weak self] in
+                guard let self, case .ready(let service) = self.phase else { return nil }
+                service.stop()
+                return service
+            }
+            await service?.waitForInFlightProcessing()
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                if case .ready(let service) = self.phase { service.stop() }
                 let id = self.keepAliveBackgroundTask
                 self.keepAliveBackgroundTask = .invalid
                 if id != .invalid { UIApplication.shared.endBackgroundTask(id) }
