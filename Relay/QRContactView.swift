@@ -132,10 +132,6 @@ struct MyQRCodeView: View {
                         .interpolation(.none)
                         .resizable()
                         .scaledToFit()
-                    RelayOfficialAvatar(size: 46)
-                        .padding(4)
-                        .background(.white, in: .circle)
-                        .accessibilityHidden(true)
                 } else {
                     ProgressView()
                         .frame(maxWidth: .infinity, minHeight: 240)
@@ -261,8 +257,7 @@ nonisolated private func makeQRImage(
     let context = CIContext()
     let filter  = CIFilter.qrCodeGenerator()
     filter.message         = Data("https://relaymsg.app/add/\(username)".utf8)
-    // High correction, so the logo in the middle doesn't stop it scanning.
-    filter.correctionLevel = "H"
+    filter.correctionLevel = "M"
 
     guard let output = filter.outputImage else { return nil }
 
@@ -352,19 +347,6 @@ nonisolated private func renderShareCard(
 
         let qrRect = CGRect(x: (width - qrSize) / 2, y: qrY, width: qrSize, height: qrSize)
         qrImage?.draw(in: qrRect)
-        // Relay mark in the middle of the code.
-        let markD = qrSize * 0.2
-        let markRing = CGRect(x: qrRect.midX - markD / 2 - 10, y: qrRect.midY - markD / 2 - 10, width: markD + 20, height: markD + 20)
-        UIColor.white.setFill()
-        UIBezierPath(ovalIn: markRing).fill()
-        let mark = markRing.insetBy(dx: 10, dy: 10)
-        UIColor(red: 0xF6 / 255, green: 0x3B / 255, blue: 1, alpha: 1).setFill()
-        UIBezierPath(ovalIn: mark).fill()
-        if let symbol = UIImage(systemName: "antenna.radiowaves.left.and.right",
-                                withConfiguration: UIImage.SymbolConfiguration(pointSize: markD * 0.42, weight: .semibold))?
-            .withTintColor(.white, renderingMode: .alwaysOriginal) {
-            symbol.draw(at: CGPoint(x: mark.midX - symbol.size.width / 2, y: mark.midY - symbol.size.height / 2))
-        }
 
         centered("Scan to message me on Relay", y: captionY, font: .systemFont(ofSize: 34, weight: .medium),
                  color: UIColor.black.withAlphaComponent(0.45))
