@@ -18,6 +18,9 @@ struct GroupCallView: View {
     var onMinimize: (() -> Void)? = nil
     @Environment(CallManager.self) private var callManager
     @State private var elapsed = 0
+    /// Space kept clear under the tiles for the control row, which grows with
+    /// the text size.
+    @ScaledMetric(relativeTo: .footnote) private var controlsInset: CGFloat = 190
     @State private var connectedAt: Date?
 
     private var peers: [GroupCallPeer] {
@@ -151,6 +154,7 @@ struct GroupCallView: View {
                     .padding(.horizontal, 16)
                 Spacer()
                 controlBar
+                    .dynamicTypeSize(...DynamicTypeSize.xxLarge)
                     .padding(.bottom, 50)
             }
 
@@ -162,21 +166,30 @@ struct GroupCallView: View {
         }
     }
 
+    /// Like the 1:1 call header: minimise on the left, name and status centred,
+    /// no glass.
     private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            if let onMinimize {
-                Button(action: onMinimize) {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .glassCompat(in: .circle)
+        HStack(alignment: .center) {
+            Group {
+                if let onMinimize {
+                    Button(action: onMinimize) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(.black.opacity(0.25), in: .circle)
+                    }
+                    .accessibilityLabel("Minimize call")
+                } else {
+                    Color.clear.frame(width: 44, height: 44)
                 }
-                .accessibilityLabel("Minimize call")
             }
-            VStack(alignment: .leading, spacing: 2) {
+
+            Spacer(minLength: 8)
+
+            VStack(spacing: 6) {
                 Text(peers.count == 1 ? peers[0].peerName : callManager.groupCallDisplayName)
-                    .font(.headline)
+                    .font(.headline.weight(.semibold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 HStack(spacing: 6) {
@@ -196,22 +209,27 @@ struct GroupCallView: View {
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.75))
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .glassCompat(in: .rect(cornerRadius: 20))
-            Spacer(minLength: 0)
+            .accessibilityElement(children: .combine)
+
+            Spacer(minLength: 8)
+
             if callManager.isLinkHost, let id = callManager.currentLinkCallId,
                let link = CallLinkStore.shared.link(id) {
                 ShareLink(item: link.url(hostAccount: service.credentials.accountId)) {
-                    Label("Invite", systemImage: "person.badge.plus")
-                        .font(.subheadline.weight(.semibold))
+                    Image(systemName: "person.badge.plus")
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .glassCompat(in: .capsule)
+                        .frame(width: 44, height: 44)
+                        .background(.black.opacity(0.25), in: .circle)
                 }
+                .accessibilityLabel("Invite people")
+            } else {
+                // Balances the minimise button so the name stays centred.
+                Color.clear.frame(width: 44, height: 44)
             }
         }
+        .shadow(radius: 8)
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 
     // MARK: - Stage
@@ -229,7 +247,7 @@ struct GroupCallView: View {
             }
             .padding(.horizontal, 12)
             .padding(.top, 96)
-            .padding(.bottom, 130)
+            .padding(.bottom, controlsInset)
         default:
             ScrollView {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
@@ -237,7 +255,7 @@ struct GroupCallView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 96)
-                .padding(.bottom, 140)
+                .padding(.bottom, controlsInset)
             }
             .scrollIndicators(.hidden)
         }
