@@ -130,6 +130,8 @@ final class CallManager: NSObject {
     private var groupCallLocalVideoCapturer: RTCCameraVideoCapturer?
     private(set) var groupCallLocalVideoTrack: RTCVideoTrack?
     private var groupPeerDelegates: [String: GroupPCDelegate] = [:]
+    /// The CallKit call for the current group or call-link call.
+    private var groupCallUUID: UUID?
 
     // MARK: Call link state
     /// Host side: people waiting to be admitted to one of our call links.
@@ -568,9 +570,9 @@ final class CallManager: NSObject {
         resetDiagnostics()
         state = .incoming(callId: callId, callerAccount: callerAccount, callerName: callerName)
 
-        // Foreground calls that arrived over the WebSocket skip CallKit; CallView
-        // shows its own incoming UI and answerCall() activates audio manually.
-        if UIApplication.shared.applicationState == .active {
+        // Every call goes through CallKit; only the Mac app, which has no CallKit,
+        // rings in-app and activates audio itself in answerCall().
+        if Self.isOnMac {
             startRingtone()
             return
         }
@@ -1187,7 +1189,10 @@ final class CallManager: NSObject {
         isMuted.toggle()
         localAudioTrack?.isEnabled = !isMuted
         groupCallLocalAudioTrack?.isEnabled = !isMuted
-        if hasCallKitReport, let uuid = activeCallUUID {
+        if let uuid = groupCallUUID {
+            let action = CXSetMutedCallAction(call: uuid, muted: isMuted)
+            Task { try? await callController.requestTransaction(with: action) }
+        } else if hasCallKitReport, let uuid = activeCallUUID {
             let action = CXSetMutedCallAction(call: uuid, muted: isMuted)
             Task { try? await callController.requestTransaction(with: action) }
         }
@@ -1688,14 +1693,7 @@ final class CallManager: NSObject {
         groupCallDisplayName = groupName
         isInGroupCall = true
 
-        if kind == .video { await requestCameraAccessIfNeeded() }
-        configureAudioSessionForCall()
-        // Group calls bypass CallKit, so activate the audio session manually.
-        let avSession = AVAudioSession.sharedInstance()
-        try? avSession.setActive(true)
-        RTCAudioSession.sharedInstance().audioSessionDidActivate(avSession)
-        RTCAudioSession.sharedInstance().isAudioEnabled = true
-        setupGroupLocalMedia(kind: kind)
+        await beginGroupMedia(kind: kind, outgoingName: groupName)
 
         var ring = Relay_Content_CallMessage()
         ring.type = .groupRing
@@ -1709,8 +1707,9 @@ final class CallManager: NSObject {
         // via reportIncomingCall and block the GROUP_RING path.
     }
 
-    /// Accepts an incoming group call ring.
-    func joinGroupCall() async {
+    /// Accepts an incoming group call ring. `fromCallKit` is set when the user
+    /// answered on a system screen, so CallKit already knows.
+    func joinGroupCall(fromCallKit: Bool = false) async {
         guard isInGroupCall, let info = groupRingInfo else { return }
         guard await makeRTCConfiguration() != nil else {
             groupCallFailureMessage = peerConnectionFailureReason ?? Self.noRelayServerMessage
@@ -1725,12 +1724,15 @@ final class CallManager: NSObject {
 
         if groupCallKind == .video { await requestCameraAccessIfNeeded() }
         configureAudioSessionForCall()
-        // No CallKit in group calls.
-        let avSession = AVAudioSession.sharedInstance()
-        try? avSession.setActive(true)
-        RTCAudioSession.sharedInstance().audioSessionDidActivate(avSession)
-        RTCAudioSession.sharedInstance().isAudioEnabled = true
         setupGroupLocalMedia(kind: groupCallKind)
+        if let uuid = groupCallUUID {
+            // Answered in the app: tell CallKit, which then activates audio.
+            if !fromCallKit {
+                try? await callController.requestTransaction(with: CXAnswerCallAction(call: uuid))
+            }
+        } else {
+            activateAudioWithoutCallKit()
+        }
 
         var join = Relay_Content_CallMessage()
         join.type = .groupJoin
@@ -1805,7 +1807,7 @@ final class CallManager: NSObject {
                 // Use our roster, not the ringer's participant list.
                 participants: Array(groupCallMembers), kind: groupCallKind
             )
-            startRingtone()
+            reportIncomingGroupRing(callerName: displayName, kind: groupCallKind)
 
         case .groupJoin:
             guard isFromCurrentGroupCallMember(msg, account: account),
@@ -1914,15 +1916,76 @@ final class CallManager: NSObject {
         await onSendGroupCallMessage?(msg, accounts)
     }
 
-    /// Activates audio (group calls bypass CallKit) and local media.
-    private func beginGroupMedia(kind: CallKind) async {
+    /// Starts local media and reports an outgoing CallKit call (we started it, or
+    /// joined a call link), which activates audio. `outgoingName` is shown on
+    /// the system call screens.
+    private func beginGroupMedia(kind: CallKind, outgoingName: String) async {
         if kind == .video { await requestCameraAccessIfNeeded() }
         configureAudioSessionForCall()
+        setupGroupLocalMedia(kind: kind)
+        guard !Self.isOnMac else {
+            activateAudioWithoutCallKit()
+            return
+        }
+        let uuid = UUID()
+        groupCallUUID = uuid
+        let action = CXStartCallAction(call: uuid, handle: Self.opaqueHandle())
+        action.isVideo = kind == .video
+        do {
+            try await callController.requestTransaction(with: action)
+            let update = CXCallUpdate()
+            update.localizedCallerName = callKitCallerName(outgoingName)
+            update.hasVideo = kind == .video
+            provider.reportCall(with: uuid, updated: update)
+            // Group calls have no ringing phase on our side.
+            provider.reportOutgoingCall(with: uuid, connectedAt: Date())
+        } catch {
+            log.error("group call: CXStartCallAction rejected: \(PrivacyRedactor.error(error))")
+            groupCallUUID = nil
+            activateAudioWithoutCallKit()
+        }
+    }
+
+    /// Rings a group call through CallKit (lock screen, Watch, CarPlay).
+    private func reportIncomingGroupRing(callerName: String, kind: CallKind) {
+        guard !Self.isOnMac else {
+            startRingtone()
+            return
+        }
+        let uuid = UUID()
+        groupCallUUID = uuid
+        let update = CXCallUpdate()
+        update.remoteHandle = Self.opaqueHandle()
+        update.localizedCallerName = callKitCallerName(callerName)
+        update.hasVideo = kind == .video
+        provider.configuration = makeProviderConfiguration()
+        // CallKit rings until told otherwise; give up like a 1:1 call does.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(45))
+            guard let self, self.groupCallUUID == uuid, self.groupRingInfo != nil else { return }
+            self.provider.reportCall(with: uuid, endedAt: Date(), reason: .unanswered)
+            self.groupCallUUID = nil
+            self.groupRingInfo = nil
+            self.endGroupCallCleanup(reportToCallKit: false)
+        }
+        provider.reportNewIncomingCall(with: uuid, update: update) { [weak self, log] error in
+            guard let error else { return }
+            // Do Not Disturb, or another call: CallKit refused, so drop the ring.
+            log.error("report group ring failed: \(PrivacyRedactor.error(error))")
+            Task { @MainActor [weak self] in
+                guard let self, self.groupCallUUID == uuid else { return }
+                self.groupCallUUID = nil
+                self.declineGroupCall()
+            }
+        }
+    }
+
+    /// Mac only (no CallKit): turn audio on by hand.
+    private func activateAudioWithoutCallKit() {
         let avSession = AVAudioSession.sharedInstance()
         try? avSession.setActive(true)
         RTCAudioSession.sharedInstance().audioSessionDidActivate(avSession)
         RTCAudioSession.sharedInstance().isAudioEnabled = true
-        setupGroupLocalMedia(kind: kind)
     }
 
     /// Host: starts the call behind one of our links. Nobody is rung.
@@ -1941,7 +2004,7 @@ final class CallManager: NSObject {
         groupCallDisplayName = name
         linkHostAccount = ownAccountId
         isInGroupCall = true
-        await beginGroupMedia(kind: kind)
+        await beginGroupMedia(kind: kind, outgoingName: name)
         return true
     }
 
@@ -2022,7 +2085,7 @@ final class CallManager: NSObject {
         groupCallKind = Self.callKind(fromMetadata: msg.ice) ?? .audio
         groupCallDisplayName = "\(out.hostName)'s call"
         isInGroupCall = true
-        await beginGroupMedia(kind: groupCallKind)
+        await beginGroupMedia(kind: groupCallKind, outgoingName: groupCallDisplayName)
 
         var join = Relay_Content_CallMessage()
         join.type = .groupJoin
@@ -2188,7 +2251,14 @@ final class CallManager: NSObject {
         groupPeers[account]?.peerConnection?.close()
     }
 
-    private func endGroupCallCleanup() {
+    /// `reportToCallKit` is false when CallKit itself ended the call.
+    private func endGroupCallCleanup(reportToCallKit: Bool = true) {
+        if let uuid = groupCallUUID {
+            groupCallUUID = nil
+            if reportToCallKit {
+                Task { try? await callController.requestTransaction(with: CXEndCallAction(call: uuid)) }
+            }
+        }
         for task in groupReconnectTasks.values { task.cancel() }
         groupReconnectTasks.removeAll()
         reconnectingUntil = nil
@@ -2209,10 +2279,14 @@ final class CallManager: NSObject {
         groupRingInfo = nil
         linkHostAccount = nil
         isVideoEnabled = true
-        RTCAudioSession.sharedInstance().isAudioEnabled = false
-        let avSession = AVAudioSession.sharedInstance()
-        RTCAudioSession.sharedInstance().audioSessionDidDeactivate(avSession)
-        try? avSession.setActive(false, options: .notifyOthersOnDeactivation)
+        isMuted = false
+        // CallKit deactivates the session itself when its call ends.
+        if Self.isOnMac {
+            RTCAudioSession.sharedInstance().isAudioEnabled = false
+            let avSession = AVAudioSession.sharedInstance()
+            RTCAudioSession.sharedInstance().audioSessionDidDeactivate(avSession)
+            try? avSession.setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 }
 
@@ -2346,14 +2420,31 @@ extension CallManager: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         Task { @MainActor in
-            await callKitAnswered()
+            if action.callUUID == groupCallUUID {
+                // An in-app join answers through CallKit too; by then the ring
+                // is gone and there's nothing left to do here.
+                if groupRingInfo != nil { await joinGroupCall(fromCallKit: true) }
+            } else {
+                await callKitAnswered()
+            }
             action.fulfill()
         }
     }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         Task { @MainActor in
-            terminate(fromRemote: false, reportToCallKit: false)
+            if action.callUUID == groupCallUUID {
+                groupCallUUID = nil
+                if groupRingInfo != nil {
+                    groupRingInfo = nil
+                    stopRingtone()
+                    endGroupCallCleanup(reportToCallKit: false)
+                } else {
+                    leaveGroupCall()
+                }
+            } else if action.callUUID == activeCallUUID {
+                terminate(fromRemote: false, reportToCallKit: false)
+            }
             action.fulfill()
         }
     }
@@ -2362,6 +2453,7 @@ extension CallManager: CXProviderDelegate {
         Task { @MainActor in
             isMuted = action.isMuted
             localAudioTrack?.isEnabled = !isMuted
+            groupCallLocalAudioTrack?.isEnabled = !isMuted
             action.fulfill()
         }
     }
