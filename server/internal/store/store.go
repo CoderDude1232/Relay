@@ -954,10 +954,7 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	   FROM accounts `
 	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1 FOR UPDATE`, supabaseUserID).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		// By email only when the account isn't linked to another sign-in user.
-		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1 AND (supabase_user_id IS NULL OR supabase_user_id = '') FOR UPDATE`,
-			emailToken,
-		).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
+		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1 FOR UPDATE`, emailToken).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AddedDevice{}, ErrAccountNotFound
@@ -1043,10 +1040,8 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		`SELECT id, username, account_password_hash FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
 	).Scan(&dev.AccountID, &dev.Username, &lockHash)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		// Adopt by email only an account not linked to another sign-in user.
 		err = tx.QueryRow(ctx,
-			`SELECT id, username, account_password_hash FROM accounts
-			  WHERE email_token = $1 AND (supabase_user_id IS NULL OR supabase_user_id = '')`, emailToken,
+			`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
 		).Scan(&dev.AccountID, &dev.Username, &lockHash)
 		adoptedByEmail = err == nil
 	}

@@ -259,6 +259,13 @@ func TestResetAccountPassword(t *testing.T) {
 	if _, _, err := s.RecoverAccount(token, "new-account-pw"); err != nil {
 		t.Fatalf("new password rejected: %v", err)
 	}
+	// With a recovery key, the email inbox alone can't reset the account.
+	if err := s.SetRecoveryKeyHash(acct, []byte(uniqueName("rk-hash-32-bytes-long-enough!!"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, "another-pw-1", "device-pw-3"); !errors.Is(err, ErrStrongerSignInRequired) {
+		t.Fatalf("reset with a recovery key: err = %v, want ErrStrongerSignInRequired", err)
+	}
 }
 
 // Email change: the token moves; a token another account holds is refused.
