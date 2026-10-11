@@ -51,4 +51,19 @@ struct AttachmentBlobStore {
         guard let url = try? url(for: id) else { return }
         try? FileManager.default.removeItem(at: url)
     }
+
+    /// Deletes cached ciphertext no attachment row refers to any more (expired
+    /// messages, deleted chats). Files younger than `minimumAge` are kept: a
+    /// send writes its file before the row exists.
+    func sweepOrphans(keeping ids: Set<String>, minimumAge: TimeInterval = 3600) {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+        let cutoff = Date().addingTimeInterval(-minimumAge)
+        for file in files where !ids.contains(file.lastPathComponent) {
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            if let modified, modified < cutoff { try? fm.removeItem(at: file) }
+        }
+    }
 }

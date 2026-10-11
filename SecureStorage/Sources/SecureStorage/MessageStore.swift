@@ -1334,6 +1334,13 @@ public final class MessageStore: @unchecked Sendable {
         ).isEmpty
     }
 
+    /// Forgets claims older than the relay could still deliver (it keeps queued
+    /// envelopes 14 days), so the dedup table doesn't grow forever.
+    public func pruneProcessedEnvelopes(olderThan age: TimeInterval = 30 * 24 * 3600) throws {
+        let cutoff = Int64((Date().timeIntervalSince1970 - age) * 1000)
+        try db.run("DELETE FROM processed_envelopes WHERE processed_at < ?", [.integer(cutoff)])
+    }
+
     /// Releases a claimed envelope id. Used for ephemeral content such as typing,
     /// which needs no dedup, so the table doesn't grow.
     public func releaseEnvelope(id: String) throws {

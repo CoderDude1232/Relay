@@ -15,7 +15,13 @@ struct PollComposerSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var question = ""
-    @State private var options: [String] = ["", ""]
+    /// Identified, so removing a row can't leave a binding pointing past the end.
+    private struct Option: Identifiable {
+        let id = UUID()
+        var text = ""
+    }
+
+    @State private var options: [Option] = [Option(), Option()]
     @State private var multiSelect = false
 
     var body: some View {
@@ -27,19 +33,21 @@ struct PollComposerSheet: View {
                 }
 
                 Section("Options") {
-                    ForEach(options.indices, id: \.self) { i in
+                    ForEach($options) { $option in
+                        let number = (options.firstIndex { $0.id == option.id } ?? 0) + 1
                         HStack {
-                            TextField("Option \(i + 1)", text: $options[i])
-                                .onChange(of: options[i]) { _, v in
-                                    if v.count > 80 { options[i] = String(v.prefix(80)) }
+                            TextField("Option \(number)", text: $option.text)
+                                .onChange(of: option.text) { _, v in
+                                    if v.count > 80 { option.text = String(v.prefix(80)) }
                                 }
-                            if !options[i].isEmpty {
-                                Text("\(options[i].count)/80")
+                            if !option.text.isEmpty {
+                                Text("\(option.text.count)/80")
                                     .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(options[i].count > 70 ? .orange : .secondary)
+                                    .foregroundStyle(option.text.count > 70 ? .orange : .secondary)
                             }
                             if options.count > 2 {
-                                Button(role: .destructive) { options.remove(at: i) } label: {
+                                let id = option.id
+                                Button(role: .destructive) { options.removeAll { $0.id == id } } label: {
                                     Image(systemName: "minus.circle.fill")
                                         .foregroundStyle(.red)
                                 }
@@ -51,7 +59,7 @@ struct PollComposerSheet: View {
 
                     if options.count < 10 {
                         Button {
-                            options.append("")
+                            options.append(Option())
                         } label: {
                             Label("Add Option", systemImage: "plus.circle")
                         }
@@ -70,7 +78,7 @@ struct PollComposerSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send") {
-                        let trimmed = options.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                        let trimmed = options.map { $0.text.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                         onSend(question.trimmingCharacters(in: .whitespaces), trimmed, multiSelect)
                         dismiss()
                     }
@@ -82,7 +90,7 @@ struct PollComposerSheet: View {
 
     private var canSend: Bool {
         !question.trimmingCharacters(in: .whitespaces).isEmpty
-        && options.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count >= 2
+        && options.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }.count >= 2
     }
 }
 

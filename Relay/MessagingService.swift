@@ -447,6 +447,9 @@ final class MessagingService {
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
         Task { [weak self] in await self?.publishDeviceLabel(force: false) }
         startPathMonitor()
+        // Housekeeping once per start: dedup claims and orphaned files.
+        try? storage.messages.pruneProcessedEnvelopes()
+        sweepAttachmentFiles()
         expireTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
@@ -460,6 +463,7 @@ final class MessagingService {
                     )) ?? []).compactMap { $0.first?.string })
                     _ = try? self.storage.messages.deleteExpiredMessages(now: now)
                     self.removeDeliveredNotifications(forConversations: affected)
+                    if !affected.isEmpty { self.sweepAttachmentFiles() }
                     self.refreshConversations()
                 }
                 await self?.flushDueScheduledMessages()
@@ -3785,6 +3789,7 @@ final class MessagingService {
         LocationShareManager.shared.stop(in: conversationId)
         do {
             try storage.messages.deleteConversation(id: conversationId)
+            sweepAttachmentFiles()
             refreshConversations()
         } catch {
             log.error("delete conversation failed: \(PrivacyRedactor.error(error))")
@@ -4344,6 +4349,13 @@ final class MessagingService {
     }
 
     /// Blob files live in the App Group container; the DB tracks only metadata.
+    /// Removes ciphertext files whose messages are gone (expired, deleted
+    /// chats). Rows are the source of truth; see `AttachmentBlobStore`.
+    func sweepAttachmentFiles() {
+        let ids = Set(((try? storage.database.query("SELECT id FROM attachments")) ?? []).compactMap { $0.first?.string })
+        attachmentStore.sweepOrphans(keeping: ids)
+    }
+
     private func reapAttachmentBlobs(messageId: String) {
         let ids = (try? storage.database.query(
             "SELECT id FROM attachments WHERE message_id = ?", [.text(messageId)]
