@@ -624,12 +624,34 @@ final class MessagingService {
             let result = try await Task.detached(priority: .userInitiated) {
                 try proc.process(envelope, blockedAccounts: blocked)
             }.value
+            await applyProcessed(result, outerSender: envelope.senderAccount)
+        } catch {
+            log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
+            handlePossiblePreKeyDesync(error)
+        }
+    }
 
+    /// Group messages that arrived before their group (see
+    /// `EnvelopeProcessor.replayDeferredGroupContent`), now that group updates
+    /// have been applied.
+    func replayDeferredGroupContent() async {
+        let proc = processor
+        let blocked = blockedAccounts
+        let results = await Task.detached(priority: .userInitiated) {
+            proc.replayDeferredGroupContent(blockedAccounts: blocked)
+        }.value
+        for result in results {
+            await applyProcessed(result, outerSender: "")
+        }
+    }
+
+    private func applyProcessed(_ result: ProcessedEnvelope, outerSender: String) async {
+        do {
             if let timestamp = result.sideEffects.deliveryReceiptTimestamp {
                 let groupId = result.conversationId.flatMap { group(for: $0)?.id }
                 // Sealed envelopes have no outer sender; receipt the identity
                 // authenticated by decryption.
-                await sendReceipt(.delivery, timestamps: [timestamp], toPeer: result.peerAccount ?? envelope.senderAccount, groupId: groupId)
+                await sendReceipt(.delivery, timestamps: [timestamp], toPeer: result.peerAccount ?? outerSender, groupId: groupId)
             }
             // The processor may have just recorded the sender's certificate-
             // attested username; drop any memoized fallback name.
@@ -674,6 +696,7 @@ final class MessagingService {
             }
             if let groupUpdate = result.groupUpdate {
                 await handleGroupUpdate(groupUpdate, authenticatedSender: result.peerAccount)
+                await replayDeferredGroupContent()
             }
             if let profile = result.profile {
                 await applyPeerProfile(profile)
@@ -2146,8 +2169,9 @@ final class MessagingService {
             return
         }
         // Reject commands older than 5 minutes.
-        let ageMs = Int64(Date().timeIntervalSince1970 * 1000) - nuke.creationTimeMs
-        guard ageMs >= -30_000 && ageMs <= 5 * 60 * 1000 else {
+        let age = Int64(Date().timeIntervalSince1970 * 1000).subtractingReportingOverflow(nuke.creationTimeMs)
+        let ageMs = age.partialValue
+        guard !age.overflow, ageMs >= -30_000 && ageMs <= 5 * 60 * 1000 else {
             log.warning("nuke: command timestamp out of acceptable range, ignoring")
             return
         }
@@ -2584,6 +2608,18 @@ final class MessagingService {
         }
         let actor = (authenticatedSender.flatMap { $0.isEmpty ? nil : $0 }) ?? info.actor
         guard !actor.isEmpty else { return }
+        // A sender whose safety number changed and hasn't been accepted can't
+        // change the group: a relay posing as an admin would start here.
+        guard actor == credentials.accountId || IdentityAcknowledgement.isSettled(peer: actor, storage: storage) else {
+            log.warning("group update from an unaccepted safety number; dropping")
+            return
+        }
+        // Revisions only ever step by one per change; an implausible jump would
+        // overflow our own `revision + 1` later and wedge every admin action.
+        guard info.revision >= 0, info.revision <= (existing?.revision ?? 0) + 100_000 else {
+            log.warning("group update: implausible revision; dropping")
+            return
+        }
 
         // 2. Authorization. With no local state, trust the authenticated actor
         //    adding us. Otherwise only admins change group state, any member may
@@ -2609,6 +2645,12 @@ final class MessagingService {
             && !info.inviteKey.isEmpty && groupInviteKey(info.groupId) == info.inviteKey
         guard isBootstrap || actorIsAdmin || isSelfDeparture || isValidSelfJoin else {
             log.warning("group update: \(String(describing: info.action)) from non-admin; dropping")
+            return
+        }
+        // An admin change older than what we have (delayed or replayed) would
+        // roll the roster back, e.g. re-adding someone since removed.
+        if let existing, !isSelfDeparture, !isValidSelfJoin, info.revision < existing.revision {
+            log.warning("group update: stale revision; dropping")
             return
         }
 
@@ -3262,7 +3304,11 @@ final class MessagingService {
             }
         }
         var devices: [PeerDevice] = []
-        var firstSeenIdentity = false
+        // Trust on first use is per account, not per device: a new device id
+        // alone must never approve keys stored earlier (e.g. one a forged
+        // incoming message planted for a fake device).
+        let firstContact = try account != credentials.accountId
+            && acknowledgedIdentities(forPeer: account) == nil
         for bundle in bundles {
             // Our own account's bundles include this device, and processing a
             // session to self throws, which would abort the whole refresh.
@@ -3280,18 +3326,16 @@ final class MessagingService {
             } else {
                 try guardIdentityReplacement(bundle.identityKey, peer: account, address: address)
             }
-            let hadIdentity = try storage.signalStore.identity(for: address, context: NullContext()) != nil
             // Always re-process, so a reinstalled peer or corrupt session gets a
             // fresh session even when one exists.
             try engine.processPeerBundle(bundle, from: address)
-            firstSeenIdentity = firstSeenIdentity || !hadIdentity
             devices.append(PeerDevice(id: bundle.deviceId, mailboxId: bundle.mailboxId, registrationId: bundle.registrationId))
         }
         try storeKnownDevices(devices, ofPeer: account)
         if account != credentials.accountId, !devices.isEmpty {
             try storage.signalStore.pruneIdentities(address: account, keepingDeviceIds: Set(devices.map(\.id)))
         }
-        if firstSeenIdentity {
+        if firstContact {
             try acknowledgeCurrentIdentity(forPeer: account)
         }
     }
@@ -4036,7 +4080,7 @@ final class MessagingService {
     }
 
     private static func identityAcknowledgementKey(forPeer peer: String) -> String {
-        "peer-identity-ack:\(peer)"
+        IdentityAcknowledgement.key(forPeer: peer)
     }
 
     private func guardIdentityReplacement(_ identityData: Data, peer: String, address: ProtocolAddress) throws {
@@ -4089,14 +4133,7 @@ final class MessagingService {
 
     /// Also reads the legacy single-key format.
     private func acknowledgedIdentities(forPeer peer: String) throws -> Set<Data>? {
-        guard let stored = try storage.database.query(
-            "SELECT value FROM kv WHERE key = ?",
-            [.text(Self.identityAcknowledgementKey(forPeer: peer))]
-        ).first?.first?.data else { return nil }
-        if let keys = try? JSONDecoder().decode([Data].self, from: stored) {
-            return Set(keys)
-        }
-        return [stored]
+        try IdentityAcknowledgement.acknowledged(forPeer: peer, storage: storage)
     }
 
     private func noteBlockedSafetyWarning(peer: String) {
@@ -4212,10 +4249,7 @@ final class MessagingService {
         guard canUnsend(message) else { return }
         do {
             reapAttachmentBlobs(messageId: message.id)
-            try storage.messages.markDeleted(
-                conversationId: conversationId,
-                targetTimestamp: message.timestamp
-            )
+            try storage.messages.markDeleted(id: message.id)
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
@@ -4234,11 +4268,7 @@ final class MessagingService {
         let conversationId = message.conversationId
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         do {
-            try storage.messages.editMessage(
-                conversationId: conversationId,
-                targetTimestamp: message.timestamp,
-                newBody: newBody
-            )
+            try storage.messages.editMessage(id: message.id, newBody: newBody)
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
         } catch {

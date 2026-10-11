@@ -241,14 +241,14 @@ struct MessageStoreTests {
         // Unsend leaves a tombstone: the row stays, body, quote and reactions
         // are cleared, and it's flagged deleted.
         try store.setReaction(conversationId: convo, targetTimestamp: 2000, author: "bob-account", isOutgoing: false, emoji: "👍", remove: false)
-        #expect(try store.markDeleted(conversationId: convo, targetTimestamp: 2000))
+        #expect(try store.markDeleted(id: "m2"))
         let afterUnsend = try store.messages(in: convo)[1]
         #expect(afterUnsend.isDeleted)
         #expect(afterUnsend.body.isEmpty)
         #expect(afterUnsend.replyTo == nil)
         #expect(afterUnsend.reactions.isEmpty)
         // Unsending a message we don't have is a no-op.
-        #expect(try !store.markDeleted(conversationId: convo, targetTimestamp: 999999))
+        #expect(try !store.markDeleted(id: "no-such-message"))
 
         // Delete-for-me removes the message and any reactions on it.
         try store.deleteMessage(id: "m1")

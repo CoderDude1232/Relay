@@ -1630,7 +1630,9 @@ struct ChatView: View {
                 guard prev.isOutgoing == message.isOutgoing else { return false }
                 // In group chats each sender's run is independent.
                 if !message.isOutgoing && prev.senderAccount != message.senderAccount { return false }
-                return message.timestamp - prev.timestamp < Self.groupWindowMillis
+                // Timestamps are sender-chosen; never trap on overflow.
+                let gap = message.timestamp.subtractingReportingOverflow(prev.timestamp)
+                return !gap.overflow && gap.partialValue < Self.groupWindowMillis
                     && calendar.isDate(
                         Date(timeIntervalSince1970: Double(prev.timestamp) / 1000),
                         inSameDayAs: date
@@ -1639,7 +1641,8 @@ struct ChatView: View {
             let groupsWithNext = next.map { nxt -> Bool in
                 guard nxt.isOutgoing == message.isOutgoing else { return false }
                 if !message.isOutgoing && nxt.senderAccount != message.senderAccount { return false }
-                return nxt.timestamp - message.timestamp < Self.groupWindowMillis
+                let gap = nxt.timestamp.subtractingReportingOverflow(message.timestamp)
+                return !gap.overflow && gap.partialValue < Self.groupWindowMillis
                     && calendar.isDate(
                         Date(timeIntervalSince1970: Double(nxt.timestamp) / 1000),
                         inSameDayAs: date

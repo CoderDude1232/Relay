@@ -304,6 +304,9 @@ public final class MessageStore: @unchecked Sendable {
     /// incoming but never unread and never receipted.
     public static let systemSender = "__system__"
 
+    /// Longest disappearing-message timer accepted (a year).
+    public static let maxDisappearingSeconds: Int64 = 365 * 24 * 60 * 60
+
     private let db: Database
 
     public init(database: Database) {
@@ -467,7 +470,8 @@ public final class MessageStore: @unchecked Sendable {
     }
 
     public func setDisappearingSeconds(_ conversationId: String, seconds: Int64) throws {
-        try db.run("UPDATE conversations SET disappearing_seconds = ? WHERE id = ?", [.integer(max(0, seconds)), .text(conversationId)])
+        let seconds = Swift.min(Swift.max(0, seconds), Self.maxDisappearingSeconds)
+        try db.run("UPDATE conversations SET disappearing_seconds = ? WHERE id = ?", [.integer(seconds), .text(conversationId)])
     }
 
     public func setConversationArchived(_ conversationId: String, archived: Bool) throws {
@@ -479,11 +483,13 @@ public final class MessageStore: @unchecked Sendable {
         try db.run("UPDATE messages SET pinned = ? WHERE id = ?", [.integer(pinned ? 1 : 0), .text(id)])
     }
 
-    public func editMessage(conversationId: String, targetTimestamp: Int64, newBody: String) throws {
+    /// Edits one message by id. Callers resolve the id from the edit's target
+    /// and author: timestamps are chosen by senders and can collide.
+    public func editMessage(id: String, newBody: String) throws {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         try db.run(
-            "UPDATE messages SET body = ?, edited_at = ? WHERE conversation_id = ? AND timestamp = ? AND deleted = 0",
-            [.text(newBody), .integer(now), .text(conversationId), .integer(targetTimestamp)]
+            "UPDATE messages SET body = ?, edited_at = ? WHERE id = ? AND deleted = 0",
+            [.text(newBody), .integer(now), .text(id)]
         )
     }
 
@@ -796,7 +802,10 @@ public final class MessageStore: @unchecked Sendable {
             let createdAt = Int64(Date().timeIntervalSince1970 * 1000)
             // System lines (call events, membership) never disappear.
             let ttl = senderAccount == Self.systemSender ? 0 : try disappearingSeconds(conversationId: conversationId)
-            let expiresAt: SQLValue = ttl > 0 ? .integer(createdAt + ttl * 1000) : .null
+            // Overflow-safe: the timer comes from peers.
+            let expiresAt: SQLValue = ttl > 0
+                ? .integer(createdAt.addingClamped(ttl.multipliedClamped(by: 1000)))
+                : .null
             try db.run(
                 """
                 INSERT INTO messages
@@ -884,7 +893,14 @@ public final class MessageStore: @unchecked Sendable {
         return wasInsert
     }
 
-    private func disappearingSeconds(conversationId: String) throws -> Int64 {
+    /// Whether the conversation has been accepted (false for a message request).
+    public func isAccepted(conversationId: String) throws -> Bool {
+        try db.query(
+            "SELECT accepted FROM conversations WHERE id = ?", [.text(conversationId)]
+        ).first?.first?.int64 != 0
+    }
+
+    public func disappearingSeconds(conversationId: String) throws -> Int64 {
         try db.query(
             "SELECT disappearing_seconds FROM conversations WHERE id = ?", [.text(conversationId)]
         ).first?.first?.int64 ?? 0
@@ -1133,38 +1149,32 @@ public final class MessageStore: @unchecked Sendable {
     }
 
     /// Applies an unsend: clears body, quote and reactions and marks the message
-    /// deleted, leaving a tombstone. Matches by sender clock within the
-    /// conversation, so it works on the author's and the recipient's copy.
-    /// Returns whether a row changed.
+    /// deleted, leaving a tombstone. By id, not timestamp (see editMessage(id:));
+    /// quotes of it lose their copied text too. Returns whether a row existed.
     @discardableResult
-    public func markDeleted(conversationId: String, targetTimestamp: Int64) throws -> Bool {
+    public func markDeleted(id: String) throws -> Bool {
         try db.transaction {
-            let exists = try !db.query(
-                "SELECT 1 FROM messages WHERE conversation_id = ? AND timestamp = ?",
-                [.text(conversationId), .integer(targetTimestamp)]
-            ).isEmpty
-            guard exists else { return false }
+            guard let row = try db.query(
+                "SELECT conversation_id, timestamp FROM messages WHERE id = ?", [.text(id)]
+            ).first, let conversationId = row[0].string, let timestamp = row[1].int64 else { return false }
             try db.run(
                 """
                 UPDATE messages
                 SET deleted = 1, body = '',
                     reply_to_timestamp = NULL, reply_to_author = NULL, reply_to_text = NULL
-                WHERE conversation_id = ? AND timestamp = ?
+                WHERE id = ?
                 """,
-                [.text(conversationId), .integer(targetTimestamp)]
+                [.text(id)]
+            )
+            try db.run(
+                "UPDATE messages SET reply_to_text = '' WHERE conversation_id = ? AND reply_to_timestamp = ?",
+                [.text(conversationId), .integer(timestamp)]
             )
             try db.run(
                 "DELETE FROM reactions WHERE conversation_id = ? AND target_timestamp = ?",
-                [.text(conversationId), .integer(targetTimestamp)]
+                [.text(conversationId), .integer(timestamp)]
             )
-            try db.run(
-                """
-                DELETE FROM attachments WHERE message_id IN (
-                    SELECT id FROM messages WHERE conversation_id = ? AND timestamp = ?
-                )
-                """,
-                [.text(conversationId), .integer(targetTimestamp)]
-            )
+            try db.run("DELETE FROM attachments WHERE message_id = ?", [.text(id)])
             return true
         }
     }
@@ -1329,5 +1339,17 @@ public final class MessageStore: @unchecked Sendable {
             "UPDATE messages SET status = ? WHERE id = ?",
             [.text(status.rawValue), .text(messageId)]
         )
+    }
+}
+
+extension Int64 {
+    func multipliedClamped(by other: Int64) -> Int64 {
+        let (r, overflow) = multipliedReportingOverflow(by: other)
+        return overflow ? ((self < 0) != (other < 0) ? .min : .max) : r
+    }
+
+    func addingClamped(_ other: Int64) -> Int64 {
+        let (r, overflow) = addingReportingOverflow(other)
+        return overflow ? (other < 0 ? .min : .max) : r
     }
 }

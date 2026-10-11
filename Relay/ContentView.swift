@@ -92,29 +92,14 @@ struct ContentView: View {
                 StorageUnavailableView(message: message)
             }
 
-            // Privacy screen. UIKit notifications fire synchronously at the start
-            // of the app-switcher swipe; scenePhase arrives a frame later.
-            if isObscured {
-                Rectangle()
-                    .fill(.regularMaterial)
-                    .ignoresSafeArea()
-                    .zIndex(100)
-            }
-
-            if isLocked {
-                ScreenLockView(isAuthenticating: isAuthenticating) {
-                    guard !isAuthenticating else { return }
-                    isAuthenticating = true
-                    Task {
-                        let ok = await BiometricGate.authenticate(reason: "Unlock Relay")
-                        isAuthenticating = false
-                        if ok { isLocked = false }
-                    }
-                }
-                .ignoresSafeArea()
-                .zIndex(101)
-            }
         }
+        // The privacy blur and the lock screen live in their own window above
+        // everything (see PrivacyShield): a sheet or full-screen photo is
+        // presented above any overlay in this hierarchy.
+        .onAppear { updateShield() }
+        .onChange(of: isObscured) { updateShield() }
+        .onChange(of: isLocked) { updateShield() }
+        .onChange(of: isAuthenticating) { updateShield() }
         .task {
             // Cold launch with the app lock on: prompt right away.
             guard isLocked, !isAuthenticating else { return }
@@ -138,6 +123,8 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             isObscured = true
+            // Synchronously: the app-switcher snapshot is taken right after this.
+            updateShield()
             if screenLockEnabled { backgroundedAt = Date() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
@@ -160,6 +147,85 @@ struct ContentView: View {
 }
 
 // MARK: - Lock screen
+
+extension ContentView {
+    private func updateShield() {
+        PrivacyShield.shared.update(
+            obscured: isObscured, locked: isLocked, authenticating: isAuthenticating
+        ) { [self] in
+            guard !isAuthenticating else { return }
+            isAuthenticating = true
+            Task {
+                let ok = await BiometricGate.authenticate(reason: "Unlock Relay")
+                isAuthenticating = false
+                if ok { isLocked = false }
+            }
+        }
+    }
+}
+
+/// A window above the app's own (sheets and full-screen covers included) that
+/// shows the app-switcher blur or the lock screen.
+@MainActor
+final class PrivacyShield {
+    static let shared = PrivacyShield()
+
+    @Observable
+    final class State {
+        var obscured = false
+        var locked = false
+        var authenticating = false
+        var onUnlock: () -> Void = {}
+    }
+
+    private let state = State()
+    private var window: UIWindow?
+
+    func update(obscured: Bool, locked: Bool, authenticating: Bool, onUnlock: @escaping () -> Void) {
+        state.obscured = obscured
+        state.locked = locked
+        state.authenticating = authenticating
+        state.onUnlock = onUnlock
+        guard obscured || locked else {
+            window?.isHidden = true
+            return
+        }
+        if locked {
+            // Don't leave a half-typed message showing in the keyboard.
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
+        if window == nil {
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            guard let scene = scenes.first(where: { $0.activationState == .foregroundActive })
+                ?? scenes.first(where: { $0.activationState == .foregroundInactive })
+                ?? scenes.first
+            else { return }
+            let window = UIWindow(windowScene: scene)
+            window.windowLevel = .alert + 1
+            let host = UIHostingController(rootView: ShieldView(state: state))
+            host.view.backgroundColor = .clear
+            host.view.accessibilityViewIsModal = true
+            window.rootViewController = host
+            self.window = window
+        }
+        window?.isHidden = false
+    }
+
+    private struct ShieldView: View {
+        let state: State
+
+        var body: some View {
+            ZStack {
+                if state.locked {
+                    ScreenLockView(isAuthenticating: state.authenticating, onUnlock: state.onUnlock)
+                } else if state.obscured {
+                    Rectangle().fill(.regularMaterial)
+                }
+            }
+            .ignoresSafeArea()
+        }
+    }
+}
 
 /// Shown when the encrypted database can't be opened at launch. Offers a
 /// retry (usually protected data isn't available yet) and a local reset.

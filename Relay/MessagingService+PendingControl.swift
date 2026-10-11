@@ -72,6 +72,10 @@ extension MessagingService {
             guard let timestamps = receipts[target], !timestamps.isEmpty else { continue }
             await sendReceipt(.delivery, timestamps: timestamps, toPeer: target.peer, groupId: target.groupId)
         }
+        // Group messages the extension saw before their group update.
+        if pending.contains(where: { if case .groupUpdate = $0.item { true } else { false } }) {
+            await replayDeferredGroupContent()
+        }
         refreshConversations()
     }
 }

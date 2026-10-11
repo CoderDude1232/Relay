@@ -316,6 +316,14 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     /// The relay drops queued envelopes after 14 days.
     static let maxQueueAgeMs: Int64 = 14 * 24 * 60 * 60 * 1000
 
+    static func durationLabel(_ seconds: Int64) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 1
+        formatter.allowedUnits = [.weekOfMonth, .day, .hour, .minute, .second]
+        return formatter.string(from: TimeInterval(seconds)) ?? "\(seconds) seconds"
+    }
+
     static func isRelayBlobId(_ id: String) -> Bool {
         id.count == 32 && id.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) }
     }
@@ -398,6 +406,98 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             sender = try ProtocolAddress(name: envelope.senderAccount, deviceId: envelope.senderDevice)
             plaintext = try engine.decrypt(envelope.message, from: sender)
         }
+        return try handle(
+            envelopeId: envelope.id, sender: sender, plaintext: plaintext,
+            attestedUsername: attestedUsername, blockedAccounts: blockedAccounts, mayDefer: true
+        )
+    }
+
+    // MARK: Group content that arrived before its group
+
+    /// Group messages that arrived before the group update that makes them
+    /// valid (the notification extension can't apply group updates; it saves
+    /// them for the app). They're decrypted already, so they're kept here and
+    /// re-handled by `replayDeferredGroupContent` once the app has applied the
+    /// pending updates. Bounded, and dropped after `deferredMaxAge`.
+    private struct DeferredGroupContent: Codable {
+        let envelopeId: String
+        let senderName: String
+        let senderDevice: UInt32
+        let attestedUsername: String?
+        let plaintext: Data
+        let groupId: String
+        let savedAt: Date
+    }
+
+    private static let deferredPrefix = "deferred-group-content:"
+    private static let deferredMaxAge: TimeInterval = 3 * 24 * 3600
+    private static let deferredMaxRows = 300
+
+    private func deferGroupContent(
+        envelopeId: String, sender: ProtocolAddress, attestedUsername: String?, plaintext: Data, groupId: String
+    ) {
+        let count = (try? storage.database.query(
+            "SELECT COUNT(*) FROM kv WHERE key LIKE ?", [.text(Self.deferredPrefix + "%")]
+        ).first?.first?.int64) ?? 0
+        guard count < Self.deferredMaxRows else { return }
+        let item = DeferredGroupContent(
+            envelopeId: envelopeId, senderName: sender.name, senderDevice: sender.deviceId,
+            attestedUsername: attestedUsername, plaintext: plaintext, groupId: groupId, savedAt: Date()
+        )
+        guard let data = try? JSONEncoder().encode(item) else { return }
+        let micros = Int64(Date().timeIntervalSince1970 * 1_000_000)
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+            [.text(Self.deferredPrefix + String(format: "%017lld:", micros) + envelopeId), .blob(data)]
+        )
+    }
+
+    /// Re-handles deferred group content whose group (and sender's membership)
+    /// is now known. Call after applying group updates.
+    public func replayDeferredGroupContent(blockedAccounts: Set<String> = []) -> [ProcessedEnvelope] {
+        let run = { () -> [ProcessedEnvelope] in
+            let rows = (try? storage.database.query(
+                "SELECT key, value FROM kv WHERE key LIKE ? ORDER BY key", [.text(Self.deferredPrefix + "%")]
+            )) ?? []
+            var results: [ProcessedEnvelope] = []
+            for row in rows {
+                guard let key = row[0].string else { continue }
+                guard let data = row[1].data, let item = try? JSONDecoder().decode(DeferredGroupContent.self, from: data),
+                      let sender = try? ProtocolAddress(name: item.senderName, deviceId: item.senderDevice)
+                else {
+                    try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
+                    continue
+                }
+                let group = try? storage.messages.group(id: item.groupId)
+                let ready = group.map { $0.members.contains(item.senderName) } ?? false
+                if !ready {
+                    if Date().timeIntervalSince(item.savedAt) > Self.deferredMaxAge {
+                        try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
+                    }
+                    continue
+                }
+                try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
+                if let result = try? handle(
+                    envelopeId: item.envelopeId, sender: sender, plaintext: item.plaintext,
+                    attestedUsername: item.attestedUsername, blockedAccounts: blockedAccounts, mayDefer: false
+                ) {
+                    results.append(result)
+                }
+            }
+            return results
+        }
+        guard let processLock else { return run() }
+        return (try? processLock.withLock { run() }) ?? []
+    }
+
+    private func handle(
+        envelopeId: String,
+        sender: ProtocolAddress,
+        plaintext: Data,
+        attestedUsername: String?,
+        blockedAccounts: Set<String>,
+        mayDefer: Bool
+    ) throws -> ProcessedEnvelope {
         let content = try Relay_Content_Content(serializedBytes: plaintext)
         let groupId = content.groupID.isEmpty ? nil : content.groupID
 
@@ -434,11 +534,22 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         if let groupId, !isGroupControl(content) {
             // We must still be a member; after leaving or removal the group's traffic
             // is dropped.
-            guard let group = try? storage.messages.group(id: groupId),
+            let group = try? storage.messages.group(id: groupId)
+            guard let group,
                   ownAccountId.isEmpty || group.members.contains(ownAccountId),
                   attestedAccount == ownAccountId || group.members.contains(attestedAccount)
             else {
-                log.warning("dropping group content from a non-member or for an unknown group")
+                // A group we don't know yet, or a sender not yet on our roster,
+                // may just be ahead of a group update the app hasn't applied.
+                // (Content for a group we've left is dropped.)
+                let maybeEarly = group == nil
+                    || (!group!.members.contains(attestedAccount) && group!.members.contains(ownAccountId))
+                if mayDefer, maybeEarly, attestedAccount != ownAccountId {
+                    deferGroupContent(envelopeId: envelopeId, sender: sender, attestedUsername: attestedUsername,
+                                      plaintext: plaintext, groupId: groupId)
+                } else {
+                    log.warning("dropping group content from a non-member or for an unknown group")
+                }
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
             }
         }
@@ -465,19 +576,72 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         // Edits and unsends name their target by timestamp only, so apply them
         // only to a message this sender wrote: their incoming message (in a group,
-        // matching sender_account), or our outgoing one for a sync copy. Otherwise
-        // anyone could rewrite or delete someone else's message.
-        func targetIsAuthoredBySender(timestamp: Int64, conversationId: String) -> Bool {
+        // matching sender_account), or our outgoing one for a sync copy. Returns
+        // that row's id; timestamps are sender-chosen, so other rows sharing it
+        // (someone else's message) must never be touched.
+        func targetAuthoredBySender(timestamp: Int64, conversationId: String) -> String? {
             let rows = (try? storage.database.query(
-                "SELECT is_outgoing, sender_account FROM messages WHERE conversation_id = ? AND timestamp = ?",
+                "SELECT id, is_outgoing, sender_account FROM messages WHERE conversation_id = ? AND timestamp = ?",
                 [.text(conversationId), .integer(timestamp)]
             )) ?? []
-            return rows.contains { row in
-                let outgoing = row[0].int64 == 1
+            return rows.first { row in
+                let outgoing = row[1].int64 == 1
                 if isSyncMessage { return outgoing }
                 if outgoing { return false }
-                return groupId == nil || row[1].string == attestedAccount
+                if row[2].string == MessageStore.systemSender { return false }
+                return groupId == nil || row[2].string == attestedAccount
+            }?[0].string
+        }
+
+        func resolvedQuote(targetTimestamp: Int64, claimedAuthor: String, conversationId: String) -> QuotedMessage {
+            let rows = (try? storage.database.query(
+                """
+                SELECT is_outgoing, sender_account, body, deleted FROM messages
+                WHERE conversation_id = ? AND timestamp = ? AND (sender_account IS NULL OR sender_account <> ?)
+                """,
+                [.text(conversationId), .integer(targetTimestamp), .text(MessageStore.systemSender)]
+            )) ?? []
+            // The row the claimed author wrote, if we have it.
+            let match = rows.first { row in
+                let outgoing = row[0].int64 == 1
+                let author = outgoing
+                    ? ownAccountId
+                    : (row[1].string ?? (groupId == nil ? (isSyncMessage ? content.syncRecipient : attestedAccount) : ""))
+                return author == claimedAuthor
             }
+            guard let match, match[3].int64 != 1 else {
+                // Not found (expired, deleted, never received): keep the link,
+                // show no text.
+                return QuotedMessage(targetTimestamp: targetTimestamp, author: claimedAuthor, text: "")
+            }
+            return QuotedMessage(targetTimestamp: targetTimestamp, author: claimedAuthor, text: match[2].string ?? "")
+        }
+
+        // Until the user accepts a changed safety number, the new key may still
+        // deliver messages (shown under the warning), but not rewrite history or
+        // settings: that's what a relay posing as this contact would do.
+        let senderSettled = attestedAccount == ownAccountId
+            || IdentityAcknowledgement.isSettled(peer: attestedAccount, storage: storage)
+
+        func applyDisappearingTimer(_ ms: Int64, conversationId: String, isSync: Bool) {
+            guard senderSettled, ms >= 0,
+                  isSync || (try? storage.messages.isAccepted(conversationId: conversationId)) == true else { return }
+            // Round up so 1–999 ms can't read as "off"; out-of-range values are ignored.
+            let secs = ms == 0 ? 0 : (ms / 1000) + (ms % 1000 == 0 ? 0 : 1)
+            guard secs <= MessageStore.maxDisappearingSeconds,
+                  let current = try? storage.messages.disappearingSeconds(conversationId: conversationId),
+                  secs != current
+            else { return }
+            try? storage.messages.setDisappearingSeconds(conversationId, seconds: secs)
+            let who = isSync ? "You" : (groupId == nil ? "They" : "A member")
+            _ = try? storage.messages.insertMessage(
+                id: UUID().uuidString, conversationId: conversationId, isOutgoing: false,
+                body: secs == 0
+                    ? "\(who) turned off disappearing messages"
+                    : "\(who) set disappearing messages to \(Self.durationLabel(secs))",
+                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                status: .received, senderAccount: MessageStore.systemSender
+            )
         }
 
         switch content.body {
@@ -501,30 +665,30 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                         : nil
                 )
             }
+            // A quote shows the original as we have it, never the sender's copy:
+            // otherwise anyone could put words in someone else's mouth (or ours).
             let quote: QuotedMessage? = text.hasQuote
-                ? QuotedMessage(targetTimestamp: text.quote.targetTimestamp, author: text.quote.author, text: text.quote.text)
+                ? resolvedQuote(targetTimestamp: text.quote.targetTimestamp, claimedAuthor: text.quote.author,
+                                conversationId: conversationId)
                 : nil
             // Relay blob ids are 32 lowercase hex chars. Drop anything else; the id is
             // used in a request path and as a cache file name.
             let attachments = text.attachments.filter { Self.isRelayBlobId($0.id) }.map { p in
                 StoredAttachment(
                     id: p.id, key: p.key, digest: p.digest, contentType: p.contentType,
-                    size: Int64(p.size), filename: p.filename.isEmpty ? nil : p.filename,
+                    size: Int64(clamping: p.size), filename: p.filename.isEmpty ? nil : p.filename,
                     width: Int(p.width), height: Int(p.height), isDownloaded: false
                 )
             }
             // Apply the sender's disappearing-message timer before inserting, so it
-            // covers this message.
-            if content.expiresAfterMs > 0 {
-                let secs = content.expiresAfterMs / 1000
-                try? storage.messages.setDisappearingSeconds(conversationId, seconds: secs)
-            }
+            // covers this message. 0 means off. A message request can't change it.
+            applyDisappearingTimer(content.expiresAfterMs, conversationId: conversationId, isSync: isSyncMessage)
             if isSyncMessage {
                 // Our own message from another device: store as outgoing under the
                 // envelope id, so duplicates are ignored.
                 do {
                     _ = try storage.messages.insertMessage(
-                        id: envelope.id, conversationId: conversationId, isOutgoing: true,
+                        id: envelopeId, conversationId: conversationId, isOutgoing: true,
                         body: text.body, timestamp: text.timestamp, status: .sent,
                         replyTo: quote, attachments: attachments, senderAccount: nil
                     )
@@ -534,7 +698,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 return ProcessedEnvelope(outcome: .applied, peerAccount: content.syncRecipient, conversationId: conversationId)
             }
             let inserted = try storage.messages.insertMessage(
-                id: envelope.id, conversationId: conversationId, isOutgoing: false,
+                id: envelopeId, conversationId: conversationId, isOutgoing: false,
                 body: text.body, timestamp: text.timestamp, status: .received,
                 replyTo: quote, attachments: attachments,
                 senderAccount: groupId == nil ? nil : attestedAccount
@@ -588,24 +752,22 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         case .delete(let deletion):
             let conversationId = try chatConversation()
-            guard targetIsAuthoredBySender(timestamp: deletion.targetTimestamp, conversationId: conversationId) else {
+            guard senderSettled,
+                  let targetId = targetAuthoredBySender(timestamp: deletion.targetTimestamp, conversationId: conversationId) else {
                 log.warning("ignoring unsend for a message the sender didn't write")
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount, conversationId: conversationId)
             }
-            try storage.messages.markDeleted(conversationId: conversationId, targetTimestamp: deletion.targetTimestamp)
+            try storage.messages.markDeleted(id: targetId)
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
 
         case .edit(let edit):
             let conversationId = try chatConversation()
-            guard targetIsAuthoredBySender(timestamp: edit.targetTimestamp, conversationId: conversationId) else {
+            guard senderSettled,
+                  let targetId = targetAuthoredBySender(timestamp: edit.targetTimestamp, conversationId: conversationId) else {
                 log.warning("ignoring edit for a message the sender didn't write")
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount, conversationId: conversationId)
             }
-            try storage.messages.editMessage(
-                conversationId: conversationId,
-                targetTimestamp: edit.targetTimestamp,
-                newBody: edit.newBody
-            )
+            try storage.messages.editMessage(id: targetId, newBody: edit.newBody)
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
 
         case .senderKeyDistribution(let skd):
@@ -649,7 +811,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             let body = "__poll__:" + (pollPayload.encode() ?? poll.question)
             do {
                 _ = try storage.messages.insertMessage(
-                    id: envelope.id, conversationId: conversationId, isOutgoing: false,
+                    id: envelopeId, conversationId: conversationId, isOutgoing: false,
                     body: body, timestamp: poll.timestamp, status: .received,
                     senderAccount: groupId == nil ? nil : attestedAccount
                 )
@@ -709,7 +871,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 default: false
             }
             if !isNonEphemeral {
-                try? storage.messages.releaseEnvelope(id: envelope.id)
+                try? storage.messages.releaseEnvelope(id: envelopeId)
             }
             let callType: CallInfo.CallType = switch call.type {
                 case .offer:      .offer
@@ -740,7 +902,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         case .typing(let typing):
             // Ephemeral, so release the dedup claim. In a group, report the existing
             // conversation; never create one for a typing frame.
-            try? storage.messages.releaseEnvelope(id: envelope.id)
+            try? storage.messages.releaseEnvelope(id: envelopeId)
             let groupConversation = groupId.flatMap { try? storage.messages.groupConversationId(groupId: $0) }
             if groupId != nil && groupConversation == nil {
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
