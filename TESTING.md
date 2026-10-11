@@ -62,6 +62,22 @@ Not yet verified: everything marked ☐ below.
 ## Accessibility (labels are ticked in App Store Connect)
 - ☐ VoiceOver and the largest text size on iPad and Apple Watch.
 
+## After the 2026-10-12 security audit
+- ☐ Receipts: B offline (app closed, no push wake), A sends; B opens later →
+  A sees Delivered, then Read.
+- ☐ Group create while B's phone is locked, A sends straight away: B gets the
+  message after opening the app (it used to be dropped).
+- ☐ Call from someone with no accepted chat: no ring, a "Missed call" line in
+  the request. Decline a call, then the caller's late push doesn't ring again.
+- ☐ App lock on, open a photo full screen, background past the timeout, come
+  back: the lock covers the photo.
+- ☐ Panic Mode: hide a chat, message it from B → no notification, badge
+  unchanged.
+- ☐ Disappearing timer: B changes it → a line in A's chat; turning it off
+  sticks.
+- ☐ Change account password / remove a passkey asks for Face ID.
+- ☐ iCloud backup restore keeps message requests as requests.
+
 ## Regression sweep (after any transport or crypto change)
 - 1:1 send/reply/receipts, group send, photo send, push wake with the app
   closed, call both ways, sign out and back in.
