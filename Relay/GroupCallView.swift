@@ -46,6 +46,15 @@ struct GroupCallView: View {
                 if let connectedAt { elapsed = Int(Date().timeIntervalSince(connectedAt)) }
             }
         }
+        .onChange(of: peers.map(\.peerName)) { old, new in
+            // Tell VoiceOver users who joined or left.
+            let joined = new.filter { !old.contains($0) }
+            let left = old.filter { !new.contains($0) }
+            let parts = joined.map { "\($0) joined" } + left.map { "\($0) left" }
+            if !parts.isEmpty {
+                AccessibilityNotification.Announcement(parts.joined(separator: ". ")).post()
+            }
+        }
         .onChange(of: peers.contains(where: \.isConnected)) { _, connected in
             if connected, connectedAt == nil {
                 connectedAt = Date()
@@ -96,6 +105,7 @@ struct GroupCallView: View {
                     .font(.system(size: 54, weight: .medium))
                     .foregroundStyle(.white)
             }
+            .accessibilityHidden(true)
             .shadow(color: .black.opacity(0.35), radius: 30, y: 12)
             .padding(.bottom, 28)
 
@@ -147,6 +157,7 @@ struct GroupCallView: View {
             if isVideo, let track = callManager.groupCallLocalVideoTrack {
                 SelfPreview(track: track, dimmed: !callManager.isVideoEnabled)
                     .onTapGesture(count: 2) { callManager.flipGroupCamera() }
+                    .accessibilityAction(named: "Flip camera") { callManager.flipGroupCamera() }
             }
         }
     }
@@ -172,6 +183,7 @@ struct GroupCallView: View {
                     if peers.count > 1 {
                         Label("\(peers.count + 1)", systemImage: "person.2.fill")
                             .labelStyle(.titleAndIcon)
+                            .accessibilityLabel("\(peers.count + 1) people")
                     }
                     if connectedAt != nil, peers.contains(where: { !$0.isConnected }) {
                         // Someone's connection dropped and is being rebuilt.
@@ -251,12 +263,19 @@ struct GroupCallView: View {
         }
     }
 
+    private func peerDescription(_ peer: GroupCallPeer) -> String {
+        if !peer.isConnected { return "\(peer.peerName), connecting" }
+        return peer.remoteVideoTrack != nil ? "\(peer.peerName), video" : peer.peerName
+    }
+
     /// One other person: like a 1:1 call.
     @ViewBuilder
     private func soloPeer(_ peer: GroupCallPeer) -> some View {
         if let track = peer.remoteVideoTrack {
             GroupRTCVideoTrackView(track: track)
                 .ignoresSafeArea()
+                .accessibilityElement()
+                .accessibilityLabel(peerDescription(peer))
         } else {
             VStack(spacing: 18) {
                 AvatarView(name: peer.peerName, size: 160, imageData: avatar(peer))
@@ -297,6 +316,8 @@ struct GroupCallView: View {
             .padding(10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(peerDescription(peer))
         .clipShape(.rect(cornerRadius: 24, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -313,7 +334,8 @@ struct GroupCallView: View {
                 icon: callManager.isSpeaker ? "speaker.wave.3.fill" : "speaker.wave.2.fill",
                 label: "Speaker",
                 background: callManager.isSpeaker ? .white.opacity(0.35) : .white.opacity(0.18),
-                foreground: .white
+                foreground: .white,
+                isOn: callManager.isSpeaker
             ) { callManager.toggleSpeaker() }
             Spacer()
             audioRoundButton(
@@ -328,7 +350,9 @@ struct GroupCallView: View {
                     icon: callManager.isVideoEnabled ? "video.fill" : "video.slash.fill",
                     label: callManager.isVideoEnabled ? "Camera" : "No Camera",
                     background: callManager.isVideoEnabled ? .white.opacity(0.18) : .white.opacity(0.10),
-                    foreground: .white
+                    foreground: .white,
+                    accessibilityName: "Camera",
+                    isOn: callManager.isVideoEnabled
                 ) { callManager.toggleVideo() }
                 Spacer()
             }
@@ -336,7 +360,8 @@ struct GroupCallView: View {
                 icon: "phone.down.fill",
                 label: "Leave",
                 background: Color(red: 0.93, green: 0.28, blue: 0.20),
-                foreground: .white
+                foreground: .white,
+                accessibilityName: "Leave call"
             ) { callManager.leaveGroupCall() }
             Spacer()
         }
@@ -347,6 +372,8 @@ struct GroupCallView: View {
         label: String,
         background: Color,
         foreground: Color,
+        accessibilityName: String? = nil,
+        isOn: Bool? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -364,6 +391,8 @@ struct GroupCallView: View {
             }
             .frame(width: 80)
         }
+        .accessibilityLabel(accessibilityName ?? label)
+        .accessibilityValue(isOn.map { $0 ? "On" : "Off" } ?? "")
     }
 
     private func bigButton(icon: String, tint: Color, label: String, action: @escaping () -> Void) -> some View {
@@ -443,7 +472,9 @@ private struct SelfPreview: View {
                         .strokeBorder(.white.opacity(0.25), lineWidth: 1))
                     .opacity(dimmed ? 0.4 : 1)
                     .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
-                    .accessibilityLabel("Your camera. Double-tap to flip.")
+                    .accessibilityElement()
+                    .accessibilityLabel(dimmed ? "Your camera, off" : "Your camera")
+                    .accessibilityHint("Swipe up or down for Flip camera")
             }
             Spacer()
         }

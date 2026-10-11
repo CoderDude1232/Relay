@@ -667,6 +667,14 @@ private struct MinimizedCallBar: View {
                 Capsule()
                     .strokeBorder(.green.opacity(0.4), lineWidth: 1)
             }
+            // One element: VoiceOver can't reach a button nested in a button.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Call with \(peerName), \(status ?? statusText)")
+            .accessibilityHint("Returns to the call")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(named: "End call") {
+                if let onEnd { onEnd() } else { callManager.endActiveCall() }
+            }
             .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
         }
         .buttonStyle(.plain)

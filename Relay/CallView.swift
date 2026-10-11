@@ -98,8 +98,12 @@ struct CallView: View {
         }
         .onAppear { revealControls() }
         .onDisappear { controlsHideTask?.cancel() }
+        .onChange(of: callManager.isReconnecting) { _, reconnecting in
+            AccessibilityNotification.Announcement(reconnecting ? "Reconnecting" : "Reconnected").post()
+        }
         .onChange(of: callManager.state) { old, new in
             revealControls()
+            announce(from: old, to: new)
             if case .active = new, case .active = old {} else if case .active = new {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
@@ -183,6 +187,7 @@ struct CallView: View {
                 Image(systemName: "phone.fill")
                     .font(.system(size: 12))
                     .foregroundStyle(.white.opacity(0.60))
+                    .accessibilityHidden(true)
                 HStack(spacing: 6) {
                     if callManager.isReconnecting {
                         Image(systemName: "wifi.slash")
@@ -195,6 +200,7 @@ struct CallView: View {
                     .foregroundStyle(.white.opacity(0.65))
             }
         }
+        .accessibilityElement(children: .combine)
     }
 
     private var videoHeader: some View {
@@ -227,6 +233,7 @@ struct CallView: View {
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.75))
             }
+            .accessibilityElement(children: .combine)
 
             Spacer()
 
@@ -251,6 +258,9 @@ struct CallView: View {
                     RTCVideoTrackView(track: remoteTrack, contentMode: .scaleAspectFit)
                         .ignoresSafeArea()
                 }
+                .accessibilityElement()
+                .accessibilityLabel("\(peerName)'s video")
+                .accessibilityAddTraits(.isImage)
             } else {
                 Color.black.ignoresSafeArea()
                 AvatarView(name: peerName, size: 112, imageData: peerAvatar)
@@ -270,6 +280,8 @@ struct CallView: View {
         VStack(alignment: .trailing, spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
                 RTCVideoTrackView(track: track)
+                    .accessibilityElement()
+                    .accessibilityLabel(callManager.isVideoEnabled ? "Your camera" : "Your camera, off")
                     .frame(width: cameraOptionsExpanded ? 150 : 118, height: cameraOptionsExpanded ? 214 : 170)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .overlay(
@@ -346,6 +358,17 @@ struct CallView: View {
         }
     }
 
+    /// Spoken by VoiceOver when the call's state changes.
+    private func announce(from old: CallState, to new: CallState) {
+        let message: String? = switch new {
+        case .active: if case .active = old { nil } else { "Call connected" }
+        case .failed(let reason): reason
+        case .connecting: "Connecting"
+        default: nil
+        }
+        if let message { AccessibilityNotification.Announcement(message).post() }
+    }
+
     private var statusLabel: String {
         switch callManager.state {
         case .outgoing: return "Ringing…"
@@ -387,7 +410,8 @@ struct CallView: View {
                 icon: callManager.isSpeaker ? "speaker.wave.3.fill" : "speaker.wave.2.fill",
                 label: "Speaker",
                 background: callManager.isSpeaker ? Color.white.opacity(0.35) : Color.white.opacity(0.18),
-                foreground: .white
+                foreground: .white,
+                isOn: callManager.isSpeaker
             ) { callManager.toggleSpeaker() }
             Spacer()
             audioRoundButton(
@@ -401,7 +425,8 @@ struct CallView: View {
                 icon: "phone.down.fill",
                 label: "End",
                 background: Color(red: 0.93, green: 0.28, blue: 0.20),
-                foreground: .white
+                foreground: .white,
+                accessibilityName: "End call"
             ) { callManager.endActiveCall() }
             Spacer()
         }
@@ -412,6 +437,8 @@ struct CallView: View {
         label: String,
         background: Color,
         foreground: Color,
+        accessibilityName: String? = nil,
+        isOn: Bool? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -429,6 +456,8 @@ struct CallView: View {
             }
             .frame(width: 80)
         }
+        .accessibilityLabel(accessibilityName ?? label)
+        .accessibilityValue(isOn.map { $0 ? "On" : "Off" } ?? "")
     }
 
     // MARK: - Button helpers
