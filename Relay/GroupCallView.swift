@@ -22,6 +22,15 @@ struct GroupCallView: View {
     /// the text size.
     @ScaledMetric(relativeTo: .footnote) private var controlsInset: CGFloat = 190
     @State private var connectedAt: Date?
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Two or more others: a plain black or white background (following the
+    /// system theme), with each person's photo on their own card.
+    private var plainBackdrop: Bool { peers.count >= 2 && callManager.groupRingInfo == nil }
+    /// Text and icon colour over the backdrop.
+    private var ink: Color { plainBackdrop ? .primary : .white }
+    private var chipFill: Color { plainBackdrop ? Color.primary.opacity(0.1) : .black.opacity(0.25) }
+    private var buttonFill: Color { plainBackdrop ? Color.primary.opacity(0.1) : .white.opacity(0.18) }
 
     private var peers: [GroupCallPeer] {
         callManager.groupPeers.values.sorted { $0.peerName.localizedCaseInsensitiveCompare($1.peerName) == .orderedAscending }
@@ -33,8 +42,12 @@ struct GroupCallView: View {
         ZStack {
             // One other person: same backdrop as a 1:1 call (their photo as a blur, or
             // their avatar colour). While waiting alone it matches your own.
-            CallBackdrop(name: backdropName, photo: backdropPhoto,
-                         matchAvatar: peers.count <= 1 && callManager.groupRingInfo == nil)
+            if plainBackdrop {
+                Color(.systemBackground).ignoresSafeArea()
+            } else {
+                CallBackdrop(name: backdropName, photo: backdropPhoto,
+                             matchAvatar: peers.count <= 1 && callManager.groupRingInfo == nil)
+            }
 
             if callManager.groupRingInfo != nil {
                 incomingLayout
@@ -175,9 +188,9 @@ struct GroupCallView: View {
                     Button(action: onMinimize) {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(ink)
                             .frame(width: 44, height: 44)
-                            .background(.black.opacity(0.25), in: .circle)
+                            .background(chipFill, in: .circle)
                     }
                     .accessibilityLabel("Minimize call")
                 } else {
@@ -190,7 +203,7 @@ struct GroupCallView: View {
             VStack(spacing: 6) {
                 Text(peers.count == 1 ? peers[0].peerName : callManager.groupCallDisplayName)
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(ink)
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     if peers.count > 1 {
@@ -207,7 +220,7 @@ struct GroupCallView: View {
                     Text(statusText).monospacedDigit()
                 }
                 .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.75))
+                .foregroundStyle(ink.opacity(0.75))
             }
             .accessibilityElement(children: .combine)
 
@@ -218,9 +231,9 @@ struct GroupCallView: View {
                 ShareLink(item: link.url(hostAccount: service.credentials.accountId)) {
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(ink)
                         .frame(width: 44, height: 44)
-                        .background(.black.opacity(0.25), in: .circle)
+                        .background(chipFill, in: .circle)
                 }
                 .accessibilityLabel("Invite people")
             } else {
@@ -228,7 +241,7 @@ struct GroupCallView: View {
                 Color.clear.frame(width: 44, height: 44)
             }
         }
-        .shadow(radius: 8)
+        .shadow(radius: plainBackdrop ? 0 : 8)
         .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 
@@ -315,8 +328,9 @@ struct GroupCallView: View {
             if let track = peer.remoteVideoTrack {
                 GroupRTCVideoTrackView(track: track)
             } else {
-                Rectangle().fill(.white.opacity(0.08))
+                TileBackdrop(name: peer.peerName, photo: avatar(peer))
                 AvatarView(name: peer.peerName, size: 84, imageData: avatar(peer))
+                    .shadow(color: .black.opacity(0.3), radius: 16, y: 6)
             }
         }
         .overlay(alignment: .bottomLeading) {
@@ -351,24 +365,24 @@ struct GroupCallView: View {
             audioRoundButton(
                 icon: callManager.isSpeaker ? "speaker.wave.3.fill" : "speaker.wave.2.fill",
                 label: "Speaker",
-                background: callManager.isSpeaker ? .white.opacity(0.35) : .white.opacity(0.18),
-                foreground: .white,
+                background: callManager.isSpeaker ? ink.opacity(0.3) : buttonFill,
+                foreground: ink,
                 isOn: callManager.isSpeaker
             ) { callManager.toggleSpeaker() }
             Spacer()
             audioRoundButton(
                 icon: callManager.isMuted ? "mic.slash.fill" : "mic.fill",
                 label: callManager.isMuted ? "Unmute" : "Mute",
-                background: callManager.isMuted ? .white.opacity(0.18) : .white,
-                foreground: callManager.isMuted ? .white : .black
+                background: callManager.isMuted ? buttonFill : ink,
+                foreground: callManager.isMuted ? ink : (plainBackdrop ? Color(.systemBackground) : .black)
             ) { callManager.toggleMute() }
             Spacer()
             if isVideo {
                 audioRoundButton(
                     icon: callManager.isVideoEnabled ? "video.fill" : "video.slash.fill",
                     label: callManager.isVideoEnabled ? "Camera" : "No Camera",
-                    background: callManager.isVideoEnabled ? .white.opacity(0.18) : .white.opacity(0.10),
-                    foreground: .white,
+                    background: callManager.isVideoEnabled ? buttonFill : ink.opacity(0.06),
+                    foreground: ink,
                     accessibilityName: "Camera",
                     isOn: callManager.isVideoEnabled
                 ) { callManager.toggleVideo() }
@@ -403,7 +417,7 @@ struct GroupCallView: View {
                     .foregroundStyle(foreground)
                 Text(label)
                     .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.82))
+                    .foregroundStyle(ink.opacity(0.82))
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
             }
@@ -428,6 +442,35 @@ struct GroupCallView: View {
 }
 
 // MARK: - Pieces
+
+/// A person's card background: their photo, blurred like the call screens, or
+/// a wash of their avatar colour.
+private struct TileBackdrop: View {
+    let name: String
+    let photo: Data?
+
+    var body: some View {
+        if let photo, let image = DecodedImageCache.image(for: photo) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .blur(radius: 40, opaque: true)
+                .saturation(1.8)
+                .overlay(Color.black.opacity(0.3))
+        } else {
+            LinearGradient(colors: [color.opacity(0.85), color.opacity(0.45)], startPoint: .top, endPoint: .bottom)
+                .overlay(Color.black.opacity(0.2))
+        }
+    }
+
+    /// Same palette and hash as AvatarView.
+    private var color: Color {
+        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
+        var hash = 0
+        for scalar in name.unicodeScalars { hash = (hash &* 31 &+ Int(scalar.value)) }
+        return palette[abs(hash) % palette.count]
+    }
+}
 
 /// Dark backdrop with a soft wash: the other person's photo when there's one,
 /// otherwise a colour from the call name (same palette as avatars).
