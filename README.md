@@ -35,16 +35,14 @@
 
 ## Features
 
-| | |
-|---|---|
-| 🔐 **End-to-end encrypted** | The Signal Protocol with a post-quantum key exchange (PQXDH), for chats, groups, calls and media. |
-| 🕶️ **Sealed sender** | Messages don't say who sent them, and the server keeps no record of who talks to whom. |
-| 🗑️ **Delivered means deleted** | The server holds a message only until your phone collects it, then deletes it. |
-| 👥 **Private groups** | The server keeps no group list: no names, members or admins. |
-| 📞 **Encrypted calls** | Voice and video, one-to-one or in groups, relayed by default so the other side never sees your IP address. |
-| 🔑 **No phone number** | Sign up with a username and a passkey; an email is optional. |
-| ⏳ **Disappearing messages** | Set a timer and messages go from every device in the chat. |
-| ☁️ **Encrypted backups** | Optional iCloud backups, encrypted with a key only you hold. |
+- 🔐 **End-to-end encrypted.** The Signal Protocol with a post-quantum key exchange (PQXDH), for chats, groups, calls and media.
+- 🕶️ **Sealed sender.** Messages don't say who sent them, and the server keeps no record of who talks to whom.
+- 🗑️ **Delivered means deleted.** The server holds a message only until your phone collects it, then deletes it.
+- 👥 **Private groups.** The server keeps no group list: no names, members or admins.
+- 📞 **Encrypted calls.** Voice and video, one-to-one or in groups, relayed by default so the other side never sees your IP address.
+- 🔑 **No phone number.** Sign up with a username and a passkey; an email is optional.
+- ⏳ **Disappearing messages.** Set a timer and messages go from every device in the chat.
+- ☁️ **Encrypted backups.** Optional iCloud backups, encrypted with a key only you hold.
 
 ## What's in this repository
 
