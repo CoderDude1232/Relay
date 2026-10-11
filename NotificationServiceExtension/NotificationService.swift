@@ -375,7 +375,11 @@ class NotificationService: UNNotificationServiceExtension {
                          conversationId: notification.conversationId, senderAccount: notification.senderAccount)
         }
 
-        if !convHidePreviews {
+        // Disappearing chats stay out of the snapshot: it would outlive the timer.
+        let disappearing = ((try? storage.database.query(
+            "SELECT disappearing_seconds FROM conversations WHERE id = ?", [.text(notification.conversationId)]
+        ).first?.first?.int64) ?? 0) > 0
+        if !convHidePreviews, !disappearing {
             let text = notification.body.hasPrefix(PendingControlStore.notepadPrefix)
                 ? previewBody
                 : RecentChatsSnapshot.previewText(body: notification.body, attachmentType: nil)
@@ -434,13 +438,15 @@ class NotificationService: UNNotificationServiceExtension {
         )
     }
 
+    /// Previews off, or the chat needs Face ID to open: either way its text
+    /// stays off the lock screen (and out of the Siri/notification snapshot).
     private func conversationHidesPreviews(_ conversationId: String, in storage: SecureStore) -> Bool {
         guard !conversationId.isEmpty,
               let row = (try? storage.database.query(
-                  "SELECT hide_previews FROM conversations WHERE id = ?", [.text(conversationId)]
+                  "SELECT hide_previews, require_biometric_chat FROM conversations WHERE id = ?", [.text(conversationId)]
               ).first) ?? nil
         else { return false }
-        return (row[0].int64 ?? 0) != 0
+        return (row[0].int64 ?? 0) != 0 || (row[1].int64 ?? 0) != 0
     }
 
     private func displayName(for conversationId: String, in storage: SecureStore) -> String? {

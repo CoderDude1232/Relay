@@ -102,7 +102,9 @@ final class WatchBridge: NSObject, WCSessionDelegate {
             let name = conv.groupId.map { service.displayName(forAccount: $0) }
                 ?? service.displayName(forAccount: conv.peerAccount)
             var messages: [WatchSnapshot.Message] = []
-            if !conv.hidePreviews,
+            // No text for chats with previews off, a Face ID lock or a
+            // disappearing timer: these copies outlive the app's own checks.
+            if !conv.hidePreviews, !conv.requireBiometricChat, conv.disappearingSeconds == 0,
                let stored = try? service.storage.messages.messages(in: conv.id, limit: Self.messagesPerChat) {
                 messages = stored.filter { !$0.isDeleted }.map { m in
                     WatchSnapshot.Message(

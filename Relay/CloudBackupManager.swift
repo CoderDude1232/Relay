@@ -358,6 +358,15 @@ final class CloudBackupManager {
         return data
     }
 
+    /// Forgets this device's copy of the backup key (remote wipe). The backup
+    /// itself stays in iCloud and needs the key the user wrote down.
+    func forgetLocalKey() {
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: Self.keychainAccount,
+        ] as CFDictionary)
+    }
+
     private func storeRecoveryKey(_ key: Data) {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

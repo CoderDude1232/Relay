@@ -172,13 +172,12 @@ struct RecoveryKeyCard: View {
             Text(RecoveryKey.format(key))
                 .font(.title3.monospaced().weight(.semibold))
                 .multilineTextAlignment(.center)
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 18)
                 .background(.fill.tertiary, in: .rect(cornerRadius: 14, style: .continuous))
                 .accessibilityLabel(RecoveryKey.format(key).map { String($0) }.joined(separator: " "))
             Button {
-                SecurePasteboard.copy(RecoveryKey.format(key))
+                SecurePasteboard.copySecret(RecoveryKey.format(key))
                 copied = true
                 Task { try? await Task.sleep(for: .seconds(2)); copied = false }
             } label: {

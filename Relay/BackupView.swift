@@ -257,7 +257,6 @@ private struct RecoveryKeySheet: View {
 
                 Text(key)
                     .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
                     .padding()
                     .frame(maxWidth: .infinity)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))

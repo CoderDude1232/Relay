@@ -714,7 +714,11 @@ struct ConversationListView: View {
                 !panicMode.isHidden(conversation.id)
                     && displayName(for: conversation).localizedCaseInsensitiveContains(searchText)
             }
-            let messageResults = searchResults.filter { !panicMode.isHidden($0.conversationId) }
+            // Face ID-locked chats aren't searchable by content either.
+            let lockedIds = Set(service.conversations.filter(\.requireBiometricChat).map(\.id))
+            let messageResults = searchResults.filter {
+                !panicMode.isHidden($0.conversationId) && !lockedIds.contains($0.conversationId)
+            }
             if !matchingConversations.isEmpty {
                 Section("Conversations") {
                     ForEach(matchingConversations) { conversation in
@@ -1387,7 +1391,7 @@ private struct ConversationRow: View {
 
     private var lastMessagePreview: (symbol: String?, text: String) {
         if isBlocked { return (nil, "Blocked") }
-        if conversation.hidePreviews { return (nil, "Preview hidden") }
+        if conversation.hidePreviews || conversation.requireBiometricChat { return (nil, "Preview hidden") }
         let draft = service.readDraft(for: conversation.id)
         if !draft.isEmpty { return ("pencil", "Draft: \(draft)") }
         let isNoteToSelf = conversation.peerAccount == service.noteToSelfAccount

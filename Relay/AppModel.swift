@@ -1110,7 +1110,9 @@ final class AppModel {
     /// the relay so it doesn't keep collecting messages; that step is capped at a
     /// few seconds so being offline never blocks sign-out. Pass false when the
     /// device or account is already gone (remote wipe, account deletion).
-    func signOut(removeFromServer: Bool = true) {
+    /// `remoteWipe` also forgets this device's iCloud Backup key.
+    func signOut(removeFromServer: Bool = true, remoteWipe: Bool = false) {
+        if remoteWipe { CloudBackupManager.shared.forgetLocalKey() }
         guard removeFromServer, case .ready(let service) = phase else {
             finishSignOut()
             return
@@ -1126,11 +1128,12 @@ final class AppModel {
 
     private func finishSignOut() {
         if case .ready(let service) = phase {
-            service.stop()
+            service.shutDown()
         }
-        // The identity key outlives app deletion in the Keychain; drop it so the
-        // next account starts clean.
-        try? keychain.wipeIdentity()
+        // The identity key outlives app deletion in the Keychain; drop it (and
+        // the database key, whose database is deleted below) so the next account
+        // starts clean.
+        try? keychain.wipeAllSecrets()
         Task { await SupabaseAuth.shared.signOut() }
         try? keychain.deleteSecret(for: Self.accountSecretName)
         wipeLocalFiles()
@@ -1145,9 +1148,9 @@ final class AppModel {
     /// in again.
     func signOutRelayOnly() {
         if case .ready(let service) = phase {
-            service.stop()
+            service.shutDown()
         }
-        try? keychain.wipeIdentity()
+        try? keychain.wipeAllSecrets()
         try? keychain.deleteSecret(for: Self.accountSecretName)
         wipeLocalFiles()
         ShareBridge.clearAll()
@@ -1157,7 +1160,7 @@ final class AppModel {
     /// Removes everything the previous account left on disk: the database,
     /// cached attachment ciphertext, and this app's preferences.
     private func wipeLocalFiles() {
-        for suffix in ["", "-wal", "-shm"] {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
             try? FileManager.default.removeItem(at: Self.databaseURL(suffix: suffix))
         }
         if let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId) {

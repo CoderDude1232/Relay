@@ -116,7 +116,7 @@ final class MessagingService {
         siriPreviewTask?.cancel()
         siriPreviewTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled, let self, !self.isShutDown else { return }
             SiriPreviewCache.write(service: self)
             WatchBridge.shared.push(service: self)
         }
@@ -421,8 +421,20 @@ final class MessagingService {
         }
     }
 
+    /// Set at sign-out. Callbacks that still hold this service (a VoIP wake,
+    /// a debounced preview write) must not bring the old account back.
+    private(set) var isShutDown = false
+
+    /// Stops for good: the account is being signed out or wiped.
+    func shutDown() {
+        isShutDown = true
+        siriPreviewTask?.cancel()
+        siriPreviewTask = nil
+        stop()
+    }
+
     func start() {
-        guard connectionTask == nil else { return }
+        guard connectionTask == nil, !isShutDown else { return }
         Task { await refreshDemoStatus() }
         if !didSweepInterruptedSends {
             // Only on the first start of this process: nothing can be mid-send
@@ -2062,6 +2074,12 @@ final class MessagingService {
             let username: String?
             let groupId: String?
             let messages: [Message]
+            /// Nil in older backups (treated as accepted).
+            var accepted: Bool?
+            var disappearingSeconds: Int64?
+            var mediaRequiresBiometric: Bool?
+            var requireBiometricChat: Bool?
+            var hidePreviews: Bool?
         }
         struct Group: Codable {
             let id: String
@@ -2077,11 +2095,20 @@ final class MessagingService {
         var groups: [Group]
     }
 
+    /// Leaves out what the user expects not to outlive this device: chats
+    /// hidden by Panic Mode, disappearing messages and view-once media.
     func exportBackupSnapshot() -> BackupSnapshot {
         var convs: [BackupSnapshot.Conversation] = []
         var groups: [BackupSnapshot.Group] = []
-        for conv in (try? storage.messages.conversations()) ?? [] {
-            let msgs = ((try? storage.messages.messages(in: conv.id, limit: 100_000)) ?? []).map { m in
+        let hidden = PanicModeManager.hiddenConversationIdsSnapshot()
+        for conv in (try? storage.messages.conversations()) ?? [] where !hidden.contains(conv.id) {
+            let expiring = Set(((try? storage.database.query(
+                "SELECT id FROM messages WHERE conversation_id = ? AND expires_at IS NOT NULL", [.text(conv.id)]
+            )) ?? []).compactMap { $0.first?.string })
+            let kept = ((try? storage.messages.messages(in: conv.id, limit: 100_000)) ?? []).filter {
+                !expiring.contains($0.id) && !$0.body.hasPrefix("~once~") && !$0.isDeleted
+            }
+            let msgs = kept.map { m in
                 BackupSnapshot.Message(
                     id: m.id, body: m.body, timestamp: m.timestamp,
                     isOutgoing: m.isOutgoing, status: m.status.rawValue, senderAccount: m.senderAccount,
@@ -2091,7 +2118,10 @@ final class MessagingService {
             }
             convs.append(BackupSnapshot.Conversation(
                 peerAccount: conv.peerAccount, username: conv.peerUsername,
-                groupId: conv.groupId, messages: msgs
+                groupId: conv.groupId, messages: msgs,
+                accepted: conv.accepted, disappearingSeconds: conv.disappearingSeconds,
+                mediaRequiresBiometric: conv.mediaRequiresBiometric,
+                requireBiometricChat: conv.requireBiometricChat, hidePreviews: conv.hidePreviews
             ))
             if let gid = conv.groupId, let g = try? storage.messages.group(id: gid) {
                 groups.append(BackupSnapshot.Group(
@@ -2118,9 +2148,20 @@ final class MessagingService {
                 // 1:1-only conversation(withPeer:).
                 convId = ((try? storage.messages.groupConversationId(groupId: gid)) ?? nil) ?? ""
             } else {
-                convId = (try? storage.messages.conversation(withPeer: c.peerAccount, username: c.username)) ?? ""
+                convId = (try? storage.messages.conversation(
+                    withPeer: c.peerAccount, username: c.username, accepted: c.accepted ?? true)) ?? ""
             }
             guard !convId.isEmpty else { continue }
+            // The restored chat keeps its request state and locks.
+            if c.accepted == false { try? storage.messages.setConversationAccepted(convId, accepted: false) }
+            if c.mediaRequiresBiometric != nil || c.requireBiometricChat != nil || c.hidePreviews != nil {
+                try? storage.messages.setConversationPrivacy(
+                    convId,
+                    mediaRequiresBiometric: c.mediaRequiresBiometric ?? false,
+                    requireBiometricChat: c.requireBiometricChat ?? false,
+                    hidePreviews: c.hidePreviews ?? false
+                )
+            }
             for m in c.messages {
                 let replyTo = m.replyTimestamp.map {
                     QuotedMessage(targetTimestamp: $0, author: m.replyAuthor ?? "", text: m.replyText ?? "")
@@ -2131,6 +2172,11 @@ final class MessagingService {
                     status: MessageStatus(rawValue: m.status) ?? .received,
                     replyTo: replyTo, senderAccount: m.senderAccount
                 )
+            }
+            // After the inserts: restored messages predate the timer and must
+            // not start expiring now.
+            if let secs = c.disappearingSeconds, secs > 0 {
+                try? storage.messages.setDisappearingSeconds(convId, seconds: secs)
             }
             try? storage.messages.markConversationRead(convId)
         }

@@ -220,7 +220,7 @@ struct RelayApp: App {
         }
         let appModel = model
         service.onNukeReceived = {
-            await MainActor.run { appModel.signOut(removeFromServer: false) }
+            await MainActor.run { appModel.signOut(removeFromServer: false, remoteWipe: true) }
         }
         service.onRemovedFromAccount = {
             await MainActor.run { appModel.signOut(removeFromServer: false) }

@@ -4,7 +4,8 @@
 //
 //  Writes the encrypted recent-chats snapshot (RecentChatsStore) that the Siri
 //  UI and notification content extensions draw from. Chats hidden by Panic Mode
-//  are left out, and chats with previews off carry no message text.
+//  are left out, and chats with previews off, a Face ID lock or a disappearing
+//  timer carry no message text.
 //
 
 import Foundation
@@ -26,7 +27,9 @@ enum SiriPreviewCache {
             let name = conv.groupId.map { service.displayName(forAccount: $0) }
                 ?? service.displayName(forAccount: conv.peerAccount)
             var messages: [RecentChatsSnapshot.Message] = []
-            if !conv.hidePreviews,
+            // No text for chats with previews off, a Face ID lock or a
+            // disappearing timer: these copies outlive the app's own checks.
+            if !conv.hidePreviews, !conv.requireBiometricChat, conv.disappearingSeconds == 0,
                let stored = try? service.storage.messages.messages(
                    in: conv.id, limit: RecentChatsSnapshot.messagesPerConversation
                ) {
