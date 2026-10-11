@@ -21,11 +21,6 @@ struct SettingsView: View {
     @State private var showingPanicSettings = false
     @State private var versionTapCount = 0
     @State private var showingInvite = false
-    @State private var confirmingNuke = false
-    @State private var nukeInProgress = false
-    @State private var nukeError: String?
-    @State private var nukeSucceeded = false
-    @State private var showingDeleteAccount = false
 
     private var displayName: String {
         let name = service.myDisplayName ?? service.username
@@ -89,9 +84,6 @@ struct SettingsView: View {
                     NavigationLink(destination: SecuritySettingsView(service: service)) {
                         SettingsNavRow(systemName: "lock.shield.fill", color: .accentColor, title: "Security")
                     }
-                    NavigationLink(destination: LinkedDevicesView(service: service)) {
-                        SettingsNavRow(systemName: "laptopcomputer.and.iphone", color: .accentColor, title: "Linked Devices")
-                    }
                     NavigationLink(destination: DataStorageSettingsView(service: service)) {
                         SettingsNavRow(systemName: "internaldrive.fill", color: .accentColor, title: "Data & Storage")
                     }
@@ -124,64 +116,7 @@ struct SettingsView: View {
                     }
                 }
 
-                // MARK: Emergency Wipe
-                Section {
-                    Button(role: .destructive) {
-                        UINotificationFeedbackGenerator().notificationOccurred(.error)
-                        confirmingNuke = true
-                    } label: {
-                        HStack(spacing: 14) {
-                            SettingsIcon(systemName: "flame.fill", color: .red, useColor: true)
-                            Text("Emergency Wipe All Devices")
-                                .foregroundStyle(.red)
-                            Spacer(minLength: 0)
-                            if nukeInProgress {
-                                ProgressView()
-                            }
-                        }
-                    }
-                    .disabled(nukeInProgress)
-                    .confirmationDialog(
-                        "Wipe ALL devices?",
-                        isPresented: $confirmingNuke,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Wipe All Devices", role: .destructive) {
-                            // Wiping every device must prove the owner is present, so
-                            // refuse when no passcode is set.
-                            guard BiometricGate.isPasscodeSet else {
-                                nukeError = BiometricGate.passcodeRequiredMessage
-                                return
-                            }
-                            nukeInProgress = true
-                            Task {
-                                let ok = await BiometricGate.authenticate(
-                                    reason: "Confirm emergency wipe of all devices",
-                                    requirePasscode: true
-                                )
-                                guard ok else {
-                                    nukeInProgress = false
-                                    return
-                                }
-                                do {
-                                    try await service.sendNukeCommand()
-                                    nukeSucceeded = true
-                                } catch {
-                                    nukeError = FriendlyError.message(for: error)
-                                }
-                                nukeInProgress = false
-                            }
-                        }
-                    } message: {
-                        Text("This will cryptographically wipe messages and keys on every device signed in to your account. This cannot be undone.")
-                    }
-                } header: {
-                    Text("Danger Zone")
-                } footer: {
-                    Text("Sends a signed wipe command to all devices on your account. Each device verifies the command before deleting its messages and keys.")
-                }
-
-                // MARK: Sign out / delete account
+                // MARK: Sign out
                 Section {
                     Button(role: .destructive) {
                         UINotificationFeedbackGenerator().notificationOccurred(.warning)
@@ -204,15 +139,6 @@ struct SettingsView: View {
                         Text(CloudBackupManager.shared.isEnabled
                              ? "Your account stays active — sign back in anytime. Chats are removed from this device, and you can restore them from your iCloud backup when you sign back in."
                              : "Your account stays active — sign back in anytime. Chats are removed from this device and iCloud Backup is off, so they can't be restored. Turn on iCloud Backup first to keep them.")
-                    }
-                    Button(role: .destructive) {
-                        UINotificationFeedbackGenerator().notificationOccurred(.warning)
-                        showingDeleteAccount = true
-                    } label: {
-                        HStack(spacing: 14) {
-                            SettingsIcon(systemName: "person.crop.circle.badge.xmark", color: .red, useColor: true)
-                            Text(service.isDemoAccount ? "Reset Demo Account" : "Delete Account").foregroundStyle(.red)
-                        }
                     }
                 } footer: {
                     Text("Relay \(appVersion)")
@@ -237,29 +163,11 @@ struct SettingsView: View {
                 }
             }
             .onAppear { avatarData = service.myAvatarData }
-            .alert("Emergency Wipe Sent", isPresented: $nukeSucceeded) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("The wipe command was delivered. All devices will delete their messages and keys.")
-            }
-            .alert("Emergency Wipe Failed", isPresented: Binding(
-                get: { nukeError != nil },
-                set: { if !$0 { nukeError = nil } }
-            )) {
-                Button("OK", role: .cancel) { nukeError = nil }
-            } message: {
-                Text(nukeError ?? "")
-            }
             .sheet(isPresented: $showingEditProfile) {
                 EditProfileSheet(service: service) { avatarData = service.myAvatarData }
             }
             .sheet(isPresented: $showingPanicSettings) {
                 PanicModeSheet(manager: panicMode)
-            }
-            .sheet(isPresented: $showingDeleteAccount) {
-                DeleteAccountSheet(service: service) {
-                    model.signOut(removeFromServer: false) // the account is already gone
-                }
             }
         }
     }
@@ -284,6 +192,11 @@ private struct AccountSettingsView: View {
     @State private var showingPasswordSheet = false
     @State private var emailDiscoverable = UserDefaults.standard.bool(forKey: MessagingService.emailDiscoverableKey)
     @State private var discoverabilityError: String?
+    @State private var showingDeleteAccount = false
+    @State private var confirmingNuke = false
+    @State private var nukeInProgress = false
+    @State private var nukeSucceeded = false
+    @State private var nukeError: String?
 
     private var username: String { service.username ?? "" }
     private var addLink: String { "relaymsg.app/add/\(username)" }
@@ -291,111 +204,123 @@ private struct AccountSettingsView: View {
     var body: some View {
         List {
             Section {
-                HStack(spacing: 14) {
-                    SettingsIcon(systemName: "at", color: .accentColor)
-                    Text("Username")
-                    Spacer(minLength: 0)
-                    Text("@\(username)")
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                if !service.isDemoAccount {
-                Button {
-                    SecurePasteboard.copy("https://\(addLink)")
-                    linkCopied = true
-                    Task { try? await Task.sleep(for: .seconds(2)); linkCopied = false }
-                } label: {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: linkCopied ? "checkmark" : "link", color: .accentColor)
-                        Text(linkCopied ? "Link Copied" : "Copy My Link").foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                        Text(addLink)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-                .tint(.primary)
-                }
-            } header: {
-                Text("Identity")
-            } footer: {
-                Text(service.isDemoAccount
-                     ? "This is a demo account for testing Relay. It can only message other demo accounts, and its sign-in details can't be changed."
-                     : "People can start a chat with you using your username, link, or QR code — no phone number or email needed.")
-            }
-
-            if !service.isDemoAccount {
-            Section {
-                Button { showingQR = true } label: {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "qrcode", color: .accentColor)
-                        Text("My QR Code").foregroundStyle(.primary)
-                    }
-                }
-                .tint(.primary)
-            }
-
-            Section {
-                Button { showingEmailSheet = true } label: {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "envelope.fill", color: .accentColor)
-                        Text("Email").foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                        Text(accountEmail ?? "Change")
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-                .tint(.primary)
-                Button { showingPasswordSheet = true } label: {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "key.fill", color: .orange)
-                        Text("Account Password").foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                        Text(UserDefaults.standard.bool(forKey: MessagingService.hasAccountPasswordKey) ? "Change" : "Set")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .tint(.primary)
-                NavigationLink(destination: PasskeysView(service: service)) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "person.badge.key.fill", color: .green)
-                        Text("Passkeys")
-                    }
-                }
-            } footer: {
-                Text(service.keepsChatListWithAccount
-                     ? "Used to recover your account by email, and required to sign in on a new device unless you use a passkey. Signing in signs out your other devices. Your chat list (not messages) is kept with your account, encrypted so only this password or your passkeys can open it, so signing back in brings your chats back."
-                     : "Used to recover your account by email, and required to sign in on a new device unless you use a passkey. Signing in signs out your other devices. Set or re-enter it here, or create a passkey, to keep your chat list (not messages) with your account, encrypted, so signing out doesn't lose your chats.")
-            }
-
-            Section {
-                Toggle(isOn: Binding(
-                    get: { emailDiscoverable },
-                    set: { on in
-                        let previous = emailDiscoverable
-                        emailDiscoverable = on
-                        Task {
-                            do {
-                                try await service.setEmailDiscoverable(on)
-                            } catch {
-                                emailDiscoverable = previous
-                                discoverabilityError = FriendlyError.message(for: error)
-                            }
+                if service.isDemoAccount {
+                    LabeledContent("Username", value: "@\(username)")
+                } else {
+                    Menu {
+                        Button {
+                            SecurePasteboard.copy("https://\(addLink)")
+                            linkCopied = true
+                            Task { try? await Task.sleep(for: .seconds(2)); linkCopied = false }
+                        } label: { Label("Copy Link", systemImage: "link") }
+                        if let url = URL(string: "https://\(addLink)") {
+                            ShareLink(item: url) { Label("Share Link", systemImage: "square.and.arrow.up") }
+                        }
+                        Button { showingQR = true } label: { Label("Show QR Code", systemImage: "qrcode") }
+                    } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: linkCopied ? "checkmark" : "at", color: .accentColor)
+                            Text(linkCopied ? "Link Copied" : "Username").foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            Text("@\(username)").foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
-                )) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "envelope.fill", color: .blue)
-                        Text("Find Me by Email")
+                    Button { showingEmailSheet = true } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "envelope.fill", color: .accentColor)
+                            Text("Email").foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            Text(accountEmail ?? "Change")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
                 }
             } footer: {
-                Text(discoverabilityError ?? "Off by default. When on, people who have your email address can find your username. Lookups are blinded, so Relay never sees the addresses searched.")
+                if service.isDemoAccount {
+                    Text("A demo account for testing Relay. It can only message other demo accounts.")
+                }
             }
+            .tint(.primary)
+
+            if !service.isDemoAccount {
+                Section {
+                    Button { showingPasswordSheet = true } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "key.fill", color: .orange)
+                            Text("Account Password").foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            Text(UserDefaults.standard.bool(forKey: MessagingService.hasAccountPasswordKey) ? "Change" : "Set")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(.primary)
+                    NavigationLink(destination: PasskeysView(service: service)) {
+                        SettingsNavRow(systemName: "person.badge.key.fill", color: .green, title: "Passkeys")
+                    }
+                } header: {
+                    Text("Sign-In")
+                } footer: {
+                    Text("Signing in on a new device needs your account password or a passkey.")
+                }
+
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { emailDiscoverable },
+                        set: { on in
+                            let previous = emailDiscoverable
+                            emailDiscoverable = on
+                            Task {
+                                do {
+                                    try await service.setEmailDiscoverable(on)
+                                } catch {
+                                    emailDiscoverable = previous
+                                    discoverabilityError = FriendlyError.message(for: error)
+                                }
+                            }
+                        }
+                    )) {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "magnifyingglass", color: .blue)
+                            Text("Find Me by Email")
+                        }
+                    }
+                } footer: {
+                    if let discoverabilityError { Text(discoverabilityError) }
+                }
+            }
+
+            Section {
+                NavigationLink(destination: LinkedDevicesView(service: service)) {
+                    SettingsNavRow(systemName: "laptopcomputer.and.iphone", color: .accentColor, title: "Linked Devices")
+                }
+            }
+
+            Section {
+                if !service.isDemoAccount {
+                    Button(role: .destructive) {
+                        UINotificationFeedbackGenerator().notificationOccurred(.error)
+                        confirmingNuke = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "flame.fill", color: .red, useColor: true)
+                            Text("Emergency Wipe All Devices").foregroundStyle(.red)
+                            Spacer(minLength: 0)
+                            if nukeInProgress { ProgressView() }
+                        }
+                    }
+                    .disabled(nukeInProgress)
+                }
+                Button(role: .destructive) {
+                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                    showingDeleteAccount = true
+                } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "person.crop.circle.badge.xmark", color: .red, useColor: true)
+                        Text(service.isDemoAccount ? "Reset Demo Account" : "Delete Account").foregroundStyle(.red)
+                    }
+                }
             }
         }
         .navigationTitle("Account")
@@ -411,6 +336,54 @@ private struct AccountSettingsView: View {
             MyQRCodeView(username: username, createInviteLink: {
                 try await service.createContactInviteLink()
             })
+        }
+        .sheet(isPresented: $showingDeleteAccount) {
+            DeleteAccountSheet(service: service) {
+                model.signOut(removeFromServer: false) // the account is already gone
+            }
+        }
+        .confirmationDialog("Wipe ALL devices?", isPresented: $confirmingNuke, titleVisibility: .visible) {
+            Button("Wipe All Devices", role: .destructive) {
+                // Wiping every device must prove the owner is present, so
+                // refuse when no passcode is set.
+                guard BiometricGate.isPasscodeSet else {
+                    nukeError = BiometricGate.passcodeRequiredMessage
+                    return
+                }
+                nukeInProgress = true
+                Task {
+                    let ok = await BiometricGate.authenticate(
+                        reason: "Confirm emergency wipe of all devices",
+                        requirePasscode: true
+                    )
+                    guard ok else {
+                        nukeInProgress = false
+                        return
+                    }
+                    do {
+                        try await service.sendNukeCommand()
+                        nukeSucceeded = true
+                    } catch {
+                        nukeError = FriendlyError.message(for: error)
+                    }
+                    nukeInProgress = false
+                }
+            }
+        } message: {
+            Text("Every device signed in to your account verifies a signed command, then deletes its messages and keys. This can't be undone.")
+        }
+        .alert("Emergency Wipe Sent", isPresented: $nukeSucceeded) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The wipe command was delivered. All devices will delete their messages and keys.")
+        }
+        .alert("Emergency Wipe Failed", isPresented: Binding(
+            get: { nukeError != nil },
+            set: { if !$0 { nukeError = nil } }
+        )) {
+            Button("OK", role: .cancel) { nukeError = nil }
+        } message: {
+            Text(nukeError ?? "")
         }
     }
 }
