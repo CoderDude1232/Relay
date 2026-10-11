@@ -4,7 +4,8 @@
 //  writer). Keep the storage format in sync with the app's copy.
 //
 //  Conversations are identified only by opaque local ids, never a peer account
-//  id. Files carry explicit data protection and are excluded from backup. A
+//  id. Files are sealed (ShareSeal), carry explicit data protection and are
+//  excluded from backup. A
 //  pending share is a protected file, not UserDefaults, deleted once processed.
 //
 
@@ -42,7 +43,7 @@ enum ShareBridge {
     static func readConversations() -> [ShareConversationSummary] {
         guard let url = container?.appendingPathComponent(shareDirName, isDirectory: true)
                 .appendingPathComponent(conversationsFile),
-              let data = try? Data(contentsOf: url),
+              let stored = try? Data(contentsOf: url), let data = ShareSeal.open(stored),
               let list = try? JSONDecoder().decode([ShareConversationSummary].self, from: data)
         else { return [] }
         return list
@@ -50,7 +51,7 @@ enum ShareBridge {
 
     static func writePendingShare(_ share: PendingShare) {
         UserDefaults(suiteName: kShareAppGroup)?.removeObject(forKey: legacyPendingKey)
-        guard let data = try? JSONEncoder().encode(share),
+        guard let json = try? JSONEncoder().encode(share), let data = ShareSeal.seal(json),
               var dir = container?.appendingPathComponent(shareDirName, isDirectory: true)
         else { return }
         let fm = FileManager.default
@@ -84,8 +85,9 @@ enum ShareBridge {
 
     static func readAvatar(forConversationId id: String) -> Data? {
         guard let url = container?.appendingPathComponent(avatarDirName, isDirectory: true)
-                .appendingPathComponent(id)
+                .appendingPathComponent(id),
+              let stored = try? Data(contentsOf: url)
         else { return nil }
-        return try? Data(contentsOf: url)
+        return ShareSeal.open(stored)
     }
 }

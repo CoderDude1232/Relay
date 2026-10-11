@@ -447,9 +447,11 @@ final class MessagingService {
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
         Task { [weak self] in await self?.publishDeviceLabel(force: false) }
         startPathMonitor()
-        // Housekeeping once per start: dedup claims and orphaned files.
+        // Housekeeping once per start: dedup claims, orphaned files, and
+        // App Group files written before they were sealed.
         try? storage.messages.pruneProcessedEnvelopes()
         sweepAttachmentFiles()
+        ShareBridge.sealLegacyFiles()
         expireTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))

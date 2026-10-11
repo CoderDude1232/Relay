@@ -10,7 +10,8 @@
 //  - conversations are identified only by the opaque local id, never a peer's
 //    account id;
 //  - hidden (panic-mode) conversations are never written;
-//  - files carry explicit Data Protection and are excluded from backups;
+//  - files are sealed (ShareSeal), carry explicit Data Protection and are
+//    excluded from backups;
 //  - a pending share is a protected file (not UserDefaults), deleted once read.
 //
 
@@ -74,7 +75,7 @@ nonisolated enum ShareBridge {
         let hidden = PanicModeManager.hiddenConversationIdsSnapshot()
         let visible = list.filter { !hidden.contains($0.id) }
         defaults?.removeObject(forKey: legacyConversationsKey)
-        guard let data = try? JSONEncoder().encode(visible),
+        guard let json = try? JSONEncoder().encode(visible), let data = ShareSeal.seal(json),
               let url = shareDir()?.appendingPathComponent(conversationsFile)
         else { return }
         // Readable after first unlock: the widget and Siri run while locked.
@@ -85,7 +86,7 @@ nonisolated enum ShareBridge {
 
     static func readConversations() -> [ShareConversationSummary] {
         guard let url = shareDir()?.appendingPathComponent(conversationsFile),
-              let data = try? Data(contentsOf: url),
+              let stored = try? Data(contentsOf: url), let data = ShareSeal.open(stored),
               let list = try? JSONDecoder().decode([ShareConversationSummary].self, from: data)
         else { return [] }
         return list
@@ -94,7 +95,7 @@ nonisolated enum ShareBridge {
     /// Removes one conversation (e.g. just hidden or deleted) from the snapshot.
     static func removeConversation(_ id: String) {
         let remaining = readConversations().filter { $0.id != id }
-        if let data = try? JSONEncoder().encode(remaining),
+        if let json = try? JSONEncoder().encode(remaining), let data = ShareSeal.seal(json),
            let url = shareDir()?.appendingPathComponent(conversationsFile) {
             writeProtected(data, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
         }
@@ -105,7 +106,7 @@ nonisolated enum ShareBridge {
 
     static func writePendingShare(_ share: PendingShare) {
         defaults?.removeObject(forKey: legacyPendingKey)
-        guard let data = try? JSONEncoder().encode(share),
+        guard let json = try? JSONEncoder().encode(share), let data = ShareSeal.seal(json),
               let url = shareDir()?.appendingPathComponent(pendingShareFile)
         else { return }
         // Complete protection: unreadable whenever the device is locked. If the
@@ -126,10 +127,10 @@ nonisolated enum ShareBridge {
         guard let url = shareDir()?.appendingPathComponent(pendingShareFile),
               FileManager.default.fileExists(atPath: url.path)
         else { return nil }
-        let data = try? Data(contentsOf: url)
-        guard let data else { return nil } // locked: leave it for later
+        let stored = try? Data(contentsOf: url)
+        guard let stored else { return nil } // locked: leave it for later
         try? FileManager.default.removeItem(at: url)
-        return try? JSONDecoder().decode(PendingShare.self, from: data)
+        return ShareSeal.open(stored).flatMap { try? JSONDecoder().decode(PendingShare.self, from: $0) }
     }
 
     // MARK: - Unread count (widget badge)
@@ -151,14 +152,34 @@ nonisolated enum ShareBridge {
 
     static func writeAvatar(_ data: Data, forConversationId id: String) {
         guard !PanicModeManager.hiddenConversationIdsSnapshot().contains(id),
-              let url = avatarDir()?.appendingPathComponent(id)
+              let url = avatarDir()?.appendingPathComponent(id),
+              let sealed = ShareSeal.seal(data)
         else { return }
-        writeProtected(data, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
+        writeProtected(sealed, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
     }
 
     static func readAvatar(forConversationId id: String) -> Data? {
-        guard let url = avatarDir()?.appendingPathComponent(id) else { return nil }
-        return try? Data(contentsOf: url)
+        guard let url = avatarDir()?.appendingPathComponent(id),
+              let stored = try? Data(contentsOf: url)
+        else { return nil }
+        return ShareSeal.open(stored)
+    }
+
+    /// Re-seals files written before sealing (the chat list and photos).
+    static func sealLegacyFiles() {
+        if let url = shareDir()?.appendingPathComponent(conversationsFile),
+           let stored = try? Data(contentsOf: url), !ShareSeal.isSealed(stored),
+           let sealed = ShareSeal.seal(stored) {
+            writeProtected(sealed, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
+        }
+        guard let dir = avatarDir(),
+              let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return }
+        for url in files {
+            guard let stored = try? Data(contentsOf: url), !ShareSeal.isSealed(stored),
+                  let sealed = ShareSeal.seal(stored) else { continue }
+            writeProtected(sealed, to: url, protection: .completeFileProtectionUntilFirstUserAuthentication)
+        }
     }
 
     static func removeAvatar(forConversationId id: String) {
@@ -180,6 +201,7 @@ nonisolated enum ShareBridge {
         defaults?.removeObject(forKey: legacyPendingKey)
         defaults?.removeObject(forKey: unreadCountKey)
         clearAvatars()
+        ShareSeal.deleteKey()
         guard let container else { return }
         try? FileManager.default.removeItem(at: container.appendingPathComponent(shareDirName, isDirectory: true))
         try? FileManager.default.removeItem(at: container.appendingPathComponent(broadcastFrameFile))

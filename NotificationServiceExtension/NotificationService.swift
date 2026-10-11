@@ -186,7 +186,7 @@ class NotificationService: UNNotificationServiceExtension {
                   forSecurityApplicationGroupIdentifier: RelayStore.appGroupId
               )?.appendingPathComponent("relay-avatars", isDirectory: true)
         else { return nil }
-        return try? Data(contentsOf: dir.appendingPathComponent(id))
+        return (try? Data(contentsOf: dir.appendingPathComponent(id))).flatMap(ShareSeal.open)
     }
 
     // MARK: - Decryption

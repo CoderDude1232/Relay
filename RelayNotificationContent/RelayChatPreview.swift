@@ -64,7 +64,7 @@ enum ChatPreviewStore {
     static func avatar(forConversationId id: String) -> UIImage? {
         guard !id.isEmpty,
               let url = container?.appendingPathComponent(avatarDirName, isDirectory: true).appendingPathComponent(id),
-              let data = try? Data(contentsOf: url)
+              let stored = try? Data(contentsOf: url), let data = ShareSeal.open(stored)
         else { return nil }
         return UIImage(data: data)
     }
