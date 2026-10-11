@@ -23,7 +23,7 @@ const (
 )
 
 // Recovery-key sign-ins per source IP per hour.
-var recoveryKeyIPLimiter = newSlidingWindowLimiter(10, time.Hour)
+var recoveryKeyIPLimiter = newSlidingWindowLimiter(60, time.Hour)
 
 // normalizeRecoveryKey upper-cases ASCII letters and drops every character
 // that isn't A–Z or 0–9.
@@ -106,7 +106,9 @@ func (s *Server) handleDeleteRecoveryKey(w http.ResponseWriter, _ *http.Request,
 // account's devices with a new one. No account password is needed.
 func (s *Server) handleRecoveryKeySignIn(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if authFailIPLimiter.exhausted(ip) || !recoveryKeyIPLimiter.allow(ip) {
+	// About 118 random bits can't be guessed, so this only bounds load; it isn't
+	// tied to the shared lockout that would block others behind a proxy.
+	if !recoveryKeyIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "too many attempts; try again later")
 		return
 	}
@@ -119,10 +121,7 @@ func (s *Server) handleRecoveryKeySignIn(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusBadRequest, "key (≤128 chars) and password (8–1024 chars) required")
 		return
 	}
-	fail := func() {
-		authFailIPLimiter.allow(ip)
-		httpError(w, http.StatusUnauthorized, errRecoveryKeySignIn)
-	}
+	fail := func() { httpError(w, http.StatusUnauthorized, errRecoveryKeySignIn) }
 	norm := normalizeRecoveryKey(req.Key)
 	if len(norm) < minRecoveryKeyNormLen || len(norm) > maxRecoveryKeyNormLen {
 		fail()

@@ -43,7 +43,7 @@ const (
 
 // Unauthenticated passkey ceremonies, per source IP per hour.
 var passkeyOptionsIPLimiter = newSlidingWindowLimiter(60, time.Hour)
-var passkeyLoginIPLimiter = newSlidingWindowLimiter(30, time.Hour)
+var passkeyLoginIPLimiter = newSlidingWindowLimiter(120, time.Hour)
 
 // passkeySessions holds go-webauthn session data between the options and
 // finish calls. Entries are single use and expire after passkeySessionTTL.
@@ -373,7 +373,9 @@ func (s *Server) handlePasskeyLoginOptions(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handlePasskeyLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if authFailIPLimiter.exhausted(ip) || !passkeyLoginIPLimiter.allow(ip) {
+	// A passkey can't be guessed, so failures don't count toward the shared
+	// per-address lockout that would also block other people behind a proxy.
+	if !passkeyLoginIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "too many attempts; try again later")
 		return
 	}
@@ -403,10 +405,7 @@ func (s *Server) handlePasskeyLogin(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "credentialId, clientDataJSON, authenticatorData, signature and userHandle (base64url) required")
 		return
 	}
-	fail := func() {
-		authFailIPLimiter.allow(ip)
-		httpError(w, http.StatusUnauthorized, errPasskeySignInFails)
-	}
+	fail := func() { httpError(w, http.StatusUnauthorized, errPasskeySignInFails) }
 	sd, ok := s.passkeyLogin.take(req.SessionID)
 	if !ok {
 		fail()

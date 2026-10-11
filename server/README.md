@@ -571,6 +571,14 @@ relay end to end, so the proxy sees only encrypted bytes. While a proxy is on th
 app never falls back to a direct connection (`allowFailover = false`); the
 notification extension uses it too. Calls (WebRTC/TURN) are not proxied.
 
+Many people can share a proxy's IP address, as they do a carrier's or an
+office's. So nothing one of them does can lock the others out: a request with a
+valid `Relay-Sig` signature is never refused because of other failures from the
+same address (only a flood of 1000 bad signatures in 10 minutes cuts an address
+off), passkey and recovery-key sign-ins don't count toward the per-address
+lockout (neither can be guessed), and the per-address failure lockout guards
+only the HTTP Basic bootstrap.
+
 The proxy reaches only the hosts in `-allow` (default: the relay API and the
 Supabase project used for sign-in), so it can't be used as an open proxy. Any
 non-CONNECT request gets a plain 404. Client addresses are never logged.

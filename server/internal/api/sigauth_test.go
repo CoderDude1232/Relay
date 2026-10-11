@@ -252,6 +252,18 @@ func TestSignatureAuth(t *testing.T) {
 		t.Fatalf("tampered signature: got %d, want 401", got)
 	}
 
+	// Other people's failures from the same address (a proxy, carrier NAT)
+	// never lock out a valid signature: well past the old 50-failure budget,
+	// a correctly signed request still gets through.
+	for range 60 {
+		again := c.signedRequest("GET", path, randomNonce(t), now)
+		again.Header.Set("Authorization", sigAuthScheme+" "+c.authUser()+":"+base64.StdEncoding.EncodeToString([]byte("not-a-real-signature")))
+		do(again)
+	}
+	if got := do(c.signedRequest("GET", path, randomNonce(t), now)); got != http.StatusOK {
+		t.Fatalf("valid signature after others' failures: got %d, want 200", got)
+	}
+
 	// Replaying the exact same signed request (same nonce) is rejected.
 	nonce := randomNonce(t)
 	if got := do(c.signedRequest("GET", path, nonce, time.Now().UnixMilli())); got != http.StatusOK {

@@ -115,8 +115,8 @@ func TestSignInMethodRequestValidation(t *testing.T) {
 		}
 	}
 
-	// 10/IP/hour, then 429.
-	for range 10 {
+	// 60/IP/hour, then 429.
+	for range 60 {
 		call(s.handleRecoveryKeySignIn, "POST", `{}`)
 	}
 	if got, _ := call(s.handleRecoveryKeySignIn, "POST", `{}`); got != http.StatusTooManyRequests {

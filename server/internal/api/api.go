@@ -381,14 +381,16 @@ var basicAuthSuccessLimiter = newTokenBucketLimiter(10, time.Hour)
 
 func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// A source that keeps failing is cut off before any bcrypt or
-		// signature work.
 		ip := clientIP(r)
-		if authFailIPLimiter.exhausted(ip) {
-			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
-			return
-		}
 		if strings.HasPrefix(r.Header.Get("Authorization"), sigAuthScheme+" ") {
+			// Many people can share one address (a proxy, carrier NAT, an office),
+			// so other people's failures never block a valid signature: checking
+			// one is cheap. Only a flood of bad signatures cuts the address off
+			// up front.
+			if sigFailFloodLimiter.exhausted(ip) {
+				httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
+				return
+			}
 			dev, err := s.authenticateSignature(r)
 			if errors.Is(err, errNonceBudget) {
 				// A valid signature from a device over its replay-cache budget.
@@ -396,11 +398,17 @@ func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerF
 				return
 			}
 			if err != nil {
-				authFailIPLimiter.allow(ip)
+				sigFailFloodLimiter.allow(ip)
 				httpError(w, http.StatusUnauthorized, "signature authentication failed")
 				return
 			}
 			next(w, r, dev)
+			return
+		}
+		// HTTP Basic costs a bcrypt, so a source that keeps failing is cut off
+		// before any password work.
+		if authFailIPLimiter.exhausted(ip) {
+			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts; try again later")
 			return
 		}
 		user, pass, ok := r.BasicAuth()

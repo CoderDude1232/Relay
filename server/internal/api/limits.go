@@ -201,8 +201,14 @@ func (l *tokenBucketLimiter) prune() {
 // hashing or signature verification runs.
 //
 // Per source IP bucket (IPv4 address / IPv6 /64): 50 failures per 10 minutes,
-// on both the Relay-Sig and HTTP Basic paths.
+// on the HTTP Basic (password) path only.
 var authFailIPLimiter = newTokenBucketLimiter(50, 10*time.Minute)
+
+// Failed Relay-Sig verifications per source IP before that address is refused
+// up front: 1000 per 10 minutes. Far above anything real; it exists so a flood
+// of bad signatures can't keep the database busy. A valid signature from a busy
+// shared address is never refused below this.
+var sigFailFloodLimiter = newTokenBucketLimiter(1000, 10*time.Minute)
 
 // Per target device: 20 failed HTTP Basic attempts per 10 minutes. Applied to
 // the Basic (password) path only. Relay-Sig has nothing guessable and must not
