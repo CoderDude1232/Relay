@@ -222,10 +222,11 @@ class NotificationService: UNNotificationServiceExtension {
         // Blocked senders are still decrypted to keep the ratchet in sync; the
         // processor drops them before storing, as in the app.
         let blocked = RelayStore.blockedAccounts(in: storage)
-        guard let result = try? processor.process(envelope, blockedAccounts: blocked) else { return .suppress }
-        // The ratchet has advanced and the app can't decrypt this again, so
-        // hand it the control payloads to apply later.
-        PendingControlStore.persist(result, envelopeId: envelope.id, in: storage)
+        // The ratchet advances and the app can't decrypt this again, so the
+        // control payloads for the app are saved in the same transaction.
+        guard let result = try? processor.process(envelope, blockedAccounts: blocked, persist: {
+            PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
+        }) else { return .suppress }
         return outcome(for: result, storage: storage, appGroupId: appGroupId, account: account)
     }
 
@@ -273,12 +274,11 @@ class NotificationService: UNNotificationServiceExtension {
 
         var latest: DecryptOutcome?
         for envelope in envelopes {
-            let result = try? processor.process(envelope, blockedAccounts: blocked)
-            // The ratchet has advanced and the app can't decrypt this again, so
-            // persist the control payloads for the app to apply.
-            if let result {
-                PendingControlStore.persist(result, envelopeId: envelope.id, in: storage)
-            }
+            // The ratchet advances and the app can't decrypt this again, so the
+            // control payloads for the app are saved in the same transaction.
+            let result = try? processor.process(envelope, blockedAccounts: blocked, persist: {
+                PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
+            })
             // Ack stored and poison messages alike, as the app does. Ephemeral
             // envelopes never queue.
             try? await api.ackMessage(envelopeId: envelope.id)

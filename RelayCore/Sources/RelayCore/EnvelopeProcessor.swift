@@ -362,13 +362,47 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
     /// - Parameter blockedAccounts: accounts whose messages are dropped. A sealed
     ///   message's sender is only known after decryption, so blocking happens here.
+    /// - Parameter persist: runs in the same transaction as the decrypt, for
+    ///   what the caller must keep (the extension's pending control payloads).
     public func process(
         _ envelope: IncomingEnvelope,
-        blockedAccounts: Set<String> = []
+        blockedAccounts: Set<String> = [],
+        persist: ((ProcessedEnvelope) -> Void)? = nil
     ) throws -> ProcessedEnvelope {
         // Serialize with the other process sharing this database.
-        guard let processLock else { return try processLocked(envelope, blockedAccounts: blockedAccounts) }
-        return try processLock.withLock { try processLocked(envelope, blockedAccounts: blockedAccounts) }
+        guard let processLock else { return try processAtomically(envelope, blockedAccounts, persist) }
+        return try processLock.withLock { try processAtomically(envelope, blockedAccounts, persist) }
+    }
+
+    /// Claim, decrypt, store and `persist` commit together. If the process dies
+    /// part-way (the extension's 30 s / 24 MB limits), nothing is claimed and
+    /// the ratchet hasn't moved, so the redelivered envelope is processed
+    /// again instead of being skipped as a duplicate. An error while handling
+    /// the decrypted content still commits the decrypt, as before: rolling it
+    /// back would lose a newly established session.
+    private func processAtomically(
+        _ envelope: IncomingEnvelope,
+        _ blockedAccounts: Set<String>,
+        _ persist: ((ProcessedEnvelope) -> Void)?
+    ) throws -> ProcessedEnvelope {
+        var handlingError: Error?
+        let result: ProcessedEnvelope? = try storage.database.transaction {
+            do {
+                let result = try processLocked(envelope, blockedAccounts: blockedAccounts)
+                persist?(result)
+                return result
+            } catch let error as HandlingError {
+                handlingError = error.underlying
+                return nil
+            }
+        }
+        if let handlingError { throw handlingError }
+        return result ?? ProcessedEnvelope(outcome: .ignored)
+    }
+
+    /// Wraps an error thrown after decryption succeeded.
+    private struct HandlingError: Error {
+        let underlying: Error
     }
 
     private func processLocked(
@@ -408,10 +442,14 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             sender = try ProtocolAddress(name: envelope.senderAccount, deviceId: envelope.senderDevice)
             plaintext = try engine.decrypt(envelope.message, from: sender)
         }
-        return try handle(
-            envelopeId: envelope.id, sender: sender, plaintext: plaintext,
-            attestedUsername: attestedUsername, blockedAccounts: blockedAccounts, mayDefer: true
-        )
+        do {
+            return try handle(
+                envelopeId: envelope.id, sender: sender, plaintext: plaintext,
+                attestedUsername: attestedUsername, blockedAccounts: blockedAccounts, mayDefer: true
+            )
+        } catch {
+            throw HandlingError(underlying: error)
+        }
     }
 
     // MARK: Group content that arrived before its group
