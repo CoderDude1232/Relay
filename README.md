@@ -20,10 +20,10 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-C611D6?style=flat-square&labelColor=12090F&logo=gnu&logoColor=white" alt="License: AGPL-3.0"></a>
-  <img src="https://img.shields.io/badge/iOS-26+-C611D6?style=flat-square&labelColor=12090F&logo=apple&logoColor=white" alt="iOS 26+">
-  <img src="https://img.shields.io/badge/server-Go-C611D6?style=flat-square&labelColor=12090F&logo=go&logoColor=white" alt="Server: Go">
-  <img src="https://img.shields.io/badge/encryption-Signal%20Protocol%20%2B%20PQXDH-C611D6?style=flat-square&labelColor=12090F&logo=signal&logoColor=white" alt="Encryption: Signal Protocol + PQXDH">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/-AGPL--3.0-C611D6?style=flat-square&logoColor=white&logo=gnu" alt="License: AGPL-3.0"></a>
+  <img src="https://img.shields.io/badge/-iOS%2026+-C611D6?style=flat-square&logoColor=white&logo=apple" alt="iOS 26+">
+  <img src="https://img.shields.io/badge/-Go-C611D6?style=flat-square&logoColor=white&logo=go" alt="Server: Go">
+  <img src="https://img.shields.io/badge/-Signal%20Protocol%20+%20PQXDH-C611D6?style=flat-square&logoColor=white&logo=signal" alt="Encryption: Signal Protocol + PQXDH">
 </p>
 
 ## Features
