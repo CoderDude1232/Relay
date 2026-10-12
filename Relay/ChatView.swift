@@ -1434,30 +1434,23 @@ struct ChatView: View {
             let mime = item.supportedContentTypes.first {
                 $0.conforms(to: .movie) || $0.conforms(to: .video)
             }?.preferredMIMEType ?? "video/mp4"
+            // Without its location metadata; not sent if that can't be done.
+            guard let clean = await MediaSanitizer.video(data, contentType: mime) else { return nil }
             return MessagingService.PendingAttachment(
-                data: data, contentType: mime, filename: "video.mp4", width: 0, height: 0
-            )
-        }
-        if isGIF {
-            let image = UIImage(data: data)
-            return MessagingService.PendingAttachment(
-                data: data,
-                contentType: "image/gif",
-                filename: "image.gif",
-                width: image.map { Int($0.size.width * $0.scale) } ?? 0,
-                height: image.map { Int($0.size.height * $0.scale) } ?? 0
+                data: clean, contentType: mime, filename: mime == "video/quicktime" ? "video.mov" : "video.mp4",
+                width: 0, height: 0
             )
         }
         // Re-encode instead of forwarding the original bytes: strips EXIF/GPS
         // metadata and turns HEIC into the JPEG the content type promises.
-        guard let image = UIImage(data: data),
-              let clean = image.jpegData(compressionQuality: 0.9) else { return nil }
+        // GIFs keep their bytes so they still animate.
+        guard let clean = MediaSanitizer.photo(data) else { return nil }
         return MessagingService.PendingAttachment(
-            data: clean,
-            contentType: "image/jpeg",
-            filename: nil,
-            width: Int(image.size.width * image.scale),
-            height: Int(image.size.height * image.scale)
+            data: clean.data,
+            contentType: clean.contentType,
+            filename: isGIF ? "image.gif" : nil,
+            width: clean.width,
+            height: clean.height
         )
     }
 
@@ -3052,7 +3045,7 @@ private struct AttachmentImageView: View {
         }
         if isGIF {
             gifData = data
-        } else if let ui = UIImage(data: data) {
+        } else if let ui = SafeImage.image(from: data, maxPixelSize: SafeImage.inlinePixelSize) {
             image = ui
         } else {
             failed = true
@@ -3886,7 +3879,7 @@ private struct ViewOnceOverlay: View {
             await service.downloadAttachment(attachment, in: conversationId)
         }
         guard let data = service.attachmentPlaintext(attachment),
-              let ui = UIImage(data: data) else {
+              let ui = SafeImage.image(from: data) else {
             unavailable = true
             return
         }

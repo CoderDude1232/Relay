@@ -40,7 +40,7 @@ enum StickerRenderer {
     /// Vision finds no subject.
     static func subjectPNG(from data: Data) async -> Data? {
         await Task.detached(priority: .userInitiated) { () -> Data? in
-            guard let source = UIImage(data: data)?.normalizedUp(), let cg = source.cgImage else { return nil }
+            guard let source = SafeImage.image(from: data, maxPixelSize: 2048)?.normalizedUp(), let cg = source.cgImage else { return nil }
             let request = VNGenerateForegroundInstanceMaskRequest()
             let handler = VNImageRequestHandler(cgImage: cg)
             guard (try? handler.perform([request])) != nil,

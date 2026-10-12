@@ -232,7 +232,7 @@ struct FileAttachmentBubble: View {
 
     private func isSensitiveFile(_ data: Data, at url: URL) async -> Bool {
         guard SensitiveContent.isEnabled else { return false }
-        if UIImage(data: data) != nil {
+        if SafeImage.isImage(data) {
             return await SensitiveContent.isSensitive(imageData: data, cacheKey: attachment.id)
         }
         return await SensitiveContent.isSensitive(videoAt: url, cacheKey: attachment.id)
@@ -663,39 +663,19 @@ struct AnimatedGIFView: UIViewRepresentable {
         Task.detached(priority: .userInitiated) {
             let animated = Self.buildAnimatedImage(from: data)
             await MainActor.run {
-                if let animated {
-                    iv.animationImages = animated.images
+                if let animated, animated.frames.count > 1 {
+                    iv.animationImages = animated.frames
                     iv.animationDuration = animated.duration
                     iv.startAnimating()
                 } else {
-                    iv.image = UIImage(data: data)
+                    iv.image = animated?.frames.first
                 }
             }
         }
     }
 
-    nonisolated private static func buildAnimatedImage(from data: Data) -> UIImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        let count = CGImageSourceGetCount(source)
-        guard count > 1 else { return UIImage(data: data) }
-        var images: [UIImage] = []
-        var totalDuration: Double = 0
-        for i in 0..<count {
-            guard let cgImage = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
-            let delay = frameDelay(source: source, index: i)
-            totalDuration += delay
-            images.append(UIImage(cgImage: cgImage))
-        }
-        return UIImage.animatedImage(with: images, duration: totalDuration)
-    }
-
-    nonisolated private static func frameDelay(source: CGImageSource, index: Int) -> Double {
-        let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
-        let gifProps = props?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
-        let delay = gifProps?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
-            ?? gifProps?[kCGImagePropertyGIFDelayTime] as? Double
-            ?? 0.1
-        return max(delay, 0.02)
+    nonisolated private static func buildAnimatedImage(from data: Data) -> (frames: [UIImage], duration: Double)? {
+        SafeImage.animation(from: data)
     }
 }
 

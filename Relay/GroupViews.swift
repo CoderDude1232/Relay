@@ -579,7 +579,7 @@ struct GroupAvatarView: View {
     let size: CGFloat
 
     var body: some View {
-        if let data, let image = UIImage(data: data) {
+        if let data, let image = DecodedImageCache.image(for: data) {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()

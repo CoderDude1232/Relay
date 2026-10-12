@@ -30,17 +30,6 @@ enum DecodedImageCache {
     }
 
     private static func downsample(_ data: Data) -> UIImage? {
-        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
-        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
-        let options = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-        ] as CFDictionary
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else {
-            return UIImage(data: data)?.preparingForDisplay()
-        }
-        return UIImage(cgImage: cg)
+        SafeImage.image(from: data, maxPixelSize: maxPixelSize)
     }
 }

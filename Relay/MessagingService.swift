@@ -1616,11 +1616,13 @@ final class MessagingService {
         if let avatar = profile.avatar {
             if avatar.id != existing?.avatarId {
                 if let ciphertext = try? await api.downloadAttachment(id: avatar.id),
-                   let plaintext = try? AttachmentCipher.open(ciphertext, key: avatar.key, digest: avatar.digest) {
+                   let opened = try? AttachmentCipher.open(ciphertext, key: avatar.key, digest: avatar.digest) {
+                    let plaintext = SafeImage.avatarJPEG(from: opened)
                     // Under Communication Safety a flagged photo is never shown,
                     // so it isn't kept either.
-                    let flagged = SensitiveContent.isRestricted
-                        ? await SensitiveContent.isSensitive(imageData: plaintext) : false
+                    let flagged = if let plaintext, SensitiveContent.isRestricted {
+                        await SensitiveContent.isSensitive(imageData: plaintext)
+                    } else { false }
                     avatarData = flagged ? nil : plaintext
                     avatarId = avatar.id
                 } else {
@@ -2925,7 +2927,8 @@ final class MessagingService {
             Task {
                 do {
                     let ciphertext = try await api.downloadAttachment(id: info.avatarId)
-                    let data = try AttachmentCipher.open(ciphertext, key: info.avatarKey, digest: info.avatarDigest)
+                    let opened = try AttachmentCipher.open(ciphertext, key: info.avatarKey, digest: info.avatarDigest)
+                    guard let data = SafeImage.avatarJPEG(from: opened) else { return }
                     if SensitiveContent.isRestricted, await SensitiveContent.isSensitive(imageData: data) { return }
                     try storage.messages.setGroupAvatar(id: info.groupId, avatarData: data)
                     refreshConversations()
@@ -4723,24 +4726,34 @@ final class MessagingService {
         if let text = share.text, !text.isEmpty {
             await sendMessage(text, in: conversationId)
         } else if let imageData = share.imageData {
-            let ct = mimeType(for: share.imageUTI ?? "public.jpeg")
+            // Shared photos carry the original file's EXIF/GPS; re-encode.
+            guard let clean = MediaSanitizer.photo(imageData) else {
+                postRelayNotice("Couldn't send the shared photo.")
+                return conversationId
+            }
             let attachment = PendingAttachment(
-                data: imageData, contentType: ct, filename: nil, width: 0, height: 0
+                data: clean.data, contentType: clean.contentType, filename: nil,
+                width: clean.width, height: clean.height
             )
             await sendMessage("", in: conversationId, attachments: [attachment])
         } else if let fileData = share.fileData, let name = share.filename {
-            let ct = UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType
-                ?? "application/octet-stream"
+            let type = UTType(filenameExtension: (name as NSString).pathExtension)
+            let ct = type?.preferredMIMEType ?? "application/octet-stream"
+            var data = fileData
+            if type?.conforms(to: .movie) == true {
+                // A shared video loses its location metadata like a picked one.
+                guard let clean = await MediaSanitizer.video(fileData, contentType: ct) else {
+                    postRelayNotice("Couldn't send the shared video.")
+                    return conversationId
+                }
+                data = clean
+            }
             let attachment = PendingAttachment(
-                data: fileData, contentType: ct, filename: name, width: 0, height: 0
+                data: data, contentType: ct, filename: name, width: 0, height: 0
             )
             await sendMessage("", in: conversationId, attachments: [attachment])
         }
         return conversationId
-    }
-
-    private func mimeType(for uti: String) -> String {
-        UTType(uti)?.preferredMIMEType ?? "image/jpeg"
     }
 
     // Feeds share-sheet and Siri suggestions.

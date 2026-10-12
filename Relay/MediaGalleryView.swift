@@ -164,7 +164,7 @@ private struct GalleryThumbnail: View {
             await service.downloadAttachment(attachment, in: conversationId)
             data = service.attachmentPlaintext(attachment)
         }
-        if let data, let ui = UIImage(data: data) {
+        if let data, let ui = SafeImage.image(from: data) {
             isSensitive = await SensitiveContent.isSensitive(image: ui, cacheKey: attachment.id)
             withAnimation { image = ui }
         }

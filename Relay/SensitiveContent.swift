@@ -35,9 +35,21 @@ enum SensitiveContent {
     static func isSensitive(imageData data: Data, cacheKey: String? = nil) async -> Bool {
         guard isEnabled else { return false }
         if let cacheKey, let known = cache[cacheKey] { return known }
-        guard let image = UIImage(data: data) else { return false }
-        return await isSensitive(image: image, cacheKey: cacheKey)
+        // An animation is checked frame by frame (up to a sample), so a
+        // harmless first frame can't carry the rest past the check.
+        let frames = SafeImage.sampledFrames(from: data, count: maxCheckedFrames, maxPixelSize: 1024)
+        guard !frames.isEmpty else { return false }
+        var flagged = false
+        for frame in frames where (try? await analyzer.analyzeImage(frame))?.isSensitive == true {
+            flagged = true
+            break
+        }
+        if let cacheKey { cache[cacheKey] = flagged }
+        return flagged
     }
+
+    /// Frames of an animation run through the analyzer.
+    private static let maxCheckedFrames = 12
 
     static func isSensitive(videoAt url: URL, cacheKey: String? = nil) async -> Bool {
         guard isEnabled else { return false }
