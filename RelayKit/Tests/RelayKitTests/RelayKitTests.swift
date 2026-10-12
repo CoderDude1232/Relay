@@ -159,3 +159,31 @@ struct LiveRelayTests {
         await bobSocket.disconnect()
     }
 }
+
+struct DirectoryDecoyTests {
+    @Test func repeatedLookupSendsTheSameRequest() {
+        let seed = Data(repeating: 7, count: 32)
+        let first = DirectoryBuckets.paddedRequest(real: [0x1234], seed: seed)
+        let again = DirectoryBuckets.paddedRequest(real: [0x1234], seed: seed)
+        #expect(first == again)
+        #expect(Set(first).count == first.count)
+        #expect(first.count >= DirectoryBuckets.decoyPaddedRequestSize)
+        #expect(first.contains(0x1234))
+    }
+
+    @Test func aBucketKeepsItsDecoysInAnyBatch() {
+        let seed = Data(repeating: 9, count: 32)
+        let alone = Set(DirectoryBuckets.paddedRequest(real: [0x1234], seed: seed))
+        let withOthers = Set(DirectoryBuckets.paddedRequest(real: [0x1234, 0x0042, 0xbeef], seed: seed))
+        let withOthers2 = Set(DirectoryBuckets.paddedRequest(real: [0x1234, 0x7777], seed: seed))
+        // Intersecting every request that included 0x1234 still leaves its
+        // own decoys alongside it.
+        #expect(alone.intersection(withOthers).intersection(withOthers2).count >= DirectoryBuckets.decoysPerBucket)
+    }
+
+    @Test func differentSeedsPickDifferentDecoys() {
+        let a = Set(DirectoryBuckets.paddedRequest(real: [0x1234], seed: Data(repeating: 1, count: 32)))
+        let b = Set(DirectoryBuckets.paddedRequest(real: [0x1234], seed: Data(repeating: 2, count: 32)))
+        #expect(a.intersection(b).count < 20)
+    }
+}

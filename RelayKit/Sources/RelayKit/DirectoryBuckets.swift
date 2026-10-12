@@ -40,6 +40,55 @@ public enum DirectoryBuckets {
     /// Every lookup asks for at least this many buckets (real plus decoys).
     static let decoyPaddedRequestSize = 512
 
+    /// Keys the decoy choice. The app sets a per-install secret at launch;
+    /// until then it's random for the process.
+    nonisolated(unsafe) public static var decoySeed: Data = Data(SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) })
+
+    /// Decoys that always travel with a given real bucket.
+    static let decoysPerBucket = 63
+    /// Above this many real buckets (a contact sync) the request is already
+    /// a crowd, and per-bucket decoys would multiply it past reason.
+    static let maxBucketsWithOwnDecoys = 64
+
+    /// The real buckets padded with decoys, shuffled. Decoys come from the
+    /// seed, not fresh randomness: each real bucket always brings the same
+    /// companions, so however often someone is looked up, and alongside
+    /// whomever, intersecting the requests leaves at least that bucket's 64.
+    /// The rest of the padding to `decoyPaddedRequestSize` is derived from the
+    /// whole set, so repeating a lookup repeats the request exactly.
+    static func paddedRequest(real: Set<UInt16>, seed: Data = decoySeed) -> [UInt16] {
+        let key = SymmetricKey(data: seed)
+        func stream(_ label: String, _ buckets: [UInt16]) -> () -> UInt16 {
+            var input = Data(label.utf8)
+            for bucket in buckets { input.append(UInt8(bucket >> 8)); input.append(UInt8(bucket & 0xff)) }
+            var counter: UInt32 = 0
+            var pool: [UInt8] = []
+            return {
+                if pool.count < 2 {
+                    var block = input
+                    withUnsafeBytes(of: counter.bigEndian) { block.append(contentsOf: $0) }
+                    counter += 1
+                    pool += Array(HMAC<SHA256>.authenticationCode(for: block, using: key))
+                }
+                defer { pool.removeFirst(2) }
+                return UInt16(pool[0]) << 8 | UInt16(pool[1])
+            }
+        }
+        let sortedReal = real.sorted()
+        var requested = real
+        if real.count <= maxBucketsWithOwnDecoys {
+            for bucket in sortedReal {
+                let next = stream("relay-decoy-bucket", [bucket])
+                for _ in 0..<decoysPerBucket { requested.insert(next()) }
+            }
+        }
+        let fill = stream("relay-decoy-set", sortedReal)
+        while requested.count < decoyPaddedRequestSize { requested.insert(fill()) }
+        // Order from the same stream, so it's deterministic too.
+        let order = stream("relay-decoy-order", sortedReal)
+        return requested.sorted().map { ($0, order()) }.sorted { $0.1 < $1.1 }.map(\.0)
+    }
+
     /// The 16-bit bucket for a token; the only part the relay sees.
     public static func bucket(for token: Data) -> UInt16 {
         var hasher = SHA256()

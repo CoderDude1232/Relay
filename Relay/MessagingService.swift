@@ -462,6 +462,7 @@ final class MessagingService {
             // Older builds donated every chat; suggestions are now opt-in.
             if !PrivacyPreferences.shareSuggestionsEnabled { INInteraction.deleteAll(completion: nil) }
         }
+        loadDirectoryDecoySeed()
         connectionTask = Task { await runConnectionLoop() }
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
         Task { [weak self] in await self?.publishDeviceLabel(force: false) }
@@ -1763,6 +1764,22 @@ final class MessagingService {
         )
         refreshConversations()
         refreshActiveMessages(ifShowing: conversationId)
+    }
+
+    /// The per-install secret that picks directory-lookup decoys, kept so a
+    /// contact's decoys stay the same across launches (see DirectoryBuckets).
+    private func loadDirectoryDecoySeed() {
+        let key = "directory:decoySeed"
+        if let seed = (try? storage.database.query("SELECT value FROM kv WHERE key = ?", [.text(key)]).first?.first?.data) ?? nil,
+           seed.count == 32 {
+            DirectoryBuckets.decoySeed = seed
+            return
+        }
+        var seed = Data(count: 32)
+        guard seed.withUnsafeMutableBytes({ SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }) == errSecSuccess
+        else { return }
+        try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(seed)])
+        DirectoryBuckets.decoySeed = seed
     }
 
     private static func groupAddedByKey(_ groupId: String) -> String { "group:addedBy:" + groupId }
