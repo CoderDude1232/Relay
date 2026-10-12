@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/relayapp/relay-server/internal/limitkey"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -20,7 +21,8 @@ import (
 const demoForbiddenMessage = "This is a demo account, so this is turned off."
 
 // demoCache memoises IsDemoAccount; the flag is set by an operator and rarely
-// changes, so a short TTL is plenty.
+// changes, so a short TTL is plenty. Entries are keyed by a limitkey digest of
+// the account id; a salt rotation only costs a cache miss.
 type demoCache struct {
 	mu      sync.Mutex
 	entries map[string]demoCacheEntry
@@ -35,12 +37,15 @@ const demoCacheTTL = time.Minute
 
 var demoFlags = demoCache{entries: map[string]demoCacheEntry{}}
 
+func demoCacheKey(accountID string) string { return limitkey.Hash("demo", accountID) }
+
 func (s *Server) isDemo(accountID string) bool {
 	if accountID == "" {
 		return false
 	}
+	key := demoCacheKey(accountID)
 	demoFlags.mu.Lock()
-	if e, ok := demoFlags.entries[accountID]; ok && time.Since(e.at) < demoCacheTTL {
+	if e, ok := demoFlags.entries[key]; ok && time.Since(e.at) < demoCacheTTL {
 		demoFlags.mu.Unlock()
 		return e.demo
 	}
@@ -53,7 +58,7 @@ func (s *Server) isDemo(accountID string) bool {
 	if len(demoFlags.entries) > 50_000 {
 		demoFlags.entries = map[string]demoCacheEntry{}
 	}
-	demoFlags.entries[accountID] = demoCacheEntry{demo: demo, at: time.Now()}
+	demoFlags.entries[key] = demoCacheEntry{demo: demo, at: time.Now()}
 	demoFlags.mu.Unlock()
 	return demo
 }
@@ -123,6 +128,7 @@ func (s *Server) handleDemoSignIn(w http.ResponseWriter, r *http.Request) {
 		"mailboxId":      dev.MailboxID,
 	})
 	s.retireReplacedDevices(dev)
+	s.reindexAccount(dev.AccountID) // drops the cleared access key from the directory
 }
 
 // handleDemoStatus tells the app whether it's signed in to a demo account (so

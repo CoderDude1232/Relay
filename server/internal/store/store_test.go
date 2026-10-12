@@ -75,9 +75,6 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 	if _, _, err := s.CreateContactInvite(victim); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := s.CreateDeviceLinkToken(victim, 0); err != nil {
-		t.Fatal(err)
-	}
 	if err := s.StoreNuke(NukeRecord{AccountID: victim, CommandID: uniqueName("nuke"), CreationTimeMs: 1, InitiatingDeviceID: 1, Signature: []byte("s")}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +99,6 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 		`SELECT COUNT(*) FROM kyber_prekeys WHERE account_id = $1`,
 		`SELECT COUNT(*) FROM one_time_prekeys WHERE account_id = $1`,
 		`SELECT COUNT(*) FROM message_queue WHERE account_id = $1`,
-		`SELECT COUNT(*) FROM device_link_tokens WHERE account_id = $1`,
 		`SELECT COUNT(*) FROM contact_invites WHERE account_id = $1`,
 		`SELECT COUNT(*) FROM directory WHERE account_id = $1`,
 		`SELECT COUNT(*) FROM nuke_commands WHERE account_id = $1`,

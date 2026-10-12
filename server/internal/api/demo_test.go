@@ -13,10 +13,18 @@ func TestDemoAccounts(t *testing.T) {
 	for _, c := range []*client{alice, demo1, demo2} {
 		c.uploadKeys(2)
 	}
+	if err := env.api.store.SetAccessKey(demo1.accountID, make([]byte, 32)); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []*client{demo1, demo2} {
 		if err := env.api.store.SetDemoAccount(c.accountID, true); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// An access key learned before the account became a demo account stops
+	// opening the sealed paths.
+	if k, _ := env.api.store.AccessKey(demo1.accountID); len(k) != 0 {
+		t.Fatal("marking an account demo kept its access key")
 	}
 	demoFlags.mu.Lock()
 	demoFlags.entries = map[string]demoCacheEntry{}

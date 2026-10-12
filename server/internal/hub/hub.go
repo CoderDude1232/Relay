@@ -171,6 +171,19 @@ func key(accountID string, deviceID uint32) string {
 	return fmt.Sprintf("%s/%d", accountID, deviceID)
 }
 
+// shareAccount and shareDevice identify a destination in the queue-share and
+// push-coalescing bookkeeping, which outlives any connection: a digest of the
+// account id instead of the id. limitkey.Stable, because a share must still
+// match its entry after a daily salt rotation. The digest has a fixed length,
+// so shareAccount is an unambiguous prefix of shareDevice.
+func shareAccount(accountID string) string {
+	return limitkey.Stable("hub-account", accountID) + "/"
+}
+
+func shareDevice(accountID string, deviceID uint32) string {
+	return shareAccount(accountID) + strconv.FormatUint(uint64(deviceID), 10)
+}
+
 // Register attaches a live session for the device. If the device already had
 // a live session (a reconnect racing the old socket's timeout, or a second
 // connection with the same credentials), the previous one is closed so there
@@ -234,7 +247,8 @@ func (h *Hub) DisconnectAccount(accountID string, reason string) int {
 			c.Close(reason)
 		}
 	}
-	h.shares.releaseWhere(func(d string) bool { return strings.HasPrefix(d, prefix) })
+	shares := shareAccount(accountID)
+	h.shares.releaseWhere(func(d string) bool { return strings.HasPrefix(d, shares) })
 	if len(victims) > 0 {
 		slog.Debug("ws: account sessions disconnected", "count", len(victims))
 	}
@@ -251,7 +265,8 @@ func (h *Hub) DisconnectDevice(accountID string, deviceID uint32, reason string)
 	s := h.sessions[k]
 	delete(h.sessions, k)
 	h.mu.Unlock()
-	h.shares.releaseWhere(func(d string) bool { return d == k })
+	shared := shareDevice(accountID, deviceID)
+	h.shares.releaseWhere(func(d string) bool { return d == shared })
 	if s == nil {
 		return false
 	}
@@ -280,7 +295,7 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 // device; it gets the envelope the next time it connects.
 func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relaypb.Envelope, push bool) error {
 	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}}
-	devKey := key(accountID, deviceID)
+	devKey := shareDevice(accountID, deviceID)
 
 	var blob []byte
 	if !env.Ephemeral {
@@ -390,7 +405,7 @@ func (h *Hub) notifyOffline(accountID string, deviceID uint32, env *relaypb.Enve
 	slog.Debug("push: waking offline device", "kind", kind)
 	// Coalesce bursts: at most one push per device per pushCoalesceWindow,
 	// plus one trailing push so the newest message always gets a wake.
-	h.pushes.submit(key(accountID, deviceID), func() {
+	h.pushes.submit(shareDevice(accountID, deviceID), func() {
 		if err := send(token, payload); err != nil {
 			slog.Warn("push failed", "kind", kind, "err", privlog.Error(err))
 			if tokenInvalid(err) {
@@ -408,8 +423,8 @@ func (h *Hub) BroadcastNuke(accountID string, nuke *relaypb.NukeCommand) {
 	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Nuke{Nuke: nuke}}
 	h.broadcastToAccount(accountID, frame)
 	// StoreNuke purged the account's queues; forget their share bookkeeping.
-	prefix := accountID + "/"
-	h.shares.releaseWhere(func(d string) bool { return strings.HasPrefix(d, prefix) })
+	shares := shareAccount(accountID)
+	h.shares.releaseWhere(func(d string) bool { return strings.HasPrefix(d, shares) })
 }
 
 // BroadcastDeviceListChanged notifies every live session of the account except
@@ -470,6 +485,6 @@ func (h *Hub) Ack(accountID string, deviceID uint32, envelopeID string) error {
 	if err := h.store.Dequeue(envelopeID, accountID, deviceID); err != nil {
 		return err
 	}
-	h.shares.release(key(accountID, deviceID), envelopeID)
+	h.shares.release(shareDevice(accountID, deviceID), envelopeID)
 	return nil
 }

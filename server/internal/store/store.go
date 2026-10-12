@@ -255,17 +255,6 @@ CREATE TABLE IF NOT EXISTS message_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_queue_recipient
     ON message_queue (account_id, device_id, created_at);
-CREATE TABLE IF NOT EXISTS device_link_tokens (
-    token      TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    password   TEXT NOT NULL,
-    code       TEXT NOT NULL,
-    expected_version BIGINT NOT NULL,
-    expires_at BIGINT NOT NULL,
-    created_at BIGINT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_device_link_tokens_expires
-    ON device_link_tokens (expires_at);
 CREATE TABLE IF NOT EXISTS nuke_commands (
     command_id           TEXT PRIMARY KEY,
     account_id           TEXT NOT NULL,
@@ -423,9 +412,6 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// never reused (peers may still hold sessions keyed by it). 0 means
 		// unset; allocation takes the max of this and MAX(device_id).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS next_device_id BIGINT NOT NULL DEFAULT 0`,
-		// The device password is generated at claim time, not stored with the
-		// link token.
-		`UPDATE device_link_tokens SET password = '' WHERE password <> ''`,
 		// Prekey upload times would act as a last-active signal, so they aren't
 		// kept; account and device creation times are rounded to the day.
 		`UPDATE signed_prekeys SET created_at = 0 WHERE created_at <> 0`,
@@ -490,6 +476,15 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`CREATE INDEX IF NOT EXISTS idx_account_notices_device ON account_notices (account_id, device_id)`,
 		// Chat-list blobs keep only the day they last changed.
 		`UPDATE account_storage SET updated_at = updated_at - (updated_at % 86400000) WHERE updated_at % 86400000 <> 0`,
+		// The legacy forward-QR link tokens went with their routes; device
+		// linking uses provisioning sessions.
+		`DROP TABLE IF EXISTS device_link_tokens`,
+		// Supabase auth users still to delete after their account was deleted
+		// (supabase_deletions.go). Only the Supabase user id is kept.
+		`CREATE TABLE IF NOT EXISTS pending_supabase_deletions (
+    user_id    TEXT PRIMARY KEY,
+    created_at BIGINT NOT NULL
+)`,
 	} {
 		if err := s.migrationExec(ctx, stmt); err != nil {
 			return err
@@ -582,13 +577,6 @@ type Device struct {
 	AuthPublicKey  []byte
 	Name           string
 	CreatedAt      int64
-}
-
-type DeviceLinkClaim struct {
-	AccountID string
-	DeviceID  uint32
-	Password  string
-	Username  string
 }
 
 // CreateAccount registers a new account and its primary device (device 1).
@@ -1316,117 +1304,6 @@ func (s *Store) AddDevice(accountID, password string, expectedVersion int64) (ui
 	return next, newVersion, tx.Commit(ctx)
 }
 
-// CreateDeviceLinkToken mints a forward-QR link token. No device password is
-// stored with it: ClaimDeviceLinkToken generates the password and returns it
-// once, so a database read never yields a working credential.
-func (s *Store) CreateDeviceLinkToken(accountID string, expectedVersion int64) (token string, code string, expiresAt int64, err error) {
-	token, err = newSecureToken(32)
-	if err != nil {
-		return "", "", 0, err
-	}
-	code, err = newVerificationCode()
-	if err != nil {
-		return "", "", 0, err
-	}
-	now := time.Now().UnixMilli()
-	expiresAt = now + int64((10*time.Minute)/time.Millisecond)
-	ctx := context.Background()
-
-	// FOR UPDATE makes the version check and token insert atomic, so two
-	// concurrent calls can't both store tokens for the same expectedVersion.
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return "", "", 0, err
-	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, `DELETE FROM device_link_tokens WHERE expires_at < $1`, now); err != nil {
-		return "", "", 0, err
-	}
-	var currentVersion int64
-	if err := tx.QueryRow(ctx, `SELECT device_list_version FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&currentVersion); errors.Is(err, pgx.ErrNoRows) {
-		return "", "", 0, ErrNotFound
-	} else if err != nil {
-		return "", "", 0, err
-	}
-	if currentVersion != expectedVersion {
-		return "", "", 0, ErrDeviceListVersionMismatch
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO device_link_tokens (token, account_id, password, code, expected_version, expires_at, created_at) VALUES ($1, $2, '', $3, $4, $5, $6)`,
-		token, accountID, code, expectedVersion, expiresAt, now); err != nil {
-		return "", "", 0, err
-	}
-	return token, code, expiresAt, tx.Commit(ctx)
-}
-
-func (s *Store) ClaimDeviceLinkToken(token string, code string) (*DeviceLinkClaim, error) {
-	now := time.Now().UnixMilli()
-	ctx := context.Background()
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM device_link_tokens WHERE expires_at < $1`, now); err != nil {
-		return nil, err
-	}
-	var claim DeviceLinkClaim
-	var expiresAt int64
-	var expectedVersion int64
-	err = tx.QueryRow(ctx, `
-		DELETE FROM device_link_tokens
-		WHERE token = $1 AND code = $2
-		RETURNING account_id, expected_version, expires_at`,
-		token, code,
-	).Scan(&claim.AccountID, &expectedVersion, &expiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	if expiresAt < now {
-		return nil, ErrNotFound
-	}
-	// The new device's password is generated here and returned exactly once.
-	claim.Password, err = newSecureToken(32)
-	if err != nil {
-		return nil, err
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(claim.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, err
-	}
-	mailboxID, err := newMailboxID()
-	if err != nil {
-		return nil, err
-	}
-	var currentVersion int64
-	if err := tx.QueryRow(ctx, `SELECT device_list_version FROM accounts WHERE id = $1 FOR UPDATE`, claim.AccountID).Scan(&currentVersion); err != nil {
-		return nil, err
-	}
-	if currentVersion != expectedVersion {
-		return nil, ErrDeviceListVersionMismatch
-	}
-	if err := checkDeviceCap(ctx, tx, claim.AccountID); err != nil {
-		return nil, err
-	}
-	if claim.DeviceID, err = allocateDeviceID(ctx, tx, claim.AccountID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		claim.AccountID, claim.DeviceID, mailboxID, hash, coarseDayMillis()); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, currentVersion+1, claim.AccountID); err != nil {
-		return nil, err
-	}
-	if err := tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1`, claim.AccountID).Scan(&claim.Username); err != nil {
-		return nil, err
-	}
-	return &claim, tx.Commit(ctx)
-}
-
 // CreateProvisioningSession mints a blind mailbox for reversed device linking.
 // The new device creates it, shows its id and ephemeral key in a QR code, and
 // polls FetchProvisioningBlob; the primary stores the ciphertext via
@@ -1501,9 +1378,8 @@ func (s *Store) FetchProvisioningBlob(sessionID string) ([]byte, error) {
 
 // AllocateLinkedDevice creates a new device row for an existing account using a
 // primary-supplied password, guarded by the device-list version to serialize
-// against concurrent link/unlink. Returns the assigned device id. This is the
-// reversed-flow counterpart to ClaimDeviceLinkToken, driven by the
-// authenticated primary after scanning the QR code.
+// against concurrent link/unlink. Returns the assigned device id. It is driven
+// by the authenticated primary after scanning the QR code.
 func (s *Store) AllocateLinkedDevice(accountID, password string, expectedVersion int64) (deviceID uint32, err error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -1677,9 +1553,9 @@ func (s *Store) SupabaseUserID(accountID string) (string, error) {
 }
 
 // DeleteAccount removes an account and everything keyed to it in one
-// transaction: prekeys, queued envelopes, devices, link tokens, contact
-// invites, directory rows, nuke commands, reports it filed, passkeys, and the
-// account row. The username enters the reuse cooldown for everyone. Reports filed
+// transaction: prekeys, queued envelopes, devices, contact invites, directory
+// rows, nuke commands, reports it filed, passkeys, and the account row. A linked Supabase user is queued in pending_supabase_deletions.
+// The username enters the reuse cooldown for everyone. Reports filed
 // against the account are kept. Returns ErrNotFound if the account does not
 // exist.
 //
@@ -1705,6 +1581,14 @@ func (s *Store) DeleteAccount(accountID string) error {
 	if err := s.releaseUsernameTx(ctx, tx, username, ""); err != nil {
 		return err
 	}
+	// Queue the linked Supabase user for deletion in the same transaction, so
+	// a failed or interrupted admin-API call is retried rather than lost.
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pending_supabase_deletions (user_id, created_at)
+		SELECT supabase_user_id, $2 FROM accounts WHERE id = $1 AND COALESCE(supabase_user_id, '') <> ''
+		ON CONFLICT (user_id) DO NOTHING`, accountID, coarseDayMillis()); err != nil {
+		return err
+	}
 	for _, stmt := range []string{
 		// Lock the device rows (see Enqueue) so no envelope lands after the
 		// queue is cleared.
@@ -1715,7 +1599,6 @@ func (s *Store) DeleteAccount(accountID string) error {
 		`DELETE FROM kyber_prekeys WHERE account_id = $1`,
 		`DELETE FROM message_queue WHERE account_id = $1`,
 		`DELETE FROM devices WHERE account_id = $1`,
-		`DELETE FROM device_link_tokens WHERE account_id = $1`,
 		`DELETE FROM contact_invites WHERE account_id = $1`,
 		`DELETE FROM directory WHERE account_id = $1`,
 		`DELETE FROM nuke_commands WHERE account_id = $1`,
@@ -2501,7 +2384,7 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 // relayd runs it hourly:
 //
 //   - message_queue: envelopes older than 14 days
-//   - encrypted_group_invites, provisioning_sessions, device_link_tokens: expired
+//   - encrypted_group_invites, provisioning_sessions: expired
 //   - contact_invites: expired or already used (single-use)
 //   - reports: older than 180 days
 //   - nuke_commands: older than an hour (delivered or stale; see nukeRetentionMillis)
@@ -2517,7 +2400,6 @@ func (s *Store) PurgeExpired() error {
 		{`DELETE FROM account_notices WHERE created_at < $1`, now - accountNoticeRetentionDay*24*60*60*1000},
 		{`DELETE FROM encrypted_group_invites WHERE expires_at < $1`, now},
 		{`DELETE FROM provisioning_sessions WHERE expires_at < $1`, now},
-		{`DELETE FROM device_link_tokens WHERE expires_at < $1`, now},
 		{`DELETE FROM contact_invites WHERE expires_at < $1 OR used_at <> 0`, now},
 		{`DELETE FROM reports WHERE created_at < $1`, now - reportTTLMillis},
 		{`DELETE FROM nuke_commands WHERE created_at < $1`, now - nukeRetentionMillis},
@@ -2589,15 +2471,6 @@ func newSecureToken(bytes int) (string, error) {
 		return "", fmt.Errorf("store: crypto/rand failed: %w", err)
 	}
 	return hex.EncodeToString(b), nil
-}
-
-func newVerificationCode() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("store: crypto/rand failed: %w", err)
-	}
-	n := int(b[0])<<16 | int(b[1])<<8 | int(b[2])
-	return fmt.Sprintf("%06d", n%1000000), nil
 }
 
 func isUniqueViolation(err error) bool {

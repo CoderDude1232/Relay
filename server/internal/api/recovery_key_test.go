@@ -48,8 +48,8 @@ func TestSignInMethodRequestValidation(t *testing.T) {
 	s := New(nil, nil, nil, "", "")
 	demoFlags.mu.Lock()
 	demoFlags.entries = map[string]demoCacheEntry{
-		"acct": {demo: false, at: time.Now()},
-		"demo": {demo: true, at: time.Now()},
+		demoCacheKey("acct"): {demo: false, at: time.Now()},
+		demoCacheKey("demo"): {demo: true, at: time.Now()},
 	}
 	demoFlags.mu.Unlock()
 	t.Cleanup(func() {

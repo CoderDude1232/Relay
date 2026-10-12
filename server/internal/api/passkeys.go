@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/relayapp/relay-server/internal/limitkey"
 	"github.com/relayapp/relay-server/internal/store"
 )
 
@@ -29,9 +30,12 @@ const (
 	DefaultPasskeyOrigin = "https://relaymsg.app"
 
 	passkeySessionTTL = 5 * time.Minute
-	// maxPasskeySessions caps each in-memory ceremony map.
-	maxPasskeySessions  = 10_000
-	maxPasskeyNameRunes = 64
+	// maxPasskeySessions caps each in-memory ceremony map, and
+	// maxPasskeySessionsPerIP the pending unauthenticated ceremonies one source
+	// address may hold in it, so a few addresses can't fill it for everyone.
+	maxPasskeySessions      = 10_000
+	maxPasskeySessionsPerIP = 20
+	maxPasskeyNameRunes     = 64
 	// maxPasskeyFieldBytes bounds each decoded WebAuthn field.
 	maxPasskeyFieldBytes = 16 << 10
 
@@ -47,45 +51,69 @@ var passkeyLoginIPLimiter = newSlidingWindowLimiter(120, time.Hour)
 
 // passkeySessions holds go-webauthn session data between the options and
 // finish calls. Entries are single use and expire after passkeySessionTTL.
+// Keys (account ids or random session ids) and owners (source IPs) are held
+// only as limitkey.Stable digests.
 type passkeySessions struct {
-	mu sync.Mutex
-	m  map[string]passkeySession
+	mu     sync.Mutex
+	m      map[string]passkeySession // by hashed key
+	owners map[string]int            // pending entries per hashed owner
 }
 
 type passkeySession struct {
 	webauthn.SessionData
 	username string // passkey sign-up only
+	owner    string // hashed source IP; "" when not counted per owner
 }
+
+var (
+	errPasskeySessionsFull  = errors.New("too many pending passkey requests; try again later")
+	errPasskeySessionsOwner = errors.New("too many pending passkey requests from this network; try again later")
+)
 
 func newPasskeySessions() *passkeySessions {
-	return &passkeySessions{m: map[string]passkeySession{}}
+	return &passkeySessions{m: map[string]passkeySession{}, owners: map[string]int{}}
 }
 
-// put stores sd under key, replacing any previous entry. It returns false if
-// the map is full of unexpired sessions.
-func (p *passkeySessions) put(key string, sd webauthn.SessionData) bool {
-	return p.putNamed(key, sd, "")
+// put stores sd under key, replacing any previous entry. owner is the source
+// IP of an unauthenticated ceremony, capped at maxPasskeySessionsPerIP pending
+// entries, or "" for a signed-in one (one per account by key). It fails when
+// the owner or the whole map is full of unexpired sessions.
+func (p *passkeySessions) put(key, owner string, sd webauthn.SessionData) error {
+	return p.putNamed(key, owner, sd, "")
 }
 
-func (p *passkeySessions) putNamed(key string, sd webauthn.SessionData, username string) bool {
+func (p *passkeySessions) putNamed(key, owner string, sd webauthn.SessionData, username string) error {
+	hk := limitkey.Stable("passkey-session", key)
+	ho := ""
+	if owner != "" {
+		ho = limitkey.Stable("passkey-owner", owner)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, ok := p.m[key]; !ok && len(p.m) >= maxPasskeySessions {
-		now := time.Now()
-		for k, v := range p.m {
-			if now.After(v.Expires) {
-				delete(p.m, k)
-			}
+	_, replacing := p.m[hk]
+	if ho != "" && p.owners[ho] >= maxPasskeySessionsPerIP {
+		p.pruneLocked(time.Now())
+		if p.owners[ho] >= maxPasskeySessionsPerIP {
+			return errPasskeySessionsOwner
 		}
+	}
+	if !replacing && len(p.m) >= maxPasskeySessions {
+		p.pruneLocked(time.Now())
 		if len(p.m) >= maxPasskeySessions {
-			return false
+			return errPasskeySessionsFull
 		}
+	}
+	if old, ok := p.m[hk]; ok {
+		p.dropLocked(hk, old)
 	}
 	if sd.Expires.IsZero() {
 		sd.Expires = time.Now().Add(passkeySessionTTL)
 	}
-	p.m[key] = passkeySession{sd, username}
-	return true
+	p.m[hk] = passkeySession{sd, username, ho}
+	if ho != "" {
+		p.owners[ho]++
+	}
+	return nil
 }
 
 // take removes and returns the unexpired session under key.
@@ -95,14 +123,53 @@ func (p *passkeySessions) take(key string) (webauthn.SessionData, bool) {
 }
 
 func (p *passkeySessions) takeNamed(key string) (passkeySession, bool) {
+	hk := limitkey.Stable("passkey-session", key)
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	e, ok := p.m[key]
-	delete(p.m, key)
-	if !ok || time.Now().After(e.Expires) {
+	e, ok := p.m[hk]
+	if !ok {
+		return passkeySession{}, false
+	}
+	p.dropLocked(hk, e)
+	if time.Now().After(e.Expires) {
 		return passkeySession{}, false
 	}
 	return e, true
+}
+
+// prune drops expired sessions. Run periodically so abandoned ceremonies
+// don't sit in memory until the map fills.
+func (p *passkeySessions) prune() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pruneLocked(time.Now())
+}
+
+func (p *passkeySessions) pruneLocked(now time.Time) {
+	for k, e := range p.m {
+		if now.After(e.Expires) {
+			p.dropLocked(k, e)
+		}
+	}
+}
+
+func (p *passkeySessions) dropLocked(hk string, e passkeySession) {
+	delete(p.m, hk)
+	if e.owner != "" {
+		if p.owners[e.owner]--; p.owners[e.owner] <= 0 {
+			delete(p.owners, e.owner)
+		}
+	}
+}
+
+// writePasskeySessionError answers a failed put: 429 when the caller's own
+// address holds too many, 503 when the map is full.
+func writePasskeySessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errPasskeySessionsOwner) {
+		httpError(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
+	httpError(w, http.StatusServiceUnavailable, errPasskeySessionsFull.Error())
 }
 
 // SetPasskeyRP configures the WebAuthn relying party: its ID (a registrable
@@ -242,8 +309,8 @@ func (s *Server) handlePasskeyRegisterOptions(w http.ResponseWriter, _ *http.Req
 		internalError(w, err)
 		return
 	}
-	if !s.passkeyReg.put(dev.AccountID, *sd) {
-		httpError(w, http.StatusServiceUnavailable, "too many pending passkey requests; try again later")
+	if err := s.passkeyReg.put(dev.AccountID, "", *sd); err != nil {
+		writePasskeySessionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -353,7 +420,8 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request, dev
 }
 
 func (s *Server) handlePasskeyLoginOptions(w http.ResponseWriter, r *http.Request) {
-	if !passkeyOptionsIPLimiter.allow(clientIP(r)) {
+	ip := clientIP(r)
+	if !passkeyOptionsIPLimiter.allow(ip) {
 		httpError(w, http.StatusTooManyRequests, "too many attempts; try again later")
 		return
 	}
@@ -370,8 +438,8 @@ func (s *Server) handlePasskeyLoginOptions(w http.ResponseWriter, r *http.Reques
 		internalError(w, err)
 		return
 	}
-	if !s.passkeyLogin.put(sessionID, *sd) {
-		httpError(w, http.StatusServiceUnavailable, "too many pending passkey requests; try again later")
+	if err := s.passkeyLogin.put(sessionID, ip, *sd); err != nil {
+		writePasskeySessionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -499,7 +567,8 @@ func newPasskeySessionID() (string, error) {
 // handlePasskeySignupOptions starts a sign-up with a passkey and no email:
 // a fresh user handle and a registration ceremony for the requested username.
 func (s *Server) handlePasskeySignupOptions(w http.ResponseWriter, r *http.Request) {
-	if !passkeyOptionsIPLimiter.allow("signup:" + clientIP(r)) {
+	ip := clientIP(r)
+	if !passkeyOptionsIPLimiter.allow("signup:" + ip) {
 		httpError(w, http.StatusTooManyRequests, "too many attempts; try again later")
 		return
 	}
@@ -535,8 +604,8 @@ func (s *Server) handlePasskeySignupOptions(w http.ResponseWriter, r *http.Reque
 		internalError(w, err)
 		return
 	}
-	if !s.passkeySignup.putNamed(sessionID, *sd, req.Username) {
-		httpError(w, http.StatusServiceUnavailable, "too many pending passkey requests; try again later")
+	if err := s.passkeySignup.putNamed(sessionID, ip, *sd, req.Username); err != nil {
+		writePasskeySessionError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -670,8 +739,8 @@ func (s *Server) handleRemoveEmailOptions(w http.ResponseWriter, _ *http.Request
 		internalError(w, err)
 		return
 	}
-	if !s.passkeyEmailRemove.put(dev.AccountID, *sd) {
-		httpError(w, http.StatusServiceUnavailable, "too many pending passkey requests; try again later")
+	if err := s.passkeyEmailRemove.put(dev.AccountID, "", *sd); err != nil {
+		writePasskeySessionError(w, err)
 		return
 	}
 	ids := make([]string, len(user.creds))

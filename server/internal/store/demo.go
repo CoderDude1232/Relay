@@ -14,6 +14,15 @@ import (
 // operator with SQL. They live in their own island: they only see and reach
 // other demo accounts, their credentials are locked, and deleting one resets it
 // instead (see the API's demo checks).
+//
+// The unauthenticated sealed paths (sealed send, call ring, sealed key fetch)
+// can't tell who is asking; they only check the target's access key, which the
+// island never hands across. So that a key learned before an account became a
+// demo account stops working, marking it demo, a review sign-in and a reset
+// all clear its access key (the signed-in device uploads its own).
+
+// clearAccessKeySQL drops the account's access key (callers reindex the directory).
+const clearAccessKeySQL = `UPDATE accounts SET access_key = NULL WHERE id = $1`
 
 // ErrDemoAccount is returned by mutations a demo account isn't allowed.
 var ErrDemoAccount = errors.New("store: demo account")
@@ -89,12 +98,18 @@ func (s *Store) ResetDemoAccount(accountID string) ([]uint32, error) {
 	if _, err := tx.Exec(ctx, `DELETE FROM account_storage WHERE account_id = $1`, accountID); err != nil {
 		return nil, err
 	}
+	if _, err := tx.Exec(ctx, clearAccessKeySQL, accountID); err != nil {
+		return nil, err
+	}
 	return removed, tx.Commit(ctx)
 }
 
 // SetDemoAccount marks or unmarks a demo account (operator use and tests).
+// Marking one clears its access key.
 func (s *Store) SetDemoAccount(accountID string, demo bool) error {
-	tag, err := s.db.Exec(context.Background(), `UPDATE accounts SET is_demo = $2 WHERE id = $1`, accountID, demo)
+	tag, err := s.db.Exec(context.Background(),
+		`UPDATE accounts SET is_demo = $2, access_key = CASE WHEN $2 THEN NULL ELSE access_key END WHERE id = $1`,
+		accountID, demo)
 	if err != nil {
 		return err
 	}
@@ -138,6 +153,9 @@ func (s *Store) DemoSignIn() (dev AddedDevice, devicePassword string, err error)
 		return AddedDevice{}, "", err
 	}
 	if dev.DeviceID, dev.MailboxID, dev.DeviceListVersion, err = addDeviceTx(ctx, tx, dev.AccountID, deviceHash); err != nil {
+		return AddedDevice{}, "", err
+	}
+	if _, err = tx.Exec(ctx, clearAccessKeySQL, dev.AccountID); err != nil {
 		return AddedDevice{}, "", err
 	}
 	return dev, devicePassword, tx.Commit(ctx)

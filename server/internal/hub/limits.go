@@ -32,7 +32,7 @@ type queueShares struct {
 
 type shareEntry struct {
 	share  string
-	device string // hub session key of the destination ("account/device")
+	device string // shareDevice of the destination
 	at     time.Time
 }
 

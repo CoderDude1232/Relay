@@ -81,38 +81,6 @@ func TestDeviceCapOnEveryAddPath(t *testing.T) {
 	if _, err := s.AllocateLinkedDevice(acct, "one-too-many", v); !errors.Is(err, ErrDeviceLimit) {
 		t.Fatalf("AllocateLinkedDevice over cap: %v", err)
 	}
-	token, code, _, err := s.CreateDeviceLinkToken(acct, v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.ClaimDeviceLinkToken(token, code); !errors.Is(err, ErrDeviceLimit) {
-		t.Fatalf("ClaimDeviceLinkToken over cap: %v", err)
-	}
-}
-
-func TestLinkTokenStoresNoPassword(t *testing.T) {
-	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("link"), nil, "", "device-pw-1", AccountPassword{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, code, _, err := s.CreateDeviceLinkToken(acct, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := s.countRows(t, `SELECT COUNT(*) FROM device_link_tokens WHERE account_id = $1 AND password <> ''`, acct); n != 0 {
-		t.Fatal("link token row holds a password")
-	}
-	claim, err := s.ClaimDeviceLinkToken(token, code)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claim.Password == "" {
-		t.Fatal("claim returned no password")
-	}
-	if _, err := s.Authenticate(acct, claim.DeviceID, claim.Password); err != nil {
-		t.Fatalf("claimed credentials don't authenticate: %v", err)
-	}
 }
 
 func TestQueuePaging(t *testing.T) {

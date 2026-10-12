@@ -263,10 +263,6 @@ var preKeyPairOTKLimiter = newTokenBucketLimiter(6, time.Hour)
 // below what enumerating session ids would need.
 var provisioningPollIPLimiter = newTokenBucketLimiter(120, 2*time.Minute)
 
-// Unauthenticated legacy link claims (POST /v1/devices/link-claims) per source
-// IP bucket: 20 per hour, bounding guesses at (token, verification code).
-var linkClaimIPLimiter = newTokenBucketLimiter(20, time.Hour)
-
 // Contact invites minted per account: 50 per rolling day (each is a DB row).
 var contactInviteLimiter = newTokenBucketLimiter(50, 24*time.Hour)
 

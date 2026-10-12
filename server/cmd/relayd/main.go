@@ -60,6 +60,17 @@ func runRetentionSweeper(st *store.Store, h *hub.Hub) {
 	}
 }
 
+// runSupabaseDeletionRetry retries queued Supabase auth-user deletions (left by
+// account deletions that couldn't reach Supabase) at startup and then hourly.
+func runSupabaseDeletionRetry(h *api.Server) {
+	h.RetrySupabaseDeletions(context.Background())
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.RetrySupabaseDeletions(context.Background())
+	}
+}
+
 // envOr returns the environment variable's value, or def when it's unset or empty.
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -230,6 +241,7 @@ func main() {
 			}
 			apiServer.SetSupabaseServiceKey(string(key))
 			slog.Info("supabase auth-user deletion enabled")
+			go runSupabaseDeletionRetry(apiServer)
 		}
 	}
 	if err := api.SetTrustedProxies(*trustedProxies); err != nil {

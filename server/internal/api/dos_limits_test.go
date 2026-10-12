@@ -13,8 +13,8 @@ import (
 	"github.com/relayapp/relay-server/internal/blob"
 )
 
-// The unauthenticated provisioning poll and legacy link claim are limited per
-// source IP before any store access (the server here has no store).
+// The unauthenticated provisioning poll is limited per source IP before any
+// store access (the server here has no store).
 func TestUnauthenticatedLinkingIPLimits(t *testing.T) {
 	for _, l := range allLimiters {
 		l.reset()
@@ -35,16 +35,8 @@ func TestUnauthenticatedLinkingIPLimits(t *testing.T) {
 	if got := do("GET", "/v1/provisioning-sessions/abc", ip+":1"); got != http.StatusTooManyRequests {
 		t.Fatalf("provisioning poll over budget: got %d, want 429", got)
 	}
-	for !linkClaimIPLimiter.exhausted(ip) {
-		linkClaimIPLimiter.allow(ip)
-	}
-	if got := do("POST", "/v1/devices/link-claims", ip+":1"); got != http.StatusTooManyRequests {
-		t.Fatalf("link claim over budget: got %d, want 429", got)
-	}
-	// Another source is unaffected (400: the empty body fails validation
-	// before the store is touched).
-	if got := do("POST", "/v1/devices/link-claims", "198.51.100.9:1"); got != http.StatusBadRequest {
-		t.Fatalf("other source: got %d, want 400", got)
+	if provisioningPollIPLimiter.exhausted("198.51.100.9") {
+		t.Fatal("another source shares the exhausted budget")
 	}
 }
 

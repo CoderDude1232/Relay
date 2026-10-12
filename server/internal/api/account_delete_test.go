@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +55,79 @@ func TestDeleteAccount(t *testing.T) {
 	again := env.registerAs(name, "password-again")
 	if again.accountID == alice.accountID {
 		t.Fatal("re-registration reused the deleted account id")
+	}
+}
+
+// TestDeleteAccountRetriesSupabaseDeletion: when Supabase can't be reached at
+// deletion time the linked user stays queued, and a later retry deletes it.
+func TestDeleteAccountRetriesSupabaseDeletion(t *testing.T) {
+	env := newTestEnv(t)
+	stubSupabase(env)
+	var mu sync.Mutex
+	down := true
+	var deleted []string
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method != http.MethodDelete || !strings.HasPrefix(r.URL.Path, "/auth/v1/admin/users/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if down {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/auth/v1/admin/users/"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(admin.Close)
+	env.api.SetSupabaseAuth(admin.URL, "anon")
+	env.api.SetSupabaseServiceKey("service")
+
+	sfx := uniqueUsername("")
+	uid := "del-u" + sfx
+	name := "delsb" + strings.ReplaceAll(sfx, "-", "")
+	var resp struct {
+		AccountID string `json:"accountId"`
+		DeviceID  uint32 `json:"deviceId"`
+	}
+	env.doJSON("POST", "/v1/accounts", "", "", map[string]string{
+		"username": name, "password": "device-pw-1", "supabaseAccessToken": uid + "|d" + sfx + "@x.com|0",
+	}, http.StatusCreated, &resp)
+	c := &client{env: env, username: name, accountID: resp.AccountID, deviceID: resp.DeviceID, password: "device-pw-1"}
+	env.clients[c.authUser()] = c
+	c.uploadDeviceAuthKey()
+
+	// Supabase is down: the account still goes, the user stays queued.
+	env.doJSON("DELETE", "/v1/accounts/me", c.authUser(), c.password, nil, http.StatusNoContent, nil)
+	pending := func() bool {
+		ids, err := env.api.store.PendingSupabaseDeletions(1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range ids {
+			if id == uid {
+				return true
+			}
+		}
+		return false
+	}
+	if !pending() {
+		t.Fatal("supabase user not queued after a failed delete")
+	}
+
+	mu.Lock()
+	down = false
+	mu.Unlock()
+	env.api.RetrySupabaseDeletions(context.Background())
+	mu.Lock()
+	gotDeleted := strings.Join(deleted, ",")
+	mu.Unlock()
+	if !strings.Contains(gotDeleted, uid) {
+		t.Fatalf("retry did not delete the supabase user (deleted %q)", gotDeleted)
+	}
+	if pending() {
+		t.Fatal("supabase user still queued after a successful retry")
 	}
 }
 

@@ -193,7 +193,7 @@ func TestPasskeyCeremonyVerification(t *testing.T) {
 			creation.Response.Attestation != protocol.PreferNoAttestation {
 			t.Fatalf("sign-up options: %+v", creation.Response)
 		}
-		if !s.passkeySignup.putNamed("sid", *sd, "newbie") {
+		if s.passkeySignup.putNamed("sid", "", *sd, "newbie") != nil {
 			t.Fatal("put failed")
 		}
 		sess, ok := s.passkeySignup.takeNamed("sid")
@@ -329,27 +329,71 @@ func TestPasskeyRequestValidation(t *testing.T) {
 
 func TestPasskeySessions(t *testing.T) {
 	p := newPasskeySessions()
-	if !p.put("a", webauthn.SessionData{Challenge: "c"}) {
+	if p.put("a", "", webauthn.SessionData{Challenge: "c"}) != nil {
 		t.Fatal("put failed")
 	}
 	if sd, ok := p.take("a"); !ok || sd.Challenge != "c" || sd.Expires.IsZero() {
 		t.Fatalf("take: %+v %v", sd, ok)
 	}
-	p.put("old", webauthn.SessionData{Expires: time.Now().Add(-time.Second)})
+	p.put("old", "", webauthn.SessionData{Expires: time.Now().Add(-time.Second)})
 	if _, ok := p.take("old"); ok {
 		t.Fatal("expired session returned")
+	}
+	for k := range p.m {
+		if k == "a" || k == "old" {
+			t.Fatal("raw key held in the session map")
+		}
 	}
 	for i := 0; i < maxPasskeySessions; i++ {
 		p.m["live-"+strconv.Itoa(i)] = passkeySession{SessionData: webauthn.SessionData{Expires: time.Now().Add(time.Minute)}}
 	}
-	if p.put("overflow", webauthn.SessionData{}) {
+	if p.put("overflow", "", webauthn.SessionData{}) != errPasskeySessionsFull {
 		t.Fatal("put beyond the cap succeeded")
 	}
 	for k := range p.m {
 		p.m[k] = passkeySession{SessionData: webauthn.SessionData{Expires: time.Now().Add(-time.Second)}}
 	}
-	if !p.put("overflow", webauthn.SessionData{}) || len(p.m) != 1 {
+	if p.put("overflow", "", webauthn.SessionData{}) != nil || len(p.m) != 1 {
 		t.Fatalf("expired sessions not pruned at the cap: %d left", len(p.m))
+	}
+}
+
+func TestPasskeySessionsPerOwner(t *testing.T) {
+	p := newPasskeySessions()
+	for i := 0; i < maxPasskeySessionsPerIP; i++ {
+		if err := p.put("s"+strconv.Itoa(i), "198.51.100.1", webauthn.SessionData{}); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+	if p.put("one-more", "198.51.100.1", webauthn.SessionData{}) != errPasskeySessionsOwner {
+		t.Fatal("per-owner cap not enforced")
+	}
+	// Another address is unaffected.
+	if p.put("other", "198.51.100.2", webauthn.SessionData{}) != nil {
+		t.Fatal("another owner refused")
+	}
+	// Taking a session frees its owner's slot.
+	if _, ok := p.take("s0"); !ok {
+		t.Fatal("take failed")
+	}
+	if p.put("one-more", "198.51.100.1", webauthn.SessionData{}) != nil {
+		t.Fatal("slot not freed by take")
+	}
+	// Expired sessions free their slots when the owner is at the cap, and on prune.
+	for k, e := range p.m {
+		e.Expires = time.Now().Add(-time.Second)
+		p.m[k] = e
+	}
+	if p.put("after-expiry", "198.51.100.1", webauthn.SessionData{}) != nil {
+		t.Fatal("expired sessions still counted against the owner")
+	}
+	for k, e := range p.m {
+		e.Expires = time.Now().Add(-time.Second)
+		p.m[k] = e
+	}
+	p.prune()
+	if len(p.m) != 0 || len(p.owners) != 0 {
+		t.Fatalf("prune left %d sessions, %d owners", len(p.m), len(p.owners))
 	}
 }
 

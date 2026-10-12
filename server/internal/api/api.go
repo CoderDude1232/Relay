@@ -83,10 +83,10 @@ type Server struct {
 
 	// Passkeys (passkeys.go). webauthn is nil until SetPasskeyRP succeeds.
 	webauthn           *webauthn.WebAuthn
-	passkeyReg         *passkeySessions // keyed by account id
-	passkeyLogin       *passkeySessions // keyed by random session id
-	passkeySignup      *passkeySessions // keyed by random session id
-	passkeyEmailRemove *passkeySessions // keyed by account id
+	passkeyReg         *passkeySessions // keyed by account id (hashed)
+	passkeyLogin       *passkeySessions // keyed by random session id, owned by source IP
+	passkeySignup      *passkeySessions // keyed by random session id, owned by source IP
+	passkeyEmailRemove *passkeySessions // keyed by account id (hashed)
 }
 
 // AppleRevoker exchanges a Sign in with Apple authorization code for the
@@ -152,9 +152,54 @@ func (s *Server) SetSupabaseServiceKey(key string) {
 	s.supabaseServiceKey = strings.TrimSpace(key)
 }
 
+// supabaseDeletionEnabled reports whether Supabase auth users can be deleted.
+func (s *Server) supabaseDeletionEnabled() bool {
+	return s.supabaseURL != "" && s.supabaseServiceKey != ""
+}
+
+// supabaseDeletionBatch bounds the queued deletions retried per sweep.
+const supabaseDeletionBatch = 100
+
+// finishSupabaseDeletion deletes a Supabase user queued by account deletion and
+// takes it off the queue once that worked. On failure it stays queued for
+// RetrySupabaseDeletions. A user linked to an account again is not deleted.
+func (s *Server) finishSupabaseDeletion(ctx context.Context, userID string) error {
+	if linked, err := s.store.SupabaseUserLinked(userID); err != nil {
+		return err
+	} else if !linked {
+		if err := s.deleteSupabaseUser(ctx, userID); err != nil {
+			return err
+		}
+	}
+	return s.store.ClearPendingSupabaseDeletion(userID)
+}
+
+// RetrySupabaseDeletions retries the Supabase user deletions that failed when
+// their accounts were deleted. relayd runs it periodically. Without a service
+// key it does nothing and the queue waits.
+func (s *Server) RetrySupabaseDeletions(ctx context.Context) {
+	if !s.supabaseDeletionEnabled() {
+		return
+	}
+	ids, err := s.store.PendingSupabaseDeletions(supabaseDeletionBatch)
+	if err != nil {
+		slog.Warn("supabase deletion retry: listing failed", "err", privlog.Error(err))
+		return
+	}
+	failures := 0
+	for _, id := range ids {
+		if err := s.finishSupabaseDeletion(ctx, id); err != nil {
+			// A few failures in a row mean Supabase is down; wait for the next run.
+			if failures++; failures >= 3 {
+				return
+			}
+		}
+	}
+}
+
 // deleteSupabaseUser removes a Supabase auth user via the admin API. Account
-// deletion treats it as best effort (the relay account is already gone, so a
-// failure is only logged); email removal fails the request instead. Without a
+// deletion queues the user first and retries until this succeeds (see
+// finishSupabaseDeletion); email removal fails the request instead. Without a
 // service key configured (development) it does nothing and returns nil.
 func (s *Server) deleteSupabaseUser(ctx context.Context, userID string) error {
 	if s.supabaseURL == "" || s.supabaseServiceKey == "" || userID == "" {
@@ -305,8 +350,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.handleClaimContactInvite) // unauthenticated: token is the capability
 	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
-	mux.HandleFunc("POST /v1/devices/link-invitations", s.auth(s.handleCreateDeviceLinkInvitation))
-	mux.HandleFunc("POST /v1/devices/link-claims", s.handleClaimDeviceLink)
 	// Reversed device linking: the new device creates a provisioning session and
 	// shows a QR; the primary scans it, creates the device, and stores an
 	// encrypted payload the new device polls for. The path is not under
@@ -1310,7 +1353,9 @@ func (s *Server) handleRecoverAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "email recovery unavailable")
 		return
 	}
-	lockKey := hex.EncodeToString(token)
+	// Keyed by a digest of the email token, never the token itself. The salt
+	// rotates daily, which forgets the backoff like registrationLockKey does.
+	lockKey := "recover:" + limitkey.Hash("recover", string(token))
 	if !recoveryLockout.attempt(lockKey) {
 		httpError(w, http.StatusTooManyRequests, "too many recovery attempts; try again later")
 		return
@@ -1487,72 +1532,6 @@ func (s *Server) handleAddDevice(w http.ResponseWriter, r *http.Request, dev *st
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"accountId": dev.AccountID, "deviceId": deviceID, "mailboxId": mailboxID, "deviceListVersion": version})
 	s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_ADDED, deviceID)
-}
-
-func (s *Server) handleCreateDeviceLinkInvitation(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-	var req struct {
-		Auth deviceMutationAuth `json:"auth"`
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		httpError(w, http.StatusBadRequest, "device mutation signature required")
-		return
-	}
-	if err := verifyDeviceMutation(dev, req.Auth, "link", 0, ""); err != nil {
-		httpError(w, http.StatusForbidden, err.Error())
-		return
-	}
-	token, code, expiresAt, err := s.store.CreateDeviceLinkToken(dev.AccountID, req.Auth.ExpectedVersion)
-	if err != nil {
-		if errors.Is(err, store.ErrDeviceListVersionMismatch) {
-			httpError(w, http.StatusConflict, "device list changed; refresh and try again")
-			return
-		}
-		internalError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"linkToken":        token,
-		"verificationCode": code,
-		"expiresAt":        expiresAt,
-	})
-}
-
-func (s *Server) handleClaimDeviceLink(w http.ResponseWriter, r *http.Request) {
-	if !linkClaimIPLimiter.allow(clientIP(r)) {
-		httpError(w, http.StatusTooManyRequests, "too many link attempts; try again later")
-		return
-	}
-	var req struct {
-		LinkToken        string `json:"linkToken"`
-		VerificationCode string `json:"verificationCode"`
-	}
-	if err := decodeJSON(r, &req); err != nil || req.LinkToken == "" || req.VerificationCode == "" {
-		httpError(w, http.StatusBadRequest, "linkToken and verificationCode required")
-		return
-	}
-	claim, err := s.store.ClaimDeviceLinkToken(req.LinkToken, req.VerificationCode)
-	if errors.Is(err, store.ErrNotFound) {
-		httpError(w, http.StatusNotFound, "link code expired or already used")
-		return
-	}
-	if errors.Is(err, store.ErrDeviceListVersionMismatch) {
-		httpError(w, http.StatusConflict, "device list changed; create a new link code")
-		return
-	}
-	if errors.Is(err, store.ErrDeviceLimit) {
-		httpError(w, http.StatusConflict, "linked device limit reached; unlink a device first")
-		return
-	}
-	if err != nil {
-		internalError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"accountId": claim.AccountID,
-		"deviceId":  claim.DeviceID,
-		"password":  claim.Password,
-		"username":  claim.Username,
-	})
 }
 
 // handleCreateProvisioningSession creates a provisioning session for reversed
@@ -2464,6 +2443,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 			return
 		}
 		s.hub.DisconnectAccount(dev.AccountID, "account deleted")
+		s.reindexAccount(dev.AccountID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -2481,7 +2461,10 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 		return
 	}
 	s.hub.DisconnectAccount(dev.AccountID, "account deleted")
-	_ = s.deleteSupabaseUser(context.WithoutCancel(r.Context()), supabaseUserID) // best effort; logged
+	// DeleteAccount queued the Supabase user; a failure here is retried later.
+	if supabaseUserID != "" && s.supabaseDeletionEnabled() {
+		_ = s.finishSupabaseDeletion(context.WithoutCancel(r.Context()), supabaseUserID)
+	}
 	if req.AppleAuthorizationCode != "" && s.appleRevoker != nil {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), appleRevokeTimeout)
 		if err := s.appleRevoker.RevokeAuthorizationCode(ctx, req.AppleAuthorizationCode); err != nil {
@@ -2774,6 +2757,9 @@ func (s *Server) PruneStaleLimiterKeys() {
 	}
 	recoveryLockout.prune()
 	oprfBudget.prune()
+	for _, p := range []*passkeySessions{s.passkeyReg, s.passkeyLogin, s.passkeySignup, s.passkeyEmailRemove} {
+		p.prune()
+	}
 }
 
 func (l *slidingWindowLimiter) prune() {

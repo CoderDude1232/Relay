@@ -79,6 +79,24 @@ func HashCurrentAndPrevious(parts ...string) (cur, prev string) {
 	return cur, prev
 }
 
+// stableSalt keys Stable. It is random per process and never rotates.
+var stableSalt = func() []byte {
+	s := make([]byte, 32)
+	if _, err := rand.Read(s); err != nil {
+		panic("limitkey: crypto/rand failed: " + err.Error())
+	}
+	return s
+}()
+
+// Stable is Hash under a salt that lasts as long as the process. It is for
+// in-memory bookkeeping that must still match its entries after a daily
+// rotation (queue shares live for the 14-day queue TTL, a pending ceremony
+// must be found again minutes later). Digests are linkable for the life of the
+// process, so prefer Hash where a reset at rotation is harmless.
+func Stable(parts ...string) string {
+	return hashWith(stableSalt, parts)
+}
+
 // IPBucket maps a request's RemoteAddr ("host:port", or a bare host) to the
 // unit an IP-based limiter should count: the full address for IPv4, and the
 // /64 prefix for IPv6 (a single subscriber is routinely handed a whole /64, so
