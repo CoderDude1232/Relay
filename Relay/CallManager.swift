@@ -2191,6 +2191,16 @@ final class CallManager: NSObject {
     private func reportIncomingGroupRing(callerName: String, kind: CallKind) {
         guard !Self.isOnMac else {
             startRingtone()
+            // No CallKit to time the ring out: stop after 45 s like a 1:1 call,
+            // so a ring whose leave never arrives doesn't go on forever.
+            let callId = groupCallId
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(45))
+                guard let self, self.groupRingInfo != nil, self.groupCallId == callId else { return }
+                self.stopRingtone()
+                self.groupRingInfo = nil
+                self.endGroupCallCleanup(reportToCallKit: false)
+            }
             return
         }
         let uuid = UUID()
