@@ -60,7 +60,7 @@ func TestCreatePasskeyAccount(t *testing.T) {
 func TestSignInMethodsAndRemoveEmail(t *testing.T) {
 	s := openTestStore(t)
 	token := []byte(uniqueName("email-token"))
-	acct, _, err := s.CreateAccount(uniqueName("rm-email"), token, uniqueName("supa"), "device-pw-1", LegacyPassword("account-pw-1"))
+	acct, _, err := s.CreateAccount(uniqueName("rm-email"), token, uniqueName("supa"), "device-pw-1", AccountPassword{Key: "derived-key-0123456789abcdef"})
 	if err != nil {
 		t.Fatal(err)
 	}

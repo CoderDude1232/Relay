@@ -312,6 +312,7 @@ extension MessagingService {
     }
 
     private static let recoveryKeyHashV2KV = "relay.recoveryKey.hashV2"
+    private static let accountPasswordUpdateNoticeKV = "relay.accountPassword.updateNotice"
 
     /// Re-registers a recovery key that this device knows under the hash
     /// sign-in now checks (older builds registered a hash of the raw key, which
@@ -324,6 +325,17 @@ extension MessagingService {
         } catch {
             // Try again next start.
         }
+    }
+
+    /// Tells the user, once, when their account password was stored by an
+    /// older build: until they enter it again it can't be used to sign in on
+    /// a new device. Settings keeps showing it until they do.
+    func noteAccountPasswordNeedsUpdateIfNeeded() async {
+        guard !isDemoAccount, kvData(Self.accountPasswordUpdateNoticeKV) == nil,
+              let methods = try? await apiClient.signInMethods(), methods.accountPasswordNeedsUpdate
+        else { return }
+        setKV(Self.accountPasswordUpdateNoticeKV, Data([1]))
+        postRelayNotice("Please enter your account password again in Settings → Account → Account Password. Relay now stores it differently, and until you do it can't be used to sign in on a new device.")
     }
 
     /// Makes a new recovery key (replacing any old one), registers its hash,

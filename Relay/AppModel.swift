@@ -917,8 +917,11 @@ final class AppModel {
             )
         } catch RelayAPIError.http(status: 404, _) {
             throw ResetError(message: "No Relay account uses that email address.")
-        } catch RelayAPIError.http(status: 403, _) {
+        } catch RelayAPIError.http(status: 403, let message) where message.contains("fresh") || message.isEmpty {
             throw ResetError(message: "That code has expired. Request a new one and try again.")
+        } catch RelayAPIError.http(status: 403, let message) {
+            // A passkey or recovery key protects the account, or it's a demo account.
+            throw ResetError(message: message)
         } catch RelayAPIError.http(status: 401, _) {
             throw ResetError(message: "Couldn't verify your email. Request a new code and try again.")
         } catch RelayAPIError.http(status: 429, _) {

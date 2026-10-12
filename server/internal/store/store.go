@@ -177,9 +177,27 @@ func isLocalDBHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// migrationExec runs one migration step without the pool's per-statement
+// timeouts: an ALTER TABLE waiting behind live traffic, or an index build on a
+// big table, would otherwise fail and stop relayd from starting.
+func (s *Store) migrationExec(ctx context.Context, sql string) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '120s'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, sql); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) migrate() error {
 	ctx := context.Background()
-	_, err := s.db.Exec(ctx, `
+	err := s.migrationExec(ctx, `
 CREATE TABLE IF NOT EXISTS accounts (
     id            TEXT PRIMARY KEY,
     username      TEXT NOT NULL UNIQUE,
@@ -473,7 +491,7 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// Chat-list blobs keep only the day they last changed.
 		`UPDATE account_storage SET updated_at = updated_at - (updated_at % 86400000) WHERE updated_at % 86400000 <> 0`,
 	} {
-		if _, err := s.db.Exec(context.Background(), stmt); err != nil {
+		if err := s.migrationExec(ctx, stmt); err != nil {
 			return err
 		}
 	}

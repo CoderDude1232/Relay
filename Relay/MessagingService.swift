@@ -577,7 +577,10 @@ final class MessagingService {
                     refreshConversations()
                     // With the socket live, send the receipts the NSE deferred.
                     await drainPendingControlMessages()
-                    Task { await self.upgradeRecoveryKeyHashIfNeeded() }
+                    Task {
+                        await self.upgradeRecoveryKeyHashIfNeeded()
+                        await self.noteAccountPasswordNeedsUpdateIfNeeded()
+                    }
                     if !didRepublishKeysThisLaunch {
                         didRepublishKeysThisLaunch = true
                         do {

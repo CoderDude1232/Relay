@@ -1082,6 +1082,20 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
     public let passkeys: Int
     public let accountPassword: Bool
     public let recoveryKey: Bool
+    /// The account password was stored by an older build and can't be used
+    /// to sign in until it's entered again on a signed-in device.
+    public let accountPasswordNeedsUpdate: Bool
+
+    enum CodingKeys: String, CodingKey { case email, passkeys, accountPassword, recoveryKey, accountPasswordNeedsUpdate }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        email = try c.decode(Bool.self, forKey: .email)
+        passkeys = try c.decode(Int.self, forKey: .passkeys)
+        accountPassword = try c.decode(Bool.self, forKey: .accountPassword)
+        recoveryKey = try c.decode(Bool.self, forKey: .recoveryKey)
+        accountPasswordNeedsUpdate = try c.decodeIfPresent(Bool.self, forKey: .accountPasswordNeedsUpdate) ?? false
+    }
 }
 
 /// A passkey sign-up challenge (`POST /v1/passkeys/signup/options`).

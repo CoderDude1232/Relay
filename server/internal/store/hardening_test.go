@@ -273,8 +273,12 @@ func TestResetAccountPassword(t *testing.T) {
 func TestRecoverAccountUpgradesToKey(t *testing.T) {
 	s := openTestStore(t)
 	token := []byte(uniqueName("tok"))
-	if _, _, err := s.CreateAccount(uniqueName("up"), token, "", "device-pw-1", LegacyPassword("old-account-pw")); err != nil {
+	acct, _, err := s.CreateAccount(uniqueName("up"), token, "", "device-pw-1", LegacyPassword("old-account-pw"))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if m, err := s.AccountSignInMethods(acct); err != nil || !m.AccountPassword || !m.AccountPasswordNeedsUpdate {
+		t.Fatalf("raw-password account: methods = %+v, err = %v; want needs update", m, err)
 	}
 	key := AccountPassword{Key: "derived-key-0123456789abcdef0123456789abcdef"}
 	if _, _, err := s.RecoverAccount(token, key); !errors.Is(err, ErrAuthFailed) {
@@ -287,6 +291,9 @@ func TestRecoverAccountUpgradesToKey(t *testing.T) {
 	}
 	if _, _, err := s.RecoverAccount(token, key); err != nil {
 		t.Fatalf("key after upgrade: %v", err)
+	}
+	if m, err := s.AccountSignInMethods(acct); err != nil || !m.AccountPassword || m.AccountPasswordNeedsUpdate {
+		t.Fatalf("upgraded account: methods = %+v, err = %v", m, err)
 	}
 	if _, _, err := s.RecoverAccount(token, LegacyPassword("old-account-pw")); !errors.Is(err, ErrAuthFailed) {
 		t.Fatalf("raw password after upgrade: err = %v", err)

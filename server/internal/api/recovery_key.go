@@ -68,6 +68,8 @@ func (s *Server) handleSignInMethods(w http.ResponseWriter, _ *http.Request, dev
 		"passkeys":        m.Passkeys,
 		"accountPassword": m.AccountPassword,
 		"recoveryKey":     m.RecoveryKey,
+		// The stored password predates key derivation; re-set it from here.
+		"accountPasswordNeedsUpdate": m.AccountPasswordNeedsUpdate,
 	})
 }
 

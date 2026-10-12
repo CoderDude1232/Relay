@@ -281,8 +281,12 @@ private struct AccountSettingsView: View {
                             SettingsIcon(systemName: "key.fill", color: .orange)
                             Text("Account Password").foregroundStyle(.primary)
                             Spacer(minLength: 0)
-                            Text(UserDefaults.standard.bool(forKey: MessagingService.hasAccountPasswordKey) ? "Change" : "Set")
-                                .foregroundStyle(.secondary)
+                            if methods?.accountPasswordNeedsUpdate == true {
+                                Text("Update").foregroundStyle(.orange)
+                            } else {
+                                Text(UserDefaults.standard.bool(forKey: MessagingService.hasAccountPasswordKey) ? "Change" : "Set")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                     .tint(.primary)
@@ -373,8 +377,10 @@ private struct AccountSettingsView: View {
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingPasswordSheet) {
-            AccountPasswordSheet(service: service)
+        .sheet(isPresented: $showingPasswordSheet, onDismiss: {
+            Task { methods = try? await service.apiClient.signInMethods() }
+        }) {
+            AccountPasswordSheet(service: service, needsUpdate: methods?.accountPasswordNeedsUpdate == true)
         }
         .sheet(isPresented: $showingEmailSheet, onDismiss: { accountEmail = model.accountEmail }) {
             ChangeEmailSheet()
@@ -1834,6 +1840,7 @@ private struct ChangeEmailSheet: View {
 
 private struct AccountPasswordSheet: View {
     let service: MessagingService
+    var needsUpdate = false
     @Environment(\.dismiss) private var dismiss
     @State private var password = ""
     @State private var confirm = ""
@@ -1851,7 +1858,9 @@ private struct AccountPasswordSheet: View {
                     SecureField("Confirm password", text: $confirm)
                         .textContentType(.newPassword)
                 } footer: {
-                    Text(errorMessage ?? "At least 8 characters. You'll need it to recover your account by email and to sign in on a new device.")
+                    Text(errorMessage ?? (needsUpdate
+                        ? "Enter your account password again, or choose a new one. Relay now stores it differently, and until you do it can't be used to sign in on a new device."
+                        : "At least 8 characters. You'll need it to recover your account by email and to sign in on a new device."))
                         .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
             }
