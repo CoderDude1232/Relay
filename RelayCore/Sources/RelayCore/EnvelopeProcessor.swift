@@ -664,10 +664,14 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             || IdentityAcknowledgement.isSettled(peer: attestedAccount, storage: storage)
 
         func applyDisappearingTimer(_ ms: Int64, conversationId: String, isSync: Bool) {
-            guard senderSettled, ms >= 0,
+            // Only a set timer is applied. Every message carries the sender's
+            // current setting and an unset field reads as 0, so 0 can't mean
+            // "off": a reply from someone who hasn't seen the change yet would
+            // switch it off. (Turning the timer off isn't carried this way.)
+            guard senderSettled, ms > 0,
                   isSync || (try? storage.messages.isAccepted(conversationId: conversationId)) == true else { return }
             // Round up so 1–999 ms can't read as "off"; out-of-range values are ignored.
-            let secs = ms == 0 ? 0 : (ms / 1000) + (ms % 1000 == 0 ? 0 : 1)
+            let secs = (ms / 1000) + (ms % 1000 == 0 ? 0 : 1)
             guard secs <= MessageStore.maxDisappearingSeconds,
                   let current = try? storage.messages.disappearingSeconds(conversationId: conversationId),
                   secs != current
@@ -676,9 +680,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             let who = isSync ? "You" : (groupId == nil ? "They" : "A member")
             _ = try? storage.messages.insertMessage(
                 id: UUID().uuidString, conversationId: conversationId, isOutgoing: false,
-                body: secs == 0
-                    ? "\(who) turned off disappearing messages"
-                    : "\(who) set disappearing messages to \(Self.durationLabel(secs))",
+                body: "\(who) set disappearing messages to \(Self.durationLabel(secs))",
                 timestamp: Int64(Date().timeIntervalSince1970 * 1000),
                 status: .received, senderAccount: MessageStore.systemSender
             )
@@ -729,7 +731,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 )
             }
             // Apply the sender's disappearing-message timer before inserting, so it
-            // covers this message. 0 means off. A message request can't change it.
+            // covers this message. A message request can't change it.
             applyDisappearingTimer(content.expiresAfterMs, conversationId: conversationId, isSync: isSyncMessage)
             if isSyncMessage {
                 // Our own message from another device: store as outgoing under the

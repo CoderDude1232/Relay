@@ -268,7 +268,8 @@ func TestResetAccountPassword(t *testing.T) {
 	}
 }
 
-// Recovery with a derived key upgrades a raw-password account once.
+// A raw-password account still upgrades when an older-style request carries
+// both the password and the key; a key alone is just a wrong password.
 func TestRecoverAccountUpgradesToKey(t *testing.T) {
 	s := openTestStore(t)
 	token := []byte(uniqueName("tok"))
@@ -276,8 +277,8 @@ func TestRecoverAccountUpgradesToKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := AccountPassword{Key: "derived-key-0123456789abcdef0123456789abcdef"}
-	if _, _, err := s.RecoverAccount(token, key); !errors.Is(err, ErrAccountPasswordUpgradeRequired) {
-		t.Fatalf("key only: err = %v", err)
+	if _, _, err := s.RecoverAccount(token, key); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("key only against a raw-password hash: err = %v, want ErrAuthFailed", err)
 	}
 	both := key
 	both.Legacy = "old-account-pw"

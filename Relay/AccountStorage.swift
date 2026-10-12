@@ -311,6 +311,21 @@ extension MessagingService {
         kvData(Self.recoveryKeyKV).map { String(decoding: $0, as: UTF8.self) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    private static let recoveryKeyHashV2KV = "relay.recoveryKey.hashV2"
+
+    /// Re-registers a recovery key that this device knows under the hash
+    /// sign-in now checks (older builds registered a hash of the raw key, which
+    /// they sent at sign-in). Once per account.
+    func upgradeRecoveryKeyHashIfNeeded() async {
+        guard let key = recoveryKey, kvData(Self.recoveryKeyHashV2KV) == nil else { return }
+        do {
+            try await apiClient.setRecoveryKeyHash(RecoveryKey.hash(key))
+            setKV(Self.recoveryKeyHashV2KV, Data([1]))
+        } catch {
+            // Try again next start.
+        }
+    }
+
     /// Makes a new recovery key (replacing any old one), registers its hash,
     /// and lets it unlock the chat list. The key is kept on this device and,
     /// encrypted, with the chat list so it can be viewed again elsewhere.
@@ -318,6 +333,7 @@ extension MessagingService {
     func createRecoveryKey() async throws -> String {
         let key = RecoveryKey.generate()
         try await apiClient.setRecoveryKeyHash(RecoveryKey.hash(key))
+        setKV(Self.recoveryKeyHashV2KV, Data([1]))
         await restoreAccountStorage()
         setKV(Self.recoveryKeyKV, Data(key.utf8))
         let content = ensureContentKey()

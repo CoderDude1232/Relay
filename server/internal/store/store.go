@@ -1052,18 +1052,27 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 
 	// Find an existing account by Supabase user id, then by verified email.
 	var lockHash []byte
+	var stronger bool // the account has a passkey or a recovery key
 	adoptedByEmail := false
-	err = tx.QueryRow(ctx,
-		`SELECT id, username, account_password_hash FROM accounts WHERE supabase_user_id = $1`, supabaseUserID,
-	).Scan(&dev.AccountID, &dev.Username, &lockHash)
+	const pick = `SELECT id, username, account_password_hash,
+	        recovery_key_hash IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.account_id = accounts.id)
+	   FROM accounts `
+	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1`, supabaseUserID,
+	).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		err = tx.QueryRow(ctx,
-			`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
-		).Scan(&dev.AccountID, &dev.Username, &lockHash)
+		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1`, emailToken,
+		).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
 		adoptedByEmail = err == nil
 	}
 
 	if err == nil {
+		// An account with a passkey or recovery key and no account password
+		// can't be taken over with the email inbox alone (an email code, or
+		// Apple/Google): it signs in with the passkey or key instead. With an
+		// account password, the registration lock below applies.
+		if stronger && len(lockHash) == 0 {
+			return AddedDevice{AccountID: dev.AccountID}, false, ErrStrongerSignInRequired
+		}
 		// Registration lock, checked before anything is written.
 		if len(lockHash) > 0 {
 			locked := AddedDevice{AccountID: dev.AccountID}
@@ -2364,6 +2373,18 @@ func (s *Store) TakePreKeyBundles(accountID string, deviceIDs []uint32, allowOne
 // to one device can't jointly overshoot the cap. A device that no longer
 // exists, possibly removed while waiting on the lock, gets ErrNotFound.
 func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope []byte) error {
+	return s.enqueue(envelopeID, accountID, deviceID, envelope, maxQueuedPerDevice)
+}
+
+// EnqueueBestEffort queues a silent envelope (a receipt): only while the
+// device's queue is under half full, so receipts piling up for an offline
+// device can never take the room real messages need. ErrQueueFull otherwise;
+// the caller drops it.
+func (s *Store) EnqueueBestEffort(envelopeID, accountID string, deviceID uint32, envelope []byte) error {
+	return s.enqueue(envelopeID, accountID, deviceID, envelope, maxQueuedPerDevice/2)
+}
+
+func (s *Store) enqueue(envelopeID, accountID string, deviceID uint32, envelope []byte, countCap int) error {
 	ctx := context.Background()
 	if len(envelope) > maxQueuedEnvelopeBytes {
 		return ErrEnvelopeTooLarge
@@ -2388,7 +2409,7 @@ func (s *Store) Enqueue(envelopeID, accountID string, deviceID uint32, envelope 
 		accountID, deviceID).Scan(&queued, &queuedBytes); err != nil {
 		return err
 	}
-	if queued >= maxQueuedPerDevice || queuedBytes+int64(len(envelope)) > maxQueuedBytesPerDevice {
+	if queued >= countCap || queuedBytes+int64(len(envelope)) > maxQueuedBytesPerDevice {
 		return ErrQueueFull
 	}
 	if _, err := tx.Exec(ctx, `

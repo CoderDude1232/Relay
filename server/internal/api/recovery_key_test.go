@@ -224,6 +224,20 @@ func TestSignInMethodsEndToEnd(t *testing.T) {
 	alice = &client{env: env, username: username, accountID: created.AccountID, deviceID: uint32(out["deviceId"].(float64)), password: "device-pw-3"}
 	env.clients[alice.authUser()] = alice
 	alice.uploadDeviceAuthKey()
+
+	// Current clients register SHA-256(v2 prefix + authKey) and sign in with
+	// authKey; the raw key then no longer matches.
+	authKey := "derived-auth-key-0123456789abcdefghijklmnopq"
+	h2 := sha256.Sum256([]byte(recoveryKeyAuthHashPrefix + authKey))
+	env.doJSON("PUT", "/v1/accounts/me/recovery-key", alice.authUser(), alice.password, map[string]string{"hash": b64URL(h2[:])}, http.StatusNoContent, nil)
+	env.doJSON("POST", "/v1/accounts/recovery-key/signin", "", "", map[string]string{"key": key, "password": "device-pw-5"}, http.StatusUnauthorized, nil)
+	env.doJSON("POST", "/v1/accounts/recovery-key/signin", "", "", map[string]string{"authKey": authKey, "password": "device-pw-5"}, http.StatusOK, &out)
+	if out["accountId"] != alice.accountID {
+		t.Fatalf("authKey sign-in: %+v", out)
+	}
+	alice = &client{env: env, username: username, accountID: created.AccountID, deviceID: uint32(out["deviceId"].(float64)), password: "device-pw-5"}
+	env.clients[alice.authUser()] = alice
+	alice.uploadDeviceAuthKey()
 	env.doJSON("DELETE", "/v1/accounts/me/recovery-key", alice.authUser(), alice.password, nil, http.StatusNoContent, nil)
 	env.doJSON("POST", "/v1/accounts/recovery-key/signin", "", "", map[string]string{"key": key, "password": "device-pw-4"}, http.StatusUnauthorized, nil)
 

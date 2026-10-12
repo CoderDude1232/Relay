@@ -53,6 +53,14 @@ actor SupabaseAuth {
         case confirmationRequired
     }
 
+    /// A random password for the Supabase user. Relay signs in to Supabase only
+    /// with emailed codes, Apple or Google, so this is never used or shown.
+    nonisolated static func unusablePassword() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64EncodedString()
+    }
+
     func signUp(email: String, password: String) async throws -> SignUpResult {
         let data = try await send(path: "/auth/v1/signup", body: ["email": email, "password": password])
         // With "Confirm email" on, Supabase returns the user without a session.

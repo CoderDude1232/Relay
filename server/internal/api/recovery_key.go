@@ -41,6 +41,14 @@ func normalizeRecoveryKey(key string) string {
 }
 
 // recoveryKeyHash is SHA-256("relay-recovery-key-v1|" + normalized key).
+// errLastSignInMethod: removing it would leave no way to sign in on a new
+// device (the account password alone isn't one: recovery needs the email).
+const errLastSignInMethod = "This is the account's only way to sign in on a new device. Add a passkey, recovery key or email first."
+
+// recoveryKeyAuthHashPrefix: current clients register
+// SHA-256(prefix + authKey), authKey being their derivation of the key.
+const recoveryKeyAuthHashPrefix = "relay-recovery-key-v2|"
+
 func recoveryKeyHash(normalized string) []byte {
 	h := sha256.Sum256([]byte(recoveryKeyHashPrefix + normalized))
 	return h[:]
@@ -96,6 +104,10 @@ func (s *Server) handleSetRecoveryKey(w http.ResponseWriter, r *http.Request, de
 }
 
 func (s *Server) handleDeleteRecoveryKey(w http.ResponseWriter, _ *http.Request, dev *store.Device) {
+	if m, err := s.store.AccountSignInMethods(dev.AccountID); err == nil && m.RecoveryKey && m.Passkeys == 0 && !m.Email {
+		httpError(w, http.StatusConflict, errLastSignInMethod)
+		return
+	}
 	if err := s.store.ClearRecoveryKeyHash(dev.AccountID); err != nil {
 		internalError(w, err)
 		return
@@ -115,21 +127,32 @@ func (s *Server) handleRecoveryKeySignIn(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req struct {
-		Key      string `json:"key"`
+		// AuthKey is derived from the key on the device; current clients
+		// never send the key, which also unlocks the chat-list blob.
+		AuthKey  string `json:"authKey"`
+		Key      string `json:"key"` // the raw key, from older clients
 		Password string `json:"password"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.Key == "" || len(req.Key) > maxRecoveryKeyChars ||
+	if err := decodeJSON(r, &req); err != nil || (req.Key == "") == (req.AuthKey == "") ||
+		len(req.Key) > maxRecoveryKeyChars || len(req.AuthKey) > 128 ||
 		len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
-		httpError(w, http.StatusBadRequest, "key (≤128 chars) and password (8–1024 chars) required")
+		httpError(w, http.StatusBadRequest, "authKey (or key, ≤128 chars) and password (8–1024 chars) required")
 		return
 	}
 	fail := func() { httpError(w, http.StatusUnauthorized, errRecoveryKeySignIn) }
-	norm := normalizeRecoveryKey(req.Key)
-	if len(norm) < minRecoveryKeyNormLen || len(norm) > maxRecoveryKeyNormLen {
-		fail()
-		return
+	var hash []byte
+	if req.AuthKey != "" {
+		h := sha256.Sum256([]byte(recoveryKeyAuthHashPrefix + req.AuthKey))
+		hash = h[:]
+	} else {
+		norm := normalizeRecoveryKey(req.Key)
+		if len(norm) < minRecoveryKeyNormLen || len(norm) > maxRecoveryKeyNormLen {
+			fail()
+			return
+		}
+		hash = recoveryKeyHash(norm)
 	}
-	accountID, demo, err := s.store.RecoveryKeyAccount(recoveryKeyHash(norm))
+	accountID, demo, err := s.store.RecoveryKeyAccount(hash)
 	if errors.Is(err, store.ErrNotFound) {
 		fail()
 		return

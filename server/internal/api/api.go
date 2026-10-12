@@ -608,8 +608,8 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrAccountPasswordRequired):
 		httpError(w, http.StatusLocked, "account password required")
 		return
-	case errors.Is(err, store.ErrAccountPasswordUpgradeRequired):
-		httpError(w, http.StatusPreconditionRequired, errAccountPasswordUpgrade)
+	case errors.Is(err, store.ErrStrongerSignInRequired):
+		httpError(w, http.StatusForbidden, "This account has a passkey or recovery key. Sign in with one of those instead.")
 		return
 	case errors.Is(err, store.ErrAccountPasswordIncorrect):
 		// Already charged by attempt.

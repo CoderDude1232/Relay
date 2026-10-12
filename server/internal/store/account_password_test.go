@@ -1,7 +1,6 @@
 package store
 
 import (
-	"errors"
 	"testing"
 )
 
@@ -28,8 +27,10 @@ func TestAccountPasswordKeysAndUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := (AccountPassword{Key: key}).verify(legacy); !errors.Is(err, ErrAccountPasswordUpgradeRequired) {
-		t.Fatalf("key against a raw hash: err = %v, want upgrade required", err)
+	// A key alone never matches a raw-password hash (no request for the raw
+	// password that a malicious relay could abuse).
+	if ok, _, err := (AccountPassword{Key: key}).verify(legacy); ok || err != nil {
+		t.Fatalf("key against a raw hash: ok=%v err=%v, want a plain mismatch", ok, err)
 	}
 	if ok, up, _ := (AccountPassword{Key: key, Legacy: "wrong"}).verify(legacy); ok || up != nil {
 		t.Fatal("wrong raw password upgraded")

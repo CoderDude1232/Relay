@@ -808,7 +808,10 @@ private struct AuthView: View {
         focused = nil
         Task {
             do {
-                switch try await SupabaseAuth.shared.signUp(email: email, password: password) {
+                // Supabase gets a random password nobody knows: sign-in is by
+                // email code, and the account password must never reach Supabase
+                // (it would allow guessing there, outside the relay's lockout).
+                switch try await SupabaseAuth.shared.signUp(email: email, password: SupabaseAuth.unusablePassword()) {
                 case .signedIn(let session):
                     try await onComplete(session, password)
                 case .confirmationRequired:

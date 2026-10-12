@@ -1158,10 +1158,12 @@ extension RelayAPIClient {
 
     /// Signs in with a recovery key, replacing the account's devices. Skips
     /// registration lock and email codes.
-    public func signInWithRecoveryKey(_ key: String, devicePassword: String) async throws -> (credentials: RelayCredentials, username: String) {
+    /// `authKey` is derived from the key on the device (the app's
+    /// RecoveryKey.authKey); the key itself is never sent.
+    public func signInWithRecoveryKey(authKey: String, devicePassword: String) async throws -> (credentials: RelayCredentials, username: String) {
         struct Response: Decodable { let accountId: String; let deviceId: UInt32; let username: String }
         let r: Response = try await request("POST", "v1/accounts/recovery-key/signin", body: [
-            "key": key, "password": devicePassword,
+            "authKey": authKey, "password": devicePassword,
         ], authenticated: false)
         return (RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword), r.username)
     }

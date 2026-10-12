@@ -3,7 +3,9 @@
 //  Relay
 //
 //  A random key that signs in to the account without a password, email code
-//  or passkey, and unlocks the chat list. The relay stores only its hash.
+//  or passkey, and unlocks the chat list. The key never leaves the phone: the
+//  relay gets authKey (one derivation) and stores a hash of it; the chat-list
+//  slot uses another (slotKey), so what the relay sees can't open it.
 //
 
 import CryptoKit
@@ -54,9 +56,24 @@ enum RecoveryKey {
 
     static func isPlausible(_ key: String) -> Bool { (20...40).contains(normalize(key).count) }
 
-    /// SHA-256("relay-recovery-key-v1|" + normalized), as stored by the relay.
-    static func hash(_ key: String) -> Data {
+    /// SHA-256("relay-recovery-key-v1|" + normalized): the hash older builds
+    /// registered, from the raw key the relay used to receive at sign-in.
+    static func legacyHash(_ key: String) -> Data {
         Data(SHA256.hash(data: Data(("relay-recovery-key-v1|" + normalize(key)).utf8)))
+    }
+
+    /// What sign-in sends instead of the key (base64url).
+    static func authKey(_ key: String) -> String {
+        HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: Data(normalize(key).utf8)),
+            info: Data("relay-recovery-key-auth-v2".utf8),
+            outputByteCount: 32
+        ).withUnsafeBytes { Data($0) }.base64URLEncodedString()
+    }
+
+    /// SHA-256("relay-recovery-key-v2|" + authKey): what the relay stores.
+    static func hash(_ key: String) -> Data {
+        Data(SHA256.hash(data: Data(("relay-recovery-key-v2|" + authKey(key)).utf8)))
     }
 
     /// Wraps the chat-list key in the account storage's recovery slot.

@@ -289,18 +289,28 @@ func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relayp
 		if err != nil {
 			return err
 		}
-		reserved := false
-		if sender != "" {
-			if !h.shares.reserve(limitkey.Hash("queue-share", sender, devKey), devKey, env.Id) {
-				return ErrSenderQuota
+		if !push {
+			// Silent (receipts): best effort, outside the sender's queue share,
+			// and never into the room real messages need. A full queue drops it.
+			if err := h.store.EnqueueBestEffort(env.Id, accountID, deviceID, blob); errors.Is(err, store.ErrQueueFull) {
+				return nil
+			} else if err != nil {
+				return err
 			}
-			reserved = true
-		}
-		if err := h.store.Enqueue(env.Id, accountID, deviceID, blob); err != nil {
-			if reserved {
-				h.shares.release(devKey, env.Id)
+		} else {
+			reserved := false
+			if sender != "" {
+				if !h.shares.reserve(limitkey.Hash("queue-share", sender, devKey), devKey, env.Id) {
+					return ErrSenderQuota
+				}
+				reserved = true
 			}
-			return err
+			if err := h.store.Enqueue(env.Id, accountID, deviceID, blob); err != nil {
+				if reserved {
+					h.shares.release(devKey, env.Id)
+				}
+				return err
+			}
 		}
 	}
 

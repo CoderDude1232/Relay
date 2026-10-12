@@ -13,8 +13,8 @@ import (
 // derived from it on the device (Argon2id with its own salt). The chat-list
 // blob's password slot is keyed by a different derivation of the same
 // password, so what the relay receives can't open it. Legacy is the raw
-// password, sent by older clients, or once by a current client to upgrade an
-// account whose hash predates keys (ErrAccountPasswordUpgradeRequired).
+// password, sent only by older clients; a key never matches a hash of a raw
+// password, so those accounts set the password again from a current client.
 type AccountPassword struct {
 	Key    string
 	Legacy string
@@ -48,9 +48,8 @@ func (p AccountPassword) hash() ([]byte, error) {
 	return nil, nil
 }
 
-// ErrAccountPasswordUpgradeRequired: the account's stored hash is of a raw
-// password and only a key was presented. The client retries once with both,
-// and the hash is replaced by one of the key.
+// ErrAccountPasswordUpgradeRequired is no longer returned (see verify); kept
+// so callers that still map it compile.
 var ErrAccountPasswordUpgradeRequired = errors.New("store: account password needs a one-time upgrade")
 
 // verify checks p against a stored hash (always one bcrypt). upgraded, when
@@ -65,7 +64,12 @@ func (p AccountPassword) verify(stored []byte) (ok bool, upgraded []byte, err er
 		return bcrypt.CompareHashAndPassword(stored[len(keyedHashPrefix):], keyedSecret(p.Key)) == nil, nil, nil
 	}
 	if p.Legacy == "" {
-		return false, nil, ErrAccountPasswordUpgradeRequired
+		// A hash of a raw password checked against a key: a wrong password.
+		// (Asking the client for the raw password instead would let a
+		// malicious relay collect it on demand.) Such accounts set a new
+		// password from a signed-in device, or reset it.
+		burnRecoveryBcrypt("k2:" + p.Key)
+		return false, nil, nil
 	}
 	if bcrypt.CompareHashAndPassword(stored, []byte(p.Legacy)) != nil {
 		return false, nil, nil

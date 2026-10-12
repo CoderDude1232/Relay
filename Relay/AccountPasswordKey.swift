@@ -6,8 +6,7 @@
 //  the password under its own fixed salt. The chat-list blob's password slot
 //  is keyed by a different derivation (AccountStorage.deriveKey, salted with
 //  the account id), so this value can't open it, and the password never
-//  leaves the phone except once, to upgrade an account whose hash predates
-//  keys (the relay asks with 428).
+//  leaves the phone.
 //
 
 import Clibsodium
@@ -39,19 +38,15 @@ enum AccountPasswordKey {
         return AccountPasswordProof(key: key)
     }
 
-    /// Runs a request that checks the password. If the relay still holds a
-    /// hash of the raw password (428), repeats it once with the password too,
-    /// and the relay switches to the key.
+    /// Runs a request that checks the password, sending only the key. The
+    /// raw password is never sent, not even if a relay asks (a malicious one
+    /// could ask at will). An account whose stored password predates keys
+    /// sees a wrong-password error and sets a new one from a signed-in device
+    /// or by email reset.
     static func checking<T>(
         _ password: String,
         _ request: (AccountPasswordProof) async throws -> T
     ) async throws -> T {
-        var proof = try await proof(for: password)
-        do {
-            return try await request(proof)
-        } catch RelayAPIError.http(let status, _) where status == AccountPasswordProof.upgradeRequiredStatus {
-            proof.legacy = password
-            return try await request(proof)
-        }
+        try await request(proof(for: password))
     }
 }

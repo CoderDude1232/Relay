@@ -572,7 +572,7 @@ final class AppModel {
         let password = Self.generateRandomPassword()
         let signedIn: (credentials: RelayCredentials, username: String)
         do {
-            signedIn = try await api.signInWithRecoveryKey(RecoveryKey.normalize(key), devicePassword: password)
+            signedIn = try await api.signInWithRecoveryKey(authKey: RecoveryKey.authKey(key), devicePassword: password)
         } catch RelayAPIError.http(401, _) {
             throw PasskeyError.failed("That recovery key isn't right. Check it and try again.")
         } catch RelayAPIError.http(409, _) {
@@ -916,9 +916,7 @@ final class AppModel {
         } catch {
             throw SetupError(step: "Password reset", underlying: error)
         }
-        // Keep the email sign-in password in step. Best effort: the relay's account
-        // password is what gates sign-in.
-        try? await SupabaseAuth.shared.updatePassword(newPassword)
+        // The account password is never given to Supabase (see SupabaseAuth.unusablePassword).
 
         let service: MessagingService
         do {

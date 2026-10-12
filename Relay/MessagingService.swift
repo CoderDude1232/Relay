@@ -564,6 +564,7 @@ final class MessagingService {
                     refreshConversations()
                     // With the socket live, send the receipts the NSE deferred.
                     await drainPendingControlMessages()
+                    Task { await self.upgradeRecoveryKeyHashIfNeeded() }
                     if !didRepublishKeysThisLaunch {
                         didRepublishKeysThisLaunch = true
                         do {
@@ -4407,8 +4408,10 @@ final class MessagingService {
     /// Removes ciphertext files whose messages are gone (expired, deleted
     /// chats). Rows are the source of truth; see `AttachmentBlobStore`.
     func sweepAttachmentFiles() {
-        let ids = Set(((try? storage.database.query("SELECT id FROM attachments")) ?? []).compactMap { $0.first?.string })
-        attachmentStore.sweepOrphans(keeping: ids)
+        // A failed query must skip the sweep: an empty keep-list would delete
+        // every cached file, including unsent ones.
+        guard let rows = try? storage.database.query("SELECT id FROM attachments") else { return }
+        attachmentStore.sweepOrphans(keeping: Set(rows.compactMap { $0.first?.string }))
     }
 
     private func reapAttachmentBlobs(messageId: String) {
