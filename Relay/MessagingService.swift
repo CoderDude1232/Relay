@@ -2085,6 +2085,18 @@ final class MessagingService {
         return "https://relaymsg.app/g/\(token)#\(fragment)"
     }
 
+    /// Stops every invite link made so far from working: members only accept
+    /// a self-join that carries the current capability, which this replaces.
+    func resetGroupInviteLink(groupId: String) async throws {
+        guard let group = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(group)
+        setGroupInviteKey(groupId, Self.randomInviteKey())
+        var announce = Relay_Content_GroupUpdate()
+        announce.action = .unspecified // silent; carries only the invite key
+        await sendGroupUpdateCustom(announce, group: group)
+        insertSystemLine("You reset the group's invite link", inGroup: groupId)
+    }
+
     // MARK: - Device linking
 
     enum LinkingError: LocalizedError {

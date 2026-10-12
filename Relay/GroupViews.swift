@@ -194,6 +194,7 @@ struct GroupInfoView: View {
     @State private var editingDescription = false
     @State private var draftDescription = ""
     @State private var inviteURL: String?
+    @State private var confirmingInviteReset = false
     @State private var showingShareSheet = false
     @State private var showingAvatarPicker = false
     @State private var working = false
@@ -329,6 +330,18 @@ struct GroupInfoView: View {
                             } label: {
                                 Label("Create Invite Link", systemImage: "link.badge.plus")
                             }
+                            Button(role: .destructive) {
+                                confirmingInviteReset = true
+                            } label: {
+                                Label("Reset Invite Link", systemImage: "link.badge.minus")
+                            }
+                        }
+                        .confirmationDialog("Reset the invite link?", isPresented: $confirmingInviteReset, titleVisibility: .visible) {
+                            Button("Reset Link", role: .destructive) {
+                                run { try await service.resetGroupInviteLink(groupId: group.id) }
+                            }
+                        } message: {
+                            Text("Links you've shared stop working. Anyone who joined already stays in the group.")
                         }
                     }
 
