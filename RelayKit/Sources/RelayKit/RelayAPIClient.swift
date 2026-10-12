@@ -586,23 +586,6 @@ public struct RelayAPIClient: Sendable {
         return r.deviceId
     }
 
-    public func createDeviceLinkInvitation(authorization: DeviceMutationAuthorization) async throws -> DeviceLinkInvitation {
-        try await request(
-            "POST",
-            "v1/devices/link-invitations",
-            body: DeviceMutationRequest(auth: authorization)
-        )
-    }
-
-    public func claimDeviceLink(linkToken: String, verificationCode: String) async throws -> DeviceLinkClaim {
-        try await request(
-            "POST",
-            "v1/devices/link-claims",
-            body: DeviceLinkClaimRequest(linkToken: linkToken, verificationCode: verificationCode),
-            authenticated: false
-        )
-    }
-
     // MARK: - Device linking
 
     /// New device: creates a provisioning session. Unauthenticated. Its
@@ -1269,19 +1252,6 @@ public struct ProvisioningSession: Decodable, Sendable {
     public let expiresAt: Int64
 }
 
-public struct DeviceLinkInvitation: Decodable, Sendable {
-    public let linkToken: String
-    public let verificationCode: String
-    public let expiresAt: Int64
-}
-
-public struct DeviceLinkClaim: Decodable, Sendable {
-    public let accountId: String
-    public let deviceId: UInt32
-    public let password: String
-    public let username: String?
-}
-
 private struct AddDeviceRequest: Encodable {
     let password: String
     let deviceName: String?
@@ -1290,11 +1260,6 @@ private struct AddDeviceRequest: Encodable {
 
 private struct DeviceMutationRequest: Encodable {
     let auth: DeviceMutationAuthorization
-}
-
-private struct DeviceLinkClaimRequest: Encodable {
-    let linkToken: String
-    let verificationCode: String
 }
 
 private struct TokenRequest: Encodable {
