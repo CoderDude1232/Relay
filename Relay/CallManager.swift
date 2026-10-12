@@ -109,6 +109,8 @@ final class CallManager: NSObject {
     /// Whether this account may ring us: an accepted chat, or a group we share.
     /// Others (message requests, strangers) get a missed-call note instead.
     var isCallAllowed: ((String) -> Bool)?
+    /// Whether Panic Mode currently hides the 1:1 chat with this account.
+    var isHiddenPeer: ((String) -> Bool)?
     /// Records a call we didn't ring for because it came from a request.
     var onCallFromRequest: ((String) -> Void)?
     /// The locally stored member list for a group id (nil if unknown). Group-call
@@ -217,6 +219,8 @@ final class CallManager: NSObject {
     /// Call-screen caller label, honoring the notification-preview privacy level.
     private func callKitCallerName(_ name: String?) -> String {
         guard NotificationPreviewSetting.current.showsSenderName, let name, !name.isEmpty else { return "Relay" }
+        // A contact whose chat Panic Mode hides isn't named on the call screen.
+        if let peer = storedCallPeer, !peer.isEmpty, isHiddenPeer?(peer) == true { return "Relay" }
         return name
     }
 
@@ -1304,6 +1308,7 @@ final class CallManager: NSObject {
     }
 
     private func postMissedCallNotification(callerName: String) {
+        if let peer = storedCallPeer, !peer.isEmpty, isHiddenPeer?(peer) == true { return }
         let content = UNMutableNotificationContent()
         content.title = NotificationPreviewSetting.current.showsSenderName ? callerName : "Relay"
         content.body = "Missed call"

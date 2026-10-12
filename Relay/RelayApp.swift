@@ -202,6 +202,10 @@ struct RelayApp: App {
         callManager.isCallAllowed = { account in
             service.isCallAllowed(from: account)
         }
+        callManager.isHiddenPeer = { account in
+            guard let convId = service.conversations.first(where: { !$0.isGroup && $0.peerAccount == account })?.id else { return false }
+            return PanicModeManager.shared.isHidden(convId)
+        }
         callManager.onCallFromRequest = { account in
             service.noteCallFromRequest(account)
         }

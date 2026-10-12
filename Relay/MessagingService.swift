@@ -65,6 +65,9 @@ private struct GroupInvitePayload: Codable {
     let inviteKey: Data
     /// Optional for links made by older builds.
     let admins: [String]?
+    /// The group's revision when the link was made (optional for older links).
+    /// A joiner starting from 1 would have its later changes dropped as stale.
+    var revision: Int64? = nil
 }
 
 extension Data {
@@ -440,6 +443,7 @@ final class MessagingService {
 
     func start() {
         guard connectionTask == nil, !isShutDown else { return }
+        isStopped = false
         Task { await refreshDemoStatus() }
         if !didSweepInterruptedSends {
             // Only on the first start of this process: nothing can be mid-send
@@ -500,7 +504,12 @@ final class MessagingService {
         pathMonitor = monitor
     }
 
+    /// Set by stop(), cleared by start(): envelopes already chained when the
+    /// app stops are left for the relay to deliver again.
+    private var isStopped = false
+
     func stop() {
+        isStopped = true
         connectionTask?.cancel()
         connectionTask = nil
         pollTask?.cancel()
@@ -676,6 +685,10 @@ final class MessagingService {
     }
 
     private func processEnvelope(_ envelope: IncomingEnvelope) async {
+        // Stopped (going to the background): don't start on more envelopes,
+        // which would take the shared-container lock just as the app is
+        // suspended. No ack, so the relay delivers it again.
+        guard !isStopped else { return }
         // Always ack, or an undecryptable envelope would redeliver forever.
         defer {
             Task { await self.ackEnvelope(envelope.id) }
@@ -737,7 +750,7 @@ final class MessagingService {
                    isConversationMuted(conversationId),
                    activeConversationId != conversationId
                 {
-                    postMentionNotification(body: body, senderAccount: result.peerAccount ?? "")
+                    postMentionNotification(body: body, senderAccount: result.peerAccount ?? "", conversationId: conversationId)
                 }
             }
             if let conversationId = result.conversationId {
@@ -944,17 +957,30 @@ final class MessagingService {
     /// Who may ring us: someone we've accepted a chat with, or a member of a
     /// group we've accepted. Anyone else is a message request.
     func isCallAllowed(from account: String) -> Bool {
-        if hasAcceptedChat(with: account) { return true }
-        return conversations.contains { conv in
-            conv.isGroup && !conv.isRequest && (group(for: conv.id)?.members.contains(account) ?? false)
+        // From the database, not `conversations`: that list may not be loaded
+        // yet (a cold launch from a VoIP push) or may lag a queue drain.
+        let db = storage.database
+        if let rows = try? db.query(
+            "SELECT accepted FROM conversations WHERE peer_account = ? AND group_id IS NULL", [.text(account)]
+        ), let accepted = rows.first?.first?.int64 {
+            return accepted != 0
+        }
+        // No 1:1 chat: a member of an accepted group we're still in.
+        let groupIds = ((try? db.query(
+            "SELECT group_id FROM conversations WHERE group_id IS NOT NULL AND accepted = 1"
+        )) ?? []).compactMap { $0.first?.string }
+        return groupIds.contains { gid in
+            guard let members = (try? storage.messages.group(id: gid))?.members else { return false }
+            return members.contains(account) && members.contains(credentials.accountId)
         }
     }
 
     /// A call from a message request doesn't ring; it leaves a note in the
-    /// request instead.
+    /// request instead (never in an accepted chat).
     func noteCallFromRequest(_ account: String) {
         guard !isBlocked(account),
-              let conversationId = try? storage.messages.conversation(withPeer: account, accepted: false)
+              let conversationId = try? storage.messages.conversation(withPeer: account, accepted: false),
+              (try? storage.messages.isAccepted(conversationId: conversationId)) == false
         else { return }
         insertSystemLine("Missed call. Accept the request to get calls from them.", conversationId: conversationId)
     }
@@ -1209,16 +1235,63 @@ final class MessagingService {
     /// can't strand it. Receipts and sync copies sent the instant a message
     /// arrives or leaves would let anyone watching the relay pair the two
     /// sealed sends by timing; the jitter blurs that link. Returns at once.
+    private struct DeferredSend {
+        var due: Date
+        let work: @MainActor () async -> Void
+    }
+    private var deferredSends: [DeferredSend] = []
+    private var deferredRunner: Task<Void, Never>?
+    private var deferredBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    /// Queues `work` to run after a random delay. The queue runs in order, so
+    /// sync copies can't overtake each other (an unsend arriving before its
+    /// message would be lost on the other device). Runs under a background
+    /// task; going to the background or running out of time sends everything
+    /// at once (flushDeferredSends).
     private func afterTimingJitter(seconds range: ClosedRange<Double>, _ work: @escaping @MainActor () async -> Void) {
-        let delay = Double.random(in: range)
-        let bgTask = UIApplication.shared.beginBackgroundTask(withName: "relay-jitter")
-        Task { @MainActor [weak self] in
-            defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
-            try? await Task.sleep(for: .seconds(delay))
-            guard let self, !self.isShutDown else { return }
-            await work()
+        deferredSends.append(DeferredSend(due: Date().addingTimeInterval(Double.random(in: range)), work: work))
+        guard deferredRunner == nil else { return }
+        if deferredBackgroundTask == .invalid {
+            deferredBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "relay-deferred-sends") { [weak self] in
+                // Out of time: send the rest now, then let go.
+                self?.flushDeferredSends()
+                self?.endDeferredBackgroundTask()
+            }
+        }
+        deferredRunner = Task { @MainActor [weak self] in
+            while let self, !self.isShutDown, let next = self.deferredSends.first {
+                if next.due > Date() {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    continue
+                }
+                self.deferredSends.removeFirst()
+                await next.work()
+            }
+            self?.deferredRunner = nil
+            self?.endDeferredBackgroundTask()
         }
     }
+
+    /// Sends everything waiting without its delay (app going to the background).
+    func flushDeferredSends() {
+        let now = Date()
+        for i in deferredSends.indices { deferredSends[i].due = now }
+    }
+
+    private func endDeferredBackgroundTask() {
+        guard deferredBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(deferredBackgroundTask)
+        deferredBackgroundTask = .invalid
+    }
+
+    /// Receipts waiting to go out, merged per recipient so a burst of messages
+    /// gets one receipt rather than one each.
+    private struct ReceiptKey: Hashable {
+        let type: Relay_Content_ReceiptMessage.TypeEnum
+        let peer: String
+        let groupId: String?
+    }
+    private var pendingReceipts: [ReceiptKey: [Int64]] = [:]
 
     private func sendSyncToOwnDevices(
         content: Relay_Content_Content,
@@ -1969,7 +2042,8 @@ final class MessagingService {
         guard let inviteKey = groupInviteKey(groupId) else { throw GroupError.notFound }
         let payload = GroupInvitePayload(
             groupId: groupId, name: group.name, members: group.members,
-            distributionId: group.distributionId, inviteKey: inviteKey, admins: group.admins
+            distributionId: group.distributionId, inviteKey: inviteKey, admins: group.admins,
+            revision: group.revision
         )
         let sealed = try AttachmentCipher.seal(try JSONEncoder().encode(payload))
         let (token, _) = try await api.createEncryptedGroupInvite(blob: sealed.ciphertext)
@@ -2481,7 +2555,7 @@ final class MessagingService {
         setGroupInviteKey(payload.groupId, payload.inviteKey)
         try storage.messages.upsertGroup(
             id: payload.groupId, name: payload.name, distributionId: payload.distributionId,
-            revision: 1, members: members,
+            revision: max(1, min(payload.revision ?? 1, 1_000_000_000)), members: members,
             // Keep the group's real admins; an empty list would make every
             // member an admin from this device's point of view.
             admins: (payload.admins ?? []).filter { payload.members.contains($0) }
@@ -2796,6 +2870,7 @@ final class MessagingService {
             }
         }
         let actorIsAdmin = existing.map { Self.isGroupAdmin(actor, in: $0) } ?? true
+        let wasMember = existing?.members.contains(credentials.accountId) ?? false
         let isSelfDeparture = (info.action == .leave || info.action == .remove) && info.target == actor
             && (existing?.members.contains(actor) ?? false)
         let isValidSelfJoin = info.action == .add && info.target == actor
@@ -2855,6 +2930,12 @@ final class MessagingService {
             }
             return
         case .promoteAdmin, .demoteAdmin:
+            // An empty admin list would make every member an admin; a group
+            // with admins never goes back to that.
+            if info.admins.isEmpty, !(existing?.admins.isEmpty ?? true) {
+                log.warning("group update: refusing an empty admin list")
+                return
+            }
             do {
                 try storage.messages.setGroupAdmins(id: info.groupId, admins: info.admins)
                 refreshConversations()
@@ -2889,7 +2970,13 @@ final class MessagingService {
             // admin check, so that would let any member make themselves sole
             // admin and reroute the group.
             newMembers = existing.members.filter { $0 != actor }
-            newAdmins = existing.admins.filter { $0 != actor }
+            var admins = existing.admins.filter { $0 != actor }
+            // The last admin left: the same remaining member becomes admin on
+            // every device, rather than the group falling open to everyone.
+            if admins.isEmpty, !existing.admins.isEmpty, let heir = newMembers.sorted().first {
+                admins = [heir]
+            }
+            newAdmins = admins
             newName = existing.name
             distributionId = existing.distributionId
         } else if isValidSelfJoin && !isBootstrap && !actorIsAdmin, let existing {
@@ -2926,11 +3013,17 @@ final class MessagingService {
         do {
             try storage.messages.upsertGroup(
                 id: info.groupId, name: newName, distributionId: distributionId,
-                revision: max(info.revision, existing?.revision ?? 0),
+                // A leave or link join bypasses the admin check, so it never
+                // moves the revision (an inflated one would make every later
+                // admin change look stale here).
+                revision: (isSelfDeparture || (isValidSelfJoin && !actorIsAdmin))
+                    ? (existing?.revision ?? 0)
+                    : max(info.revision, existing?.revision ?? 0),
                 members: newMembers, admins: newAdmins
             )
-            // Added to a new group by someone we've never chatted with: a request.
-            if isBootstrap, actor != credentials.accountId, !hasAcceptedChat(with: actor),
+            // Added by someone we've never chatted with to a group we weren't in
+            // (new, or one we left or deleted as a request): a request.
+            if !wasMember, actor != credentials.accountId, !hasAcceptedChat(with: actor),
                let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {
                 try? storage.messages.setConversationAccepted(convoId, accepted: false)
             }
@@ -3227,13 +3320,27 @@ final class MessagingService {
         } else if (try? storage.messages.isMessageRequest(peer: account)) == true {
             return
         }
-        var content = Relay_Content_Content()
-        content.receipt.type = type
-        content.receipt.messageTimestamps = timestamps
-        if let groupId { content.groupID = groupId }
-        // Not the instant the message arrived (see afterTimingJitter).
+        // Not the instant the message arrived (see afterTimingJitter); merged
+        // with others for the same recipient while it waits.
+        let key = ReceiptKey(type: type, peer: account, groupId: groupId)
+        if pendingReceipts[key] != nil {
+            pendingReceipts[key]?.append(contentsOf: timestamps)
+            return
+        }
+        pendingReceipts[key] = timestamps
         afterTimingJitter(seconds: 1...6) { [weak self] in
-            guard let self else { return }
+            guard let self, let batch = self.pendingReceipts.removeValue(forKey: key), !batch.isEmpty else { return }
+            // Blocked or turned into a request while waiting: nothing goes out.
+            if self.isBlocked(account) { return }
+            if let groupId {
+                if self.conversations.first(where: { $0.groupId == groupId })?.isRequest == true { return }
+            } else if (try? self.storage.messages.isMessageRequest(peer: account)) == true {
+                return
+            }
+            var content = Relay_Content_Content()
+            content.receipt.type = type
+            content.receipt.messageTimestamps = batch
+            if let groupId { content.groupID = groupId }
             do {
                 try await self.sendContent(
                     try content.serializedData(),
@@ -3460,15 +3567,19 @@ final class MessagingService {
         // With an access key the fetch is anonymous; a 403 means it was rotated
         // and we fall back to the signed fetch. For someone new, look up their
         // certificate username in the blinded directory to get the key first.
+        // At most one directory lookup per refresh (they count against a rate limit).
+        var lookedUp = false
         if account != credentials.accountId, knownAccessKey(account) == nil,
-           let username = cachedUsername(account),
-           let resolved = try? await resolveAccount(username: username), resolved != account {
-            log.info("directory username now belongs to a different account; using the signed fetch")
+           let username = cachedUsername(account) {
+            lookedUp = true
+            if let resolved = try? await resolveAccount(username: username), resolved != account {
+                log.info("directory username now belongs to a different account; using the signed fetch")
+            }
         }
         if account != credentials.accountId, let known = knownAccessKey(account),
            let anonymous = try await fetchBundlesAnonymously(account, accessKey: known) {
             bundles = anonymous
-        } else if account != credentials.accountId, let username = cachedUsername(account),
+        } else if account != credentials.accountId, !lookedUp, let username = cachedUsername(account),
                   (try? await resolveAccount(username: username)) == account,
                   let fresh = knownAccessKey(account),
                   let anonymous = try await fetchBundlesAnonymously(account, accessKey: fresh) {
@@ -3643,11 +3754,18 @@ final class MessagingService {
     private func startPresencePolling(peer: String) {}
     private func stopPresencePolling() {}
 
-    private func postMentionNotification(body: String, senderAccount: String) {
+    private func postMentionNotification(body: String, senderAccount: String, conversationId: String) {
+        // The same rules as the notification extension: nothing for a hidden
+        // chat or a request, and no text where previews are off, a Face ID
+        // lock is set or messages disappear.
+        guard !PanicModeManager.shared.isHidden(conversationId),
+              let conv = conversations.first(where: { $0.id == conversationId }), !conv.isRequest
+        else { return }
         let content = UNMutableNotificationContent()
         let preview = NotificationPreviewSetting.current
+        let textAllowed = preview.showsContent && !conv.hidePreviews && !conv.requireBiometricChat && conv.disappearingSeconds == 0
         content.title = "You were mentioned"
-        content.body = preview.showsContent ? body
+        content.body = textAllowed ? body
             : (preview.showsSenderName ? "by \(displayName(forAccount: senderAccount))" : "")
         content.sound = .default
         let id = "mention-\(senderAccount)-\(Int64(Date().timeIntervalSince1970 * 1000))"

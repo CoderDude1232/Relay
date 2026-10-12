@@ -63,9 +63,13 @@ final class WatchSession: NSObject, WCSessionDelegate {
             kSecReturnData: true,
         ]
         var out: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data, data.count == 32 {
+        let status = SecItemCopyMatching(query as CFDictionary, &out)
+        if status == errSecSuccess, let data = out as? Data, data.count == 32 {
             return SymmetricKey(data: data)
         }
+        // Only make a new key when there's none: any other failure (e.g. the
+        // keychain not available yet) must not throw away the existing one.
+        guard status == errSecItemNotFound else { return nil }
         let key = SymmetricKey(size: .bits256)
         let raw = key.withUnsafeBytes { Data($0) }
         let add: [CFString: Any] = [

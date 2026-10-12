@@ -94,6 +94,10 @@ nonisolated enum ShareBridge {
 
     /// Removes one conversation (e.g. just hidden or deleted) from the snapshot.
     static func removeConversation(_ id: String) {
+        // If the file exists but can't be opened (key unavailable), leave it:
+        // writing back an empty list would blank the widget and share sheet.
+        if let url = shareDir()?.appendingPathComponent(conversationsFile),
+           let stored = try? Data(contentsOf: url), ShareSeal.open(stored) == nil { return }
         let remaining = readConversations().filter { $0.id != id }
         if let json = try? JSONEncoder().encode(remaining), let data = ShareSeal.seal(json),
            let url = shareDir()?.appendingPathComponent(conversationsFile) {

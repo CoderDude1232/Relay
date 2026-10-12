@@ -390,17 +390,20 @@ extension KeychainSecureStore: IdentityCredentialProviding {
     /// service. Any existing database becomes undecryptable, so delete it too.
     /// Idempotent.
     public func wipeAllSecrets() throws {
-        try wipeIdentity()
-        try deleteKey(tag: Item.enclaveKeyTag)
+        // Delete everything even if one step fails, then report the first error.
+        var firstError: Error?
+        do { try wipeIdentity() } catch { firstError = firstError ?? error }
+        do { try deleteKey(tag: Item.enclaveKeyTag) } catch { firstError = firstError ?? error }
         var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: config.service,
         ]
         if let group = config.accessGroup { query[kSecAttrAccessGroup] = group }
         let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw StorageError.keychain(status: status)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            firstError = firstError ?? StorageError.keychain(status: status)
         }
+        if let firstError { throw firstError }
     }
 
     private func deleteKey(tag: String) throws {

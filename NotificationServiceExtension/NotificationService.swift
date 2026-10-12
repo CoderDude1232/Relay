@@ -227,7 +227,7 @@ class NotificationService: UNNotificationServiceExtension {
         let result: ProcessedEnvelope
         do {
             result = try processor.process(envelope, blockedAccounts: blocked, persist: {
-                PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
+                self.persistForApp($0, envelopeId: envelope.id, in: storage)
             })
         } catch is CrossProcessLock.Timeout {
             // The app has the lock; it will process the (still queued) envelope.
@@ -241,14 +241,27 @@ class NotificationService: UNNotificationServiceExtension {
     // Contentless push: the payload carries no message data at all, only a
     // wake. Fetch this device's queued envelopes, decrypt and store them, and
     // ack each one so the server dequeues it.
+    /// What the app needs from an envelope the extension decrypted, saved in
+    /// the same transaction as the decrypt (the app can't decrypt it again):
+    /// control payloads, and every call signal for the app to replay.
+    private func persistForApp(_ result: ProcessedEnvelope, envelopeId: String, in storage: SecureStore) {
+        PendingControlStore.persist(result, envelopeId: envelopeId, in: storage)
+        if let callInfo = result.callInfo {
+            savePendingCallMessage(callInfo, in: storage)
+        }
+    }
+
     /// How long to wait for the app's envelope lock before leaving the work to it.
     private static let lockTimeout: TimeInterval = 8
 
     /// Shown when the app holds the lock: something arrived, but it's the app's
-    /// to decrypt. Names nobody.
-    private static let pendingMessageOutcome = DecryptOutcome.show(
-        title: "Relay", body: "New message", conversationId: "", senderAccount: ""
-    )
+    /// to decrypt. Names nobody. Not shown while Panic Mode hides chats: it
+    /// could be from one of them.
+    private static var pendingMessageOutcome: DecryptOutcome {
+        PanicHiddenChats.load().isEmpty
+            ? .show(title: "Relay", body: "New message", conversationId: "", senderAccount: "")
+            : .suppress
+    }
 
     private func fetchAndDecrypt() async -> DecryptOutcome? {
         let appGroupId = RelayStore.appGroupId
@@ -296,7 +309,7 @@ class NotificationService: UNNotificationServiceExtension {
             let result: ProcessedEnvelope?
             do {
                 result = try processor.process(envelope, blockedAccounts: blocked, persist: {
-                    PendingControlStore.persist($0, envelopeId: envelope.id, in: storage)
+                    self.persistForApp($0, envelopeId: envelope.id, in: storage)
                 })
             } catch is CrossProcessLock.Timeout {
                 // The app is processing (or is suspended holding the lock).
@@ -337,7 +350,6 @@ class NotificationService: UNNotificationServiceExtension {
         // HANGUP means the caller gave up before we answered: show a missed call.
         // Other signalling goes through VoIP push and CallKit; suppress it here.
         if let callInfo = result.callInfo {
-            savePendingCallMessage(callInfo, in: storage)
             if callInfo.type == .linkJoinRequest {
                 // Only for a link we created, with the right secret, so nobody can spam
                 // this banner. The app picks the request up via PendingControlStore.
@@ -356,11 +368,13 @@ class NotificationService: UNNotificationServiceExtension {
                 let callerAccount = result.peerAccount ?? ""
                 // Only from someone we've accepted a chat with: anyone can send a
                 // HANGUP, and calls from requests don't ring in the first place.
-                let accepted = (try? storage.database.query(
-                    "SELECT 1 FROM conversations WHERE peer_account = ? AND group_id IS NULL AND accepted = 1",
+                let chatId = (try? storage.database.query(
+                    "SELECT id FROM conversations WHERE peer_account = ? AND group_id IS NULL AND accepted = 1",
                     [.text(callerAccount)]
-                ))?.isEmpty == false
-                guard accepted else { return .suppress }
+                ))?.first?.first?.string
+                guard let chatId else { return .suppress }
+                // A chat hidden by Panic Mode leaves no banner.
+                if PanicHiddenChats.load().contains(chatId) { return .suppress }
                 let showName = Self.previewLevel(defaults: UserDefaults(suiteName: appGroupId)) != "none"
                 let name = showName ? (callerDisplayName(for: callerAccount, in: storage) ?? "Relay") : "Relay"
                 return .show(title: name, body: "Missed call",

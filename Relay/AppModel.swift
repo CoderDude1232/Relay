@@ -186,6 +186,9 @@ final class AppModel {
     /// marks the device offline, and APNs takes over.
     func enterBackground() {
         backgroundDisconnectTask?.cancel()
+        // Receipts and sync copies waiting out their random delay go now,
+        // while there's still time to send them.
+        if case .ready(let service) = phase { service.flushDeferredSends() }
 
         // iOS is reclaiming background time; stop now. The expiry handler runs on
         // the main thread, same as this actor.
@@ -193,17 +196,10 @@ final class AppModel {
             guard let self else { return }
             let id = self.keepAliveBackgroundTask
             self.keepAliveBackgroundTask = .invalid
-            guard case .ready(let service) = self.phase else {
-                UIApplication.shared.endBackgroundTask(id)
-                return
-            }
-            service.stop()
-            // Briefly let an envelope finish: it holds a lock in the shared
-            // container, and a suspended app holding one is killed (0xdead10cc).
-            Task { @MainActor in
-                await service.waitForInFlightProcessing(timeout: .seconds(2))
-                UIApplication.shared.endBackgroundTask(id)
-            }
+            // The expiry handler must end the task before it returns, or iOS
+            // kills the app; stop() also stops further envelopes from starting.
+            if case .ready(let service) = self.phase { service.stop() }
+            UIApplication.shared.endBackgroundTask(id)
         }
         keepAliveBackgroundTask = bgTask
 

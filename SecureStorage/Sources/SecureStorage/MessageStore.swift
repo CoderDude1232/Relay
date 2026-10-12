@@ -1027,8 +1027,13 @@ public final class MessageStore: @unchecked Sendable {
     ) throws {
         try db.run(
             """
-            INSERT OR REPLACE INTO profiles (account_id, display_name, avatar_id, avatar_data, revision, status, bio, links)
+            INSERT INTO profiles (account_id, display_name, avatar_id, avatar_data, revision, status, bio, links)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                display_name = excluded.display_name, avatar_id = excluded.avatar_id,
+                avatar_data = excluded.avatar_data, revision = excluded.revision,
+                status = excluded.status, bio = excluded.bio, links = excluded.links
+            WHERE excluded.revision >= profiles.revision
             """,
             [
                 .text(account),
