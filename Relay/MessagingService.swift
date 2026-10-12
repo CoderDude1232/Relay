@@ -985,10 +985,11 @@ final class MessagingService {
         let db = storage.database
         if let rows = try? db.query(
             "SELECT accepted FROM conversations WHERE peer_account = ? AND group_id IS NULL", [.text(account)]
-        ), let accepted = rows.first?.first?.int64 {
-            return accepted != 0
+        ), let accepted = rows.first?.first?.int64, accepted != 0 {
+            return true
         }
-        // No 1:1 chat: a member of an accepted group we're still in.
+        // No accepted 1:1 chat: a member of an accepted group we're still in
+        // (someone in our group may also have a pending 1:1 request).
         let groupIds = ((try? db.query(
             "SELECT group_id FROM conversations WHERE group_id IS NOT NULL AND accepted = 1"
         )) ?? []).compactMap { $0.first?.string }
@@ -996,6 +997,13 @@ final class MessagingService {
             guard let members = (try? storage.messages.group(id: gid))?.members else { return false }
             return members.contains(account) && members.contains(credentials.accountId)
         }
+    }
+
+    /// The 1:1 chat with `account`, read from the database.
+    func oneToOneConversationId(withPeer account: String) -> String? {
+        (try? storage.database.query(
+            "SELECT id FROM conversations WHERE peer_account = ? AND group_id IS NULL", [.text(account)]
+        ).first?.first?.string) ?? nil
     }
 
     /// A call from a message request doesn't ring; it leaves a note in the
@@ -2105,8 +2113,15 @@ final class MessagingService {
     /// Stops every invite link made so far from working: members only accept
     /// a self-join that carries the current capability, which this replaces.
     func resetGroupInviteLink(groupId: String) async throws {
+        guard let existing = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
+        try requireGroupAdmin(existing)
+        // A new revision, so members ahead of our last one don't drop it as stale.
+        try storage.messages.upsertGroup(
+            id: groupId, name: existing.name, distributionId: existing.distributionId,
+            revision: existing.revision + 1, members: existing.members,
+            admins: existing.admins, isAnnounceOnly: existing.isAnnounceOnly
+        )
         guard let group = try storage.messages.group(id: groupId) else { throw GroupError.notFound }
-        try requireGroupAdmin(group)
         setGroupInviteKey(groupId, Self.randomInviteKey())
         var announce = Relay_Content_GroupUpdate()
         announce.action = .unspecified // silent; carries only the invite key
@@ -3043,6 +3058,13 @@ final class MessagingService {
             newAdmins = admins
             newName = existing.name
             distributionId = existing.distributionId
+        } else if isBlocked(actor), let existing {
+            // A blocked admin gets this far only for someone else's removal
+            // (see EnvelopeProcessor): apply just that, never their lists.
+            newMembers = existing.members.filter { $0 != info.target }
+            newAdmins = existing.admins.filter { $0 != info.target }
+            newName = existing.name
+            distributionId = info.distributionId.isEmpty ? existing.distributionId : info.distributionId
         } else if isValidSelfJoin && !isBootstrap && !actorIsAdmin, let existing {
             // A link-joiner may only add themselves; never take a non-admin's
             // roster, admins, name or epoch.
@@ -4804,8 +4826,9 @@ final class MessagingService {
             let type = UTType(filenameExtension: (name as NSString).pathExtension)
             let ct = type?.preferredMIMEType ?? "application/octet-stream"
             var data = fileData
-            if type?.conforms(to: .movie) == true {
+            if let type, type.conforms(to: .quickTimeMovie) || type.conforms(to: .mpeg4Movie) {
                 // A shared video loses its location metadata like a picked one.
+                // (Other formats, which AVFoundation can't rewrite, go as files.)
                 guard let clean = await MediaSanitizer.video(fileData, contentType: ct) else {
                     postRelayNotice("Couldn't send the shared video.")
                     return conversationId

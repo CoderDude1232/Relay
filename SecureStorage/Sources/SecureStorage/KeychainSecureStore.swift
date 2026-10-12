@@ -57,8 +57,11 @@ public final class KeychainSecureStore {
         if let plain = try read(Item.plainDatabaseKey) {
             // Left unwrapped (an older build, or a Simulator without an
             // enclave key): wrap it now when the Secure Enclave can, so the
-            // master key isn't readable from the Keychain alone.
-            if let enclaveKey = try? enclaveWrappingKey(),
+            // master key isn't readable from the Keychain alone. Only the app
+            // does this; an extension running at the same moment could
+            // otherwise create a second enclave key under the same tag.
+            if !Bundle.main.bundlePath.hasSuffix(".appex"),
+               let enclaveKey = try? enclaveWrappingKey(),
                let wrapped = try? wrap(plain, with: enclaveKey),
                (try? unwrap(wrapped)) == plain {
                 try write(Item.wrappedDatabaseKey, data: wrapped)

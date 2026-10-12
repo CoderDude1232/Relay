@@ -26,7 +26,9 @@ public enum ProfileText {
     public static func name(_ raw: String) -> String {
         let cleaned = collapseWhitespace(stripInvisible(raw, keepNewlines: false))
         let limited = String(cleaned.prefix(maxNameLength)).trimmingCharacters(in: .whitespaces)
-        return reservedNames.contains(limited.lowercased()) ? "" : limited
+        // Joiners and direction marks alone would be an invisible name.
+        let visible = limited.unicodeScalars.contains { !(0x200C...0x200F).contains($0.value) && !$0.properties.isWhitespace }
+        return !visible || reservedNames.contains(limited.lowercased()) ? "" : limited
     }
 
     /// A group name: one line, visible characters, at most 100.
@@ -70,8 +72,7 @@ public enum ProfileText {
     }
 
     /// Removes control characters, direction overrides/embeddings/isolates
-    /// and other invisible format characters. Zero-width joiners stay, since
-    /// emoji sequences need them.
+    /// and other invisible format characters.
     static func stripInvisible(_ s: String, keepNewlines: Bool) -> String {
         var out = String.UnicodeScalarView()
         for scalar in s.unicodeScalars {
@@ -80,12 +81,14 @@ public enum ProfileText {
                 out.append(scalar)
             case 0x09, 0x0A, 0x0D:
                 out.append(" ")
-            case 0x200D: // zero-width joiner (emoji sequences)
+            case 0x200C, 0x200D, 0x200E, 0x200F:
+                // Joiners (emoji sequences, Persian and Indic names) and
+                // direction marks (right-to-left names) are part of real names.
                 out.append(scalar)
             case 0x00...0x1F, 0x7F...0x9F,          // C0/C1 controls
-                 0x061C, 0x200E, 0x200F,            // direction marks
+                 0x061C,                            // Arabic letter mark
                  0x202A...0x202E, 0x2066...0x2069,  // embeddings, overrides, isolates
-                 0x200B, 0x200C, 0x2060...0x2064,   // zero-width and invisible operators
+                 0x200B, 0x2060...0x2064,           // zero-width space, invisible operators
                  0xFEFF, 0xFFF9...0xFFFB,           // BOM, interlinear annotations
                  0x2028, 0x2029, 0x00AD, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x180E:
                 if scalar.value == 0x2028 || scalar.value == 0x2029 { out.append(keepNewlines ? "\n" : " ") }

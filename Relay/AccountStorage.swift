@@ -244,16 +244,16 @@ extension MessagingService {
         importStored(plaintext)
     }
 
-    /// The chat list, plus the recovery key kept alongside it. A copy older
-    /// than one this device already saw (the relay serving a stale version)
-    /// is ignored: it could bring back a replaced recovery key or old chats.
+    /// The chat list, plus the recovery key kept alongside it. The list is
+    /// merged in as always; the recovery key is taken only from a copy at
+    /// least as new as one this device has seen, so a stale copy served by
+    /// the relay can't bring back a key that was replaced.
     private func importStored(_ plaintext: Data) {
         let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any]
         let writtenAt = (object?[Self.writtenAtField] as? NSNumber)?.int64Value ?? 0
-        let seen = kvData(Self.storageSeenAtKV).flatMap { Int64(String(decoding: $0, as: UTF8.self)) } ?? 0
-        if writtenAt < seen { return }
-        if writtenAt > seen { setKV(Self.storageSeenAtKV, Data(String(writtenAt).utf8)) }
-        if let key = object?["recoveryKey"] as? String, !key.isEmpty {
+        let seen = storageSeenAt
+        if writtenAt > seen { storageSeenAt = writtenAt }
+        if writtenAt >= seen, let key = object?["recoveryKey"] as? String, !key.isEmpty {
             setKV(Self.recoveryKeyKV, Data(key.utf8))
         }
         if let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext) {
@@ -261,19 +261,22 @@ extension MessagingService {
         }
     }
 
-    private func storedPlaintext() -> Data? {
+    /// The plaintext to upload and the write time inside it (the relay can't
+    /// fake it). The time is recorded as seen only once the upload succeeds.
+    private func storedPlaintext() -> (data: Data, writtenAt: Int64)? {
         guard let json = try? JSONEncoder().encode(chatListSnapshot()),
               var object = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
         else { return nil }
         if let key = recoveryKey { object["recoveryKey"] = key }
-        // Inside the encryption, so the relay can't fake it: lets a device
-        // tell a stale copy from the latest one.
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        let seen = kvData(Self.storageSeenAtKV).flatMap { Int64(String(decoding: $0, as: UTF8.self)) } ?? 0
-        let writtenAt = max(now, seen + 1)
+        let writtenAt = max(Int64(Date().timeIntervalSince1970 * 1000), storageSeenAt + 1)
         object[Self.writtenAtField] = writtenAt
-        setKV(Self.storageSeenAtKV, Data(String(writtenAt).utf8))
-        return try? JSONSerialization.data(withJSONObject: object)
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return (data, writtenAt)
+    }
+
+    private var storageSeenAt: Int64 {
+        get { kvData(Self.storageSeenAtKV).flatMap { Int64(String(decoding: $0, as: UTF8.self)) } ?? 0 }
+        set { setKV(Self.storageSeenAtKV, Data(String(newValue).utf8)) }
     }
 
     private static let writtenAtField = "writtenAt"
@@ -438,10 +441,11 @@ extension MessagingService {
         guard keepsChatListWithAccount, !isDemoAccount else { return }
         for _ in 0..<2 {
             let key = ensureContentKey()
-            guard let json = storedPlaintext(),
-                  let blob = try? AccountStorageCrypto.seal(json, contentKey: key, slots: slots) else { return }
+            guard let stored = storedPlaintext(),
+                  let blob = try? AccountStorageCrypto.seal(stored.data, contentKey: key, slots: slots) else { return }
             do {
                 accountStorageVersion = try await apiClient.putAccountStorage(blob, baseVersion: accountStorageVersion)
+                if stored.writtenAt > storageSeenAt { storageSeenAt = stored.writtenAt }
                 return
             } catch RelayAPIError.http(status: 409, _) {
                 await restoreAccountStorage()

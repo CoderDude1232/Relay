@@ -559,6 +559,9 @@ final class CallManager: NSObject {
             guard let self, !Task.isCancelled else { return }
             guard self.storedCallId == callId, self.storedCallPeer?.isEmpty != false else { return }
             self.log.warning("no OFFER arrived for VoIP-reported call; ending it")
+            // Only a ring that never named a caller counts toward suppression:
+            // a blocked caller, a request or a quick hangup is someone real.
+            self.noteUnverifiedRing()
             self.endUnverifiedCall()
         }
         onAwaitingCallOffer?()
@@ -603,7 +606,6 @@ final class CallManager: NSObject {
     /// Ends an anonymous call whose caller never identified themselves (no OFFER,
     /// or a blocked sender). Nothing is sent, recorded or shown as missed.
     private func endUnverifiedCall() {
-        noteUnverifiedRing()
         offerWaitTask?.cancel()
         offerWaitTask = nil
         stopRingtone()

@@ -203,7 +203,9 @@ struct RelayApp: App {
             service.isCallAllowed(from: account)
         }
         callManager.isHiddenPeer = { account in
-            guard let convId = service.conversations.first(where: { !$0.isGroup && $0.peerAccount == account })?.id else { return false }
+            // From the database: on a cold launch from a VoIP push the chat
+            // list may not be loaded yet.
+            guard let convId = service.oneToOneConversationId(withPeer: account) else { return false }
             return PanicModeManager.shared.isHidden(convId)
         }
         callManager.onCallFromRequest = { account in

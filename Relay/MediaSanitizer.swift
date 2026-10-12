@@ -20,10 +20,28 @@ nonisolated enum MediaSanitizer {
             let size = SafeImage.pixelSize(of: data) ?? .zero
             return (data, "image/gif", Int(size.width), Int(size.height))
         }
-        guard let image = SafeImage.image(from: data, maxPixelSize: SafeImage.fullScreenPixelSize),
-              let jpeg = image.jpegData(compressionQuality: 0.9)
-        else { return nil }
-        return (jpeg, "image/jpeg", Int(image.size.width * image.scale), Int(image.size.height * image.scale))
+        guard let image = SafeImage.image(from: data, maxPixelSize: SafeImage.fullScreenPixelSize) else { return nil }
+        let width = Int(image.size.width * image.scale), height = Int(image.size.height * image.scale)
+        // Keep transparency (a cut-out, a screenshot of a sticker) as PNG.
+        if isPNG(data), hasAlpha(image), let png = image.pngData() {
+            return (png, "image/png", width, height)
+        }
+        guard let jpeg = image.jpegData(compressionQuality: 0.9) else { return nil }
+        return (jpeg, "image/jpeg", width, height)
+    }
+
+    private static func hasAlpha(_ image: UIImage) -> Bool {
+        switch image.cgImage?.alphaInfo {
+        case .first, .last, .premultipliedFirst, .premultipliedLast, .alphaOnly: true
+        default: false
+        }
+    }
+
+    private static func isPNG(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let type = CGImageSourceGetType(source) as String?
+        else { return false }
+        return UTType(type)?.conforms(to: .png) == true
     }
 
     static func isGIF(_ data: Data) -> Bool {

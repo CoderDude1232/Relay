@@ -566,15 +566,19 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         // Drop blocked senders now that the sender is known. Sealed messages
         // can't be filtered earlier because the wire envelope has no sender.
-        // The exception is a membership change to a group we're already in:
-        // ignoring a blocked admin's removals would leave people they removed
-        // on our roster, still getting our group messages.
+        // The exception is someone leaving or being removed from a group we're
+        // already in: ignoring a blocked admin's removals would leave people
+        // they removed on our roster, still getting our group messages.
+        // Nothing else from them (renames, re-adding us, ...) is applied.
         if blockedAccounts.contains(attestedAccount) {
-            let isKnownGroupUpdate: Bool = {
-                guard let groupId, case .groupUpdate = content.body else { return false }
+            let isRemovalFromKnownGroup: Bool = {
+                guard let groupId, case .groupUpdate(let update) = content.body,
+                      update.action == .remove || update.action == .leave,
+                      !update.target.isEmpty, update.target != ownAccountId
+                else { return false }
                 return ((try? storage.messages.group(id: groupId)) ?? nil) != nil
             }()
-            if !isKnownGroupUpdate {
+            if !isRemovalFromKnownGroup {
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
             }
         }
@@ -717,18 +721,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         // Messages sort by the sender's timestamp and the read marker follows
         // the newest one, so a far-future timestamp would pin a message to the
         // bottom of the chat and the chat to the top of the list, and make
-        // everything after it look read. Allow a day of clock skew.
+        // everything after it look read. It's stored no later than a day
+        // ahead; receipts still name the sender's own timestamp.
         let latestPlausibleTimestamp = Int64(Date().timeIntervalSince1970 * 1000) + 86_400_000
-        func isPlausible(_ timestamp: Int64) -> Bool {
-            timestamp > 0 && timestamp <= latestPlausibleTimestamp
-        }
+        func storable(_ timestamp: Int64) -> Int64 { min(max(timestamp, 1), latestPlausibleTimestamp) }
 
         switch content.body {
         case .text(let text):
-            guard isPlausible(text.timestamp) else {
-                log.warning("dropping a message with an implausible timestamp")
-                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
-            }
             if blockedByAnnounceOnly {
                 log.warning("dropping a non-admin message in an announce-only group")
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
@@ -740,7 +739,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 let locId = "liveloc:\(conversationId):\(attestedAccount)"
                 let wasInsert = (try? storage.messages.upsertLiveLocation(
                     id: locId, conversationId: conversationId, isOutgoing: false,
-                    body: text.body, timestamp: text.timestamp,
+                    body: text.body, timestamp: storable(text.timestamp),
                     senderAccount: groupId == nil ? nil : attestedAccount
                 )) ?? false
                 return ProcessedEnvelope(
@@ -776,7 +775,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 do {
                     _ = try storage.messages.insertMessage(
                         id: envelopeId, conversationId: conversationId, isOutgoing: true,
-                        body: text.body, timestamp: text.timestamp, status: .sent,
+                        body: text.body, timestamp: storable(text.timestamp), status: .sent,
                         replyTo: quote, attachments: attachments, senderAccount: nil
                     )
                 } catch {
@@ -786,7 +785,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             }
             let inserted = try storage.messages.insertMessage(
                 id: envelopeId, conversationId: conversationId, isOutgoing: false,
-                body: text.body, timestamp: text.timestamp, status: .received,
+                body: text.body, timestamp: storable(text.timestamp), status: .received,
                 replyTo: quote, attachments: attachments,
                 senderAccount: groupId == nil ? nil : attestedAccount
             )
@@ -890,11 +889,12 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, groupUpdate: info)
 
         case .poll(let received):
-            if blockedByAnnounceOnly || !isPlausible(received.timestamp) {
+            if blockedByAnnounceOnly {
                 log.warning("dropping a non-admin poll in an announce-only group")
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
             }
             var poll = received
+            poll.timestamp = storable(poll.timestamp)
             poll.question = String(poll.question.prefix(Self.maxPollQuestionLength))
             poll.options = poll.options.prefix(Self.maxPollOptions).map { String($0.prefix(Self.maxPollOptionLength)) }
             let conversationId = try chatConversation()

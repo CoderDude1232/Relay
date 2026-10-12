@@ -739,7 +739,7 @@ struct ChatView: View {
             chatAIEnabled = UserDefaults.standard.bool(forKey: "chat.ai.\(conversationId)")
             chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
         }
-        .onChange(of: service.activeMessages.last?.id) {
+        .onChange(of: service.activeMessagesRevision) {
             refreshVerification()
             pinnedMessage = service.pinnedMessage(for: conversationId)
         }
@@ -1338,19 +1338,14 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             HStack(spacing: 10) {
-                if !isGroup {
+                if !isGroup || requestBlockTarget != nil {
                     Button(role: .destructive) { confirmBlockRequest = true } label: {
                         Text("Block").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 }
                 Button(role: .destructive) {
-                    if let conversation, let groupId = conversation.groupId {
-                        Task { try? await service.leaveGroup(groupId); service.deleteConversation(conversation.id) }
-                    } else {
-                        service.deleteConversation(conversationId)
-                    }
-                    onClose?()
+                    removeRequest()
                 } label: {
                     Text("Delete").frame(maxWidth: .infinity)
                 }
@@ -1373,8 +1368,7 @@ struct ChatView: View {
             Text("They won't be able to message or call you, and this chat is deleted.")
         }
         .sheet(isPresented: $showingRequestReport, onDismiss: {
-            service.deleteConversation(conversationId)
-            onClose?()
+            removeRequest()
         }) {
             if let target = requestBlockTarget {
                 ReportContactSheet(service: service, account: target,
@@ -1393,18 +1387,27 @@ struct ChatView: View {
 
     private func blockRequest(report: Bool) {
         guard let peer = requestBlockTarget else {
-            // An older group request with no record of who added us: just leave it.
-            service.deleteConversation(conversationId)
-            onClose?()
+            removeRequest()
             return
         }
         service.blockAccount(peer)
         if report {
             showingRequestReport = true
         } else {
-            service.deleteConversation(conversationId)
-            onClose?()
+            removeRequest()
         }
+    }
+
+    /// Deletes a request. For a group that means leaving it too: deleting only
+    /// the chat leaves us on the roster, and the next update brings it back.
+    private func removeRequest() {
+        if let conversation, let groupId = conversation.groupId {
+            let id = conversation.id
+            Task { try? await service.leaveGroup(groupId); service.deleteConversation(id) }
+        } else {
+            service.deleteConversation(conversationId)
+        }
+        onClose?()
     }
 
     private var isAnnounceOnlyBlocked: Bool {
@@ -1469,7 +1472,10 @@ struct ChatView: View {
                 $0.conforms(to: .movie) || $0.conforms(to: .video)
             }?.preferredMIMEType ?? "video/mp4"
             // Without its location metadata; not sent if that can't be done.
-            guard let clean = await MediaSanitizer.video(data, contentType: mime) else { return nil }
+            guard let clean = await MediaSanitizer.video(data, contentType: mime) else {
+                service.postRelayNotice("A video couldn't be prepared for sending, so it was left out.")
+                return nil
+            }
             return MessagingService.PendingAttachment(
                 data: clean, contentType: mime, filename: mime == "video/quicktime" ? "video.mov" : "video.mp4",
                 width: 0, height: 0
