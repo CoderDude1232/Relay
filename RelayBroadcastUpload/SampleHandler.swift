@@ -12,11 +12,17 @@ final class SampleHandler: RPBroadcastSampleHandler {
     private static let frameFilename = "RelayBroadcastFrame.jpg"
     private static let stateFilename = "RelayBroadcastState.plist"
 
+    /// Written by the app while a video call wants the screen; see stopIfUnwanted.
+    private static let wantedFilename = "RelayBroadcastWanted"
+
     private let context = CIContext(options: [.workingColorSpace: CGColorSpaceCreateDeviceRGB()])
     private var lastFrameSentAt = Date.distantPast
     private let minimumFrameInterval: TimeInterval = 1.0 / 12.0
+    private var startedAt = Date()
+    private var lastWantedCheck = Date.distantPast
 
     override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
+        startedAt = Date()
         writeState(active: true)
     }
 
@@ -34,7 +40,27 @@ final class SampleHandler: RPBroadcastSampleHandler {
 
     override func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, with sampleBufferType: RPSampleBufferType) {
         guard sampleBufferType == .video else { return }
+        guard !stopIfUnwanted() else { return }
         publishVideoFrame(sampleBuffer)
+    }
+
+    /// Ends the broadcast once no Relay call wants it (the call ended, the user
+    /// stopped sharing, or it was started from Control Center outside a call),
+    /// instead of capturing whatever is on screen until the user notices.
+    /// Returns true when it has stopped.
+    private func stopIfUnwanted() -> Bool {
+        let now = Date()
+        // A few seconds' grace at the start, for the app to say it wants it.
+        guard now.timeIntervalSince(startedAt) > 5, now.timeIntervalSince(lastWantedCheck) >= 1 else { return false }
+        lastWantedCheck = now
+        guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId),
+              !FileManager.default.fileExists(atPath: containerURL.appendingPathComponent(Self.wantedFilename).path)
+        else { return false }
+        removeLatestFrame()
+        finishBroadcastWithError(NSError(domain: "app.relaymsg.broadcast", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "Screen sharing stopped because you're not sharing in a Relay video call.",
+        ]))
+        return true
     }
 
     private func publishVideoFrame(_ sampleBuffer: CMSampleBuffer) {

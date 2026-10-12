@@ -362,6 +362,9 @@ final class CallManager: NSObject {
         provider = CXProvider(configuration: Self.providerConfiguration())
         super.init()
         provider.setDelegate(self, queue: nil)
+        // A new process is in no call: a marker left by a killed app would
+        // keep a screen broadcast going.
+        Self.setBroadcastWanted(false)
         // Must be set before any peer connection exists. With manual audio, WebRTC
         // only starts audio hardware when isAudioEnabled is set from
         // provider(_:didActivate:); otherwise it fights CallKit for the session.
@@ -1700,6 +1703,7 @@ final class CallManager: NSObject {
         localVideoTrack.isEnabled = true
         deviceBroadcastFrameModifiedAt = nil
         updateDiagnostics { _ in }
+        Self.setBroadcastWanted(true)
 
         deviceBroadcastTask?.cancel()
         deviceBroadcastTask = Task.detached(priority: .utility) { [weak self, weak source, weak capturer] in
@@ -1727,8 +1731,10 @@ final class CallManager: NSObject {
             deviceBroadcastTask = nil
             screenVideoCapturer = nil
             isUsingDeviceBroadcast = false
-            // Don't leave the last screen frame lying in the App Group container.
+            // Don't leave the last screen frame lying in the App Group container,
+            // and tell the broadcast extension to stop capturing the screen.
             if let url = Self.broadcastFrameURL() { try? FileManager.default.removeItem(at: url) }
+            Self.setBroadcastWanted(false)
             isScreenSharing = false
             updateDiagnostics { _ in }
             if restartCamera, isVideoEnabled, let capturer = localVideoCapturer {
@@ -1783,6 +1789,21 @@ final class CallManager: NSObject {
               let pixelBuffer = pixelBuffer(from: image)
         else { return nil }
         return (modifiedAt, pixelBuffer)
+    }
+
+    /// While this file exists the screen-share broadcast extension keeps
+    /// capturing; without it (the call ended, sharing stopped) it finishes,
+    /// rather than recording whatever is on screen until the user notices.
+    nonisolated private static func setBroadcastWanted(_ wanted: Bool) {
+        guard let url = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: broadcastAppGroupId)?
+            .appendingPathComponent("RelayBroadcastWanted")
+        else { return }
+        if wanted {
+            try? Data().write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     nonisolated private static func broadcastFrameURL() -> URL? {
