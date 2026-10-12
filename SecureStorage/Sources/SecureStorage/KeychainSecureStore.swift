@@ -55,6 +55,15 @@ public final class KeychainSecureStore {
             return DatabaseKey(bytes: try unwrap(wrapped))
         }
         if let plain = try read(Item.plainDatabaseKey) {
+            // Left unwrapped (an older build, or a Simulator without an
+            // enclave key): wrap it now when the Secure Enclave can, so the
+            // master key isn't readable from the Keychain alone.
+            if let enclaveKey = try? enclaveWrappingKey(),
+               let wrapped = try? wrap(plain, with: enclaveKey),
+               (try? unwrap(wrapped)) == plain {
+                try write(Item.wrappedDatabaseKey, data: wrapped)
+                try? deleteSecret(for: Item.plainDatabaseKey)
+            }
             return DatabaseKey(bytes: plain)
         }
 

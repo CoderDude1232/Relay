@@ -105,6 +105,10 @@ public final class Database: @unchecked Sendable {
             // if the other process has it open, this is retried on the next open.
             _ = try? query("PRAGMA journal_mode = TRUNCATE;")
             try run("PRAGMA foreign_keys = ON;")
+            // Overwrite deleted content in place: an unsent or disappeared
+            // message shouldn't survive in a free page for anyone who later
+            // has the key.
+            try run("PRAGMA secure_delete = ON;")
         } catch {
             sqlite3_close(handle)
             handle = nil

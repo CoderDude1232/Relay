@@ -244,10 +244,16 @@ extension MessagingService {
         importStored(plaintext)
     }
 
-    /// The chat list, plus the recovery key kept alongside it.
+    /// The chat list, plus the recovery key kept alongside it. A copy older
+    /// than one this device already saw (the relay serving a stale version)
+    /// is ignored: it could bring back a replaced recovery key or old chats.
     private func importStored(_ plaintext: Data) {
-        if let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
-           let key = object["recoveryKey"] as? String, !key.isEmpty {
+        let object = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any]
+        let writtenAt = (object?[Self.writtenAtField] as? NSNumber)?.int64Value ?? 0
+        let seen = kvData(Self.storageSeenAtKV).flatMap { Int64(String(decoding: $0, as: UTF8.self)) } ?? 0
+        if writtenAt < seen { return }
+        if writtenAt > seen { setKV(Self.storageSeenAtKV, Data(String(writtenAt).utf8)) }
+        if let key = object?["recoveryKey"] as? String, !key.isEmpty {
             setKV(Self.recoveryKeyKV, Data(key.utf8))
         }
         if let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext) {
@@ -256,13 +262,22 @@ extension MessagingService {
     }
 
     private func storedPlaintext() -> Data? {
-        guard let json = try? JSONEncoder().encode(chatListSnapshot()) else { return nil }
-        guard let key = recoveryKey,
+        guard let json = try? JSONEncoder().encode(chatListSnapshot()),
               var object = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
-        else { return json }
-        object["recoveryKey"] = key
+        else { return nil }
+        if let key = recoveryKey { object["recoveryKey"] = key }
+        // Inside the encryption, so the relay can't fake it: lets a device
+        // tell a stale copy from the latest one.
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let seen = kvData(Self.storageSeenAtKV).flatMap { Int64(String(decoding: $0, as: UTF8.self)) } ?? 0
+        let writtenAt = max(now, seen + 1)
+        object[Self.writtenAtField] = writtenAt
+        setKV(Self.storageSeenAtKV, Data(String(writtenAt).utf8))
         return try? JSONSerialization.data(withJSONObject: object)
     }
+
+    private static let writtenAtField = "writtenAt"
+    private static let storageSeenAtKV = "me:accountStorageSeenAt"
 
     private func openStored(_ blob: Data) -> Data? {
         if AccountStorageCrypto.isLegacy(blob) {
