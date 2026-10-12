@@ -2825,9 +2825,10 @@ var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 
 // Call rings are unauthenticated, so they are bounded per IP and per
 // destination mailbox.
-// turnCredentialLimiter bounds TURN credential requests per account: 240 an
-// hour covers back-to-back calls with reconnects.
-var turnCredentialLimiter = newSlidingWindowLimiter(240, time.Hour)
+// turnCredentialLimiter bounds TURN credential requests per account. Each
+// credential is good for an hour, so 60 an hour covers back-to-back calls
+// with reconnects without handing one account an unbounded supply.
+var turnCredentialLimiter = newSlidingWindowLimiter(60, time.Hour)
 
 var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
 var callRingMailboxLimiter = newSlidingWindowLimiter(6, time.Minute)

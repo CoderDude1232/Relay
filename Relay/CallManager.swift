@@ -253,6 +253,29 @@ final class CallManager: NSObject {
         recentlyEndedCallIds[callId].map { Date().timeIntervalSince($0) < 600 } ?? false
     }
 
+    /// When anonymous rings that never identified a caller keep arriving (an
+    /// unauthenticated ring needs only a mailbox access key), later ones are
+    /// ended at once instead of ringing as "Relay" for `offerWaitSeconds`. A
+    /// real caller still rings: their OFFER is decrypted and reported with
+    /// their name. Kept in UserDefaults because each push may be a new launch.
+    private static let unverifiedRingsKey = "relay.calls.unverifiedRings"
+    private static let unverifiedRingWindow: TimeInterval = 600
+    private static let unverifiedRingLimit = 3
+
+    private func recentUnverifiedRings() -> [Double] {
+        let cutoff = Date().timeIntervalSince1970 - Self.unverifiedRingWindow
+        return (UserDefaults.standard.array(forKey: Self.unverifiedRingsKey) as? [Double] ?? []).filter { $0 > cutoff }
+    }
+
+    private func noteUnverifiedRing() {
+        let times = recentUnverifiedRings() + [Date().timeIntervalSince1970]
+        UserDefaults.standard.set(Array(times.suffix(20)), forKey: Self.unverifiedRingsKey)
+    }
+
+    private var isSuppressingAnonymousRings: Bool {
+        recentUnverifiedRings().count >= Self.unverifiedRingLimit
+    }
+
     /// Misses an unanswered incoming call after `incomingRingSeconds`, so a call
     /// whose HANGUP never arrives doesn't ring forever.
     private func startIncomingRingTimeout(callId: String) {
@@ -443,7 +466,7 @@ final class CallManager: NSObject {
             try? await Task.sleep(for: .seconds(45))
             guard let self, !Task.isCancelled else { return }
             guard case .active = self.state else {
-                self.failCall("No answer.", notifyPeer: true)
+                self.failCall("No answer.", notifyPeer: true, endedReason: .unanswered)
                 return
             }
         }
@@ -498,9 +521,10 @@ final class CallManager: NSObject {
             }
             return
         }
-        guard case .idle = state, !callId.isEmpty, !endedRecently(callId) else {
-            // Busy or malformed push. BUSY can't be sent yet because the caller is
-            // unknown; `reportIncomingCall` answers the OFFER with BUSY when it arrives.
+        guard case .idle = state, !callId.isEmpty, !endedRecently(callId), !isSuppressingAnonymousRings else {
+            // Busy, malformed, or one of a burst of rings that never named a
+            // caller. BUSY can't be sent yet because the caller is unknown;
+            // `reportIncomingCall` answers the OFFER (or rings for it) when it arrives.
             reportAndEndRejectedPushCall(completion: pushCompletion)
             return
         }
@@ -579,6 +603,7 @@ final class CallManager: NSObject {
     /// Ends an anonymous call whose caller never identified themselves (no OFFER,
     /// or a blocked sender). Nothing is sent, recorded or shown as missed.
     private func endUnverifiedCall() {
+        noteUnverifiedRing()
         offerWaitTask?.cancel()
         offerWaitTask = nil
         stopRingtone()
@@ -731,7 +756,7 @@ final class CallManager: NSObject {
     // MARK: - Answer (in-app button)
 
     func answerCall() async {
-        guard case .incoming(_, let callerAccount, _) = state, !hasAnsweredCall else { return }
+        guard case .incoming(let callId, let callerAccount, _) = state, !hasAnsweredCall else { return }
         let answerPeer = (storedCallPeer?.isEmpty == false ? storedCallPeer : nil) ?? callerAccount
         hasAnsweredCall = true
         stopRingtone()
@@ -740,9 +765,14 @@ final class CallManager: NSObject {
         if storedCallKind == .video {
             await requestCameraAccessIfNeeded()
         }
+        guard isStillAnswering(callId) else { return }
         configureAudioSessionForCall()
         guard let pc = await makePeerConnection() else {
-            failPeerConnectionSetup(notifyPeer: true)
+            if isStillAnswering(callId) { failPeerConnectionSetup(notifyPeer: true) }
+            return
+        }
+        guard isStillAnswering(callId) else {
+            pc.close()
             return
         }
         peerConnection = pc
@@ -767,15 +797,20 @@ final class CallManager: NSObject {
 
     // Called by CXProviderDelegate for lock-screen answers.
     func callKitAnswered() async {
-        guard case .incoming(_, let callerAccount, _) = state, !hasAnsweredCall else { return }
+        guard case .incoming(let callId, let callerAccount, _) = state, !hasAnsweredCall else { return }
         let answerPeer = (storedCallPeer?.isEmpty == false ? storedCallPeer : nil) ?? callerAccount
         hasAnsweredCall = true
         if storedCallKind == .video {
             await requestCameraAccessIfNeeded()
         }
+        guard isStillAnswering(callId) else { return }
         configureAudioSessionForCall()
         guard let pc = await makePeerConnection() else {
-            failPeerConnectionSetup(notifyPeer: true)
+            if isStillAnswering(callId) { failPeerConnectionSetup(notifyPeer: true) }
+            return
+        }
+        guard isStillAnswering(callId) else {
+            pc.close()
             return
         }
         peerConnection = pc
@@ -785,6 +820,15 @@ final class CallManager: NSObject {
             pendingOffer = nil
             await applyOffer(offer, from: answerPeer)
         }
+    }
+
+    /// Whether the call being answered is still the current one: the caller
+    /// can hang up (or CallKit end it) while answering waits on the camera
+    /// prompt or TURN credentials, and carrying on would leave a call stuck
+    /// connecting with the microphone open.
+    private func isStillAnswering(_ callId: String) -> Bool {
+        guard case .incoming(let id, _, _) = state, id == callId, hasAnsweredCall else { return false }
+        return true
     }
 
     /// Fails the call after `makePeerConnection` returned nil, with the
@@ -1160,7 +1204,7 @@ final class CallManager: NSObject {
         terminate(fromRemote: false)
     }
 
-    private func failCall(_ reason: String, notifyPeer: Bool) {
+    private func failCall(_ reason: String, notifyPeer: Bool, endedReason: CXCallEndedReason = .failed) {
         noteCallEnded(storedCallId)
         stopRingtone()
         offerWaitTask?.cancel()
@@ -1187,7 +1231,7 @@ final class CallManager: NSObject {
         peerConnection?.close()
         peerConnection = nil
         if hasCallKitReport, let uuid = activeCallUUID {
-            provider.reportCall(with: uuid, endedAt: Date(), reason: .failed)
+            provider.reportCall(with: uuid, endedAt: Date(), reason: endedReason)
         }
         activeCallUUID = nil
         hasCallKitReport = false
@@ -1974,8 +2018,16 @@ final class CallManager: NSObject {
         case .groupJoin:
             guard isFromCurrentGroupCallMember(msg, account: account),
                   groupRingInfo == nil,   // we haven't accepted the ring yet
-                  groupPeers[account] == nil
+                  groupPeers[account] == nil,
+                  isBlockedAccount?(account) != true
             else { return }
+            // The roster was captured when the call started; someone removed
+            // from the group since then doesn't get back in by joining.
+            if let groupId = groupCallGroupId, !groupId.isEmpty,
+               let roster = groupMembersResolver?(groupId), !roster.contains(account) {
+                log.warning("ignoring GROUP_JOIN from someone no longer in the group")
+                return
+            }
             let peerName = nameResolver?(account) ?? "Unknown"
             groupPeers[account] = GroupCallPeer(peerAccount: account, peerName: peerName)
             await initiateGroupPeerOffer(toPeer: account, callId: msg.callID)
