@@ -1467,7 +1467,8 @@ final class MessagingService {
 
     func setMyDisplayName(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != myDisplayName else { return }
+        // Peers would blank it anyway (ProfileText.name).
+        guard !trimmed.isEmpty, trimmed != myDisplayName, !ReservedNames.isReserved(trimmed) else { return }
         try? storage.database.run(
             "INSERT OR REPLACE INTO kv (key, value) VALUES ('me:name', ?)",
             [.blob(Data(trimmed.utf8))]

@@ -5,6 +5,7 @@
 
 import AuthenticationServices
 import CryptoKit
+import RelayCore
 import RelayKit
 import SwiftUI
 
@@ -1458,8 +1459,10 @@ private struct SetupView: View {
         case idle, checking, available, taken, unknown, invalid(String)
     }
 
+    private var displayNameReserved: Bool { ReservedNames.isReserved(displayName) }
+
     private var canContinue: Bool {
-        guard !displayName.trimmingCharacters(in: .whitespaces).isEmpty, !isLoading else { return false }
+        guard !displayName.trimmingCharacters(in: .whitespaces).isEmpty, !displayNameReserved, !isLoading else { return false }
         if case .available = usernameStatus { return true }
         return false
     }
@@ -1548,6 +1551,14 @@ private struct SetupView: View {
                 usernameStatusLabel
                     .padding(.horizontal, 32)
                     .padding(.top, 8)
+
+                if displayNameReserved {
+                    Text("That display name is reserved. Please choose another.")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 32)
+                        .padding(.top, 4)
+                }
 
                 if let errorMessage {
                     InlineErrorBanner(errorMessage)
@@ -1694,6 +1705,7 @@ enum UsernameRules {
             (s >= "a" && s <= "z") || (s >= "0" && s <= "9") || s == "_"
         }
         if !ok { return "Only a–z, 0–9 and underscores." }
+        if ReservedNames.isReserved(u) { return "That name is reserved. Please choose another." }
         return nil
     }
 }

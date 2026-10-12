@@ -670,6 +670,9 @@ type rowQuerier interface {
 // case-insensitively, or another account released it less than
 // UsernameReuseCooldown ago.
 func (s *Store) usernameUnavailableTx(ctx context.Context, q rowQuerier, username, exceptAccountID string) (bool, error) {
+	if ReservedUsername(username) {
+		return true, nil
+	}
 	var taken bool
 	if err := q.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM accounts WHERE lower(username) = lower($1) AND id <> $2)`,

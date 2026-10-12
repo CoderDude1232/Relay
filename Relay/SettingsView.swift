@@ -6,6 +6,7 @@
 import Intents
 import LocalAuthentication
 import PhotosUI
+import RelayCore
 import RelayKit
 import SwiftUI
 import UIKit
@@ -1014,7 +1015,7 @@ private struct EditProfileSheet: View {
                     .listRowBackground(Color.clear)
                 }
 
-                Section("Name") {
+                Section {
                     TextField("Display name", text: $displayNameDraft)
                         .autocorrectionDisabled()
                         .submitLabel(.next)
@@ -1034,6 +1035,13 @@ private struct EditProfileSheet: View {
                     }
                     .tint(.primary)
                     .disabled(service.isDemoAccount) // demo login is fixed
+                } header: {
+                    Text("Name")
+                } footer: {
+                    if ReservedNames.isReserved(displayNameDraft) {
+                        Text("That display name is reserved. Please choose another.")
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 Section {
@@ -1098,6 +1106,7 @@ private struct EditProfileSheet: View {
                         ProgressView()
                     } else {
                         Button("Save") { saveAndDismiss() }.bold()
+                            .disabled(ReservedNames.isReserved(displayNameDraft))
                     }
                 }
             }

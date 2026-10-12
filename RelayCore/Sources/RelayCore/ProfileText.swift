@@ -18,9 +18,6 @@ public enum ProfileText {
     public static let maxLinkLabelLength = 40
     public static let maxLinkURLLength = 300
 
-    /// Names a peer can't take: the app shows these for you and for Relay itself.
-    static let reservedNames: Set<String> = ["you", "relay", "relay team", "relay support", "system"]
-
     /// A display name: one line, visible characters only. Empty if nothing
     /// usable remains or it's a reserved name.
     public static func name(_ raw: String) -> String {
@@ -28,7 +25,7 @@ public enum ProfileText {
         let limited = String(cleaned.prefix(maxNameLength)).trimmingCharacters(in: .whitespaces)
         // Joiners and direction marks alone would be an invisible name.
         let visible = limited.unicodeScalars.contains { !(0x200C...0x200F).contains($0.value) && !$0.properties.isWhitespace }
-        return !visible || reservedNames.contains(limited.lowercased()) ? "" : limited
+        return !visible || ReservedNames.isReserved(limited) ? "" : limited
     }
 
     /// A group name: one line, visible characters, at most 100.

@@ -248,6 +248,16 @@ password from a signed-in current client, or reset it.
 | `GET /v1/accounts/me/sign-in-methods` | sig | → `200 {email: bool, passkeys: int, accountPassword: bool, recoveryKey: bool, accountPasswordNeedsUpdate: bool}`. `email` is true when the account has an email token **or** a Supabase link; `passkeys` is the passkey count; `accountPassword` / `recoveryKey` whether each is set. `accountPasswordNeedsUpdate` is true when the stored password hash predates key derivation (a hash of the raw password, which a current client's key never matches): the client asks the user to enter it again. Lets the client warn before removing the last way back in. |
 | `POST /v1/accounts/me/nuke` | sig | `{commandId, creationTimeMs, initiatingDeviceId, signature}` → `204`. Signed remote wipe; broadcasts a `Nuke` frame to all live sessions. Signature over `relay-nuke-v1\n…`; rejects >5 min old / >30 s future / duplicate `commandId`. |
 
+**Reserved usernames.** Nobody can take a name the app uses for you or its own
+chats, or one that would pass for staff or the system: `you`, `me`, `notetoself`,
+`system`, `admin`, `support`, `official`, `deleted` and similar, and anything
+starting with `relay`. Names are compared after lower-casing, reading look-alike
+digits and symbols as letters (`0`→o, `1`→i/l, `3`→e, `@`→a, …) and dropping
+everything but letters, so `Note_To_Self` and `re1ay` count. Registration, OAuth
+and passkey sign-up and rename answer `409 "username already taken"`, and
+`/available` reports `false` (`internal/store/reserved_names.go`; the app applies
+the same rule to display names).
+
 **Username reuse cooldown.** Sealed-sender certificates carry the sender's
 username for up to 7 days, so a released name — renamed away from, or freed by
 account deletion — can't be claimed by **another** account for **7 days**
