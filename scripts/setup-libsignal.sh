@@ -9,6 +9,8 @@
 set -eu
 
 LIBSIGNAL_VERSION="v0.97.4"
+# The tag's commit: a tag can be moved, a commit can't.
+LIBSIGNAL_COMMIT="b5121d07c72f9e631f178d907ca892587f64f9e2"
 ARCHIVE="libsignal-client-ios-build-${LIBSIGNAL_VERSION}.tar.gz"
 ARCHIVE_URL="https://build-artifacts.signal.org/libraries/${ARCHIVE}"
 ARCHIVE_SHA256="ef01dc615300fc2bb63559de6b8d2bbfd9798db459ef24b3b23ef224defaecee"
@@ -21,6 +23,11 @@ if [ ! -d libsignal ]; then
     git clone --depth 1 --branch "$LIBSIGNAL_VERSION" https://github.com/signalapp/libsignal.git
 else
     echo "third_party/libsignal already present, skipping clone"
+fi
+ACTUAL_COMMIT="$(git -C libsignal rev-parse HEAD)"
+if [ "$ACTUAL_COMMIT" != "$LIBSIGNAL_COMMIT" ]; then
+    echo "third_party/libsignal is at $ACTUAL_COMMIT, expected $LIBSIGNAL_COMMIT ($LIBSIGNAL_VERSION)" >&2
+    exit 1
 fi
 
 if [ ! -f libsignal-ffi/ios-device/libsignal_ffi.a ]; then
