@@ -80,7 +80,20 @@ final class MyStickerStore {
         return base.appendingPathComponent("Stickers", isDirectory: true)
     }
 
-    private init() { reload() }
+    private init() {
+        excludeFromBackup()
+        reload()
+    }
+
+    /// Stickers are often cut from photos of people; they stay off iCloud
+    /// and computer backups, which iOS doesn't encrypt with Relay's keys.
+    private func excludeFromBackup() {
+        var dir = directory
+        guard FileManager.default.fileExists(atPath: dir.path) else { return }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? dir.setResourceValues(values)
+    }
 
     func reload() {
         let files = (try? FileManager.default.contentsOfDirectory(
@@ -101,6 +114,7 @@ final class MyStickerStore {
 
     func add(_ png: Data) {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        excludeFromBackup()
         let id = UUID().uuidString
         try? png.write(to: url(id), options: [.atomic, .completeFileProtection])
         ids.insert(id, at: 0)

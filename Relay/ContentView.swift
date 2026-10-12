@@ -262,6 +262,10 @@ final class PrivacyShield {
             window.rootViewController = host
             self.window = window
         }
+        // Opaque, and set through UIKit so it's in the very next frame: the
+        // app-switcher snapshot can be taken before SwiftUI renders, and a
+        // blur still shows the shape of photos and large text.
+        window?.rootViewController?.view.backgroundColor = locked ? .clear : .systemBackground
         window?.isHidden = false
     }
 
@@ -273,7 +277,7 @@ final class PrivacyShield {
                 if state.locked {
                     ScreenLockView(isAuthenticating: state.authenticating, onUnlock: state.onUnlock)
                 } else if state.obscured {
-                    Rectangle().fill(.regularMaterial)
+                    Color(uiColor: .systemBackground)
                 }
             }
             .ignoresSafeArea()
