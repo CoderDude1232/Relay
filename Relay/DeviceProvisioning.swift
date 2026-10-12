@@ -8,9 +8,26 @@
 //  end-to-end encrypted and must never be logged.
 //
 
+import CryptoKit
 import Foundation
 
 /// Shown in the new device's linking QR code. Kept small to fit the QR.
+/// A six-digit code both devices show while linking: a hash of the QR's
+/// one-time key and the account being joined. Someone who saw the QR and
+/// raced in their own account would make the new device show a different
+/// code (and username) from the one on the user's existing device.
+enum LinkCode {
+    static func make(ephemeralPublicKey: Data, accountId: String) -> String {
+        var input = Data("relay-link-code-v1".utf8)
+        input.append(ephemeralPublicKey)
+        input.append(Data(accountId.utf8))
+        let digest = SHA256.hash(data: input)
+        let n = digest.prefix(4).reduce(UInt32(0)) { $0 << 8 | UInt32($1) } % 1_000_000
+        let digits = String(format: "%06u", n)
+        return digits.prefix(3) + " " + digits.suffix(3)
+    }
+}
+
 struct LinkQRPayload: Codable {
     var version: Int = 1
     let sessionId: String

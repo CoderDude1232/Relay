@@ -190,6 +190,16 @@ struct LinkDeviceView: View {
                     Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Profile → Linked Devices.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let qr = pendingLink {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Link code").font(.caption.weight(.semibold))
+                            Text(LinkCode.make(ephemeralPublicKey: qr.ephemeralPublicKey, accountId: service.credentials.accountId))
+                                .font(.title2.monospacedDigit().weight(.bold))
+                            Text("The new device will show this code and your username before it joins. If either is different, don't continue on it.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .font(.subheadline)
                 .padding()

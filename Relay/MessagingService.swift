@@ -426,6 +426,10 @@ final class MessagingService {
     private(set) var isShutDown = false
 
     /// Stops for good: the account is being signed out or wiped.
+    /// What to do about a device the user doesn't recognise. Unlinking alone
+    /// isn't enough: a linked device holds the account's security key.
+    static let untrustedDeviceAdvice = "If this wasn't you, unlink it in Profile → Linked Devices, then sign in to your account again on this iPhone so the account gets a new security key, and check your passkeys, recovery key and account password."
+
     func shutDown() {
         isShutDown = true
         LocationShareManager.shared.stopAll()
@@ -595,6 +599,9 @@ final class MessagingService {
                     // A new device of ours needs our label to show us by name.
                     if change.action == .added {
                         Task { await self.publishDeviceLabel(force: true) }
+                        // Every other device says so, not just the one that
+                        // linked it (where a notice is easy to delete).
+                        postRelayNotice("A new device (device \(change.deviceId)) was added to your account. \(Self.untrustedDeviceAdvice)")
                     }
                 case .accountNotice(let kind, let timeMs):
                     noteAccountChange(kind: kind, timeMs: timeMs)
@@ -2056,7 +2063,7 @@ final class MessagingService {
         try await api.storeProvisioningBlob(sessionId: sessionId, blob: blob)
 
         // Record the link in the Relay chat so it can't happen silently.
-        postRelayNotice("A new device (device \(deviceId)) was linked to your account. If this wasn't you, unlink it in Settings → Linked Devices and change your recovery details.")
+        postRelayNotice("A new device (device \(deviceId)) was linked to your account. \(Self.untrustedDeviceAdvice)")
     }
 
     /// 32 random bytes, URL-safe base64.
@@ -2409,7 +2416,7 @@ final class MessagingService {
     func removeLinkedDevice(deviceId: UInt32) async throws {
         let authorization = try await deviceMutationAuthorization(action: "remove", targetDeviceId: deviceId, password: "")
         try await api.removeDevice(deviceId: deviceId, authorization: authorization)
-        postRelayNotice("Device \(deviceId) was unlinked from your account.")
+        postRelayNotice("Device \(deviceId) was unlinked from your account. It no longer gets new messages, but it still holds your account's security key; if someone else may have it, sign in to your account again on this iPhone to make a new one.")
     }
 
     private func deviceMutationAuthorization(action: String, targetDeviceId: UInt32, password: String) async throws -> RelayKit.DeviceMutationAuthorization {

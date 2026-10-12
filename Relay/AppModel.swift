@@ -47,6 +47,20 @@ final class AppModel {
     var shouldOfferBackupRestore = false
     /// Show the one-time "create a passkey" prompt after a non-passkey sign-in.
     var shouldOfferPasskey = false
+    /// The relay says this device was removed from the account (signed in
+    /// elsewhere, or unlinked). The service has stopped; the data stays until
+    /// the user chooses to delete it, because that frame isn't signed by the
+    /// account and only an identity-signed remote wipe may erase data.
+    var removedFromAccount = false
+
+    /// A new device about to join an account asks the user to confirm it.
+    struct LinkConfirmation: Identifiable {
+        let id = UUID()
+        let username: String
+        let code: String
+        let respond: (Bool) -> Void
+    }
+    var linkConfirmation: LinkConfirmation?
     /// A recovery key made at sign-up, shown once so it can be saved.
     var newRecoveryKey: String?
     @ObservationIgnored private let passkeys = PasskeyAuthenticator()
@@ -1008,8 +1022,11 @@ final class AppModel {
     enum LinkingError: LocalizedError {
         case timedOut
         case unauthenticated
+        case declined
         var errorDescription: String? {
             switch self {
+            case .declined:
+                return "Linking was cancelled. Nothing was added to this device."
             case .timedOut:
                 return "Timed out waiting for the other device. Make sure both devices are online, then try again."
             case .unauthenticated:
@@ -1080,6 +1097,19 @@ final class AppModel {
             throw SetupError(step: "Verify provisioning signature", underlying: LinkingError.unauthenticated)
         }
 
+        // The signature only proves the payload is self-consistent: anyone who
+        // saw the QR could have sent their own account first. The user checks
+        // the account and code against the existing device before anything is
+        // installed.
+        let code = LinkCode.make(ephemeralPublicKey: ephemeral.publicKey, accountId: payload.accountId)
+        let joined = await withCheckedContinuation { continuation in
+            linkConfirmation = LinkConfirmation(username: payload.username ?? "", code: code) {
+                continuation.resume(returning: $0)
+            }
+        }
+        linkConfirmation = nil
+        guard joined else { throw LinkingError.declined }
+
         // Install the shared identity before opening storage/service so the Keychain
         // never generates a fresh identity for this device.
         do {
@@ -1138,7 +1168,13 @@ final class AppModel {
     /// few seconds so being offline never blocks sign-out. Pass false when the
     /// device or account is already gone (remote wipe, account deletion).
     /// `remoteWipe` also forgets this device's iCloud Backup key.
+    func handleRemovedFromAccount() {
+        if case .ready(let service) = phase { service.shutDown() }
+        removedFromAccount = true
+    }
+
     func signOut(removeFromServer: Bool = true, remoteWipe: Bool = false) {
+        removedFromAccount = false
         if remoteWipe { CloudBackupManager.shared.forgetLocalKey() }
         guard removeFromServer, case .ready(let service) = phase else {
             finishSignOut()

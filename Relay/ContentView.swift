@@ -35,6 +35,9 @@ struct ContentView: View {
             case .ready(let service):
                 MainTabView(service: service)
                     .environment(\.relayAppLocked, isLocked)
+                    .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
+                        RemovedFromAccountView()
+                    }
                     .task(id: model.shouldOfferBackupRestore) {
                         guard model.shouldOfferBackupRestore else { return }
                         model.shouldOfferBackupRestore = false
@@ -93,6 +96,16 @@ struct ContentView: View {
             }
 
         }
+        .alert(
+            "Join @\(model.linkConfirmation?.username ?? "")?",
+            isPresented: Binding(get: { model.linkConfirmation != nil }, set: { _ in }),
+            presenting: model.linkConfirmation
+        ) { confirmation in
+            Button("Join") { confirmation.respond(true) }
+            Button("Cancel", role: .cancel) { confirmation.respond(false) }
+        } message: { confirmation in
+            Text("Link code \(confirmation.code). Only join if this is your username and your other device shows the same code.")
+        }
         // The privacy blur and the lock screen live in their own window above
         // everything (see PrivacyShield): a sheet or full-screen photo is
         // presented above any overlay in this hierarchy.
@@ -143,6 +156,47 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Removed from the account
+
+/// Shown when the relay reports that this device is no longer on the account.
+/// Nothing is deleted until the user says so.
+private struct RemovedFromAccountView: View {
+    @Environment(AppModel.self) private var model
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "iphone.slash")
+                .font(.system(size: 52, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("Signed Out on This iPhone")
+                .font(.title2.weight(.bold))
+                .multilineTextAlignment(.center)
+            Text("Your account was signed in on another device, or this one was removed from it. Relay has stopped here. Your messages are still on this iPhone until you delete them.\n\nIf this wasn't you, sign in again right away and check your passkeys, recovery key and account password.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(role: .destructive) {
+                confirming = true
+            } label: {
+                Text("Sign Out and Delete Data").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .padding(28)
+        .confirmationDialog("Delete Relay's data on this iPhone?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Delete Data and Sign Out", role: .destructive) {
+                model.signOut(removeFromServer: false)
+            }
+        } message: {
+            Text("Messages that exist only on this iPhone can't be recovered afterwards, unless you have an iCloud backup.")
+        }
+        .interactiveDismissDisabled()
     }
 }
 

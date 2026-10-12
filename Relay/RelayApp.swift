@@ -223,7 +223,7 @@ struct RelayApp: App {
             await MainActor.run { appModel.signOut(removeFromServer: false, remoteWipe: true) }
         }
         service.onRemovedFromAccount = {
-            await MainActor.run { appModel.signOut(removeFromServer: false) }
+            await MainActor.run { appModel.handleRemovedFromAccount() }
         }
         callManager.onFetchTurnCredentials = { afterFailure in
             try await service.apiClient.fetchTurnCredentials(afterFailure: afterFailure)
