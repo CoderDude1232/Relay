@@ -935,6 +935,15 @@ final class CallManager: NSObject {
             } else {
                 // New incoming call over the WebSocket.
                 if isBlockedAccount?(account) == true { return }
+                // Both of us called at the same moment: each side would answer
+                // the other with BUSY and neither call would connect. The call
+                // with the smaller id wins on both devices; the other side
+                // drops its own outgoing call and rings for this one.
+                if case .outgoing(let ourId, let peer, _) = state, peer == account,
+                   !hasRemoteDescription, msg.callID < ourId {
+                    log.info("both sides called at once; taking the other call")
+                    terminate(fromRemote: false)
+                }
                 let displayName = nameResolver?(account) ?? "Unknown"
                 reportIncomingCall(callId: msg.callID, callerAccount: account, callerName: displayName, kind: kind)
                 if case .incoming(let id, let caller, _) = state, id == msg.callID, caller == account {
