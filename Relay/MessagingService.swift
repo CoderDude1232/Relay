@@ -478,12 +478,14 @@ final class MessagingService {
                     guard let self else { return }
                     // Notifications of expired messages go too.
                     let now = Int64(Date().timeIntervalSince1970 * 1000)
-                    let affected = Set(((try? self.storage.database.query(
-                        "SELECT DISTINCT conversation_id FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                    let expired = (try? self.storage.database.query(
+                        "SELECT conversation_id, id FROM messages WHERE expires_at IS NOT NULL AND expires_at <= ?",
                         [.integer(now)]
-                    )) ?? []).compactMap { $0.first?.string })
+                    )) ?? []
+                    let affected = Set(expired.compactMap { $0.first?.string })
                     _ = try? self.storage.messages.deleteExpiredMessages(now: now)
-                    self.removeDeliveredNotifications(forConversations: affected)
+                    self.removeDeliveredNotifications(
+                        forConversations: affected, messageIds: Set(expired.compactMap { $0.count > 1 ? $0[1].string : nil }))
                     if !affected.isEmpty { self.sweepAttachmentFiles() }
                     self.refreshConversations()
                 }
@@ -492,15 +494,20 @@ final class MessagingService {
         }
     }
 
-    /// Removes delivered notifications for these chats (their threads), so a
+    /// Removes delivered notifications in these chats (their threads), so a
     /// message that expired, was unsent or edited doesn't linger on the lock
-    /// screen with its old text.
-    func removeDeliveredNotifications(forConversations ids: Set<String>) {
+    /// screen with its old text. With `messageIds`, a notification that names
+    /// its message goes only if it's one of them; ones that don't say go too.
+    func removeDeliveredNotifications(forConversations ids: Set<String>, messageIds: Set<String>? = nil) {
         guard !ids.isEmpty else { return }
         let center = UNUserNotificationCenter.current()
         center.getDeliveredNotifications { delivered in
-            let stale = delivered.filter { ids.contains($0.request.content.threadIdentifier) }
-                .map(\.request.identifier)
+            let stale = delivered.filter {
+                guard ids.contains($0.request.content.threadIdentifier) else { return false }
+                guard let messageIds, let shown = $0.request.content.userInfo["relayMessageId"] as? String else { return true }
+                return messageIds.contains(shown)
+            }
+            .map(\.request.identifier)
             if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
         }
     }
@@ -739,7 +746,8 @@ final class MessagingService {
 
     private func applyProcessed(_ result: ProcessedEnvelope, outerSender: String) async {
         if result.removesNotifications, let conversationId = result.conversationId {
-            removeDeliveredNotifications(forConversations: [conversationId])
+            removeDeliveredNotifications(forConversations: [conversationId],
+                                         messageIds: result.removedMessageId.map { [$0] })
         }
         do {
             if let timestamp = result.sideEffects.deliveryReceiptTimestamp {

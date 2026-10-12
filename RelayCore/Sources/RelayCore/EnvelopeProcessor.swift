@@ -52,6 +52,9 @@ public struct NotificationContent: Sendable {
     public let senderAccount: String
     public let conversationId: String
     public let body: String
+    /// The stored message this announces, so an unsend, edit or expiry can
+    /// remove just its notification. Empty when it isn't one message.
+    public var messageId: String = ""
 }
 
 public enum GroupAction: Sendable, Codable {
@@ -265,6 +268,9 @@ public struct ProcessedEnvelope: Sendable {
     public let screenSecurityUpdate: ScreenSecurityInfo?
     /// An unsend or edit: the chat's delivered notifications show stale text.
     public var removesNotifications = false
+    /// The message whose notification is stale. Notifications that don't
+    /// say which message they announce are removed with the whole chat's.
+    public var removedMessageId: String?
 
     public init(
         outcome: Outcome,
@@ -786,7 +792,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 peerAccount: attestedAccount,
                 conversationId: conversationId,
                 notification: inserted
-                    ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: preview)
+                    ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: preview, messageId: envelopeId)
                     : nil,
                 sideEffects: effects
             )
@@ -832,6 +838,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             try storage.messages.markDeleted(id: targetId)
             var result = ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
             result.removesNotifications = true
+            result.removedMessageId = targetId
             return result
 
         case .edit(let edit):
@@ -844,6 +851,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             try storage.messages.editMessage(id: targetId, newBody: edit.newBody)
             var result = ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
             result.removesNotifications = true
+            result.removedMessageId = targetId
             return result
 
         case .senderKeyDistribution(let skd):
@@ -906,7 +914,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(
                 outcome: inserted ? .stored : .duplicate, peerAccount: attestedAccount, conversationId: conversationId,
                 notification: inserted
-                    ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: "📊 Poll: \(poll.question)")
+                    ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: "📊 Poll: \(poll.question)", messageId: envelopeId)
                     : nil,
                 pollInfo: inserted ? pollInfo : nil
             )

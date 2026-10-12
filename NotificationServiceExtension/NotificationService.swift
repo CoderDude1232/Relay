@@ -84,11 +84,11 @@ class NotificationService: UNNotificationServiceExtension {
         contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
         switch outcome {
-        case .show(_, _, let conversationId, _) where !conversationId.isEmpty
+        case .show(_, _, let conversationId, _, _) where !conversationId.isEmpty
             && PanicHiddenChats.load().contains(conversationId):
             // Hidden by Panic Mode: nothing on the lock screen, no Siri donation.
             contentHandler(UNMutableNotificationContent())
-        case .show(let title, let body, let conversationId, let senderAccount):
+        case .show(let title, let body, let conversationId, let senderAccount, let messageId):
             // Sender, preview, and the conversation id for tap-to-navigate.
             content.title = title
             content.body = body
@@ -96,6 +96,8 @@ class NotificationService: UNNotificationServiceExtension {
             if !conversationId.isEmpty {
                 var info = content.userInfo
                 info["conversationId"] = conversationId
+                // Lets an unsend, edit or expiry remove just this banner.
+                if !messageId.isEmpty { info[Self.messageIdKey] = messageId }
                 content.userInfo = info
                 content.threadIdentifier = conversationId
             }
@@ -191,8 +193,11 @@ class NotificationService: UNNotificationServiceExtension {
 
     // MARK: - Decryption
 
+    /// userInfo key naming the message a banner announces (shared with the app).
+    static let messageIdKey = "relayMessageId"
+
     private enum DecryptOutcome {
-        case show(title: String, body: String, conversationId: String, senderAccount: String)
+        case show(title: String, body: String, conversationId: String, senderAccount: String, messageId: String = "")
         case suppress // decrypted, but nothing to show
     }
 
@@ -338,12 +343,18 @@ class NotificationService: UNNotificationServiceExtension {
         appGroupId: String,
         account: RelayAccount
     ) -> DecryptOutcome? {
-        // An unsend or edit: drop the chat's banners that show the old text.
+        // An unsend or edit: drop the banner that shows the old text (and any
+        // in that chat that don't say which message they're for).
         if result.removesNotifications, let conversationId = result.conversationId {
             let center = UNUserNotificationCenter.current()
+            let removedId = result.removedMessageId
             center.getDeliveredNotifications { delivered in
-                let stale = delivered.filter { $0.request.content.threadIdentifier == conversationId }
-                    .map(\.request.identifier)
+                let stale = delivered.filter {
+                    guard $0.request.content.threadIdentifier == conversationId else { return false }
+                    guard let removedId, let shown = $0.request.content.userInfo[Self.messageIdKey] as? String else { return true }
+                    return shown == removedId
+                }
+                .map(\.request.identifier)
                 if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
             }
         }
@@ -422,7 +433,8 @@ class NotificationService: UNNotificationServiceExtension {
         ).first?.first?.int64) ?? 1) == 0
         if isRequest {
             return .show(title: globalPrivacy == "none" ? "Relay" : title, body: "Sent you a message request",
-                         conversationId: notification.conversationId, senderAccount: notification.senderAccount)
+                         conversationId: notification.conversationId, senderAccount: notification.senderAccount,
+                         messageId: notification.messageId)
         }
 
         // Disappearing chats stay out of the snapshot: it would outlive the timer.
@@ -446,13 +458,15 @@ class NotificationService: UNNotificationServiceExtension {
                          conversationId: "", senderAccount: "")
         case "nameOnly":
             return .show(title: title, body: "New Message",
-                         conversationId: notification.conversationId, senderAccount: notification.senderAccount)
+                         conversationId: notification.conversationId, senderAccount: notification.senderAccount,
+                         messageId: notification.messageId)
         default:
             return .show(
                 title: title,
                 body: previewBody,
                 conversationId: notification.conversationId,
-                senderAccount: notification.senderAccount
+                senderAccount: notification.senderAccount,
+                messageId: notification.messageId
             )
         }
     }
