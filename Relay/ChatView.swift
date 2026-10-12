@@ -2342,7 +2342,9 @@ private struct MessageBubble: View {
                             .foregroundStyle(message.isOutgoing ? .white.opacity(0.65) : .secondary)
                     }
                     if let url = displayBody.firstURL, message.isOutgoing || !inRequestChat {
-                        LinkPreviewView(url: url, isOutgoing: message.isOutgoing)
+                        LinkPreviewView(url: url, isOutgoing: message.isOutgoing,
+                                        fetchAllowed: message.isOutgoing && message.status != .received
+                                            && abs(Date().timeIntervalSince1970 * 1000 - Double(message.timestamp)) < 120_000)
                     }
                 } else {
                     metadataRow

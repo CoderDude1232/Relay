@@ -7,6 +7,7 @@
 //
 
 import LinkPresentation
+import RelayKit
 import SwiftUI
 
 // MARK: - URL detection helper
@@ -39,6 +40,10 @@ private let linkPreviewCache: NSCache<NSString, NSString> = {
 struct LinkPreviewView: View {
     let url: URL
     let isOutgoing: Bool
+    /// Fetched only for a message sent from here just now: re-fetching on
+    /// every render (a forward, a copy from another device, each relaunch)
+    /// would keep telling the site when this chat is open, and from which IP.
+    var fetchAllowed = false
 
     @Environment(\.openURL) private var openURL
     @State private var title: String?
@@ -92,7 +97,10 @@ struct LinkPreviewView: View {
             // Never fetch received links: that would reveal our IP, and that we
             // read the message, to a server the sender chose. The Generate Link
             // Previews privacy setting disables fetching entirely.
-            guard isOutgoing, PrivacyPreferences.linkPreviewsEnabled else { return }
+            // Nor while a proxy hides our IP from the relay: the preview would
+            // go straight to the site.
+            guard isOutgoing, fetchAllowed, PrivacyPreferences.linkPreviewsEnabled,
+                  RelayProxy.active == nil else { return }
             let provider = LPMetadataProvider()
             provider.shouldFetchSubresources = false
             provider.timeout = 8
