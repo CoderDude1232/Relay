@@ -171,9 +171,9 @@ actor SupabaseAuth {
     }
 
     /// Exchange an Apple identity token for a Supabase session (OIDC id_token grant).
-    func signInWithApple(identityToken: String) async throws -> SupabaseSession {
+    func signInWithApple(identityToken: String, nonce: String) async throws -> SupabaseSession {
         try await post(path: "/auth/v1/token?grant_type=id_token",
-                       body: ["provider": "apple", "id_token": identityToken])
+                       body: ["provider": "apple", "id_token": identityToken, "nonce": nonce])
     }
 
     /// Exchange a Google PKCE authorization code for a Supabase session.

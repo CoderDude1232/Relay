@@ -9,6 +9,7 @@
 //
 
 import AuthenticationServices
+import CryptoKit
 import UIKit
 
 enum AppleSignInRecord {
@@ -84,12 +85,15 @@ final class AppleSignInFlow: NSObject, ASAuthorizationControllerDelegate,
 
     private var continuation: CheckedContinuation<Result<ASAuthorization, Error>, Never>?
 
-    static func run(scopes: [ASAuthorization.Scope]) async -> Result<ASAuthorization, Error> {
+    /// `nonce` is the raw value; Apple puts its SHA-256 in the identity token
+    /// and Supabase checks it, so a token from another sign-in can't be replayed.
+    static func run(scopes: [ASAuthorization.Scope], nonce: String) async -> Result<ASAuthorization, Error> {
         let flow = AppleSignInFlow()
         return await withCheckedContinuation { continuation in
             flow.continuation = continuation
             let request = ASAuthorizationAppleIDProvider().createRequest()
             request.requestedScopes = scopes
+            request.nonce = SHA256.hash(data: Data(nonce.utf8)).map { String(format: "%02x", $0) }.joined()
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = flow
             controller.presentationContextProvider = flow

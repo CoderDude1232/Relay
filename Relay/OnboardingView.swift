@@ -378,7 +378,10 @@ private struct WelcomeView: View {
                         .frame(height: Self.buttonHeight * 3 + 24)
                 } else {
                     Button {
-                        Task { handleAppleResult(await AppleSignInFlow.run(scopes: [.email, .fullName])) }
+                        Task {
+                            let nonce = UUID().uuidString + UUID().uuidString
+                            handleAppleResult(await AppleSignInFlow.run(scopes: [.email, .fullName], nonce: nonce), nonce: nonce)
+                        }
                     } label: {
                         SignInButtonLabel(title: "Continue with Apple", style: .light) {
                             Image(systemName: "apple.logo")
@@ -455,7 +458,7 @@ private struct WelcomeView: View {
 
     // MARK: Apple
 
-    private func handleAppleResult(_ result: Result<ASAuthorization, Error>) {
+    private func handleAppleResult(_ result: Result<ASAuthorization, Error>, nonce: String) {
         switch result {
         case .success(let auth):
             guard let cred = auth.credential as? ASAuthorizationAppleIDCredential,
@@ -472,7 +475,7 @@ private struct WelcomeView: View {
             oauthError = nil
             Task {
                 do {
-                    let session = try await SupabaseAuth.shared.signInWithApple(identityToken: token)
+                    let session = try await SupabaseAuth.shared.signInWithApple(identityToken: token, nonce: nonce)
                     AppleSignInRecord.used = true
                     onOAuthSession(session, appleName)
                 } catch {
