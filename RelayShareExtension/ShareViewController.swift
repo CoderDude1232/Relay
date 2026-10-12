@@ -55,6 +55,10 @@ final class ShareViewController: UIViewController {
         let ctx = extensionContext
         Task {
             let share = await extractShare(from: items, conversationId: conversationId)
+            if share.text == nil, share.imageData == nil, share.fileData == nil, sawTooLarge {
+                showTooLarge()
+                return
+            }
             ShareBridge.writePendingShare(share)
             if let url = URL(string: "relay://pending-share") {
                 await ctx?.open(url)
@@ -65,6 +69,23 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Content extraction
 
+    /// The relay takes attachments up to about 26 MB; anything bigger can't be
+    /// sent, and reading it into the extension's memory could get it killed.
+    private static let maxShareBytes = 25 * 1024 * 1024
+    private var sawTooLarge = false
+
+    private func showTooLarge() {
+        let alert = UIAlertController(
+            title: "Too Large to Send",
+            message: "Relay can send files up to 25 MB.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            self?.extensionContext?.cancelRequest(withError: NSError(domain: "com.relay.share", code: 2))
+        })
+        present(alert, animated: true)
+    }
+
     private func extractShare(
         from items: [NSExtensionItem],
         conversationId: String
@@ -73,6 +94,10 @@ final class ShareViewController: UIViewController {
             for provider in item.attachments ?? [] {
                 if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                     if let data = await loadData(provider, type: UTType.image.identifier) {
+                        guard data.count <= Self.maxShareBytes else {
+                            sawTooLarge = true
+                            continue
+                        }
                         return PendingShare(conversationId: conversationId, text: nil,
                                            imageData: data, imageUTI: UTType.jpeg.identifier,
                                            fileData: nil, filename: nil)
@@ -124,13 +149,31 @@ final class ShareViewController: UIViewController {
         }
     }
 
+    private enum LoadedFile { case file(Data, String), tooLarge, unavailable }
+
     private func loadFile(_ provider: NSItemProvider) async -> (Data, String)? {
+        switch await loadFileChecked(provider) {
+        case .file(let data, let name): return (data, name)
+        case .tooLarge:
+            sawTooLarge = true
+            return nil
+        case .unavailable: return nil
+        }
+    }
+
+    private func loadFileChecked(_ provider: NSItemProvider) async -> LoadedFile {
         await withCheckedContinuation { continuation in
             provider.loadFileRepresentation(forTypeIdentifier: UTType.data.identifier) { url, _ in
-                guard let url else { continuation.resume(returning: nil); return }
+                guard let url else { continuation.resume(returning: .unavailable); return }
                 let name = url.lastPathComponent
+                // Check the size before reading it all into memory.
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                guard size <= Self.maxShareBytes else {
+                    continuation.resume(returning: .tooLarge)
+                    return
+                }
                 let data = try? Data(contentsOf: url)
-                continuation.resume(returning: data.map { ($0, name) })
+                continuation.resume(returning: data.map { .file($0, name) } ?? .unavailable)
             }
         }
     }
