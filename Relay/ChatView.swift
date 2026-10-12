@@ -3888,8 +3888,11 @@ private struct ViewOnceOverlay: View {
         viewed = true
         // Delete the ciphertext and attachment row right after display so it
         // can't be shown or re-downloaded again.
+        // Every attachment goes, not just the one shown: a modified sender
+        // could otherwise attach more that stay viewable.
+        let all = message.attachments
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            service.deleteViewOnceAttachment(attachment, in: conversationId)
+            for attachment in all { service.deleteViewOnceAttachment(attachment, in: conversationId) }
         }
     }
 }

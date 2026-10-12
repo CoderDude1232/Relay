@@ -372,7 +372,7 @@ public final class MessageStore: @unchecked Sendable {
         let rows = try db.query("""
             SELECT c.id, c.peer_account, c.peer_username, c.last_message_at,
                    (SELECT CASE
-                        WHEN m.body LIKE '__relay_loc__%' THEN '~loc~'
+                        WHEN substr(m.body, 1, 13) = '__relay_loc__' THEN '~loc~'
                         WHEN m.body = '__sticker__' THEN '~sticker~'
                         WHEN (m.body IS NULL OR m.body = '') AND
                              EXISTS(SELECT 1 FROM attachments a WHERE a.message_id = m.id AND a.content_type LIKE 'image/%') THEN '~photo~'
@@ -616,12 +616,17 @@ public final class MessageStore: @unchecked Sendable {
     }
 
     public func searchMessages(query: String, limit: Int = 100) throws -> [SearchResult] {
-        let pattern = "%\(query.lowercased())%"
+        // `%`, `_` and the escape character itself match literally.
+        let escaped = query.lowercased()
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+        let pattern = "%\(escaped)%"
         let rows = try db.query(
             """
             SELECT id, conversation_id, body, timestamp
             FROM messages
-            WHERE deleted = 0 AND body != '' AND lower(body) LIKE ?
+            WHERE deleted = 0 AND body != '' AND lower(body) LIKE ? ESCAPE '\\'
               AND (expires_at IS NULL OR expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000)
             ORDER BY timestamp DESC
             LIMIT ?

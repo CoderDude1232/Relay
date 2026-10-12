@@ -835,8 +835,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 action: Self.action(update.action),
                 actor: update.actor,
                 target: update.target,
-                name: update.name,
-                description: update.description_p,
+                name: ProfileText.groupName(update.name),
+                description: ProfileText.groupDescription(update.description_p),
                 avatarId: update.hasAvatar && Self.isRelayBlobId(update.avatar.id) ? update.avatar.id : "",
                 avatarKey: update.hasAvatar ? update.avatar.key : Data(),
                 avatarDigest: update.hasAvatar ? update.avatar.digest : Data(),
@@ -910,12 +910,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 : nil
             let info = ProfileInfo(
                 account: attestedAccount,
-                displayName: profile.displayName,
+                displayName: ProfileText.name(profile.displayName),
                 avatar: avatar,
                 revision: profile.timestamp,
-                status: profile.status,
-                bio: profile.bio,
-                links: profile.links.map { ProfileInfo.Link(label: $0.label, url: $0.url) }
+                status: ProfileText.status(profile.status),
+                bio: ProfileText.bio(profile.bio),
+                links: ProfileText.links(profile.links.map { ($0.label, $0.url) })
+                    .map { ProfileInfo.Link(label: $0.label, url: $0.url) }
             )
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, profile: info)
 

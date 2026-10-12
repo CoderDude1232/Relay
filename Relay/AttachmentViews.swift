@@ -34,8 +34,11 @@ struct VoiceNoteBubble: View {
     @State private var transcript: String?
     @State private var isTranscribing = false
     @State private var showTranscript = false
+    @Environment(\.relayIsMessageRequest) private var inRequest
 
     private var tint: Color { isOutgoing ? .white : .primary }
+    /// Audio from someone not yet accepted isn't downloaded or parsed.
+    private var heldForRequest: Bool { inRequest && !isOutgoing }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -61,7 +64,7 @@ struct VoiceNoteBubble: View {
                 }
                 .frame(height: 34)
 
-                Text(failed ? "—" : label)
+                Text(heldForRequest ? "Accept to play" : failed ? "—" : label)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(tint.opacity(0.85))
 
@@ -116,7 +119,10 @@ struct VoiceNoteBubble: View {
         }
         .contentShape(.rect)
         .onTapGesture { Task { await unlockAndTogglePlayback() } }
-        .task(id: attachment.id) { await load() }
+        .task(id: "\(attachment.id)|\(heldForRequest)") {
+            guard !heldForRequest else { return }
+            await load()
+        }
     }
 
     private var label: String {
@@ -189,8 +195,18 @@ struct FileAttachmentBubble: View {
     /// A flagged file waiting for the adult's "View Anyway".
     @State private var sensitivePreview: PreviewItem?
     @State private var showingSensitiveHelp = false
+    @Environment(\.relayIsMessageRequest) private var inRequest
 
     private var tint: Color { isOutgoing ? .white : .primary }
+    /// Files from someone not yet accepted aren't downloaded or opened.
+    private var heldForRequest: Bool { inRequest && !isOutgoing }
+
+    /// Types QuickLook renders as web content, which can load remote
+    /// resources and so tell a sender's server the file was opened (and from
+    /// which IP). They open as plain text instead.
+    private static let webContentExtensions: Set<String> = [
+        "html", "htm", "xhtml", "shtml", "svg", "svgz", "xml", "webarchive", "mht", "mhtml",
+    ]
 
     var body: some View {
         Button {
@@ -260,7 +276,7 @@ struct FileAttachmentBubble: View {
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(sizeLabel)
+                Text(heldForRequest ? "Accept to open" : sizeLabel)
                     .font(.caption)
                     .foregroundStyle(tint.opacity(0.75))
             }
@@ -273,7 +289,7 @@ struct FileAttachmentBubble: View {
     }
 
     private func open() async {
-        guard !busy else { return }
+        guard !busy, !heldForRequest else { return }
         if requiresBiometric && !isUnlocked {
             guard await BiometricGate.authenticate(reason: "Unlock this attachment in Relay.") else { return }
             isUnlocked = true
@@ -286,7 +302,11 @@ struct FileAttachmentBubble: View {
         guard let plaintext = service.attachmentPlaintext(attachment) else { return }
         do {
             // Random filename + complete protection; deleted when the preview closes.
-            let url = try TempMediaFiles.write(plaintext, originalName: attachment.filename, fallbackExtension: "")
+            let ext = ((attachment.filename ?? "") as NSString).pathExtension.lowercased()
+            let isWebContent = Self.webContentExtensions.contains(ext)
+                || attachment.contentType.contains("html") || attachment.contentType.contains("svg")
+            let url = try TempMediaFiles.write(plaintext, originalName: isWebContent ? nil : attachment.filename,
+                                               fallbackExtension: isWebContent ? "txt" : "")
             TempMediaFiles.remove(tempFileURL)
             tempFileURL = url
             let item = PreviewItem(url: url, title: attachment.filename ?? senderName)

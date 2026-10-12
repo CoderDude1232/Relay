@@ -2533,7 +2533,7 @@ final class MessagingService {
         guard Self.isValidGroupId(payload.groupId, ownAccount: credentials.accountId) else {
             throw GroupError.notFound
         }
-        var preview = GroupInvitePreview(groupName: payload.name, memberCount: payload.members.count, payload: json)
+        var preview = GroupInvitePreview(groupName: ProfileText.groupName(payload.name), memberCount: payload.members.count, payload: json)
         if let existing = try storage.messages.group(id: payload.groupId),
            existing.members.contains(credentials.accountId) {
             preview.existingConversationId = try storage.messages.groupConversationId(groupId: payload.groupId)

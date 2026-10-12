@@ -115,7 +115,8 @@ final class VoicePlayer {
         player = try? AVAudioPlayer(data: data)
         player?.enableRate = true
         player?.prepareToPlay()
-        duration = player?.duration ?? 0
+        let reported = player?.duration ?? 0
+        duration = reported.isFinite && reported > 0 ? reported : 0
     }
 
     /// Starts or pauses playback of the given audio, loading it lazily.
@@ -147,7 +148,7 @@ final class VoicePlayer {
                 try? await Task.sleep(nanoseconds: 50_000_000)
                 guard let self, let player = self.player else { break }
                 if player.isPlaying {
-                    self.progress = self.duration > 0 ? player.currentTime / self.duration : 0
+                    self.progress = self.duration > 0 ? min(max(player.currentTime / self.duration, 0), 1) : 0
                 } else {
                     // Natural finish: reset for replay.
                     self.isPlaying = false
@@ -167,6 +168,8 @@ final class VoicePlayer {
 
 /// m:ss
 func formatDuration(_ seconds: TimeInterval) -> String {
-    let total = Int(seconds.rounded())
+    // A crafted file can report NaN or an absurd duration; Int() traps on those.
+    guard seconds.isFinite else { return "0:00" }
+    let total = Int(min(max(seconds, 0), 359_999).rounded())
     return String(format: "%d:%02d", total / 60, total % 60)
 }
