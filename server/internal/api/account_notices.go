@@ -31,9 +31,18 @@ func (s *Server) deliverAccountNotices(accountID string, deviceID uint32, send f
 		slog.Error("account notice: take failed", "err", privlog.Error(err))
 		return
 	}
-	for _, n := range notices {
-		send(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_AccountNotice{
+	for i, n := range notices {
+		if !send(&relaypb.ServerFrame{Payload: &relaypb.ServerFrame_AccountNotice{
 			AccountNotice: &relaypb.AccountNotice{Kind: n.Kind, TimeMs: n.TimeMs},
-		}})
+		}}) {
+			// Not handed to the socket: keep this and the rest for the next
+			// connection rather than lose a security notice.
+			for _, rest := range notices[i:] {
+				if err := s.store.RestoreAccountNotice(accountID, deviceID, rest); err != nil {
+					slog.Error("account notice: restore failed", "err", privlog.Error(err))
+				}
+			}
+			return
+		}
 	}
 }

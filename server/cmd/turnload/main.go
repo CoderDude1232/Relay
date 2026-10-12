@@ -245,8 +245,17 @@ func read(iface string) (sample, error) {
 		return s, err
 	}
 	line, _, _ := strings.Cut(string(stat), "\n")
-	fields := strings.Fields(line) // cpu user nice system idle iowait irq softirq steal ...
-	for i, v := range fields[1:] {
+	fields := strings.Fields(line) // cpu user nice system idle iowait irq softirq steal guest guest_nice
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return s, fmt.Errorf("unexpected /proc/stat")
+	}
+	// The first eight counters: guest and guest_nice are already included in
+	// user and nice, so adding them would count that time twice.
+	counters := fields[1:]
+	if len(counters) > 8 {
+		counters = counters[:8]
+	}
+	for i, v := range counters {
 		n, _ := strconv.ParseUint(v, 10, 64)
 		s.cpuTotal += n
 		if i != 3 && i != 4 { // idle, iowait

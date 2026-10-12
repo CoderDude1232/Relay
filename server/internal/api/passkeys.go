@@ -335,8 +335,11 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request, dev
 		return
 	}
 	if m, err := s.store.AccountSignInMethods(dev.AccountID); err == nil && m.Passkeys == 1 && !m.Email && !m.RecoveryKey {
-		httpError(w, http.StatusConflict, errLastSignInMethod)
-		return
+		// Only if it's that one passkey; an unknown id is still a 404 below.
+		if list, err := s.store.ListPasskeys(dev.AccountID); err == nil && len(list) == 1 && bytes.Equal(list[0].CredentialID, id) {
+			httpError(w, http.StatusConflict, errLastSignInMethod)
+			return
+		}
 	}
 	if err := s.store.DeletePasskey(dev.AccountID, id); errors.Is(err, store.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "no such passkey")

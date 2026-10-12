@@ -1057,11 +1057,9 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 	const pick = `SELECT id, username, account_password_hash,
 	        recovery_key_hash IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.account_id = accounts.id)
 	   FROM accounts `
-	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1`, supabaseUserID,
-	).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
+	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1`, supabaseUserID).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1`, emailToken,
-		).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
+		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1`, emailToken).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
 		adoptedByEmail = err == nil
 	}
 

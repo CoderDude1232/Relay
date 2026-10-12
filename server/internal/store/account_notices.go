@@ -63,3 +63,12 @@ func (s *Store) TakeAccountNotices(accountID string, deviceID uint32) ([]Account
 	}
 	return out, nil
 }
+
+// RestoreAccountNotice puts back a notice that couldn't be delivered.
+func (s *Store) RestoreAccountNotice(accountID string, deviceID uint32, n AccountNotice) error {
+	_, err := s.db.Exec(context.Background(),
+		`INSERT INTO account_notices (account_id, device_id, kind, created_at)
+		 SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT 1 FROM devices WHERE account_id = $1 AND device_id = $2)`,
+		accountID, int64(deviceID), n.Kind, n.TimeMs)
+	return err
+}

@@ -483,7 +483,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		SupabaseAccessToken string `json:"supabaseAccessToken"`
 		AccountPassword     string `json:"accountPassword"`    // raw (older clients)
 		AccountPasswordKey  string `json:"accountPasswordKey"` // derived on the device
-		Email               string `json:"email"` // rejected; see above
+		Email               string `json:"email"`              // rejected; see above
 	}
 	if err := decodeJSON(r, &req); err != nil ||
 		!validUsername.MatchString(req.Username) ||
@@ -564,8 +564,8 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		AccessToken     string `json:"accessToken"`
-		Username        string `json:"username"`
+		AccessToken        string `json:"accessToken"`
+		Username           string `json:"username"`
 		Password           string `json:"password"`
 		AccountPassword    string `json:"accountPassword"`
 		AccountPasswordKey string `json:"accountPasswordKey"`
@@ -794,13 +794,15 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid access key")
 		return
 	}
-	if !sealedSendMailboxLimiter.allow(req.MailboxID) {
-		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
-		return
-	}
 	dest, ok := s.checkMailboxAccess(req.MailboxID, token)
 	if !ok {
 		httpError(w, http.StatusForbidden, "delivery rejected")
+		return
+	}
+	// Charged only after the access check: otherwise anyone who knew a mailbox
+	// id could spend its budget with bad keys and block its delivery.
+	if !sealedSendMailboxLimiter.allow(req.MailboxID) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
 
@@ -1895,13 +1897,16 @@ func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid access key")
 		return
 	}
-	if !callRingMailboxLimiter.allow(req.DestinationMailbox) {
-		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
-		return
-	}
 	dest, ok := s.checkMailboxAccess(req.DestinationMailbox, key)
 	if !ok {
 		httpError(w, http.StatusForbidden, "ring rejected")
+		return
+	}
+	// After the access check (see handleSealedSend). A ring is one push that
+	// shows a call screen, so the budget is small: a few a minute, and a cap
+	// per day so nobody can keep a phone ringing.
+	if !callRingMailboxLimiter.allow(req.DestinationMailbox) || !callRingMailboxDailyLimiter.allow(req.DestinationMailbox) {
+		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 		return
 	}
 	s.hub.PushCallToAccount(dest.AccountID, req.CallID)
@@ -2825,7 +2830,8 @@ var attachmentIPLimiter = newSlidingWindowLimiter(600, time.Minute)
 var turnCredentialLimiter = newSlidingWindowLimiter(240, time.Hour)
 
 var callRingIPLimiter = newSlidingWindowLimiter(60, time.Minute)
-var callRingMailboxLimiter = newSlidingWindowLimiter(20, time.Minute)
+var callRingMailboxLimiter = newSlidingWindowLimiter(6, time.Minute)
+var callRingMailboxDailyLimiter = newSlidingWindowLimiter(100, 24*time.Hour)
 
 // usernameLookupLimiter bounds username availability checks per IP per hour:
 // enough for sign-up typing, too few for bulk probing.

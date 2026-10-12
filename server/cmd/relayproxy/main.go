@@ -23,6 +23,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -133,11 +134,19 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// clientHost is the per-client bucket: the IPv4 address, or the IPv6 /64
+// (one client typically has a whole /64 to rotate through).
 func clientHost(remoteAddr string) string {
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return host
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
 	}
-	return remoteAddr
+	if ip, err := netip.ParseAddr(host); err == nil && ip.Is6() && !ip.Is4In6() {
+		if p, err := ip.Prefix(64); err == nil {
+			return p.String()
+		}
+	}
+	return host
 }
 
 func (p *proxy) acquire(remoteAddr string) bool {
