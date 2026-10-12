@@ -2168,54 +2168,71 @@ final class MessagingService {
         // The relay stores no device names.
         let deviceId = try await api.linkDevice(password: password, deviceName: nil, authorization: authorization)
 
-        // Every device of the account presents the same identity.
-        let identityData = try keychain.identityKeyPair().serialize()
+        // Until the payload is stored the new device can never sign in, so a
+        // failure from here on removes it rather than leaving a keyless row.
+        do {
+            // Every device of the account presents the same identity.
+            let identityData = try keychain.identityKeyPair().serialize()
 
-        var peers: [LinkProvisioningPayload.PeerStub] = []
-        let convList = conversations.filter { $0.groupId == nil && !$0.peerAccount.isEmpty }
-        if syncConversations {
-            peers = convList.prefix(50).map { .init(account: $0.peerAccount, username: $0.peerUsername) }
-        }
-        var historyId: String?
-        var historyKey: Data?
-        var historyDigest: Data?
-        if syncHistory {
-            if let (id, key, digest) = try? await buildAndUploadHistory(conversations: convList) {
-                historyId = id
-                historyKey = key
-                historyDigest = digest
+            var peers: [LinkProvisioningPayload.PeerStub] = []
+            let convList = conversations.filter { $0.groupId == nil && !$0.peerAccount.isEmpty }
+            if syncConversations {
+                peers = convList.prefix(50).map { .init(account: $0.peerAccount, username: $0.peerUsername) }
             }
-        }
+            var historyId: String?
+            var historyKey: Data?
+            var historyDigest: Data?
+            if syncHistory {
+                if let (id, key, digest) = try? await buildAndUploadHistory(conversations: convList) {
+                    historyId = id
+                    historyKey = key
+                    historyDigest = digest
+                }
+            }
 
-        // Sign a transcript binding the session, the ephemeral key and the
-        // credentials, so the new device can reject a replayed or swapped blob.
-        let signature = try ProvisioningSignature.sign(
-            sessionId: sessionId,
-            recipientEphemeralPublicKey: ephemeralPublicKey,
-            accountId: credentials.accountId,
-            deviceId: deviceId,
-            password: password,
-            identityKeyPair: identityData
-        )
-        let payload = LinkProvisioningPayload(
-            identityKeyPair: identityData,
-            accountId: credentials.accountId,
-            username: username,
-            deviceId: deviceId,
-            password: password,
-            serverURL: serverURL.absoluteString,
-            peers: peers,
-            historyId: historyId,
-            historyKey: historyKey,
-            historyDigest: historyDigest,
-            signature: signature
-        )
-        let plaintext = try JSONEncoder().encode(payload)
-        let blob = try ProvisioningCipher.seal(plaintext, toEphemeralPublicKey: ephemeralPublicKey)
-        try await api.storeProvisioningBlob(sessionId: sessionId, blob: blob)
+            // Sign a transcript binding the session, the ephemeral key and the
+            // credentials, so the new device can reject a replayed or swapped blob.
+            let signature = try ProvisioningSignature.sign(
+                sessionId: sessionId,
+                recipientEphemeralPublicKey: ephemeralPublicKey,
+                accountId: credentials.accountId,
+                deviceId: deviceId,
+                password: password,
+                identityKeyPair: identityData
+            )
+            let payload = LinkProvisioningPayload(
+                identityKeyPair: identityData,
+                accountId: credentials.accountId,
+                username: username,
+                deviceId: deviceId,
+                password: password,
+                serverURL: serverURL.absoluteString,
+                peers: peers,
+                historyId: historyId,
+                historyKey: historyKey,
+                historyDigest: historyDigest,
+                signature: signature
+            )
+            let plaintext = try JSONEncoder().encode(payload)
+            let blob = try ProvisioningCipher.seal(plaintext, toEphemeralPublicKey: ephemeralPublicKey)
+            try await api.storeProvisioningBlob(sessionId: sessionId, blob: blob)
+        } catch {
+            await removeUnprovisionedDevice(deviceId)
+            throw error
+        }
 
         // Record the link in the Relay chat so it can't happen silently.
         postRelayNotice("A new device (device \(deviceId)) was linked to your account. \(Self.untrustedDeviceAdvice)")
+    }
+
+    /// Best effort: the relay also reaps devices that never publish keys.
+    private func removeUnprovisionedDevice(_ deviceId: UInt32) async {
+        do {
+            let authorization = try await deviceMutationAuthorization(action: "remove", targetDeviceId: deviceId, password: "")
+            try await api.removeDevice(deviceId: deviceId, authorization: authorization)
+        } catch {
+            log.warning("link: removing the unprovisioned device failed: \(PrivacyRedactor.error(error))")
+        }
     }
 
     /// 32 random bytes, URL-safe base64.

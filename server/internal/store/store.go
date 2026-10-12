@@ -1511,11 +1511,25 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 		return 0, ErrDeviceListVersionMismatch
 	}
 
-	// Delete the device's prekeys and queued envelopes before the row.
+	// Lock the device row first so an in-flight Enqueue (which locks it)
+	// either commits before the queue is cleared or then finds no device.
+	if _, err := tx.Exec(ctx, `SELECT device_id FROM devices WHERE account_id = $1 AND device_id = $2 FOR UPDATE`, accountID, deviceID); err != nil {
+		return 0, err
+	}
+	if err := deleteDeviceTx(ctx, tx, accountID, deviceID); err != nil {
+		return 0, err
+	}
+	newVersion := currentVersion + 1
+	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, newVersion, accountID); err != nil {
+		return 0, err
+	}
+	return newVersion, tx.Commit(ctx)
+}
+
+// deleteDeviceTx deletes a device row with its prekeys and queued envelopes.
+// Returns ErrNotFound when the device doesn't exist.
+func deleteDeviceTx(ctx context.Context, tx pgx.Tx, accountID string, deviceID uint32) error {
 	for _, stmt := range []string{
-		// Lock the device row first so an in-flight Enqueue (which locks it)
-		// either commits before the queue is cleared or then finds no device.
-		`SELECT device_id FROM devices WHERE account_id = $1 AND device_id = $2 FOR UPDATE`,
 		`DELETE FROM one_time_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM one_time_kyber_prekeys WHERE account_id = $1 AND device_id = $2`,
 		`DELETE FROM signed_prekeys WHERE account_id = $1 AND device_id = $2`,
@@ -1523,21 +1537,103 @@ func (s *Store) RemoveDevice(accountID string, deviceID uint32, expectedVersion 
 		`DELETE FROM message_queue WHERE account_id = $1 AND device_id = $2`,
 	} {
 		if _, err := tx.Exec(ctx, stmt, accountID, deviceID); err != nil {
-			return 0, err
+			return err
 		}
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM devices WHERE account_id = $1 AND device_id = $2`, accountID, deviceID)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return 0, ErrNotFound
+		return ErrNotFound
 	}
-	newVersion := currentVersion + 1
-	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, newVersion, accountID); err != nil {
-		return 0, err
+	return nil
+}
+
+// UnfinishedDeviceTTL is how long a linked device may go without publishing an
+// identity key before ReapUnfinishedDevices removes it. Device creation times
+// are kept only to the day, so the cutoff is a whole day boundary and a
+// device is always given at least this long.
+const UnfinishedDeviceTTL = 24 * time.Hour
+
+// DeviceRef names one device.
+type DeviceRef struct {
+	AccountID string
+	DeviceID  uint32
+}
+
+// ReapUnfinishedDevices removes devices left behind by a link that never
+// completed: no identity key at least UnfinishedDeviceTTL after creation,
+// on an account that has another device with one. An account whose only
+// devices are keyless is left alone, so an interrupted sign-up isn't turned
+// into an account with no devices. Each removal bumps device_list_version.
+// Returns the removed devices so the caller can notify the account.
+func (s *Store) ReapUnfinishedDevices() ([]DeviceRef, error) {
+	ctx := context.Background()
+	cutoff := coarseDayMillis() - UnfinishedDeviceTTL.Milliseconds()
+	rows, err := s.db.Query(ctx, `
+		SELECT d.account_id, d.device_id FROM devices d
+		WHERE d.identity_key IS NULL AND d.created_at < $1
+		  AND EXISTS (SELECT 1 FROM devices o WHERE o.account_id = d.account_id AND o.identity_key IS NOT NULL)`,
+		cutoff)
+	if err != nil {
+		return nil, err
 	}
-	return newVersion, tx.Commit(ctx)
+	var candidates []DeviceRef
+	for rows.Next() {
+		var d DeviceRef
+		if err := rows.Scan(&d.AccountID, &d.DeviceID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		candidates = append(candidates, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var reaped []DeviceRef
+	for _, d := range candidates {
+		ok, err := s.reapUnfinishedDevice(ctx, d)
+		if err != nil {
+			return reaped, err
+		}
+		if ok {
+			reaped = append(reaped, d)
+		}
+	}
+	return reaped, nil
+}
+
+// reapUnfinishedDevice removes one candidate unless it published keys since
+// it was selected. Locks the account row, then the device row, as RemoveDevice.
+func (s *Store) reapUnfinishedDevice(ctx context.Context, d DeviceRef) (bool, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var version int64
+	if err := tx.QueryRow(ctx, `SELECT device_list_version FROM accounts WHERE id = $1 FOR UPDATE`, d.AccountID).Scan(&version); errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	var one int
+	if err := tx.QueryRow(ctx,
+		`SELECT 1 FROM devices WHERE account_id = $1 AND device_id = $2 AND identity_key IS NULL FOR UPDATE`,
+		d.AccountID, d.DeviceID).Scan(&one); errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if err := deleteDeviceTx(ctx, tx, d.AccountID, d.DeviceID); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = $1 WHERE id = $2`, version+1, d.AccountID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 // SupabaseUserID returns the Supabase auth user linked to an account, or ""
@@ -1729,6 +1825,27 @@ func (s *Store) LookupUsername(accountID string) (string, error) {
 		return "", ErrNotFound
 	}
 	return username, err
+}
+
+// KeyedDeviceIDs returns the ids of an account's devices that have published
+// an identity key. A device from an unfinished link has none and can't be
+// sent to, so senders aren't told it is missing.
+func (s *Store) KeyedDeviceIDs(accountID string) ([]uint32, error) {
+	rows, err := s.db.Query(context.Background(),
+		`SELECT device_id FROM devices WHERE account_id = $1 AND identity_key IS NOT NULL ORDER BY device_id`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uint32
+	for rows.Next() {
+		var id uint32
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // Devices returns all devices registered to an account.

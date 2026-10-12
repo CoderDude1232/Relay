@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/api"
 	"github.com/relayapp/relay-server/internal/apns"
 	"github.com/relayapp/relay-server/internal/blob"
@@ -43,12 +44,21 @@ func runBlobGC(blobs *blob.Store, ttl time.Duration) {
 
 // runRetentionSweeper deletes expired rows from every table with a retention
 // window (queue, invites, provisioning sessions, link tokens, reports, nuke
-// commands) at startup and then hourly, and prunes the hub's in-memory
-// bookkeeping.
+// commands) and devices from links that never finished, at startup and then
+// hourly, and prunes the hub's in-memory bookkeeping.
 func runRetentionSweeper(st *store.Store, h *hub.Hub) {
 	sweep := func() {
 		if err := st.PurgeExpired(); err != nil {
 			slog.Warn("retention sweep failed", "err", privlog.Error(err))
+		}
+		reaped, err := st.ReapUnfinishedDevices()
+		if err != nil {
+			slog.Warn("unfinished-device sweep failed", "err", privlog.Error(err))
+		}
+		for _, d := range reaped {
+			h.DisconnectDevice(d.AccountID, d.DeviceID, "device removed")
+			// Device ids start at 1, so 0 excludes no one.
+			h.BroadcastDeviceListChanged(d.AccountID, 0, relaypb.DeviceListChanged_DEVICE_REMOVED, d.DeviceID)
 		}
 		h.Prune(store.QueueTTL)
 	}

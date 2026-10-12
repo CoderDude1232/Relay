@@ -378,13 +378,14 @@ func (s *Server) handleSend(sender *store.Device, req *relaypb.SendRequest) *rel
 	// didn't address. The message above was already delivered; the sender
 	// should send to the missing devices without re-sending to this one.
 	// Skip this for self-sends (own-device sync) so the phone doesn't get
-	// asked to re-send its own sync messages to itself.
+	// asked to re-send its own sync messages to itself. A device without keys
+	// (an unfinished link) has no bundle to fetch, so it isn't listed.
 	if !req.Ephemeral && sender.AccountID != destination.AccountID {
-		all, err := s.store.Devices(destination.AccountID)
+		ids, err := s.store.KeyedDeviceIDs(destination.AccountID)
 		if err == nil {
-			for _, d := range all {
-				if d.DeviceID != destination.DeviceID {
-					resp.MissingDevices = append(resp.MissingDevices, d.DeviceID)
+			for _, id := range ids {
+				if id != destination.DeviceID {
+					resp.MissingDevices = append(resp.MissingDevices, id)
 				}
 			}
 			if len(resp.MissingDevices) > 0 {

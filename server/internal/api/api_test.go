@@ -389,11 +389,17 @@ func TestMismatchedDevicesRejected(t *testing.T) {
 
 	// Bob adds a second device; Alice only encrypts for device 1.
 	secondDevicePassword := "password-bob2"
+	var added struct {
+		DeviceID uint32 `json:"deviceId"`
+	}
 	env.doJSON("POST", "/v1/devices", bob.authUser(), bob.password, map[string]any{
 		"password": secondDevicePassword,
 		"auth":     bob.signedDeviceMutation("add", 0, secondDevicePassword),
-	}, http.StatusCreated, nil)
+	}, http.StatusCreated, &added)
 
+	// Until it publishes keys the new device can't be sent to, so it isn't
+	// reported missing (a link that never finishes would otherwise make
+	// every sender re-fetch bundles on every send).
 	aliceWS := env.connect(alice)
 	aliceWS.writeFrame(sendFrame(bob.mailboxID, &relaypb.DeviceMessage{
 		DeviceId: 1,
@@ -401,6 +407,20 @@ func TestMismatchedDevicesRejected(t *testing.T) {
 		Content:  []byte("x"),
 	}))
 	resp := aliceWS.readFrame().GetSendResponse()
+	if resp.GetStatus() != relaypb.SendStatus_SEND_STATUS_OK || len(resp.MissingDevices) != 0 {
+		t.Fatalf("keyless device: status = %v, missing = %v; want OK and none", resp.GetStatus(), resp.MissingDevices)
+	}
+
+	bob2 := &client{env: env, accountID: bob.accountID, deviceID: added.DeviceID, password: secondDevicePassword}
+	env.clients[bob2.authUser()] = bob2
+	bob2.uploadDeviceAuthKey()
+	bob2.uploadKeys(1)
+	aliceWS.writeFrame(sendFrame(bob.mailboxID, &relaypb.DeviceMessage{
+		DeviceId: 1,
+		Type:     relaypb.CiphertextType_CIPHERTEXT_TYPE_MESSAGE,
+		Content:  []byte("x"),
+	}))
+	resp = aliceWS.readFrame().GetSendResponse()
 	if resp.GetStatus() != relaypb.SendStatus_SEND_STATUS_MISMATCHED_DEVICES {
 		t.Fatalf("status = %v, want MISMATCHED_DEVICES", resp.GetStatus())
 	}

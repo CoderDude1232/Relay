@@ -49,6 +49,7 @@ An hourly sweeper (also run at startup) deletes:
 | Contact invites | until used or expired (7 d) |
 | Released-username hashes (`released_usernames`) | 7 days (the reuse cooldown) |
 | Group invites, provisioning sessions | until expired |
+| Devices that never published an identity key (an unfinished link) | 1–2 days: reaped once created before yesterday (creation times are kept to the day), only on accounts that have a keyed device. Removed like `DELETE /v1/devices/{id}` (prekeys, queue, `device_list_version` bump, socket closed, `DEVICE_REMOVED` broadcast) |
 
 ### TLS (recommended for LAN / device testing)
 
@@ -276,7 +277,7 @@ cooldown ends.
 | `POST /v1/provisioning-sessions` | none | → `201 {sessionId, expiresAt}`. New device mints a blind mailbox for reversed linking; shows `{sessionId, ephemeralPublicKey}` in a QR (ephemeral key never touches the server). 10-min expiry. Rate-limited to 10 sessions / source IP / 10 min (`429`). (Top-level path, not under `/v1/devices/`, to avoid a `{id}` route collision with `/v1/devices/{id}/auth-key`.) |
 | `GET /v1/provisioning-sessions/{id}` | none | → `200 {blob}` once the primary has provisioned, `204` while pending, `404` expired/consumed. New device polls this. Single-use: the session is deleted on the first successful fetch. Polls are limited per source IP (burst 120, then 1/s; `429`) — poll at most once a second. |
 | `PUT /v1/provisioning-sessions/{id}` | sig | `{blob}` → `204`. Primary deposits the ciphertext (identity key + credentials, AES-GCM under an ECDH-derived key, **signed by the account identity key** so the new device authenticates the primary). **Write-once** — a session can be provisioned only once, so a second writer can't substitute the payload (`404` if expired/unknown/already used). Blob capped at 64 KiB (`413`). Relay stores only the opaque blob. |
-| `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion` or 5-device limit. Broadcasts `DeviceListChanged(DEVICE_ADDED)`. No verification code — the camera scan is the trust anchor. |
+| `POST /v1/devices/link` | sig | `{password, auth{expectedVersion, signerDeviceId, signature}}` → `201 {deviceId}`. Primary creates the new device after scanning the QR; `password` is bound into the mutation signature. `409` on stale `expectedVersion` or 5-device limit. Broadcasts `DeviceListChanged(DEVICE_ADDED)`. No verification code — the camera scan is the trust anchor. The iOS primary removes the device again if it can't store the provisioning payload; a device whose link never finishes (no `PUT /v1/keys`) still counts toward the 5-device limit and shows in `GET /v1/devices` until it is unlinked or reaped (see *Retention*). |
 | `PUT /v1/devices/auth-key` | sig | `{publicKey}` — uncompressed P-256 point `0x04‖X‖Y` (65 bytes), ≤512 B → `204`. Stores the key `Relay-Sig` and nuke/device-list signatures verify against. The **first** upload for a device may use HTTP Basic (the only route that accepts it); once a key exists, the request must be Relay-Sig signed by the **current** key (so a leaked device password can't swap it). |
 | `GET /v1/devices/{id}/auth-key` | sig | → `{authPublicKey}` (same account only). Lets clients verify a peer device's nuke/device-list signatures. |
 | `PUT /v1/devices/apns` | sig | `{token}` → `204`. Registers an APNs token (iOS); sets push kind `apns`. Token must be 64–200 hex chars (`400` otherwise). |
@@ -398,7 +399,9 @@ envelopes in any one destination device's queue (a device queue holds at most
 that mailbox — the server rejects any other count with
 `SEND_STATUS_MISMATCHED_DEVICES`. To reach every device of a recipient the
 sender sends N separate frames, one per mailbox. On a cross-account send the
-response lists the recipient's other registered devices in `missing_devices`
+response lists the recipient's other devices that have published keys in
+`missing_devices` (a device with no identity key yet, such as an unfinished
+link, has no bundle to fetch and is left out)
 (and `extra_devices`/`stale_devices` when the addressed device id or
 `registration_id` is wrong) so the sender can fetch those bundles and send the
 remaining frames; a stale `registration_id` yields `stale_devices`. Self-sends

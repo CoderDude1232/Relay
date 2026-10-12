@@ -286,3 +286,76 @@ func TestSetAccountEmailToken(t *testing.T) {
 		t.Fatalf("taken token: err = %v", err)
 	}
 }
+
+// A linked device that never published keys is reaped once it is a day old,
+// with its queue, and doesn't count as a device senders must cover. Fresh
+// links and accounts with no keyed device at all are left alone.
+func TestReapUnfinishedDevices(t *testing.T) {
+	s := openTestStore(t)
+	acct, _, err := s.CreateAccount(uniqueName("reap"), nil, "", "device-pw-1", AccountPassword{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testKeys(t, s, acct, 1)
+	var v int64
+	add := func() uint32 {
+		t.Helper()
+		var id uint32
+		if id, v, err = s.AddDevice(acct, "device-pw-x", v); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	orphan, keyed, fresh := add(), add(), add()
+	testKeys(t, s, acct, keyed)
+	if err := s.Enqueue("env-"+uniqueName("q"), acct, orphan, []byte("ct")); err != nil {
+		t.Fatal(err)
+	}
+	old := coarseDayMillis() - 3*UnfinishedDeviceTTL.Milliseconds()
+	mustExec(t, s, `UPDATE devices SET created_at = $1 WHERE account_id = $2 AND device_id IN ($3, $4)`, old, acct, orphan, keyed)
+
+	// A sign-up that never uploaded keys has no other device to fall back on.
+	lone, _, err := s.CreateAccount(uniqueName("reap-lone"), nil, "", "device-pw-1", AccountPassword{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s, `UPDATE devices SET created_at = $1 WHERE account_id = $2`, old, lone)
+
+	if ids, err := s.KeyedDeviceIDs(acct); err != nil || fmt.Sprint(ids) != fmt.Sprint([]uint32{1, keyed}) {
+		t.Fatalf("KeyedDeviceIDs = %v (err %v), want [1 %d]", ids, err, keyed)
+	}
+
+	reaped, err := s.ReapUnfinishedDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine []DeviceRef
+	for _, d := range reaped {
+		if d.AccountID == acct || d.AccountID == lone {
+			mine = append(mine, d)
+		}
+	}
+	if len(mine) != 1 || mine[0] != (DeviceRef{AccountID: acct, DeviceID: orphan}) {
+		t.Fatalf("reaped %+v, want only device %d of the linked account", mine, orphan)
+	}
+	devs, err := s.Devices(acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []uint32
+	for _, d := range devs {
+		left = append(left, d.DeviceID)
+	}
+	if fmt.Sprint(left) != fmt.Sprint([]uint32{1, keyed, fresh}) {
+		t.Fatalf("devices left = %v, want [1 %d %d]", left, keyed, fresh)
+	}
+	if n := s.countRows(t, `SELECT COUNT(*) FROM message_queue WHERE account_id = $1 AND device_id = $2`, acct, orphan); n != 0 {
+		t.Fatalf("%d queued envelopes left for the reaped device", n)
+	}
+	if got, err := s.DeviceListVersion(acct); err != nil || got != v+1 {
+		t.Fatalf("device list version = %d (err %v), want %d", got, err, v+1)
+	}
+	if devs, err := s.Devices(lone); err != nil || len(devs) != 1 {
+		t.Fatalf("lone account devices = %+v (err %v), want its one device kept", devs, err)
+	}
+}
