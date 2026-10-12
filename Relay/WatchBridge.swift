@@ -65,8 +65,8 @@ final class WatchBridge: NSObject, WCSessionDelegate {
             guard let data = ShareBridge.readAvatar(forConversationId: id) else { continue }
             let hash = SHA256.hash(data: data).prefix(8).map { String(format: "%02x", $0) }.joined()
             guard sentHashes[id] != hash, let thumbnail = Self.thumbnail(data) else { continue }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("watch-avatar-\(UUID().uuidString).jpg")
-            guard (try? thumbnail.write(to: url, options: .completeFileProtection)) != nil else { continue }
+            // The protected temp folder is swept at launch, so these copies don't pile up.
+            guard let url = try? TempMediaFiles.write(thumbnail, originalName: nil, fallbackExtension: "jpg") else { continue }
             WCSession.default.transferFile(url, metadata: [WatchProtocol.avatarKey: id])
             sentHashes[id] = hash
         }
@@ -74,7 +74,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
     }
 
     private static func thumbnail(_ data: Data) -> Data? {
-        guard let image = UIImage(data: data) else { return nil }
+        guard let image = SafeImage.image(from: data, maxPixelSize: 512) else { return nil }
         let side = avatarSize
         let scale = max(side / image.size.width, side / image.size.height)
         let drawn = CGSize(width: image.size.width * scale, height: image.size.height * scale)

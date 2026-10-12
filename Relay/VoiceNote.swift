@@ -28,7 +28,9 @@ final class VoiceRecorder {
         do {
             try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
             try session.setActive(true)
-            let url = FileManager.default.temporaryDirectory
+            // The protected temp folder: complete file protection, no backups,
+            // swept at launch if the app is killed mid-recording.
+            let url = TempMediaFiles.directory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("m4a")
             let settings: [String: Any] = [

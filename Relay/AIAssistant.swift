@@ -73,11 +73,8 @@ actor AIAssistant {
     /// `AIError.transcriptionUnavailable` rather than sending audio to Apple.
     func transcribe(audioData: Data, contentType: String) async throws -> String {
         let ext = contentType.contains("m4a") ? "m4a" : "aac"
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension(ext)
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        try audioData.write(to: tmp)
+        let tmp = try TempMediaFiles.write(audioData, originalName: nil, fallbackExtension: ext)
+        defer { TempMediaFiles.remove(tmp) }
         return try await transcribe(url: tmp)
     }
 
