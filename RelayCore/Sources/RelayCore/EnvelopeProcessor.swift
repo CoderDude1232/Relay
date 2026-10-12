@@ -699,8 +699,21 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return group.isAnnounceOnly && !group.admins.isEmpty && !group.admins.contains(attestedAccount)
         }()
 
+        // Messages sort by the sender's timestamp and the read marker follows
+        // the newest one, so a far-future timestamp would pin a message to the
+        // bottom of the chat and the chat to the top of the list, and make
+        // everything after it look read. Allow a day of clock skew.
+        let latestPlausibleTimestamp = Int64(Date().timeIntervalSince1970 * 1000) + 86_400_000
+        func isPlausible(_ timestamp: Int64) -> Bool {
+            timestamp > 0 && timestamp <= latestPlausibleTimestamp
+        }
+
         switch content.body {
         case .text(let text):
+            guard isPlausible(text.timestamp) else {
+                log.warning("dropping a message with an implausible timestamp")
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            }
             if blockedByAnnounceOnly {
                 log.warning("dropping a non-admin message in an announce-only group")
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
@@ -860,7 +873,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, groupUpdate: info)
 
         case .poll(let received):
-            if blockedByAnnounceOnly {
+            if blockedByAnnounceOnly || !isPlausible(received.timestamp) {
                 log.warning("dropping a non-admin poll in an announce-only group")
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
             }

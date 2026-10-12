@@ -299,11 +299,16 @@ struct RecoveryKeyView: View {
         }
     }
 
-    /// Shows the key, making one if this device doesn't have it.
+    /// Shows the key, making one only if the account has none. A key that
+    /// exists but couldn't be loaded here (say, the chat list didn't download)
+    /// is never silently replaced: the one the user wrote down would stop working.
     private func reveal() async {
         if service.recoveryKey == nil { await service.restoreAccountStorage() }
         if let key = service.recoveryKey {
             revealed = key
+        } else if methods?.recoveryKey != false { // unknown counts as "has one"
+            errorMessage = "Your recovery key couldn't be loaded on this device. Check your connection and try again, or create a new key (the old one will stop working)."
+            confirmingReplace = true
         } else {
             await create()
         }

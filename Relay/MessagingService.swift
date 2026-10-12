@@ -4172,8 +4172,9 @@ final class MessagingService {
     }
 
     func bulkDelete(_ ids: Set<String>) {
-        for id in ids { try? storage.messages.deleteConversation(id: id) }
-        refreshConversations()
+        // The same path as one delete: stop live location, close the chat and
+        // remove the cached attachment files too.
+        for id in ids { deleteConversation(id) }
     }
 
     func bulkMarkRead(_ ids: Set<String>) {

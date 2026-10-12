@@ -319,23 +319,26 @@ struct ConversationListView: View {
             // unreliable in compact mode.
             if let oldId, oldId != newId { service.closeConversation(id: oldId) }
             if let newId, searchTarget?.conversationId != newId { searchTarget = nil }
-            if let newId { service.openConversation(newId) }
 
             // Re-lock when leaving a chat, whether to the list or another chat.
             if let oldId, oldId != newId { sessionUnlocked.remove(oldId) }
             guard let newId else { return }
             searchText = ""
-            guard let conv = service.conversations.first(where: { $0.id == newId }),
-                  conv.requireBiometricChat,
-                  !sessionUnlocked.contains(newId) else { return }
-            // Hide the chat while authenticating.
-            selectedConversationId = nil
-            Task {
-                guard await BiometricGate.authenticate(reason: "Unlock this chat in Relay.") else { return }
-                // Mark unlocked before setting the id so the re-triggered onChange skips auth.
-                sessionUnlocked.insert(newId)
-                selectedConversationId = newId
+            if let conv = service.conversations.first(where: { $0.id == newId }),
+               conv.requireBiometricChat,
+               !sessionUnlocked.contains(newId) {
+                // Hide the chat while authenticating. It isn't opened (which
+                // marks it read and sends read receipts) until unlocked.
+                selectedConversationId = nil
+                Task {
+                    guard await BiometricGate.authenticate(reason: "Unlock this chat in Relay.") else { return }
+                    // Mark unlocked before setting the id so the re-triggered onChange skips auth.
+                    sessionUnlocked.insert(newId)
+                    selectedConversationId = newId
+                }
+                return
             }
+            service.openConversation(newId)
         }
     }
 
@@ -1406,6 +1409,10 @@ private struct ConversationRow: View {
             let json = String((body ?? "").dropFirst("__poll__:".count))
             let question = PollPayload.decode(json)?.question ?? json
             return ("chart.bar.xaxis", "\(prefix)Poll: \(question)")
+        case let body where body?.hasPrefix(notepadPrefix) == true:
+            return ("note.text", "\(prefix)Updated the shared notepad")
+        case let body where body?.hasPrefix(MessagingService.viewOncePrefix) == true:
+            return ("1.circle", "\(prefix)View-once media")
         case let body where body?.hasPrefix("call:") == true:
             return ("phone.fill", String((body ?? "").dropFirst(5)))
         case let body:

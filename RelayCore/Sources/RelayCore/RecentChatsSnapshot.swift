@@ -55,6 +55,7 @@ public struct RecentChatsSnapshot: Codable, Sendable {
         }
         if body.hasPrefix("__relay_loc__") { return "Location" }
         if body.hasPrefix("~once~") { return "View-once media" }
+        if body.hasPrefix(PendingControlStore.notepadPrefix) { return "Updated the shared notepad" }
         if body.isEmpty {
             guard let type = attachmentType else { return "Attachment" }
             if type.hasPrefix("image/") { return "Photo" }
