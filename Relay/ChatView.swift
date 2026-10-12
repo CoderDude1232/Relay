@@ -1365,7 +1365,8 @@ struct ChatView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .background(.ultraThinMaterial)
-        .confirmationDialog("Block \(peerName)?", isPresented: $confirmBlockRequest, titleVisibility: .visible) {
+        .confirmationDialog("Block \(requestBlockTarget.map { service.displayName(forAccount: $0) } ?? peerName)?",
+                            isPresented: $confirmBlockRequest, titleVisibility: .visible) {
             Button("Block", role: .destructive) { blockRequest(report: false) }
             Button("Block and Report", role: .destructive) { blockRequest(report: true) }
         } message: {
@@ -1375,14 +1376,28 @@ struct ChatView: View {
             service.deleteConversation(conversationId)
             onClose?()
         }) {
-            if let peer = conversation?.peerAccount {
-                ReportContactSheet(service: service, account: peer, displayName: peerName)
+            if let target = requestBlockTarget {
+                ReportContactSheet(service: service, account: target,
+                                   displayName: service.displayName(forAccount: target))
             }
         }
     }
 
+    /// The person a request's Block and Report act on: the sender of a 1:1
+    /// request, or whoever added us to a group (not the group itself).
+    private var requestBlockTarget: String? {
+        guard let conversation else { return nil }
+        if let groupId = conversation.groupId { return service.groupRequestAdder(groupId: groupId) }
+        return conversation.peerAccount
+    }
+
     private func blockRequest(report: Bool) {
-        guard let peer = conversation?.peerAccount else { return }
+        guard let peer = requestBlockTarget else {
+            // An older group request with no record of who added us: just leave it.
+            service.deleteConversation(conversationId)
+            onClose?()
+            return
+        }
         service.blockAccount(peer)
         if report {
             showingRequestReport = true

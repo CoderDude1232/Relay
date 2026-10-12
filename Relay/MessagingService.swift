@@ -1765,6 +1765,16 @@ final class MessagingService {
         refreshActiveMessages(ifShowing: conversationId)
     }
 
+    private static func groupAddedByKey(_ groupId: String) -> String { "group:addedBy:" + groupId }
+
+    /// Who added us to a group that's still a message request.
+    func groupRequestAdder(groupId: String) -> String? {
+        let data = (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(Self.groupAddedByKey(groupId))]
+        ).first?.first?.data) ?? nil
+        return data.flatMap { String(data: $0, encoding: .utf8) }.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     private func readKVInt(_ key: String) -> Int64 {
         guard let data = ((try? storage.database.query(
             "SELECT value FROM kv WHERE key = ?", [.text(key)]).first?.first?.data) ?? nil),
@@ -3051,6 +3061,9 @@ final class MessagingService {
             if !wasMember, actor != credentials.accountId, !hasAcceptedChat(with: actor),
                let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {
                 try? storage.messages.setConversationAccepted(convoId, accepted: false)
+                // Block and Report on the request act on whoever added us.
+                try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                                          [.text(Self.groupAddedByKey(info.groupId)), .blob(Data(actor.utf8))])
             }
             refreshConversations()
             if let convoId = try? storage.messages.groupConversationId(groupId: info.groupId) {

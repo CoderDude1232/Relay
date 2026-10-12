@@ -566,8 +566,17 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
         // Drop blocked senders now that the sender is known. Sealed messages
         // can't be filtered earlier because the wire envelope has no sender.
+        // The exception is a membership change to a group we're already in:
+        // ignoring a blocked admin's removals would leave people they removed
+        // on our roster, still getting our group messages.
         if blockedAccounts.contains(attestedAccount) {
-            return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            let isKnownGroupUpdate: Bool = {
+                guard let groupId, case .groupUpdate = content.body else { return false }
+                return ((try? storage.messages.group(id: groupId)) ?? nil) != nil
+            }()
+            if !isKnownGroupUpdate {
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            }
         }
 
         // The relay-signed certificate names the sender's username, so we never
