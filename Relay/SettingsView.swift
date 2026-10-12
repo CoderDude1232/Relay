@@ -3,6 +3,7 @@
 //  Relay
 //
 
+import Intents
 import LocalAuthentication
 import PhotosUI
 import RelayKit
@@ -547,6 +548,7 @@ struct PrivacySettingsView: View {
     @AppStorage(PrivacyPreferences.sendTypingKey) private var sendTyping = true
     @AppStorage(PrivacyPreferences.linkPreviewsKey) private var linkPreviews = true
     @AppStorage(PrivacyPreferences.spotlightIndexingKey) private var spotlightIndexing = false
+    @AppStorage(PrivacyPreferences.shareSuggestionsKey) private var shareSuggestions = false
 
     var body: some View {
         List {
@@ -588,6 +590,12 @@ struct PrivacySettingsView: View {
                                       spotlightIndexing = enabled
                                       if enabled { service.refreshConversations() }  // re-index now
                                       else { SpotlightIndexer.deindexAll() }
+                                  }))
+                SettingsToggleRow(systemName: "square.and.arrow.up", title: "Suggest Chats in Share Sheet",
+                                  info: "Lets iOS suggest chats you message in the Share Sheet and Siri. iOS keeps those suggestions, with chat names and photos, outside Relay's encryption. Hidden chats are never suggested.",
+                                  isOn: Binding(get: { shareSuggestions }, set: { enabled in
+                                      shareSuggestions = enabled
+                                      if !enabled { INInteraction.deleteAll(completion: nil) }
                                   }))
             } header: {
                 Text("System Integration")

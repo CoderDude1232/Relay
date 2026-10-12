@@ -40,6 +40,9 @@ nonisolated enum NotificationPreviewSetting: String, CaseIterable, Sendable {
 nonisolated enum PrivacyPreferences {
     /// Index conversation names in Spotlight. Off by default.
     static let spotlightIndexingKey = "relay.spotlightIndexing"
+    /// Donate sent messages to iOS for Share Sheet and Siri suggestions. Off
+    /// by default: iOS keeps the chat names and photos outside our encryption.
+    static let shareSuggestionsKey = "relay.shareSuggestions"
     /// Fetch link previews for links you send. On by default; incoming previews
     /// are never fetched automatically.
     static let linkPreviewsKey = "relay.linkPreviews"
@@ -54,6 +57,10 @@ nonisolated enum PrivacyPreferences {
 
     static var spotlightIndexingEnabled: Bool {
         defaults.bool(forKey: spotlightIndexingKey)
+    }
+
+    static var shareSuggestionsEnabled: Bool {
+        defaults.bool(forKey: shareSuggestionsKey)
     }
 
     static var linkPreviewsEnabled: Bool {

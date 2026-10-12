@@ -459,6 +459,8 @@ final class MessagingService {
             // yet, so anything still "sending" was interrupted by a kill.
             didSweepInterruptedSends = true
             failInterruptedSends()
+            // Older builds donated every chat; suggestions are now opt-in.
+            if !PrivacyPreferences.shareSuggestionsEnabled { INInteraction.deleteAll(completion: nil) }
         }
         connectionTask = Task { await runConnectionLoop() }
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
@@ -4770,8 +4772,10 @@ final class MessagingService {
 
     // Feeds share-sheet and Siri suggestions.
     private func donateInteraction(peerAccount account: String, conversationId: String) {
-        // Siri's store is outside the encrypted DB, so skip panic-hidden chats.
-        guard !PanicModeManager.hiddenConversationIdsSnapshot().contains(conversationId) else { return }
+        // Siri's store is outside the encrypted DB: only when the user opted
+        // in, and never for panic-hidden chats.
+        guard PrivacyPreferences.shareSuggestionsEnabled,
+              !PanicModeManager.hiddenConversationIdsSnapshot().contains(conversationId) else { return }
         let name = displayName(forAccount: account)
         // Identify the person by conversation id, not account id: these
         // donations live in Siri's store, outside the app.
