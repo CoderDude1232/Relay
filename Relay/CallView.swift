@@ -153,7 +153,7 @@ struct CallView: View {
         let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
         var hash = 0
         for scalar in name.unicodeScalars { hash = (hash &* 31 &+ Int(scalar.value)) }
-        return palette[abs(hash) % palette.count]
+        return palette[Int(hash.magnitude % UInt(palette.count))]
     }
 
     // Controls only auto-hide during active video calls.

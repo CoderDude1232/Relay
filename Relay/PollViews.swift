@@ -168,7 +168,7 @@ struct PollBubble: View {
         }
         .padding(12)
         .onAppear { refresh() }
-        .onChange(of: service.activeMessages.count) { refresh() }
+        .onChange(of: service.activeMessagesRevision) { refresh() }
     }
 
     private var uniqueVoters: Int {

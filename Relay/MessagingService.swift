@@ -126,6 +126,15 @@ final class MessagingService {
     }
     private(set) var callHistory: [StoredCall] = []
     private(set) var activeMessages: [StoredMessage] = []
+    /// How many of the newest messages the open chat loads; grows with
+    /// "Load Earlier Messages".
+    private(set) var activeMessageLimit = MessagingService.messagePageSize
+    /// Whether the open chat has messages older than the ones loaded.
+    private(set) var hasEarlierMessages = false
+    static let messagePageSize = 100
+    /// Bumped on every reload of the open chat, including ones that change
+    /// no message (a poll vote, a reaction), for views that read other tables.
+    private(set) var activeMessagesRevision = 0
     private(set) var activeConversationId: String?
     /// Set to the conversation ID whose messages have just finished loading.
     /// Lets ChatView distinguish "still loading" from "genuinely empty".
@@ -3711,6 +3720,8 @@ final class MessagingService {
     func openConversation(_ conversationId: String) {
         activeConversationId = conversationId
         activeMessages = []
+        activeMessageLimit = Self.messagePageSize
+        hasEarlierMessages = false
         messagesLoadedConversationId = nil
         cachedActiveGroup = group(for: conversationId)  // avoids per-message DB queries
         refreshActiveMessages(ifShowing: conversationId)
@@ -4850,14 +4861,27 @@ final class MessagingService {
         }
     }
 
+    /// Loads the next page of older messages into the open chat.
+    func loadEarlierMessages() {
+        guard let conversationId = activeConversationId, hasEarlierMessages else { return }
+        activeMessageLimit += Self.messagePageSize
+        refreshActiveMessages(ifShowing: conversationId)
+    }
+
     private func refreshActiveMessages(ifShowing conversationId: String) {
         guard activeConversationId == conversationId else { return }
         let messageStore = storage.messages
+        let limit = activeMessageLimit
         Task.detached(priority: .userInitiated) { [weak self] in
-            let msgs = (try? messageStore.messages(in: conversationId)) ?? []
+            // One extra row tells whether anything older exists.
+            var msgs = (try? messageStore.messages(in: conversationId, limit: limit + 1)) ?? []
+            let hasEarlier = msgs.count > limit
+            if hasEarlier { msgs.removeFirst() }
             await MainActor.run { [weak self] in
-                guard let self, self.activeConversationId == conversationId else { return }
+                guard let self, self.activeConversationId == conversationId, self.activeMessageLimit == limit else { return }
                 self.activeMessages = msgs
+                self.hasEarlierMessages = hasEarlier
+                self.activeMessagesRevision &+= 1
                 self.messagesLoadedConversationId = conversationId
             }
         }

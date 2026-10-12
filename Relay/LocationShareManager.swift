@@ -31,7 +31,11 @@ struct LocationPayload: Codable {
     static func decode(_ body: String) -> LocationPayload? {
         guard body.hasPrefix(locationPrefix) else { return nil }
         let json = String(body.dropFirst(locationPrefix.count))
-        return try? JSONDecoder().decode(LocationPayload.self, from: Data(json.utf8))
+        guard let payload = try? JSONDecoder().decode(LocationPayload.self, from: Data(json.utf8)),
+              // A sender's out-of-range coordinate would crash MapKit.
+              (-90...90).contains(payload.lat), (-180...180).contains(payload.lng)
+        else { return nil }
+        return payload
     }
 
     func encode() -> String {

@@ -1295,6 +1295,7 @@ public final class MessageStore: @unchecked Sendable {
             ON CONFLICT(conversation_id, poll_author, poll_timestamp, voter_account) DO UPDATE SET
                 selected_options = excluded.selected_options,
                 voted_at = excluded.voted_at
+            WHERE excluded.voted_at >= poll_votes.voted_at
             """,
             [.text(conversationId), .text(pollAuthor), .integer(pollTimestamp),
              .text(voterAccount), .text(optJSON), .integer(votedAt)]

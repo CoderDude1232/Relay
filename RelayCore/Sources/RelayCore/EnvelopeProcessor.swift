@@ -345,6 +345,9 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     /// Body prefix of a live-location update (the app's `locationPrefix`).
     /// Updates collapse into one moving bubble per sharer.
     static let liveLocationPrefix = "__relay_loc__"
+    static let maxPollOptions = 12
+    static let maxPollOptionLength = 100
+    static let maxPollQuestionLength = 300
 
     public init(
         storage: SecureStore,
@@ -686,13 +689,19 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             )
         }
 
+        // Announce-only: only admins post (messages and polls). A modified
+        // client could still send; don't show it. (Legacy groups with no
+        // admins are open.)
+        let blockedByAnnounceOnly: Bool = {
+            guard let groupId, attestedAccount != ownAccountId,
+                  let group = try? storage.messages.group(id: groupId)
+            else { return false }
+            return group.isAnnounceOnly && !group.admins.isEmpty && !group.admins.contains(attestedAccount)
+        }()
+
         switch content.body {
         case .text(let text):
-            // Announce-only: only admins post. A modified client could still
-            // send; don't show it. (Legacy groups with no admins are open.)
-            if let groupId, attestedAccount != ownAccountId,
-               let group = try? storage.messages.group(id: groupId),
-               group.isAnnounceOnly, !group.admins.isEmpty, !group.admins.contains(attestedAccount) {
+            if blockedByAnnounceOnly {
                 log.warning("dropping a non-admin message in an announce-only group")
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
             }
@@ -850,7 +859,14 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             )
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, groupUpdate: info)
 
-        case .poll(let poll):
+        case .poll(let received):
+            if blockedByAnnounceOnly {
+                log.warning("dropping a non-admin poll in an announce-only group")
+                return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
+            }
+            var poll = received
+            poll.question = String(poll.question.prefix(Self.maxPollQuestionLength))
+            poll.options = poll.options.prefix(Self.maxPollOptions).map { String($0.prefix(Self.maxPollOptionLength)) }
             let conversationId = try chatConversation()
             let pollInfo = PollInfo(
                 question: poll.question,
@@ -863,8 +879,9 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             // Stored with a JSON body so the UI can render the question and options.
             let pollPayload = PollPayload(question: poll.question, options: Array(poll.options), multiSelect: poll.multiSelect)
             let body = "__poll__:" + (pollPayload.encode() ?? poll.question)
+            var inserted = false
             do {
-                _ = try storage.messages.insertMessage(
+                inserted = try storage.messages.insertMessage(
                     id: envelopeId, conversationId: conversationId, isOutgoing: false,
                     body: body, timestamp: poll.timestamp, status: .received,
                     senderAccount: groupId == nil ? nil : attestedAccount
@@ -872,15 +889,20 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             } catch {
                 log.error("insertMessage (poll): \(error.localizedDescription)")
             }
+            // A redelivered poll is already stored and was already announced.
             return ProcessedEnvelope(
-                outcome: .stored, peerAccount: attestedAccount, conversationId: conversationId,
-                notification: NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: "📊 Poll: \(poll.question)"),
-                pollInfo: pollInfo
+                outcome: inserted ? .stored : .duplicate, peerAccount: attestedAccount, conversationId: conversationId,
+                notification: inserted
+                    ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: "📊 Poll: \(poll.question)")
+                    : nil,
+                pollInfo: inserted ? pollInfo : nil
             )
 
         case .pollVote(let vote):
             let conversationId = try chatConversation()
-            let selectedOptions = vote.selectedOptions.map { Int($0) }
+            // Option indexes the poll could actually have, each once.
+            let selectedOptions = Array(Set(vote.selectedOptions.map { Int($0) }
+                .filter { (0..<Self.maxPollOptions).contains($0) })).sorted()
             do {
                 try storage.messages.upsertPollVote(
                     conversationId: conversationId,

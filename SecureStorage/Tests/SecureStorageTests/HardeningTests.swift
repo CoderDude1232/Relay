@@ -395,3 +395,45 @@ struct MessageRequestTests {
         #expect(try !messages.isMessageRequest(peer: "stranger"))
     }
 }
+
+struct OrderingAndSearchTests {
+    @Test func olderPollVoteNeverReplacesNewer() throws {
+        let storage = try SecureStore(path: tempPath(), key: .random(), credentials: Credentials())
+        let store = storage.messages
+        let convo = try store.conversation(withPeer: "bob")
+        try store.upsertPollVote(conversationId: convo, pollAuthor: "bob", pollTimestamp: 1,
+                                 voterAccount: "carol", selectedOptions: [2], votedAt: 200)
+        try store.upsertPollVote(conversationId: convo, pollAuthor: "bob", pollTimestamp: 1,
+                                 voterAccount: "carol", selectedOptions: [0], votedAt: 100)
+        #expect(try store.pollVotes(conversationId: convo, pollAuthor: "bob", pollTimestamp: 1).map(\.selectedOptions) == [[2]])
+        try store.upsertPollVote(conversationId: convo, pollAuthor: "bob", pollTimestamp: 1,
+                                 voterAccount: "carol", selectedOptions: [1], votedAt: 300)
+        #expect(try store.pollVotes(conversationId: convo, pollAuthor: "bob", pollTimestamp: 1).map(\.selectedOptions) == [[1]])
+    }
+
+    @Test func olderProfileNeverReplacesNewer() throws {
+        let storage = try SecureStore(path: tempPath(), key: .random(), credentials: Credentials())
+        let store = storage.messages
+        try store.upsertProfile(account: "bob", displayName: "New", avatarId: nil, avatarData: nil,
+                                revision: 6, status: nil, bio: nil, linksJSON: nil)
+        try store.upsertProfile(account: "bob", displayName: "Old", avatarId: nil, avatarData: nil,
+                                revision: 5, status: nil, bio: nil, linksJSON: nil)
+        #expect(try store.peerProfile(account: "bob")?.displayName == "New")
+    }
+
+    @Test func searchTreatsWildcardsLiterally() throws {
+        let storage = try SecureStore(path: tempPath(), key: .random(), credentials: Credentials())
+        let store = storage.messages
+        let convo = try store.conversation(withPeer: "bob")
+        try store.insertMessage(id: "a", conversationId: convo, isOutgoing: false,
+                                body: "50% off", timestamp: 1, status: .received)
+        try store.insertMessage(id: "b", conversationId: convo, isOutgoing: false,
+                                body: "500 offers", timestamp: 2, status: .received)
+        try store.insertMessage(id: "c", conversationId: convo, isOutgoing: false,
+                                body: "a relay locks up", timestamp: 3, status: .received)
+        #expect(try store.searchMessages(query: "50%").map(\.messageId) == ["a"])
+        #expect(try store.searchMessages(query: "_").isEmpty)
+        // Ordinary text isn't previewed as a location.
+        #expect(try store.conversations().first?.lastMessageBody == "a relay locks up")
+    }
+}

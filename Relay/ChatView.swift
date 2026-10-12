@@ -116,6 +116,9 @@ struct ChatView: View {
     @State private var showFormattingBar = false
     @State private var editingMessage: StoredMessage? = nil
     @State private var safariURL: URL?
+    /// The message that was first before loading earlier ones, so the view
+    /// stays where it was instead of jumping.
+    @State private var earlierLoadAnchorId: String?
     @State private var initialScrollDone = false
     @State private var newMessageBanner: String? = nil
 
@@ -152,6 +155,15 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    if service.hasEarlierMessages && initialScrollDone {
+                        Button("Load Earlier Messages") {
+                            earlierLoadAnchorId = service.activeMessages.first?.id
+                            service.loadEarlierMessages()
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                    }
                     ForEach(displayItems) { item in
                         switch item {
                         case .dateSeparator(let id, let label):
@@ -231,7 +243,14 @@ struct ChatView: View {
                     DispatchQueue.main.async { initialScrollDone = true }
                 }
             }
-            .onChange(of: service.activeMessages.count) {
+            .onChange(of: service.activeMessages.first?.id) {
+                guard let anchor = earlierLoadAnchorId else { return }
+                earlierLoadAnchorId = nil
+                DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+            }
+            // Keyed on the newest message, not the count: the count stops
+            // changing once a chat has a full page of messages.
+            .onChange(of: service.activeMessages.last?.id) {
                 guard initialScrollDone else { return }
                 guard let last = service.activeMessages.last else { return }
                 if last.isOutgoing || isAtBottom {
@@ -720,7 +739,7 @@ struct ChatView: View {
             chatAIEnabled = UserDefaults.standard.bool(forKey: "chat.ai.\(conversationId)")
             chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
         }
-        .onChange(of: service.activeMessages.count) {
+        .onChange(of: service.activeMessages.last?.id) {
             refreshVerification()
             pinnedMessage = service.pinnedMessage(for: conversationId)
         }
