@@ -35,7 +35,7 @@ final class AppModel {
 
     static let appGroupId = RelayStore.appGroupId
     private static let accountSecretName = "relay-account"
-    private static let accessKeySecretName = "relay-access-key"
+    private static let accessKeySecretName = MessagingService.accessKeySecretName
     /// Set once this device received the account's shared identity via linking.
     /// Secondaries linked without it hold a self-generated identity and see the
     /// re-link nudge.

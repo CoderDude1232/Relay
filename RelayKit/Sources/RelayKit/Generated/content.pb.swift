@@ -545,6 +545,12 @@ public nonisolated struct Relay_Content_ProfileUpdate: Sendable {
   /// labelled profile links (site/handle)
   public var links: [Relay_Content_ProfileLink] = []
 
+  /// The sender's sealed-sender access key (32 bytes), so the recipient can
+  /// fetch the sender's prekey bundles anonymously (GET /v1/keys/{account}/sealed)
+  /// instead of with a signed request that names the fetcher. Empty from older
+  /// clients.
+  public var accessKey: Data = Data()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1685,7 +1691,7 @@ nonisolated extension Relay_Content_AttachmentPointer: SwiftProtobuf.Message, Sw
 
 nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProfileUpdate"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0\u{1}status\0\u{1}bio\0\u{1}links\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0\u{1}status\0\u{1}bio\0\u{1}links\0\u{3}access_key\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1699,6 +1705,7 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
       case 4: try { try decoder.decodeSingularStringField(value: &self.status) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self.bio) }()
       case 6: try { try decoder.decodeRepeatedMessageField(value: &self.links) }()
+      case 7: try { try decoder.decodeSingularBytesField(value: &self.accessKey) }()
       default: break
       }
     }
@@ -1727,6 +1734,9 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if !self.links.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.links, fieldNumber: 6)
     }
+    if !self.accessKey.isEmpty {
+      try visitor.visitSingularBytesField(value: self.accessKey, fieldNumber: 7)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1737,6 +1747,7 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if lhs.status != rhs.status {return false}
     if lhs.bio != rhs.bio {return false}
     if lhs.links != rhs.links {return false}
+    if lhs.accessKey != rhs.accessKey {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

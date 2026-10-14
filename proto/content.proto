@@ -141,6 +141,11 @@ message ProfileUpdate {
   string status = 4;            // short "about" line shown under the name
   string bio = 5;               // longer free-text profile bio
   repeated ProfileLink links = 6; // labelled profile links (site/handle)
+  // The sender's sealed-sender access key (32 bytes), so the recipient can
+  // fetch the sender's prekey bundles anonymously (GET /v1/keys/{account}/sealed)
+  // instead of with a signed request that names the fetcher. Empty from older
+  // clients.
+  bytes access_key = 7;
 }
 
 // A single labelled link on a profile (e.g. label "Website", url
