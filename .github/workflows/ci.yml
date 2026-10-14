@@ -54,8 +54,8 @@ jobs:
           RELAY_TEST_DSN: postgres://relay:relay@localhost:5432/relay_test?sslmode=disable
         run: go test -count=1 -p 1 ./...
 
-  packages:
-    name: Swift packages
+  ios:
+    name: iOS app and Swift packages
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -95,3 +95,9 @@ jobs:
       - name: Build RelayCore
         working-directory: RelayCore
         run: xcodebuild build -scheme RelayCore -destination "$SIMULATOR" -quiet
+      - name: Build app
+        # Simulator build without signing: catches compile errors in the app
+        # and its extensions.
+        run: >-
+          xcodebuild build -project Relay.xcodeproj -scheme Relay
+          -destination "$SIMULATOR" CODE_SIGNING_ALLOWED=NO -quiet

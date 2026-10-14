@@ -54,6 +54,9 @@ struct ChatView: View {
     @State private var showingGroupInfo = false
     @State private var showingChatSettings = false
     @State private var verification: MessagingService.PeerVerification?
+    /// In a group: members whose safety number changed, which blocks sends.
+    @State private var changedGroupMembers: [String] = []
+    @State private var showingChangedGroupMembers = false
     // AI
     @State private var smartReplies: [String] = []
     @State private var showingSummary = false
@@ -524,7 +527,9 @@ struct ChatView: View {
                         self.pinnedMessage = nil
                     }
                 }
-                if verification?.state == .changed {
+                if isGroup, !changedGroupMembers.isEmpty {
+                    groupSafetyNumberChangedBanner
+                } else if verification?.state == .changed {
                     safetyNumberChangedBanner
                 }
             }
@@ -629,6 +634,9 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showingVerification, onDismiss: refreshVerification) {
             NavigationStack { VerificationView(service: service, conversationId: conversationId, peerName: peerName) }
+        }
+        .sheet(isPresented: $showingChangedGroupMembers, onDismiss: refreshVerification) {
+            NavigationStack { GroupSafetyNumbersView(service: service, conversationId: conversationId) }
         }
         .sheet(isPresented: $showingGroupInfo) {
             GroupInfoView(
@@ -746,7 +754,11 @@ struct ChatView: View {
         .onChange(of: service.blockedSafetyWarningConversationId) { _, blockedConversationId in
             guard blockedConversationId == conversationId else { return }
             refreshVerification()
-            showingVerification = true
+            if isGroup {
+                showingChangedGroupMembers = true
+            } else {
+                showingVerification = true
+            }
             service.clearBlockedSafetyWarning()
         }
         .onChange(of: draft) { _, newValue in
@@ -864,8 +876,34 @@ struct ChatView: View {
         .buttonStyle(.plain)
     }
 
+    private var groupSafetyNumberChangedBanner: some View {
+        Button {
+            showingChangedGroupMembers = true
+        } label: {
+            Label(groupSafetyNumberChangedText, systemImage: "exclamationmark.shield.fill")
+                .font(.footnote.weight(.medium))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.vertical, 10)
+                .background(.orange.opacity(0.9), in: .rect)
+                .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var groupSafetyNumberChangedText: String {
+        if changedGroupMembers.count == 1, let member = changedGroupMembers.first {
+            return "\(service.displayName(forAccount: member))’s safety number changed — tap to verify"
+        }
+        return "\(changedGroupMembers.count) members’ safety numbers changed — tap to review"
+    }
+
     private func refreshVerification() {
-        verification = service.peerVerification(for: conversationId)
+        if isGroup {
+            changedGroupMembers = service.groupMembersWithChangedSafetyNumbers(conversationId)
+        } else {
+            verification = service.peerVerification(for: conversationId)
+        }
     }
 
     private var mentionSuggestions: [String] {

@@ -1249,7 +1249,13 @@ final class MessagingService {
         } catch {
             log.error("send failed: \(PrivacyRedactor.error(error))")
             try? storage.messages.updateStatus(messageId: messageId, status: .failed)
-            if let safetyError = error as? SafetyNumberChangedError {
+            if group(for: conversationId) != nil {
+                // A group send stops at a member whose key changed; the group
+                // thread names them (groupMembersWithChangedSafetyNumbers).
+                if !groupMembersWithChangedSafetyNumbers(conversationId).isEmpty {
+                    blockedSafetyWarningConversationId = conversationId
+                }
+            } else if let safetyError = error as? SafetyNumberChangedError {
                 noteBlockedSafetyWarning(peer: safetyError.peer)
             }
         }
@@ -4428,9 +4434,39 @@ final class MessagingService {
         ((try? storage.signalStore.identityKeys(address: peer).count) ?? 0) > 1
     }
 
+    /// The account whose safety number a 1:1 conversation verifies.
+    func verificationPeer(for conversationId: String) -> String? {
+        resolvedPeerAccount(for: conversationId)
+    }
+
     /// Nil until a session/identity exists.
     func peerVerification(for conversationId: String) -> PeerVerification? {
-        guard let peer = resolvedPeerAccount(for: conversationId) else { return nil }
+        resolvedPeerAccount(for: conversationId).flatMap { peerVerification(forPeer: $0) }
+    }
+
+    /// Group members (other than us) whose safety number changed and isn't
+    /// acknowledged yet. Group sends fail closed while this is non-empty.
+    func groupMembersWithChangedSafetyNumbers(_ conversationId: String) -> [String] {
+        guard let group = group(for: conversationId) else { return [] }
+        return group.members.filter { member in
+            member != credentials.accountId && hasUnacknowledgedSafetyNumberChange(member)
+        }
+        .sorted { displayName(forAccount: $0).localizedCaseInsensitiveCompare(displayName(forAccount: $1)) == .orderedAscending }
+    }
+
+    /// What peerVerification reports as `.changed`, without computing the
+    /// safety number (cheap enough to run for every group member).
+    private func hasUnacknowledgedSafetyNumberChange(_ peer: String) -> Bool {
+        if hasConflictingIdentityKeys(peer) { return true }
+        switch try? storage.signalStore.verificationState(address: peer) {
+        case .changed: return true
+        case .unverified: return (try? isIdentityChangeAwaitingAcknowledgement(forPeer: peer)) == true
+        default: return false
+        }
+    }
+
+    /// Nil until a session/identity exists.
+    func peerVerification(forPeer peer: String) -> PeerVerification? {
         do {
             guard let deviceId = try storage.signalStore.newestIdentityDeviceId(address: peer),
                   let safetyNumber = try engine.safetyNumber(withPeer: peer, deviceId: deviceId) else { return nil }
@@ -4450,6 +4486,10 @@ final class MessagingService {
     /// Clearing also dismisses a pending safety-number-changed warning.
     func setVerified(_ verified: Bool, conversationId: String) {
         guard let peer = resolvedPeerAccount(for: conversationId) else { return }
+        setVerified(verified, peer: peer)
+    }
+
+    func setVerified(_ verified: Bool, peer: String) {
         // Would also approve devices the safety number doesn't cover.
         if verified, hasConflictingIdentityKeys(peer) { return }
         do {
@@ -4466,15 +4506,14 @@ final class MessagingService {
     /// When a peer's removed devices still have stored keys (which makes the
     /// safety number look conflicting), re-fetches their current devices so the
     /// stale keys are dropped.
-    func refreshPeerIdentitiesIfConflicting(conversationId: String) async {
-        guard let peer = resolvedPeerAccount(for: conversationId), hasConflictingIdentityKeys(peer) else { return }
+    func refreshPeerIdentitiesIfConflicting(peer: String) async {
+        guard hasConflictingIdentityKeys(peer) else { return }
         try? await refreshSessions(withPeer: peer)
         refreshConversations()
     }
 
     /// Marks the peer verified if the scanned encoding matches.
-    func verifyScanned(_ encoding: Data, conversationId: String) -> Bool {
-        guard let peer = resolvedPeerAccount(for: conversationId) else { return false }
+    func verifyScanned(_ encoding: Data, peer: String) -> Bool {
         guard !hasConflictingIdentityKeys(peer) else { return false }
         do {
             guard let deviceId = try storage.signalStore.newestIdentityDeviceId(address: peer) else { return false }
