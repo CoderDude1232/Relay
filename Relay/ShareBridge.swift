@@ -60,7 +60,9 @@ nonisolated enum ShareBridge {
     private static let shareDirName = "relay-share"
     private static let avatarDirName = "relay-avatars"
     private static let conversationsFile = "conversations.json"
-    private static let pendingShareFile = "pending-share.json"
+    /// Single-slot file from builds that kept one pending share; read, then removed.
+    private static let legacyPendingShareFile = "pending-share.json"
+    private static let pendingSharePrefix = "pending-share-"
     private static let broadcastFrameFile = "RelayBroadcastFrame.jpg"
 
     private static var defaults: UserDefaults? { UserDefaults(suiteName: kShareAppGroup) }
@@ -108,10 +110,13 @@ nonisolated enum ShareBridge {
 
     // MARK: - Pending share
 
+    /// Queues a share for the app to send. Each one gets its own file, named by
+    /// time so they send in order: two Siri sends or quick replies made before
+    /// the app opens must both go out.
     static func writePendingShare(_ share: PendingShare) {
         defaults?.removeObject(forKey: legacyPendingKey)
         guard let json = try? JSONEncoder().encode(share), let data = ShareSeal.seal(json),
-              let url = shareDir()?.appendingPathComponent(pendingShareFile)
+              let url = shareDir()?.appendingPathComponent(newPendingShareFileName())
         else { return }
         // Complete protection: unreadable whenever the device is locked. If the
         // device is locked right now (e.g. a Siri request), fall back to
@@ -121,20 +126,40 @@ nonisolated enum ShareBridge {
         }
     }
 
-    /// Returns the share and deletes it so it is processed exactly once.
-    static func readAndClearPendingShare() -> PendingShare? {
+    /// Returns every queued share, oldest first, and deletes each one read so it
+    /// is processed exactly once. A file still locked stays for next time.
+    static func readAndClearPendingShares() -> [PendingShare] {
+        var shares: [PendingShare] = []
         // Migrate from the legacy UserDefaults location.
         if let legacy = defaults?.data(forKey: legacyPendingKey) {
             defaults?.removeObject(forKey: legacyPendingKey)
-            if let share = try? JSONDecoder().decode(PendingShare.self, from: legacy) { return share }
+            if let share = try? JSONDecoder().decode(PendingShare.self, from: legacy) { shares.append(share) }
         }
-        guard let url = shareDir()?.appendingPathComponent(pendingShareFile),
-              FileManager.default.fileExists(atPath: url.path)
-        else { return nil }
-        let stored = try? Data(contentsOf: url)
-        guard let stored else { return nil } // locked: leave it for later
-        try? FileManager.default.removeItem(at: url)
-        return ShareSeal.open(stored).flatMap { try? JSONDecoder().decode(PendingShare.self, from: $0) }
+        guard let dir = shareDir() else { return shares }
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0 == legacyPendingShareFile || $0.hasPrefix(pendingSharePrefix) }
+            .sorted { lhs, rhs in
+                // The legacy single slot predates any queued file.
+                if lhs == legacyPendingShareFile { return rhs != legacyPendingShareFile }
+                if rhs == legacyPendingShareFile { return false }
+                return lhs < rhs
+            }
+        for name in names {
+            let url = dir.appendingPathComponent(name)
+            guard let stored = try? Data(contentsOf: url) else { continue } // locked: leave it
+            try? FileManager.default.removeItem(at: url)
+            if let share = ShareSeal.open(stored).flatMap({ try? JSONDecoder().decode(PendingShare.self, from: $0) }) {
+                shares.append(share)
+            }
+        }
+        return shares
+    }
+
+    /// `pending-share-<ms, zero-padded>-<uuid>.json`: sorts in creation order.
+    /// Same format as the extensions' copies.
+    private static func newPendingShareFileName() -> String {
+        let ms = Int64(Date().timeIntervalSince1970 * 1000)
+        return pendingSharePrefix + String(format: "%015lld-", ms) + UUID().uuidString + ".json"
     }
 
     // MARK: - Unread count (widget badge)

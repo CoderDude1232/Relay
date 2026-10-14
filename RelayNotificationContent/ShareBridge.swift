@@ -34,7 +34,7 @@ enum ShareBridge {
     private static let shareDirName = "relay-share"
     private static let avatarDirName = "relay-avatars"
     private static let conversationsFile = "conversations.json"
-    private static let pendingShareFile = "pending-share.json"
+    private static let pendingSharePrefix = "pending-share-"
 
     private static var container: URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: kShareAppGroup)
@@ -65,7 +65,11 @@ enum ShareBridge {
         dirValues.isExcludedFromBackup = true
         try? dir.setResourceValues(dirValues)
 
-        var url = dir.appendingPathComponent(pendingShareFile)
+        // One file per share, so a second one before the app opens doesn't
+        // replace the first. The app sends them in name (= time) order.
+        let ms = Int64(Date().timeIntervalSince1970 * 1000)
+        let name = pendingSharePrefix + String(format: "%015lld-", ms) + UUID().uuidString + ".json"
+        var url = dir.appendingPathComponent(name)
         // Complete protection, or completeUnlessOpen if the device is locked right
         // now (creatable while locked, unreadable until unlock).
         do {

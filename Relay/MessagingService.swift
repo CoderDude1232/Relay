@@ -4822,10 +4822,18 @@ final class MessagingService {
         }
     }
 
-    // Sends a PendingShare left by the Share Extension and returns its
-    // conversation id for navigation.
+    // Sends every PendingShare left by the Share Extension, Siri or a quick
+    // reply, oldest first, and returns the last one's conversation id for
+    // navigation.
     func processPendingShare() async -> String? {
-        guard let share = ShareBridge.readAndClearPendingShare() else { return nil }
+        var lastConversationId: String?
+        for share in ShareBridge.readAndClearPendingShares() {
+            lastConversationId = await sendPendingShare(share)
+        }
+        return lastConversationId
+    }
+
+    private func sendPendingShare(_ share: PendingShare) async -> String {
         let conversationId = share.conversationId
         if let text = share.text, !text.isEmpty {
             await sendMessage(text, in: conversationId)
