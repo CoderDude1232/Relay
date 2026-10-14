@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Server (Go)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+          POSTGRES_DB: relay_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        # -p 1: the api and store packages reset the same test database, so
+        # they must not run at the same time.
+        env:
+          RELAY_TEST_DSN: postgres://relay:relay@localhost:5432/relay_test?sslmode=disable
+        run: go test -count=1 -p 1 ./...
+
+  packages:
+    name: Swift packages
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+      - name: Cache libsignal
+        uses: actions/cache@v4
+        with:
+          path: third_party
+          key: libsignal-${{ hashFiles('scripts/setup-libsignal.sh') }}
+      - name: Vendor libsignal
+        run: scripts/setup-libsignal.sh
+      - name: Pick a simulator
+        run: |
+          udid="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          ios = sorted((k for k in devices if ".SimRuntime.iOS-" in k),
+                       key=lambda k: [int(p) for p in k.rsplit("iOS-", 1)[1].split("-")])
+          phones = [d for d in devices[ios[-1]] if d["name"].startswith("iPhone")]
+          print(phones[0]["udid"])
+          ')"
+          echo "SIMULATOR=id=$udid" >> "$GITHUB_ENV"
+      - name: Test CryptoCore
+        working-directory: CryptoCore
+        run: xcodebuild test -scheme CryptoCore -destination "$SIMULATOR" -quiet
+      - name: Test RelayKit
+        working-directory: RelayKit
+        run: xcodebuild test -scheme RelayKit -destination "$SIMULATOR" -quiet
+      - name: Test SecureStorage
+        working-directory: SecureStorage
+        run: xcodebuild test -scheme SecureStorage -destination "$SIMULATOR" -quiet
+      - name: Build RelayCore
+        working-directory: RelayCore
+        run: xcodebuild build -scheme RelayCore -destination "$SIMULATOR" -quiet
