@@ -73,11 +73,12 @@ final class RelayWatch_Watch_AppUITests: XCTestCase {
     func testQuickReplyAppearsInTheChat() throws {
         launchWithChats()
         openChat("alice")
-        // The first quick reply, "👍"; the others sit off to the side.
-        let reply = app.buttons["quick-reply-0"]
+        // "OK", the second quick reply; later ones sit off to the side.
+        let reply = app.buttons["quick-reply-1"]
         XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        XCTAssertFalse(element(containing: "You: OK").exists)
         reply.tap()
-        XCTAssertTrue(element(containing: "You: 👍").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(containing: "You: OK").waitForExistence(timeout: 10))
         XCTAssertFalse(element(containing: "Couldn't send").exists)
     }
 

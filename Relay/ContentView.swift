@@ -677,38 +677,56 @@ struct MainTabView: View {
                 }
             )
         }
-        .alert("User Not Found", isPresented: Binding(
-            get: { deepLinkError != nil },
-            set: { if !$0 { deepLinkError = nil } }
-        )) {
-            Button("OK", role: .cancel) { deepLinkError = nil }
-        } message: {
-            Text(deepLinkError ?? "")
-        }
-        .alert("Invite Link Not Valid", isPresented: Binding(
-            get: { inviteError != nil },
-            set: { if !$0 { inviteError = nil } }
-        )) {
-            Button("OK", role: .cancel) { inviteError = nil }
-        } message: {
-            Text(inviteError ?? "")
-        }
-        .alert("Invalid Invite", isPresented: Binding(
-            get: { joinGroupError != nil },
-            set: { if !$0 { joinGroupError = nil } }
-        )) {
-            Button("OK", role: .cancel) { joinGroupError = nil }
-        } message: {
-            Text(joinGroupError ?? "")
-        }
-        .alert("Call Not Started", isPresented: Binding(
-            get: { callManager.groupCallFailureMessage != nil },
-            set: { if !$0 { callManager.groupCallFailureMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) { callManager.groupCallFailureMessage = nil }
-        } message: {
-            Text(callManager.groupCallFailureMessage ?? "")
-        }
+        // In their own modifier: chained here, the alerts made the body too
+        // big for the compiler to type-check in reasonable time.
+        .modifier(MainTabErrorAlerts(
+            deepLinkError: $deepLinkError, inviteError: $inviteError, joinGroupError: $joinGroupError
+        ))
+    }
+}
+
+/// MainTabView's error alerts for links, invites and group calls.
+private struct MainTabErrorAlerts: ViewModifier {
+    @Binding var deepLinkError: String?
+    @Binding var inviteError: String?
+    @Binding var joinGroupError: String?
+    @Environment(CallManager.self) private var callManager
+
+    func body(content: Content) -> some View {
+        content
+            .alert("User Not Found", isPresented: isPresented($deepLinkError)) {
+                Button("OK", role: .cancel) { deepLinkError = nil }
+            } message: {
+                Text(deepLinkError ?? "")
+            }
+            .alert("Invite Link Not Valid", isPresented: isPresented($inviteError)) {
+                Button("OK", role: .cancel) { inviteError = nil }
+            } message: {
+                Text(inviteError ?? "")
+            }
+            .alert("Invalid Invite", isPresented: isPresented($joinGroupError)) {
+                Button("OK", role: .cancel) { joinGroupError = nil }
+            } message: {
+                Text(joinGroupError ?? "")
+            }
+            .alert("Call Not Started", isPresented: groupCallFailurePresented) {
+                Button("OK", role: .cancel) { callManager.groupCallFailureMessage = nil }
+            } message: {
+                Text(callManager.groupCallFailureMessage ?? "")
+            }
+    }
+
+    /// Shown while `message` is set; dismissing clears it.
+    private func isPresented(_ message: Binding<String?>) -> Binding<Bool> {
+        Binding(get: { message.wrappedValue != nil }, set: { if !$0 { message.wrappedValue = nil } })
+    }
+
+    private var groupCallFailurePresented: Binding<Bool> {
+        let manager = callManager
+        return Binding(
+            get: { manager.groupCallFailureMessage != nil },
+            set: { if !$0 { manager.groupCallFailureMessage = nil } }
+        )
     }
 }
 

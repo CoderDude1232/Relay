@@ -111,6 +111,9 @@ jobs:
                       key=lambda k: [int(p) for p in k.rsplit("watchOS-", 1)[1].split("-")])
           print(devices[os[-1]][0]["udid"])
           ')"
+          # Boot first: a cold simulator can time out the first UI test's launch.
+          xcrun simctl boot "$watch" || true
+          xcrun simctl bootstatus "$watch" -b
           if ! xcodebuild test -project Relay.xcodeproj -scheme "RelayWatch Watch App" \
               -destination "id=$watch" CODE_SIGNING_ALLOWED=NO > watch-test.log 2>&1; then
             grep -E "error:|failed|Failing tests|XCTAssert" watch-test.log | head -200
