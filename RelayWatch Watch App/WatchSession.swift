@@ -67,6 +67,17 @@ final class WatchSession: NSObject, WCSessionDelegate {
         WCSession.default.activate()
     }
 
+    #if DEBUG
+    /// A session on the given chats that treats every send and call as
+    /// accepted, for tests. Never touches WatchConnectivity or the cache.
+    init(testSnapshot: WatchSnapshot) {
+        super.init()
+        isUITest = true
+        snapshot = testSnapshot
+        hasReceived = true
+    }
+    #endif
+
     // MARK: Encrypted cache
 
     /// The cached chat list holds names and recent message text, so it's

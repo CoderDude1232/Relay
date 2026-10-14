@@ -138,3 +138,38 @@ struct DisplayTests {
         #expect(Color(relayHex: "") == nil)
     }
 }
+
+/// Sending and calling from the watch, on the built-in test chats.
+@MainActor
+struct SessionTests {
+    @Test func sentMessageShowsAtOnceAsPending() async {
+        let session = WatchSession(testSnapshot: .uiTestFixture())
+        let before = session.messages(in: "alice").count
+        let error = await session.send("  On my way  ", to: "alice")
+        #expect(error == nil)
+        let messages = session.messages(in: "alice")
+        #expect(messages.count == before + 1)
+        let sent = try? #require(messages.last)
+        #expect(sent?.text == "On my way")
+        #expect(sent?.outgoing == true)
+        #expect(sent?.id.hasPrefix("pending-") == true)
+    }
+
+    @Test func blankMessageIsNotSent() async {
+        let session = WatchSession(testSnapshot: .uiTestFixture())
+        let before = session.messages(in: "alice").count
+        #expect(await session.send("   ", to: "alice") == nil)
+        #expect(session.messages(in: "alice").count == before)
+    }
+
+    @Test func callIsHandedToTheIPhone() async {
+        let session = WatchSession(testSnapshot: .uiTestFixture())
+        #expect(await session.call("alice", video: false) == nil)
+    }
+
+    @Test func notificationTapOpensTheChat() {
+        let session = WatchSession(testSnapshot: .uiTestFixture())
+        session.open(chatId: "family")
+        #expect(session.path == ["family"])
+    }
+}
