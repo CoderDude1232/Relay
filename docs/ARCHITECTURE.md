@@ -59,8 +59,11 @@ must agree on. The wire contract itself is `proto/` plus `server/README.md`.
   bundle re-fetch so every device of the recipient is covered (minus the
   sender's own device on self-sends). Sealed-sender messages use the
   unauthenticated `POST /v1/messages/sealed` path instead.
-- Key bundles are fetched anonymously with the peer's access key, which comes
-  from the blinded directory entry; the signed fetch is only a fallback.
+- Key bundles are fetched anonymously with the peer's access key. Contacts
+  hand theirs over end-to-end in their profile update (`ProfileUpdate.access_key`);
+  for someone not heard from yet it comes from the blinded directory entry. The
+  signed fetch is a last resort, for an older client that is neither in the
+  directory nor sending its key.
 
 ## Authentication
 

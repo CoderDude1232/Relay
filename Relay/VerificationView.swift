@@ -2,7 +2,8 @@
 //  VerificationView.swift
 //  Relay
 //
-//  Safety-number verification for a 1:1 conversation.
+//  Safety-number verification with one contact, opened from their 1:1 chat or
+//  from a group whose member's safety number changed.
 //
 //  The QR carries Base64 of libsignal's scannable fingerprint encoding, so it
 //  survives AVFoundation's string decoding.
@@ -17,8 +18,19 @@ import SwiftUI
 
 struct VerificationView: View {
     let service: MessagingService
-    let conversationId: String
+    /// Nil when the conversation has no peer; shows the no-session state.
+    let peer: String?
     let peerName: String
+
+    init(service: MessagingService, conversationId: String, peerName: String) {
+        self.init(service: service, peer: service.verificationPeer(for: conversationId), peerName: peerName)
+    }
+
+    init(service: MessagingService, peer: String?, peerName: String) {
+        self.service = service
+        self.peer = peer
+        self.peerName = peerName
+    }
 
     @Environment(\.dismiss) private var dismiss
     @State private var verification: MessagingService.PeerVerification?
@@ -52,7 +64,7 @@ struct VerificationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
         .task {
-            await service.refreshPeerIdentitiesIfConflicting(conversationId: conversationId)
+            if let peer { await service.refreshPeerIdentitiesIfConflicting(peer: peer) }
             reload()
         }
         .sheet(isPresented: $showingScanner) {
@@ -198,7 +210,7 @@ struct VerificationView: View {
 
             if state == .verified {
                 Button(role: .destructive) {
-                    service.setVerified(false, conversationId: conversationId)
+                    if let peer { service.setVerified(false, peer: peer) }
                     reload()
                 } label: {
                     Text("Clear Verification").frame(maxWidth: .infinity)
@@ -206,7 +218,7 @@ struct VerificationView: View {
                 .glassStyleCompat()
             } else {
                 Button {
-                    service.setVerified(true, conversationId: conversationId)
+                    if let peer { service.setVerified(true, peer: peer) }
                     reload()
                 } label: {
                     Text("Mark as Verified").frame(maxWidth: .infinity)
@@ -220,7 +232,7 @@ struct VerificationView: View {
     // MARK: - Actions
 
     private func reload() {
-        verification = service.peerVerification(for: conversationId)
+        verification = peer.flatMap { service.peerVerification(forPeer: $0) }
     }
 
     /// Uses the async authorization API: a MainActor-isolated callback invoked
@@ -257,7 +269,7 @@ struct VerificationView: View {
             scanResult = .mismatched
             return
         }
-        let matched = service.verifyScanned(encoding, conversationId: conversationId)
+        let matched = peer.map { service.verifyScanned(encoding, peer: $0) } ?? false
         scanResult = matched ? .matched : .mismatched
         reload()
     }
@@ -279,6 +291,46 @@ struct VerificationView: View {
 // MARK: - Safety-number grid
 
 /// The 60 digits laid out as 12 groups of 5, three per row.
+/// Lists the group members whose safety number changed. Sends to the group
+/// fail until each is reviewed, so this says who is holding them up.
+struct GroupSafetyNumbersView: View {
+    let service: MessagingService
+    let conversationId: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var members: [String] = []
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(members, id: \.self) { member in
+                    let name = service.displayName(forAccount: member)
+                    NavigationLink(destination: VerificationView(service: service, peer: member, peerName: name)) {
+                        HStack(spacing: 12) {
+                            AvatarView(name: name, size: 32, imageData: service.peerAvatarData(forAccount: member))
+                            Text(name)
+                        }
+                    }
+                }
+            } footer: {
+                Text(members.isEmpty
+                     ? "Every member’s safety number is up to date. Messages to this group can be sent again."
+                     : "Messages to this group won’t send until you review each changed safety number. Compare it with the person in another way, then mark it as verified.")
+            }
+        }
+        .navigationTitle("Safety Numbers Changed")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+        }
+        .onAppear(perform: reload)
+    }
+
+    private func reload() {
+        members = service.groupMembersWithChangedSafetyNumbers(conversationId)
+    }
+}
+
 private struct SafetyNumberGrid: View {
     let numeric: String
 

@@ -1026,13 +1026,18 @@ func (x *AttachmentPointer) GetHeight() uint32 {
 // session, so the relay sees only ciphertext and the encrypted avatar blob,
 // which is an ordinary attachment. Recipients keep the newest by timestamp.
 type ProfileUpdate struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DisplayName   string                 `protobuf:"bytes,1,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	Avatar        *AttachmentPointer     `protobuf:"bytes,2,opt,name=avatar,proto3" json:"avatar,omitempty"`        // optional; unset means no photo
-	Timestamp     int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // sender clock; newest wins
-	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`        // short "about" line shown under the name
-	Bio           string                 `protobuf:"bytes,5,opt,name=bio,proto3" json:"bio,omitempty"`              // longer free-text profile bio
-	Links         []*ProfileLink         `protobuf:"bytes,6,rep,name=links,proto3" json:"links,omitempty"`          // labelled profile links (site/handle)
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	DisplayName string                 `protobuf:"bytes,1,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	Avatar      *AttachmentPointer     `protobuf:"bytes,2,opt,name=avatar,proto3" json:"avatar,omitempty"`        // optional; unset means no photo
+	Timestamp   int64                  `protobuf:"varint,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // sender clock; newest wins
+	Status      string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`        // short "about" line shown under the name
+	Bio         string                 `protobuf:"bytes,5,opt,name=bio,proto3" json:"bio,omitempty"`              // longer free-text profile bio
+	Links       []*ProfileLink         `protobuf:"bytes,6,rep,name=links,proto3" json:"links,omitempty"`          // labelled profile links (site/handle)
+	// The sender's sealed-sender access key (32 bytes), so the recipient can
+	// fetch the sender's prekey bundles anonymously (GET /v1/keys/{account}/sealed)
+	// instead of with a signed request that names the fetcher. Empty from older
+	// clients.
+	AccessKey     []byte `protobuf:"bytes,7,opt,name=access_key,json=accessKey,proto3" json:"access_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1105,6 +1110,13 @@ func (x *ProfileUpdate) GetBio() string {
 func (x *ProfileUpdate) GetLinks() []*ProfileLink {
 	if x != nil {
 		return x.Links
+	}
+	return nil
+}
+
+func (x *ProfileUpdate) GetAccessKey() []byte {
+	if x != nil {
+		return x.AccessKey
 	}
 	return nil
 }
@@ -2022,14 +2034,16 @@ const file_content_proto_rawDesc = "" +
 	"\x04size\x18\x05 \x01(\x04R\x04size\x12\x1a\n" +
 	"\bfilename\x18\x06 \x01(\tR\bfilename\x12\x14\n" +
 	"\x05width\x18\a \x01(\rR\x05width\x12\x16\n" +
-	"\x06height\x18\b \x01(\rR\x06height\"\xe6\x01\n" +
+	"\x06height\x18\b \x01(\rR\x06height\"\x85\x02\n" +
 	"\rProfileUpdate\x12!\n" +
 	"\fdisplay_name\x18\x01 \x01(\tR\vdisplayName\x128\n" +
 	"\x06avatar\x18\x02 \x01(\v2 .relay.content.AttachmentPointerR\x06avatar\x12\x1c\n" +
 	"\ttimestamp\x18\x03 \x01(\x03R\ttimestamp\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x10\n" +
 	"\x03bio\x18\x05 \x01(\tR\x03bio\x120\n" +
-	"\x05links\x18\x06 \x03(\v2\x1a.relay.content.ProfileLinkR\x05links\"5\n" +
+	"\x05links\x18\x06 \x03(\v2\x1a.relay.content.ProfileLinkR\x05links\x12\x1d\n" +
+	"\n" +
+	"access_key\x18\a \x01(\fR\taccessKey\"5\n" +
 	"\vProfileLink\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\"^\n" +

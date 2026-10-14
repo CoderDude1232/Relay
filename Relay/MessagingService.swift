@@ -7,6 +7,7 @@
 //
 
 import CryptoCore
+import CryptoKit
 import Foundation
 import Intents
 import LibSignalClient
@@ -1249,7 +1250,13 @@ final class MessagingService {
         } catch {
             log.error("send failed: \(PrivacyRedactor.error(error))")
             try? storage.messages.updateStatus(messageId: messageId, status: .failed)
-            if let safetyError = error as? SafetyNumberChangedError {
+            if group(for: conversationId) != nil {
+                // A group send stops at a member whose key changed; the group
+                // thread names them (groupMembersWithChangedSafetyNumbers).
+                if !groupMembersWithChangedSafetyNumbers(conversationId).isEmpty {
+                    blockedSafetyWarningConversationId = conversationId
+                }
+            } else if let safetyError = error as? SafetyNumberChangedError {
                 noteBlockedSafetyWarning(peer: safetyError.peer)
             }
         }
@@ -1588,14 +1595,14 @@ final class MessagingService {
             }
             if !inAcceptedGroup { return }
         }
-        // Sent at least once (revision 1) even with nothing set: this is how
-        // peers learn our username without asking the relay who an account is.
+        guard profileNeedsSending(to: account) else { return }
         let rev = max(myProfileRevision, 1)
-        guard readKVInt("pfsent:\(account)") < rev else { return }
+        let accessKey = ownAccessKey()
         do {
             var content = Relay_Content_Content()
             content.profile.displayName = myDisplayName ?? ""
             content.profile.timestamp = rev
+            if let accessKey { content.profile.accessKey = accessKey }
             content.profile.bio = myBio
             content.profile.links = myLinks.map {
                 var l = Relay_Content_ProfileLink()
@@ -1608,9 +1615,40 @@ final class MessagingService {
             }
             try await sendContent(try content.serializedData(), toPeer: account, clientTimestamp: rev)
             writeKVInt("pfsent:\(account)", rev)
+            if let accessKey { writeKVInt("pfak:\(account)", Self.accessKeyTag(accessKey)) }
         } catch {
             log.error("profile send failed: \(PrivacyRedactor.error(error))")
         }
+    }
+
+    /// Sent at least once (revision 1) even with nothing set: this is how peers
+    /// learn our username without asking the relay who an account is. Re-sent
+    /// at the same revision when the peer hasn't had our current access key.
+    private func profileNeedsSending(to account: String) -> Bool {
+        if readKVInt("pfsent:\(account)") < max(myProfileRevision, 1) { return true }
+        guard let accessKey = ownAccessKey() else { return false }
+        return readKVInt("pfak:\(account)") != Self.accessKeyTag(accessKey)
+    }
+
+    /// Keychain item holding our sealed-sender access key (AppModel creates and
+    /// publishes it).
+    static let accessKeySecretName = "relay-access-key"
+
+    /// Our access key, carried in profile updates so contacts can fetch our
+    /// prekey bundles anonymously. Nil until AppModel has created it. Cached,
+    /// since a group send checks it once per member.
+    private func ownAccessKey() -> Data? {
+        if let cachedOwnAccessKey { return cachedOwnAccessKey }
+        guard let key = try? keychain.loadSecret(for: Self.accessKeySecretName), key.count == 32 else { return nil }
+        cachedOwnAccessKey = key
+        return key
+    }
+    @ObservationIgnored private var cachedOwnAccessKey: Data?
+
+    /// Short tag recording which access key a peer last got. Not secret: kv is
+    /// encrypted at rest, and it only has to tell a rotated key from the old one.
+    private static func accessKeyTag(_ key: Data) -> Int64 {
+        Int64(bitPattern: SHA256.hash(data: key).prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) })
     }
 
     /// Uploads the avatar once per revision and caches the pointer.
@@ -1641,6 +1679,12 @@ final class MessagingService {
 
     /// Newest revision wins; a changed avatar is downloaded via the blob pipeline.
     func applyPeerProfile(_ profile: ProfileInfo) async {
+        // Taken even when the rest of the profile is stale: peers re-send the
+        // same revision to hand over a new access key.
+        if let accessKey = profile.accessKey, profile.account != credentials.accountId,
+           accessKey != knownAccessKey(profile.account) {
+            rememberAccessKey(accessKey, for: profile.account)
+        }
         let existing = (try? storage.messages.peerProfile(account: profile.account)) ?? nil
         if let existing, existing.revision >= profile.revision { return }
 
@@ -2705,9 +2749,8 @@ final class MessagingService {
 
     private func distributeProfileToGroupMembersIfNeeded(group: StoredGroup) async {
         if conversations.first(where: { $0.groupId == group.id })?.isRequest == true { return }
-        let rev = max(myProfileRevision, 1)
         let needsProfile = group.members.filter {
-            $0 != credentials.accountId && readKVInt("pfsent:\($0)") < rev
+            $0 != credentials.accountId && profileNeedsSending(to: $0)
         }
         for member in needsProfile {
             await sendMyProfileIfNeeded(toPeer: member)
@@ -3676,9 +3719,11 @@ final class MessagingService {
 
     private func refreshSessions(withPeer account: String) async throws {
         let bundles: [PeerPreKeyBundle]
-        // With an access key the fetch is anonymous; a 403 means it was rotated
-        // and we fall back to the signed fetch. For someone new, look up their
-        // certificate username in the blinded directory to get the key first.
+        // With an access key the fetch is anonymous. Contacts hand us theirs in
+        // their profile update; for someone we haven't heard from, look up their
+        // certificate username in the blinded directory to get it. A 403 means
+        // the key was rotated. The signed fetch is the last resort, for an
+        // older client that isn't in the directory and hasn't sent a key.
         // At most one directory lookup per refresh (they count against a rate limit).
         var lookedUp = false
         if account != credentials.accountId, knownAccessKey(account) == nil,
@@ -4428,9 +4473,39 @@ final class MessagingService {
         ((try? storage.signalStore.identityKeys(address: peer).count) ?? 0) > 1
     }
 
+    /// The account whose safety number a 1:1 conversation verifies.
+    func verificationPeer(for conversationId: String) -> String? {
+        resolvedPeerAccount(for: conversationId)
+    }
+
     /// Nil until a session/identity exists.
     func peerVerification(for conversationId: String) -> PeerVerification? {
-        guard let peer = resolvedPeerAccount(for: conversationId) else { return nil }
+        resolvedPeerAccount(for: conversationId).flatMap { peerVerification(forPeer: $0) }
+    }
+
+    /// Group members (other than us) whose safety number changed and isn't
+    /// acknowledged yet. Group sends fail closed while this is non-empty.
+    func groupMembersWithChangedSafetyNumbers(_ conversationId: String) -> [String] {
+        guard let group = group(for: conversationId) else { return [] }
+        return group.members.filter { member in
+            member != credentials.accountId && hasUnacknowledgedSafetyNumberChange(member)
+        }
+        .sorted { displayName(forAccount: $0).localizedCaseInsensitiveCompare(displayName(forAccount: $1)) == .orderedAscending }
+    }
+
+    /// What peerVerification reports as `.changed`, without computing the
+    /// safety number (cheap enough to run for every group member).
+    private func hasUnacknowledgedSafetyNumberChange(_ peer: String) -> Bool {
+        if hasConflictingIdentityKeys(peer) { return true }
+        switch try? storage.signalStore.verificationState(address: peer) {
+        case .changed: return true
+        case .unverified: return (try? isIdentityChangeAwaitingAcknowledgement(forPeer: peer)) == true
+        default: return false
+        }
+    }
+
+    /// Nil until a session/identity exists.
+    func peerVerification(forPeer peer: String) -> PeerVerification? {
         do {
             guard let deviceId = try storage.signalStore.newestIdentityDeviceId(address: peer),
                   let safetyNumber = try engine.safetyNumber(withPeer: peer, deviceId: deviceId) else { return nil }
@@ -4450,6 +4525,10 @@ final class MessagingService {
     /// Clearing also dismisses a pending safety-number-changed warning.
     func setVerified(_ verified: Bool, conversationId: String) {
         guard let peer = resolvedPeerAccount(for: conversationId) else { return }
+        setVerified(verified, peer: peer)
+    }
+
+    func setVerified(_ verified: Bool, peer: String) {
         // Would also approve devices the safety number doesn't cover.
         if verified, hasConflictingIdentityKeys(peer) { return }
         do {
@@ -4466,15 +4545,14 @@ final class MessagingService {
     /// When a peer's removed devices still have stored keys (which makes the
     /// safety number look conflicting), re-fetches their current devices so the
     /// stale keys are dropped.
-    func refreshPeerIdentitiesIfConflicting(conversationId: String) async {
-        guard let peer = resolvedPeerAccount(for: conversationId), hasConflictingIdentityKeys(peer) else { return }
+    func refreshPeerIdentitiesIfConflicting(peer: String) async {
+        guard hasConflictingIdentityKeys(peer) else { return }
         try? await refreshSessions(withPeer: peer)
         refreshConversations()
     }
 
     /// Marks the peer verified if the scanned encoding matches.
-    func verifyScanned(_ encoding: Data, conversationId: String) -> Bool {
-        guard let peer = resolvedPeerAccount(for: conversationId) else { return false }
+    func verifyScanned(_ encoding: Data, peer: String) -> Bool {
         guard !hasConflictingIdentityKeys(peer) else { return false }
         do {
             guard let deviceId = try storage.signalStore.newestIdentityDeviceId(address: peer) else { return false }

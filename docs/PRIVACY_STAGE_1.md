@@ -161,6 +161,7 @@ Run these before considering Stage 1 deployed:
 
 ## Stage 3D Limitations
 
-- Group sends fail closed if any member's identity replacement is unacknowledged;
-  there is not yet a group member-specific warning surface inside the group
-  thread.
+- Group sends fail closed if any member's identity replacement is unacknowledged.
+  The group thread shows a banner naming the member (or how many members)
+  whose safety number changed, and opens a list to verify each one
+  (`GroupSafetyNumbersView`).

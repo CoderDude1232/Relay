@@ -56,6 +56,28 @@ struct WireMappingTests {
         let expected = "Basic " + Data("abc.1:secret12".utf8).base64EncodedString()
         #expect(credentials.authorizationHeader == expected)
     }
+
+    @Test func profileUpdateCarriesAccessKey() throws {
+        var content = Relay_Content_Content()
+        content.profile.displayName = "Alex"
+        content.profile.timestamp = 7
+        content.profile.accessKey = Data(repeating: 0xAB, count: 32)
+
+        // The same message encoded by the server's Go code from content.proto,
+        // so the Swift and Go generated code agree on field 7.
+        let goEncoded = Data(hex: "4a2a0a04416c657818073a20" + String(repeating: "ab", count: 32))
+        let data = try content.serializedData()
+        #expect(data == goEncoded)
+        let decoded = try Relay_Content_Content(serializedBytes: goEncoded)
+        #expect(decoded.profile.accessKey == Data(repeating: 0xAB, count: 32))
+        #expect(decoded.profile.displayName == "Alex")
+        #expect(decoded == content)
+
+        // Older clients send no key; it decodes as empty.
+        var old = Relay_Content_ProfileUpdate()
+        old.displayName = "Sam"
+        #expect(try Relay_Content_ProfileUpdate(serializedBytes: old.serializedData()).accessKey.isEmpty)
+    }
 }
 
 // MARK: - Live end-to-end (requires a running relayd)
@@ -185,5 +207,18 @@ struct DirectoryDecoyTests {
         let a = Set(DirectoryBuckets.paddedRequest(real: [0x1234], seed: Data(repeating: 1, count: 32)))
         let b = Set(DirectoryBuckets.paddedRequest(real: [0x1234], seed: Data(repeating: 2, count: 32)))
         #expect(a.intersection(b).count < 20)
+    }
+}
+
+private extension Data {
+    init(hex: String) {
+        var bytes: [UInt8] = []
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            bytes.append(UInt8(hex[index..<next], radix: 16)!)
+            index = next
+        }
+        self.init(bytes)
     }
 }

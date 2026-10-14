@@ -98,5 +98,11 @@ Still open:
 - [x] Sign in with Apple revocation: key MFV3G8G4PD at /opt/relay/siwa.p8
       (root 0600), relayd runs with -siwa-* flags (2026-10-09).
 - [ ] Device-test calls (voice/video over TURN) and iCloud backup/restore.
-- [ ] Later: fetch prekey bundles anonymously (access-key gated) and exchange
+- [x] Fetch prekey bundles anonymously (access-key gated) and exchange
       access keys end-to-end, so the relay can't see who fetches whose keys.
+      Done 2026-10-14: `GET /v1/keys/{account}/sealed` serves bundles to the
+      holder of the peer's access key, which comes from the peer's profile
+      update (`ProfileUpdate.access_key`, end-to-end) or the blinded directory.
+      The signed `GET /v1/keys/{account}` is left only for older clients that
+      are in neither. Needs a two-phone check: after both phones update, a
+      non-discoverable contact's key fetches should go to `/sealed`.
