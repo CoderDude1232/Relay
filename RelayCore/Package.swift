@@ -33,5 +33,19 @@ let package = Package(
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ]
         ),
+        .testTarget(
+            name: "RelayCoreTests",
+            dependencies: [
+                "RelayCore",
+                .product(name: "CryptoCore", package: "CryptoCore"),
+                .product(name: "SecureStorage", package: "SecureStorage"),
+                .product(name: "RelayKit", package: "RelayKit"),
+                .product(name: "LibSignalClient", package: "LibSignalClient"),
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L\(packageDir)/../third_party/libsignal-ffi/ios-simulator"])
+            ]
+        ),
     ]
 )
