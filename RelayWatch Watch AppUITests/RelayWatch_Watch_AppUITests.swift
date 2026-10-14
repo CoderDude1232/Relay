@@ -2,42 +2,106 @@
 //  RelayWatch_Watch_AppUITests.swift
 //  RelayWatch Watch AppUITests
 //
-//  Created by Ethan Daly on 10/10/2026.
+//  The watch app as someone uses it: the chat list, opening a chat, quick
+//  replies and calling. There's no paired iPhone in the simulator, so the app
+//  runs on its built-in test chats (see WatchUITestFixture.swift) and treats
+//  sends and calls as accepted.
 //
 
 import XCTest
 
 final class RelayWatch_Watch_AppUITests: XCTestCase {
+    private var app: XCUIApplication!
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
+        app = XCUIApplication()
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    private func launchWithChats() {
+        app.launchArguments = ["-RelayWatchUITestFixture"]
+        app.launch()
+    }
+
+    /// Any element whose accessibility label contains `text`.
+    private func element(containing text: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
+    private func openChat(_ id: String) {
+        let row = app.buttons["chat-\(id)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "chat row \(id) missing")
+        row.tap()
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
-        let app = XCUIApplication()
+    func testFirstLaunchAsksForTheIPhone() throws {
+        app.launchArguments = ["-RelayWatchUITestEmpty"]
         app.launch()
+        XCTAssertTrue(element(containing: "Open Relay on your iPhone").waitForExistence(timeout: 10))
+    }
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+    @MainActor
+    func testChatListShowsChatsWithPreviews() throws {
+        launchWithChats()
+        XCTAssertTrue(app.buttons["chat-alice"].waitForExistence(timeout: 10))
+        XCTAssertTrue(element(containing: "Alice Smith").exists)
+        XCTAssertTrue(element(containing: "See you there").exists)
+        XCTAssertTrue(element(containing: "2 unread").exists)
+        XCTAssertTrue(element(containing: "You: OK").exists)
+    }
+
+    @MainActor
+    func testOpeningAChatShowsItsMessages() throws {
+        launchWithChats()
+        openChat("alice")
+        XCTAssertTrue(element(containing: "Sure, noon works").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(containing: "You: Lunch tomorrow?").exists)
+    }
+
+    @MainActor
+    func testGroupMessagesNameTheirSender() throws {
+        launchWithChats()
+        openChat("family")
+        XCTAssertTrue(element(containing: "Mom: Dinner at 7").waitForExistence(timeout: 5))
+        XCTAssertTrue(element(containing: "Missed group call").exists)
+        // Calls from a group start on the iPhone, so the watch offers none.
+        XCTAssertFalse(app.buttons["Call Family"].exists)
+    }
+
+    @MainActor
+    func testQuickReplyAppearsInTheChat() throws {
+        launchWithChats()
+        openChat("alice")
+        let reply = app.buttons["On my way"]
+        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        reply.tap()
+        XCTAssertTrue(element(containing: "You: On my way").waitForExistence(timeout: 5))
+        XCTAssertFalse(app.alerts["Couldn't send"].exists)
+    }
+
+    @MainActor
+    func testCallingHandsOffToTheIPhone() throws {
+        launchWithChats()
+        openChat("alice")
+        let call = app.buttons["Call Alice Smith"]
+        XCTAssertTrue(call.waitForExistence(timeout: 5))
+        call.tap()
+        XCTAssertTrue(app.alerts["Calling on your iPhone"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testEmptyChatSaysSo() throws {
+        launchWithChats()
+        openChat("bob")
+        XCTAssertTrue(element(containing: "No recent messages").waitForExistence(timeout: 5))
     }
 
     @MainActor
     func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
+            app.launchArguments = ["-RelayWatchUITestFixture"]
+            app.launch()
         }
     }
 }
