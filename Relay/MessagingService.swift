@@ -489,6 +489,11 @@ final class MessagingService {
                         forConversations: affected, messageIds: Set(expired.compactMap { $0.count > 1 ? $0[1].string : nil }))
                     if !affected.isEmpty { self.sweepAttachmentFiles() }
                     self.refreshConversations()
+                    // The open chat shows its own copy of the messages; drop the
+                    // expired ones from the screen too.
+                    if let active = self.activeConversationId, affected.contains(active) {
+                        self.refreshActiveMessages(ifShowing: active)
+                    }
                 }
                 await self?.flushDueScheduledMessages()
             }

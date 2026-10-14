@@ -2578,6 +2578,9 @@ extension CallManager: RTCPeerConnectionDelegate {
         // Relay-only mode: drop non-relay candidates, which carry this device's IPs.
         let dropForPrivacy = CallManager.isPrivateCallModeEnabled && !CallManager.isRelayCandidate(sdp)
         Task { @MainActor in
+            // A connection from a call that has ended: its candidates would go
+            // to the next call's peer under that call's id.
+            guard pc === peerConnection else { return }
             log.info("ICE candidate gathered type=\(candidateType)")
             if dropForPrivacy {
                 log.info("dropping non-relay ICE candidate (relay-only mode)")
@@ -2603,6 +2606,7 @@ extension CallManager: RTCPeerConnectionDelegate {
     }
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         Task { @MainActor in
+            guard pc === peerConnection else { return }
             remoteVideoTrack = stream.videoTracks.first
             updateDiagnostics { _ in }
         }
@@ -2623,6 +2627,7 @@ extension CallManager: RTCPeerConnectionDelegate {
         streams mediaStreams: [RTCMediaStream]
     ) {
         Task { @MainActor in
+            guard peerConnection === self.peerConnection else { return }
             if let track = receiver.track as? RTCVideoTrack {
                 remoteVideoTrack = track
                 storedCallKind = .video
@@ -2633,6 +2638,10 @@ extension CallManager: RTCPeerConnectionDelegate {
 
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange state: RTCIceConnectionState) {
         Task { @MainActor in
+            // Callbacks hop to the main actor, so one from a closed connection
+            // can land after the next call has started: it must not mark that
+            // call connected or schedule its failure.
+            guard pc === peerConnection else { return }
             updateDiagnostics { $0.iceConnectionState = String(describing: state) }
             switch state {
             case .connected, .completed:
