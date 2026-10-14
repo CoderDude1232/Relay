@@ -77,7 +77,9 @@ final class RelayWatch_Watch_AppUITests: XCTestCase {
         let reply = app.buttons["quick-reply-1"]
         XCTAssertTrue(reply.waitForExistence(timeout: 5))
         XCTAssertFalse(element(containing: "You: OK").exists)
-        reply.tap()
+        // Tap the button's centre directly: inside the horizontally scrolling
+        // row, an element tap can be taken as the start of a scroll.
+        reply.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(element(containing: "You: OK").waitForExistence(timeout: 10),
                       "no sent bubble; screen was:\n\(app.debugDescription)")
         XCTAssertFalse(element(containing: "Couldn't send").exists)
