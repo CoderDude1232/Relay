@@ -48,13 +48,29 @@ struct FormattingTextEditor: UIViewRepresentable {
     /// Wraps at the proposed width and caps the height at `maxLines`. A
     /// non-scrolling UITextView otherwise reports its single-line intrinsic
     /// width and long text overflows instead of wrapping.
+    ///
+    /// Scrolling is switched on here, from the same measurement that caps the
+    /// height: a non-scrolling UITextView doesn't draw lines that don't fit its
+    /// frame, so text past the cap would vanish instead of scrolling.
     func sizeThatFits(_ proposal: ProposedViewSize, uiView tv: UITextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0, width < .greatestFiniteMagnitude else { return nil }
-        let lineHeight = tv.font?.lineHeight ?? 20
-        let maxH = lineHeight * CGFloat(maxLines)
-            + tv.textContainerInset.top + tv.textContainerInset.bottom
+        let maxH = maxHeight(of: tv)
         let fit = tv.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let overflows = fit.height > maxH + 0.5
+        if tv.isScrollEnabled != overflows {
+            tv.isScrollEnabled = overflows
+            if overflows {
+                // Keep the caret's line on screen once the box stops growing.
+                DispatchQueue.main.async { tv.scrollRangeToVisible(tv.selectedRange) }
+            }
+        }
         return CGSize(width: width, height: min(fit.height, maxH))
+    }
+
+    private func maxHeight(of tv: UITextView) -> CGFloat {
+        let lineHeight = tv.font?.lineHeight ?? 20
+        return lineHeight * CGFloat(maxLines)
+            + tv.textContainerInset.top + tv.textContainerInset.bottom
     }
 
     func makeUIView(context ctx: Context) -> UITextView {
@@ -88,14 +104,6 @@ struct FormattingTextEditor: UIViewRepresentable {
         applyIncognito(to: tv)
         if tv.text != text { tv.text = text }
         ctx.coordinator.updatePlaceholder(in: tv)
-        let lineHeight = tv.font?.lineHeight ?? 20
-        let maxH = lineHeight * CGFloat(maxLines)
-            + tv.textContainerInset.top + tv.textContainerInset.bottom
-        let needs = tv.contentSize.height > maxH
-        if tv.isScrollEnabled != needs {
-            tv.isScrollEnabled = needs
-            tv.invalidateIntrinsicContentSize()
-        }
         if isFocused && !tv.isFirstResponder {
             tv.becomeFirstResponder()
         } else if !isFocused && tv.isFirstResponder {
