@@ -78,7 +78,8 @@ final class RelayWatch_Watch_AppUITests: XCTestCase {
         XCTAssertTrue(reply.waitForExistence(timeout: 5))
         XCTAssertFalse(element(containing: "You: OK").exists)
         reply.tap()
-        XCTAssertTrue(element(containing: "You: OK").waitForExistence(timeout: 10))
+        XCTAssertTrue(element(containing: "You: OK").waitForExistence(timeout: 10),
+                      "no sent bubble; screen was:\n\(app.debugDescription)")
         XCTAssertFalse(element(containing: "Couldn't send").exists)
     }
 
@@ -86,7 +87,8 @@ final class RelayWatch_Watch_AppUITests: XCTestCase {
     func testCallingHandsOffToTheIPhone() throws {
         launchWithChats()
         openChat("alice")
-        let call = app.buttons["call"]
+        // The toolbar can report the button more than once.
+        let call = app.buttons["call"].firstMatch
         XCTAssertTrue(call.waitForExistence(timeout: 5))
         XCTAssertEqual(call.label, "Call Alice Smith")
         call.tap()

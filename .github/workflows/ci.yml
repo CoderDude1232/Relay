@@ -116,7 +116,7 @@ jobs:
           xcrun simctl bootstatus "$watch" -b
           if ! xcodebuild test -project Relay.xcodeproj -scheme "RelayWatch Watch App" \
               -destination "id=$watch" CODE_SIGNING_ALLOWED=NO > watch-test.log 2>&1; then
-            grep -E "error:|failed|Failing tests|XCTAssert" watch-test.log | head -200
+            grep -E -A120 "error:|Failing tests" watch-test.log | head -400
             exit 1
           fi
       - name: Build app
