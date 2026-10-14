@@ -98,6 +98,10 @@ jobs:
       - name: Build app
         # Simulator build without signing: catches compile errors in the app
         # and its extensions.
-        run: >-
-          xcodebuild build -project Relay.xcodeproj -scheme Relay
-          -destination "$SIMULATOR" CODE_SIGNING_ALLOWED=NO -quiet
+        # The full log is thousands of warning lines; print only the errors.
+        run: |
+          if ! xcodebuild build -project Relay.xcodeproj -scheme Relay \
+              -destination "$SIMULATOR" CODE_SIGNING_ALLOWED=NO -quiet > build.log 2>&1; then
+            grep -E -A3 "error:" build.log | head -200
+            exit 1
+          fi
