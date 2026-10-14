@@ -100,3 +100,7 @@ Still open:
 - [ ] Device-test calls (voice/video over TURN) and iCloud backup/restore.
 - [ ] Later: fetch prekey bundles anonymously (access-key gated) and exchange
       access keys end-to-end, so the relay can't see who fetches whose keys.
+      Partly in place (checked 2026-10-14): `GET /v1/keys/{account}/sealed`
+      serves bundles to the holder of the peer's access key, which comes from
+      the blinded directory entry. The signed `GET /v1/keys/{account}` is still
+      the fallback, and access keys aren't exchanged end-to-end yet.

@@ -52,17 +52,12 @@ Actions:
       (0600, SHA-256 verified) 2026-09-18. Recommend a second copy in a password
       manager / offsite — losing it invalidates every stored token and forces a
       full index rebuild.
-- [ ] **Stranded accounts (registered while OPRF was off) have no stored email.**
-      Their `email_token` is null, so email recovery/discovery can't match them.
-      Decision: they must **re-supply their email once** after the redeploy so the
-      server can store the keyed token. Needs a small path to do that:
-      - Simplest: an authenticated `PUT /v1/accounts/me/email` (Relay-Sig) that takes
-        an email, computes `oprf.Token(email)`, and sets `email_token` +
-        (re)inserts the `directory` row (`kind=1`). Then prompt for email in-app on
-        next launch when the account has no `email_token` (server exposes a
-        `hasRecoveryEmail` bit).
-      - OAuth accounts already have a Supabase email; re-provision their `email_token`
-        server-side on next authenticated call instead of prompting.
+- [x] **Stranded accounts (registered while OPRF was off) have no stored email.**
+      Superseded (checked 2026-10-14): email is optional now, and Settings >
+      Change Email re-keys the account's `email_token` through the
+      Supabase-verified `PUT /v1/accounts/me/email`. Accounts without an email
+      sign in with a passkey or the recovery key. The planned automatic
+      "re-enter your email" prompt on launch was not built.
 - [x] **`resolveAccount` on 503:** decided — **surface a clear error, no silent
       plaintext fallback** (a fallback would leak the looked-up username to the relay,
       downgrading the privacy guarantee). Implemented: `resolveAccount` /
@@ -77,41 +72,15 @@ Actions:
 - [ ] Push claim → the strong "content-free wake" wording is now TRUE by default; keep
       it, optionally note the opt-in "Include Message in Push" toggle.
 
-## Security: replace reusable Basic-auth device passwords with request signatures
+## DONE: Relay-Sig request signatures replaced Basic-auth device passwords
 
-**Why:** REST + WS auth is HTTP Basic `"<accountId>.<deviceId>":devicePassword` — a
-**reusable secret** that crosses the wire on every request. Any TLS-terminating hop
-(a future proxy/edge), a leaked log, or a captured request exposes a credential that
-can be replayed indefinitely. Signatures fix this: nothing replayable ever transits.
-
-**Design (reuse existing infra):** every device already has a **P256 auth keypair**
-whose private key stays on-device (today it signs nuke commands; server stores only
-`devices.auth_public_key` and verifies via `verifyNukeSignature`). Reuse it to sign
-each request. The server already has the verify primitive.
-
-**Wire format (proposed):**
-- Header `Authorization: Relay-Sig <accountId>.<deviceId>:<base64 ECDSA-P256 sig>`
-- Headers `X-Relay-Timestamp` (unix ms) and `X-Relay-Nonce` (random, base64).
-- Canonical signed string: `METHOD "\n" PATH "\n" TIMESTAMP "\n" NONCE`.
-  **Body is intentionally NOT signed** — hashing 26 MB attachment uploads on-device is
-  wasteful, and body integrity is already covered by TLS. The goal is "credential not
-  replayable if observed," not defending an active MITM at a terminating hop (that's
-  game-over regardless).
-- Server accepts the signature IFF: signature valid against `dev.AuthPublicKey`,
-  timestamp within ±5 min, and nonce unseen recently (small in-memory LRU per device to
-  block same-request replay inside the window).
-
-**Transition (non-breaking):**
-1. ✅ Server `auth()` accepts **either** `Relay-Sig` **or** Basic (added; Basic still works).
-2. Client: plumb the device auth private key into `RelayAPIClient`/`RelayWebSocket`; sign
-   every REST request + the WS upgrade. Extensions (NSE, Share) must sign too.
-3. Once all clients ship signatures, drop Basic auth from `auth()` (breaking; gate on a
-   minimum-client-version check).
-
-**Status:** server-side accept-either verifier + unit test done; client signing + the
-eventual Basic-auth removal remain.
-
-
+(Checked 2026-10-14.) Every authenticated REST call and the WebSocket upgrade
+are signed with Relay-Sig v2 (`RelayKit/Sources/RelayKit/RelaySigning.swift`,
+`server/internal/api/sigauth.go`); the signature covers the method, request URI,
+account, device, timestamp, nonce and a SHA-256 of the body. The server accepts
+HTTP Basic only on `PUT /v1/devices/auth-key` (the one-time upload of a new
+device's auth key) and refuses it for any device that already has one. See
+`docs/ARCHITECTURE.md`, "Authentication".
 
 ## Transport: QUIC status
 
