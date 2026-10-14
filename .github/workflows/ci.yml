@@ -49,10 +49,15 @@ jobs:
         run: go vet ./...
       - name: go test
         # -p 1: the api and store packages reset the same test database, so
-        # they must not run at the same time.
+        # they must not run at the same time. -race: the hub and WebSocket
+        # sessions are shared across goroutines.
         env:
           RELAY_TEST_DSN: postgres://relay:relay@localhost:5432/relay_test?sslmode=disable
-        run: go test -count=1 -p 1 ./...
+        run: go test -race -count=1 -p 1 ./...
+      - name: govulncheck
+        # Known vulnerabilities in dependencies or the Go standard library
+        # that the server's code actually reaches.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   ios:
     name: iOS app and Swift packages
@@ -93,9 +98,9 @@ jobs:
       - name: Test SecureStorage
         working-directory: SecureStorage
         run: xcodebuild test -scheme SecureStorage -destination "$SIMULATOR" -quiet
-      - name: Build RelayCore
+      - name: Test RelayCore
         working-directory: RelayCore
-        run: xcodebuild build -scheme RelayCore -destination "$SIMULATOR" -quiet
+        run: xcodebuild test -scheme RelayCore -destination "$SIMULATOR" -quiet
       - name: Build app
         # Simulator build without signing: catches compile errors in the app
         # and its extensions. The app targets Xcode 27; older compilers time
