@@ -966,7 +966,6 @@ struct ChatView: View {
         message.isOutgoing
     }
 
-    @ViewBuilder
     private func quoteAuthor(of message: StoredMessage) -> String {
         message.isOutgoing ? service.credentials.accountId : (conversation?.peerAccount ?? "")
     }
