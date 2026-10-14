@@ -64,6 +64,7 @@ jobs:
           xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
           sudo xcode-select -s "$xcode"
           xcodebuild -version
+          echo "XCODE_MAJOR=$(xcodebuild -version | awk 'NR==1 { split($2, v, "."); print v[1] }')" >> "$GITHUB_ENV"
       - name: Cache libsignal
         uses: actions/cache@v4
         with:
@@ -97,7 +98,10 @@ jobs:
         run: xcodebuild build -scheme RelayCore -destination "$SIMULATOR" -quiet
       - name: Build app
         # Simulator build without signing: catches compile errors in the app
-        # and its extensions.
+        # and its extensions. The app targets Xcode 27; older compilers time
+        # out type-checking some large SwiftUI bodies, so this waits for a
+        # runner image that has it.
+        if: fromJSON(env.XCODE_MAJOR) >= 27
         # The full log is thousands of warning lines; print only the errors.
         run: |
           if ! xcodebuild build -project Relay.xcodeproj -scheme Relay \
