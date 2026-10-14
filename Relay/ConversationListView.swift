@@ -190,57 +190,14 @@ struct ConversationListView: View {
             } message: {
                 Text("Messages in these chats will be removed from this device.")
             }
-            .alert("Enter Panic PIN", isPresented: $showingPanicPIN) {
-                SecureField("PIN", text: $panicPINInput)
-                    .keyboardType(.numberPad)
-                Button("Unlock") {
-                    let pin = panicPINInput
-                    panicPINInput = ""
-                    Task {
-                        let result = await panicMode.activate(pin: pin)
-                        guard result != .unlocked else { return }
-                        UINotificationFeedbackGenerator().notificationOccurred(.error)
-                        if case .lockedOut(let until) = result {
-                            panicLockoutUntil = until
-                        } else {
-                            panicLockoutUntil = nil
-                        }
-                        // Let the PIN alert finish dismissing before presenting the next one.
-                        try? await Task.sleep(for: .milliseconds(350))
-                        showingPanicPINError = true
-                    }
-                }
-                Button("Cancel", role: .cancel) { panicPINInput = "" }
-            }
-            .alert(panicLockoutUntil == nil ? "Incorrect PIN" : "Too Many Attempts", isPresented: $showingPanicPINError) {
-                if panicLockoutUntil == nil {
-                    Button("Try Again") {
-                        panicPINInput = ""
-                        showingPanicPIN = true
-                    }
-                }
-                Button(panicLockoutUntil == nil ? "Cancel" : "OK", role: .cancel) {}
-            } message: {
-                if let until = panicLockoutUntil {
-                    Text("Try again \(until, format: .relative(presentation: .named)).")
-                }
-            }
-            .alert("Couldn't Start Chat", isPresented: Binding(
-                get: { qrStartError != nil },
-                set: { if !$0 { qrStartError = nil } }
-            )) {
-                Button("OK", role: .cancel) { qrStartError = nil }
-            } message: {
-                Text(qrStartError ?? "")
-            }
-            .alert("Couldn't Leave Group", isPresented: Binding(
-                get: { deleteError != nil },
-                set: { if !$0 { deleteError = nil } }
-            )) {
-                Button("OK", role: .cancel) { deleteError = nil }
-            } message: {
-                Text(deleteError ?? "")
-            }
+            // In their own modifiers: chained here, the alerts made the body too
+            // big for the compiler to type-check in reasonable time.
+            .modifier(PanicPINAlerts(
+                panicMode: panicMode, showingPIN: $showingPanicPIN, pinInput: $panicPINInput,
+                showingError: $showingPanicPINError, lockoutUntil: $panicLockoutUntil
+            ))
+            .modifier(MessageAlert(title: "Couldn't Start Chat", message: $qrStartError))
+            .modifier(MessageAlert(title: "Couldn't Leave Group", message: $deleteError))
             .sheet(isPresented: $showingNewGroup) {
                 NewGroupView(service: service) { conversationId in
                     openConversation(conversationId)
@@ -1712,6 +1669,71 @@ struct ConnectionBadge: View {
             Image(systemName: "wifi.slash")
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Offline")
+        }
+    }
+}
+
+/// The panic-mode PIN prompt, and what follows a wrong PIN.
+private struct PanicPINAlerts: ViewModifier {
+    let panicMode: PanicModeManager
+    @Binding var showingPIN: Bool
+    @Binding var pinInput: String
+    @Binding var showingError: Bool
+    @Binding var lockoutUntil: Date?
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Enter Panic PIN", isPresented: $showingPIN) {
+                SecureField("PIN", text: $pinInput)
+                    .keyboardType(.numberPad)
+                Button("Unlock") {
+                    let pin = pinInput
+                    pinInput = ""
+                    Task {
+                        let result = await panicMode.activate(pin: pin)
+                        guard result != .unlocked else { return }
+                        UINotificationFeedbackGenerator().notificationOccurred(.error)
+                        if case .lockedOut(let until) = result {
+                            lockoutUntil = until
+                        } else {
+                            lockoutUntil = nil
+                        }
+                        // Let the PIN alert finish dismissing before presenting the next one.
+                        try? await Task.sleep(for: .milliseconds(350))
+                        showingError = true
+                    }
+                }
+                Button("Cancel", role: .cancel) { pinInput = "" }
+            }
+            .alert(lockoutUntil == nil ? "Incorrect PIN" : "Too Many Attempts", isPresented: $showingError) {
+                if lockoutUntil == nil {
+                    Button("Try Again") {
+                        pinInput = ""
+                        showingPIN = true
+                    }
+                }
+                Button(lockoutUntil == nil ? "Cancel" : "OK", role: .cancel) {}
+            } message: {
+                if let until = lockoutUntil {
+                    Text("Try again \(until, format: .relative(presentation: .named)).")
+                }
+            }
+    }
+}
+
+/// An alert shown while `message` is set; OK clears it.
+private struct MessageAlert: ViewModifier {
+    let title: String
+    @Binding var message: String?
+
+    func body(content: Content) -> some View {
+        content.alert(title, isPresented: Binding(
+            get: { message != nil },
+            set: { if !$0 { message = nil } }
+        )) {
+            Button("OK", role: .cancel) { message = nil }
+        } message: {
+            Text(message ?? "")
         }
     }
 }

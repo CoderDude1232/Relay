@@ -312,9 +312,14 @@ private struct AccountSettingsView: View {
                 } header: {
                     Text("Sign-In")
                 } footer: {
-                    Text(hasEmail
-                         ? "Signing in on a new device needs your account password, a passkey or your recovery key."
-                         : "No email is linked. Sign in with a passkey or your recovery key.")
+                    if let methods, !methods.hasWayBackIn {
+                        Text("Nothing can sign in to this account from a new device. Add a passkey or make a recovery key, or losing this iPhone loses the account.")
+                            .foregroundStyle(.red)
+                    } else {
+                        Text(hasEmail
+                             ? "Signing in on a new device needs your account password, a passkey or your recovery key."
+                             : "No email is linked. Sign in with a passkey or your recovery key.")
+                    }
                 }
 
                 if hasEmail {

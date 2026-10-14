@@ -1075,6 +1075,21 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
         recoveryKey = try c.decode(Bool.self, forKey: .recoveryKey)
         accountPasswordNeedsUpdate = try c.decodeIfPresent(Bool.self, forKey: .accountPasswordNeedsUpdate) ?? false
     }
+
+    public init(email: Bool, passkeys: Int, accountPassword: Bool, recoveryKey: Bool, accountPasswordNeedsUpdate: Bool = false) {
+        self.email = email
+        self.passkeys = passkeys
+        self.accountPassword = accountPassword
+        self.recoveryKey = recoveryKey
+        self.accountPasswordNeedsUpdate = accountPasswordNeedsUpdate
+    }
+
+    /// Whether the account could be signed in to from a new device if this
+    /// one were lost: a passkey, a recovery key, a usable account password, or
+    /// an email that can reset the password.
+    public var hasWayBackIn: Bool {
+        passkeys > 0 || recoveryKey || (accountPassword && !accountPasswordNeedsUpdate) || email
+    }
 }
 
 /// A passkey sign-up challenge (`POST /v1/passkeys/signup/options`).

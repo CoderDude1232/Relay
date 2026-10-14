@@ -49,10 +49,15 @@ jobs:
         run: go vet ./...
       - name: go test
         # -p 1: the api and store packages reset the same test database, so
-        # they must not run at the same time.
+        # they must not run at the same time. -race: the hub and WebSocket
+        # sessions are shared across goroutines.
         env:
           RELAY_TEST_DSN: postgres://relay:relay@localhost:5432/relay_test?sslmode=disable
-        run: go test -count=1 -p 1 ./...
+        run: go test -race -count=1 -p 1 ./...
+      - name: govulncheck
+        # Known vulnerabilities in dependencies or the Go standard library
+        # that the server's code actually reaches.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   ios:
     name: iOS app and Swift packages
@@ -64,7 +69,6 @@ jobs:
           xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
           sudo xcode-select -s "$xcode"
           xcodebuild -version
-          echo "XCODE_MAJOR=$(xcodebuild -version | awk 'NR==1 { split($2, v, "."); print v[1] }')" >> "$GITHUB_ENV"
       - name: Cache libsignal
         uses: actions/cache@v4
         with:
@@ -93,15 +97,32 @@ jobs:
       - name: Test SecureStorage
         working-directory: SecureStorage
         run: xcodebuild test -scheme SecureStorage -destination "$SIMULATOR" -quiet
-      - name: Build RelayCore
+      - name: Test RelayCore
         working-directory: RelayCore
-        run: xcodebuild build -scheme RelayCore -destination "$SIMULATOR" -quiet
+        run: xcodebuild test -scheme RelayCore -destination "$SIMULATOR" -quiet
+      - name: Test Watch app
+        # Unit tests plus UI tests that drive the watch app on its built-in
+        # test chats (no paired iPhone in the simulator).
+        run: |
+          watch="$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          os = sorted((k for k in devices if ".SimRuntime.watchOS-" in k and devices[k]),
+                      key=lambda k: [int(p) for p in k.rsplit("watchOS-", 1)[1].split("-")])
+          print(devices[os[-1]][0]["udid"])
+          ')"
+          # Boot first: a cold simulator can time out the first UI test's launch.
+          xcrun simctl boot "$watch" || true
+          xcrun simctl bootstatus "$watch" -b
+          if ! xcodebuild test -project Relay.xcodeproj -scheme "RelayWatch Watch App" \
+              -destination "id=$watch" CODE_SIGNING_ALLOWED=NO > watch-test.log 2>&1; then
+            grep -E -A120 "error:|Failing tests" watch-test.log | head -400
+            exit 1
+          fi
       - name: Build app
         # Simulator build without signing: catches compile errors in the app
-        # and its extensions. The app targets Xcode 27; older compilers time
-        # out type-checking some large SwiftUI bodies, so this waits for a
-        # runner image that has it.
-        if: fromJSON(env.XCODE_MAJOR) >= 27
+        # and its extensions. Runs even if a test step failed.
+        if: ${{ !cancelled() }}
         # The full log is thousands of warning lines; print only the errors.
         run: |
           if ! xcodebuild build -project Relay.xcodeproj -scheme Relay \

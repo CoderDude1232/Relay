@@ -20,6 +20,7 @@ struct ChatListView: View {
                         NavigationLink(value: chat.id) {
                             ChatRow(chat: chat, avatar: session.avatar(for: chat.id))
                         }
+                        .accessibilityIdentifier("chat-\(chat.id)")
                     }
                 }
             }
@@ -57,8 +58,8 @@ private struct ChatRow: View {
                 Text(chat.name)
                     .font(.headline)
                     .lineLimit(1)
-                if let last = chat.messages.last {
-                    Text(last.outgoing ? "You: \(last.text)" : last.text)
+                if let preview = chat.preview {
+                    Text(preview)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -103,7 +104,18 @@ struct WatchAvatar: View {
         .accessibilityHidden(true)
     }
 
-    private var initials: String {
+    private var initials: String { Self.initials(for: name) }
+
+    /// Up to two initials: "Ada Lovelace" is "AL".
+    static func initials(for name: String) -> String {
         name.split(separator: " ").prefix(2).compactMap { $0.first.map(String.init) }.joined().uppercased()
+    }
+}
+
+extension WatchSnapshot.Chat {
+    /// The chat list's second line: the last message, "You: " if it was ours.
+    var preview: String? {
+        guard let last = messages.last else { return nil }
+        return last.outgoing ? "You: \(last.text)" : last.text
     }
 }

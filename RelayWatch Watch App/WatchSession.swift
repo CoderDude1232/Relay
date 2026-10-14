@@ -37,8 +37,26 @@ final class WatchSession: NSObject, WCSessionDelegate {
             .appendingPathComponent("chats.json")
     }
 
+    #if DEBUG
+    /// UI tests run against a built-in chat list and never reach an iPhone.
+    private var isUITest = false
+    #endif
+
     override init() {
         super.init()
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains(WatchUITest.fixtureArgument) {
+            isUITest = true
+            snapshot = .uiTestFixture()
+            hasReceived = true
+            return
+        }
+        if arguments.contains(WatchUITest.emptyArgument) {
+            isUITest = true
+            return
+        }
+        #endif
         if let data = Self.readCache(),
            let cached = try? JSONDecoder().decode(WatchSnapshot.self, from: data) {
             snapshot = cached
@@ -48,6 +66,17 @@ final class WatchSession: NSObject, WCSessionDelegate {
         WCSession.default.delegate = self
         WCSession.default.activate()
     }
+
+    #if DEBUG
+    /// A session on the given chats that treats every send and call as
+    /// accepted, for tests. Never touches WatchConnectivity or the cache.
+    init(testSnapshot: WatchSnapshot) {
+        super.init()
+        isUITest = true
+        snapshot = testSnapshot
+        hasReceived = true
+    }
+    #endif
 
     // MARK: Encrypted cache
 
@@ -179,12 +208,18 @@ final class WatchSession: NSObject, WCSessionDelegate {
     }
 
     private func request(_ message: [String: Any]) {
+        #if DEBUG
+        if isUITest { return }
+        #endif
         guard WCSession.default.activationState == .activated, WCSession.default.isReachable else { return }
         WCSession.default.sendMessage(message, replyHandler: { _ in }, errorHandler: { _ in })
     }
 
     /// Returns an error message, or nil on success.
     private func requestWithReply(_ message: [String: Any]) async -> String? {
+        #if DEBUG
+        if isUITest { return nil }
+        #endif
         guard WCSession.default.activationState == .activated else { return "Not connected to your iPhone" }
         guard WCSession.default.isReachable else { return "Your iPhone isn't nearby" }
         nonisolated(unsafe) let message = message
@@ -205,11 +240,7 @@ final class WatchSession: NSObject, WCSessionDelegate {
         else { return }
         snapshot = next
         hasReceived = true
-        // Drop pending bubbles the iPhone has now confirmed.
-        for (chatId, sent) in pending {
-            let confirmed = Set((next.chats.first { $0.id == chatId }?.messages ?? []).filter(\.outgoing).map(\.text))
-            pending[chatId] = sent.filter { !confirmed.contains($0.text) }
-        }
+        pending = Self.reconcile(pending, with: next)
         pruneAvatars(keeping: Set(next.chats.map(\.id)))
         if next.chats.isEmpty {
             pending = [:]
@@ -221,6 +252,41 @@ final class WatchSession: NSObject, WCSessionDelegate {
             )
             Self.writeCache(data)
         }
+    }
+
+    /// How far the iPhone's clock may trail the watch's when matching a sent
+    /// bubble to the iPhone's copy.
+    nonisolated static let confirmSkewMs: Int64 = 60_000
+    /// A sent bubble the iPhone still hasn't shown after this long is dropped
+    /// rather than left looking unsent forever.
+    nonisolated static let pendingMaxAgeMs: Int64 = 10 * 60_000
+
+    /// Drops pending bubbles the iPhone has now confirmed. Each outgoing
+    /// message in the snapshot, sent no earlier than the bubble, confirms one
+    /// bubble with the same text, so an older "OK" in the history can't hide a
+    /// new "OK" that hasn't arrived yet, and sending "OK" twice needs two.
+    nonisolated static func reconcile(
+        _ pending: [String: [WatchSnapshot.Message]],
+        with snapshot: WatchSnapshot,
+        nowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+    ) -> [String: [WatchSnapshot.Message]] {
+        guard !snapshot.chats.isEmpty else { return [:] }
+        var out: [String: [WatchSnapshot.Message]] = [:]
+        for (chatId, sent) in pending {
+            let stored = snapshot.chats.first { $0.id == chatId }?.messages ?? []
+            var unmatched = stored.filter(\.outgoing)
+            let remaining = sent.filter { bubble in
+                if let i = unmatched.firstIndex(where: {
+                    $0.text == bubble.text && $0.timestamp >= bubble.timestamp - confirmSkewMs
+                }) {
+                    unmatched.remove(at: i)
+                    return false
+                }
+                return nowMs - bubble.timestamp < pendingMaxAgeMs
+            }
+            if !remaining.isEmpty { out[chatId] = remaining }
+        }
+        return out
     }
 
     // MARK: WCSessionDelegate

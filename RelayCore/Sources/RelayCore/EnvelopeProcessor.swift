@@ -470,10 +470,13 @@ public struct EnvelopeProcessor: @unchecked Sendable {
 
     /// Group messages that arrived before the group update that makes them
     /// valid (the notification extension can't apply group updates; it saves
-    /// them for the app). They're decrypted already, so they're kept here and
-    /// re-handled by `replayDeferredGroupContent` once the app has applied the
-    /// pending updates. Bounded, and dropped after `deferredMaxAge`.
-    private struct DeferredGroupContent: Codable {
+    /// them for the app). They're decrypted already, so the relay can't
+    /// redeliver them: they're kept here and re-handled by
+    /// `replayDeferredGroupContent` once the app has applied the pending
+    /// updates. Bounded (oldest evicted first), and dropped once older than the
+    /// relay's own queue retention, by which time their group update would have
+    /// been lost too.
+    struct DeferredGroupContent: Codable {
         let envelopeId: String
         let senderName: String
         let senderDevice: UInt32
@@ -483,31 +486,50 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         let savedAt: Date
     }
 
-    private static let deferredPrefix = "deferred-group-content:"
-    private static let deferredMaxAge: TimeInterval = 3 * 24 * 3600
-    private static let deferredMaxRows = 300
+    static let deferredPrefix = "deferred-group-content:"
+    static let deferredMaxAge = TimeInterval(maxQueueAgeMs / 1000)
+    static let deferredMaxRows = 1000
 
     private func deferGroupContent(
         envelopeId: String, sender: ProtocolAddress, attestedUsername: String?, plaintext: Data, groupId: String
     ) {
-        let count = (try? storage.database.query(
-            "SELECT COUNT(*) FROM kv WHERE key LIKE ?", [.text(Self.deferredPrefix + "%")]
-        ).first?.first?.int64) ?? 0
-        guard count < Self.deferredMaxRows else { return }
         let item = DeferredGroupContent(
             envelopeId: envelopeId, senderName: sender.name, senderDevice: sender.deviceId,
             attestedUsername: attestedUsername, plaintext: plaintext, groupId: groupId, savedAt: Date()
         )
         guard let data = try? JSONEncoder().encode(item) else { return }
         let micros = Int64(Date().timeIntervalSince1970 * 1_000_000)
-        try? storage.database.run(
-            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
-            [.text(Self.deferredPrefix + String(format: "%017lld:", micros) + envelopeId), .blob(data)]
-        )
+        do {
+            // Make room by evicting the oldest rows: a full table must not
+            // silently swallow the newest messages, which matter most.
+            let count = try storage.database.query(
+                "SELECT COUNT(*) FROM kv WHERE key LIKE ?", [.text(Self.deferredPrefix + "%")]
+            ).first?.first?.int64 ?? 0
+            let excess = count - Int64(Self.deferredMaxRows) + 1
+            if excess > 0 {
+                log.warning("deferred group content is full; evicting the \(excess) oldest")
+                try storage.database.run(
+                    """
+                    DELETE FROM kv WHERE key IN (
+                        SELECT key FROM kv WHERE key LIKE ? ORDER BY key LIMIT ?
+                    )
+                    """,
+                    [.text(Self.deferredPrefix + "%"), .integer(excess)]
+                )
+            }
+            try storage.database.run(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                [.text(Self.deferredPrefix + String(format: "%017lld:", micros) + envelopeId), .blob(data)]
+            )
+        } catch {
+            log.error("failed to defer group content: \(error.localizedDescription)")
+        }
     }
 
     /// Re-handles deferred group content whose group (and sender's membership)
-    /// is now known. Call after applying group updates.
+    /// is now known. Call after applying group updates. A row is removed only
+    /// once it has been handled; one that fails is kept for the next replay
+    /// until it expires.
     public func replayDeferredGroupContent(blockedAccounts: Set<String> = []) -> [ProcessedEnvelope] {
         let run = { () -> [ProcessedEnvelope] in
             let rows = (try? storage.database.query(
@@ -516,26 +538,34 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             var results: [ProcessedEnvelope] = []
             for row in rows {
                 guard let key = row[0].string else { continue }
+                let deleteRow = { try storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)]) }
                 guard let data = row[1].data, let item = try? JSONDecoder().decode(DeferredGroupContent.self, from: data),
                       let sender = try? ProtocolAddress(name: item.senderName, deviceId: item.senderDevice)
                 else {
-                    try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
+                    try? deleteRow()
                     continue
                 }
+                let expired = Date().timeIntervalSince(item.savedAt) > Self.deferredMaxAge
                 let group = try? storage.messages.group(id: item.groupId)
                 let ready = group.map { $0.members.contains(item.senderName) } ?? false
-                if !ready {
-                    if Date().timeIntervalSince(item.savedAt) > Self.deferredMaxAge {
-                        try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
-                    }
+                guard ready else {
+                    if expired { try? deleteRow() }
                     continue
                 }
-                try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
-                if let result = try? handle(
-                    envelopeId: item.envelopeId, sender: sender, plaintext: item.plaintext,
-                    attestedUsername: item.attestedUsername, blockedAccounts: blockedAccounts, mayDefer: false
-                ) {
+                do {
+                    // Handling and removal commit together, so a failure leaves
+                    // the row (and nothing half-applied) for the next replay.
+                    let result = try storage.database.transaction { () throws -> ProcessedEnvelope in
+                        try deleteRow()
+                        return try handle(
+                            envelopeId: item.envelopeId, sender: sender, plaintext: item.plaintext,
+                            attestedUsername: item.attestedUsername, blockedAccounts: blockedAccounts, mayDefer: false
+                        )
+                    }
                     results.append(result)
+                } catch {
+                    log.error("deferred group content failed: \(error.localizedDescription)")
+                    if expired { try? deleteRow() }
                 }
             }
             return results

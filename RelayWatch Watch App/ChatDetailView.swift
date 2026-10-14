@@ -59,6 +59,7 @@ struct ChatDetailView: View {
                         Image(systemName: "phone.fill")
                     }
                     .accessibilityLabel("Call \(chat?.name ?? "")")
+                    .accessibilityIdentifier("call")
                 }
             }
         }
@@ -88,10 +89,11 @@ struct ChatDetailView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(Self.quickReplies, id: \.self) { reply in
+                    ForEach(Array(Self.quickReplies.enumerated()), id: \.element) { index, reply in
                         Button(reply) { Task { await send(reply) } }
                             .buttonStyle(.bordered)
                             .fixedSize()
+                            .accessibilityIdentifier("quick-reply-\(index)")
                     }
                 }
             }
