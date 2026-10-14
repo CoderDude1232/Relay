@@ -605,6 +605,7 @@ final class MessagingService {
                     Task {
                         await self.upgradeRecoveryKeyHashIfNeeded()
                         await self.noteAccountPasswordNeedsUpdateIfNeeded()
+                        await self.noteNoWayBackInIfNeeded()
                     }
                     if !didRepublishKeysThisLaunch {
                         didRepublishKeysThisLaunch = true

@@ -331,6 +331,9 @@ extension MessagingService {
 
     private static let recoveryKeyHashV2KV = "relay.recoveryKey.hashV2"
     private static let accountPasswordUpdateNoticeKV = "relay.accountPassword.updateNotice"
+    private static let noWayBackInNoticeKV = "relay.signIn.noWayBackInNotice"
+    /// How often to repeat the warning while the account still has no way back in.
+    private static let noWayBackInNoticeInterval: TimeInterval = 7 * 24 * 3600
 
     /// Re-registers a recovery key that this device knows under the hash
     /// sign-in now checks (older builds registered a hash of the raw key, which
@@ -354,6 +357,22 @@ extension MessagingService {
         else { return }
         setKV(Self.accountPasswordUpdateNoticeKV, Data([1]))
         postRelayNotice("Please enter your account password again in Settings → Account → Account Password. Relay now stores it differently, and until you do it can't be used to sign in on a new device.")
+    }
+
+    /// Warns when nothing could sign in to this account from a new device
+    /// (no passkey, recovery key, usable account password or email): losing
+    /// this iPhone would lose the account. Repeats weekly until fixed.
+    func noteNoWayBackInIfNeeded() async {
+        guard !isDemoAccount,
+              let methods = try? await apiClient.signInMethods(), !methods.hasWayBackIn
+        else { return }
+        let now = Date().timeIntervalSince1970
+        if let last = kvData(Self.noWayBackInNoticeKV).flatMap({ Double(String(decoding: $0, as: UTF8.self)) }),
+           now - last < Self.noWayBackInNoticeInterval {
+            return
+        }
+        setKV(Self.noWayBackInNoticeKV, Data(String(now).utf8))
+        postRelayNotice("Your account has no way to sign in on a new device. If you lose this iPhone, you lose the account. Add a passkey or make a recovery key in Settings → Account → Sign-In.")
     }
 
     /// Makes a new recovery key (replacing any old one), registers its hash,

@@ -222,3 +222,25 @@ private extension Data {
         self.init(bytes)
     }
 }
+
+struct SignInMethodsTests {
+    @Test func decodesWithoutTheNewerField() throws {
+        let json = Data(#"{"email":false,"passkeys":2,"accountPassword":true,"recoveryKey":false}"#.utf8)
+        let methods = try JSONDecoder().decode(SignInMethods.self, from: json)
+        #expect(methods == SignInMethods(email: false, passkeys: 2, accountPassword: true, recoveryKey: false))
+    }
+
+    @Test func anyOneMethodIsAWayBackIn() {
+        #expect(SignInMethods(email: false, passkeys: 1, accountPassword: false, recoveryKey: false).hasWayBackIn)
+        #expect(SignInMethods(email: false, passkeys: 0, accountPassword: false, recoveryKey: true).hasWayBackIn)
+        #expect(SignInMethods(email: false, passkeys: 0, accountPassword: true, recoveryKey: false).hasWayBackIn)
+        #expect(SignInMethods(email: true, passkeys: 0, accountPassword: false, recoveryKey: false).hasWayBackIn)
+    }
+
+    @Test func nothingUsableIsNoWayBackIn() {
+        #expect(!SignInMethods(email: false, passkeys: 0, accountPassword: false, recoveryKey: false).hasWayBackIn)
+        // A password stored by an older build can't sign in until re-entered.
+        #expect(!SignInMethods(email: false, passkeys: 0, accountPassword: true, recoveryKey: false,
+                               accountPasswordNeedsUpdate: true).hasWayBackIn)
+    }
+}
