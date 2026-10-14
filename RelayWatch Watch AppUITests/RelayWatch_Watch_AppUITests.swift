@@ -66,28 +66,30 @@ final class RelayWatch_Watch_AppUITests: XCTestCase {
         XCTAssertTrue(element(containing: "Mom: Dinner at 7").waitForExistence(timeout: 5))
         XCTAssertTrue(element(containing: "Missed group call").exists)
         // Calls from a group start on the iPhone, so the watch offers none.
-        XCTAssertFalse(app.buttons["Call Family"].exists)
+        XCTAssertFalse(app.buttons["call"].exists)
     }
 
     @MainActor
     func testQuickReplyAppearsInTheChat() throws {
         launchWithChats()
         openChat("alice")
-        let reply = app.buttons["On my way"]
+        // The first quick reply, "👍"; the others sit off to the side.
+        let reply = app.buttons["quick-reply-0"]
         XCTAssertTrue(reply.waitForExistence(timeout: 5))
         reply.tap()
-        XCTAssertTrue(element(containing: "You: On my way").waitForExistence(timeout: 5))
-        XCTAssertFalse(app.alerts["Couldn't send"].exists)
+        XCTAssertTrue(element(containing: "You: 👍").waitForExistence(timeout: 5))
+        XCTAssertFalse(element(containing: "Couldn't send").exists)
     }
 
     @MainActor
     func testCallingHandsOffToTheIPhone() throws {
         launchWithChats()
         openChat("alice")
-        let call = app.buttons["Call Alice Smith"]
+        let call = app.buttons["call"]
         XCTAssertTrue(call.waitForExistence(timeout: 5))
+        XCTAssertEqual(call.label, "Call Alice Smith")
         call.tap()
-        XCTAssertTrue(app.alerts["Calling on your iPhone"].waitForExistence(timeout: 5))
+        XCTAssertTrue(element(containing: "The call is on your iPhone").waitForExistence(timeout: 5))
     }
 
     @MainActor
