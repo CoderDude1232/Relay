@@ -122,9 +122,11 @@ class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
-        if let contentHandler, let bestAttemptContent {
-            contentHandler(bestAttemptContent)
-        }
+        guard let contentHandler, let bestAttemptContent else { return }
+        // Out of time before decrypting, so the sender is unknown: while Panic
+        // Mode hides chats, even the server's generic "New message" could be
+        // from one of them (as with pendingMessageOutcome).
+        contentHandler(PanicHiddenChats.load().isEmpty ? bestAttemptContent : UNMutableNotificationContent())
     }
 
     // MARK: - Communication Notification enrichment
@@ -400,6 +402,9 @@ class NotificationService: UNNotificationServiceExtension {
             // messages shouldn't fall back to the server's "New message" placeholder.
             return .suppress
         }
+        // Hidden by Panic Mode: no banner at all. present() checks this too, but
+        // the "none" preview level below drops the conversation id first.
+        if PanicHiddenChats.load().contains(notification.conversationId) { return .suppress }
         let defaults = UserDefaults(suiteName: appGroupId)
         // Like the app, an @mention of us still shows in a muted conversation.
         if RelayStore.isConversationMuted(notification.conversationId, defaults: defaults) {
