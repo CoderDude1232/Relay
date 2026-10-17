@@ -31,6 +31,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/blob"
+	"github.com/relayapp/relay-server/internal/history"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/limitkey"
 	"github.com/relayapp/relay-server/internal/oprf"
@@ -45,9 +46,10 @@ type Server struct {
 	blobs        *blob.Store
 	turnURLs     []string // empty = TURN not configured
 	turnSecret   string
-	demoCodeHash []byte          // sha256 of the review code; nil = demo sign-in off
-	turnHealth   *TURNHealth     // nil = no failover
-	cfTURN       *CloudflareTURN // nil = no failover
+	demoCodeHash []byte           // sha256 of the review code; nil = demo sign-in off
+	turnHealth   *TURNHealth      // nil = no failover
+	cfTURN       *CloudflareTURN  // nil = no failover
+	history      *history.Storage // nil = history backup unavailable
 
 	// Supabase social login. When supabaseURL is set, access tokens are
 	// verified server-to-server via GET /auth/v1/user and the returned
@@ -339,6 +341,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/accounts/me/demo", s.auth(s.handleDemoStatus))
 	mux.HandleFunc("GET /v1/accounts/me/storage", s.auth(s.handleGetAccountStorage))
 	mux.HandleFunc("PUT /v1/accounts/me/storage", s.auth(s.handlePutAccountStorage))
+	mux.HandleFunc("GET /v1/history", s.auth(s.handleListHistory))
+	mux.HandleFunc("DELETE /v1/history", s.auth(s.handleDeleteHistory))
+	mux.HandleFunc("PUT /v1/history/{seq}", s.auth(s.handlePutHistory))
+	mux.HandleFunc("GET /v1/history/{seq}", s.auth(s.handleGetHistory))
+	mux.HandleFunc("DELETE /v1/history/{seq}", s.auth(s.handleDeleteHistorySegment))
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))
@@ -441,6 +448,13 @@ func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerF
 				return
 			}
 			dev, err := s.authenticateSignature(r)
+			var tooBig *http.MaxBytesError
+			if errors.As(err, &tooBig) {
+				// The body is read before the signature is checked; an
+				// oversized one is a size error, not a bad signature.
+				httpError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
 			if errors.Is(err, errNonceBudget) {
 				// A valid signature from a device over its replay-cache budget.
 				httpError(w, http.StatusTooManyRequests, errNonceBudget.Error())
@@ -2438,10 +2452,12 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 	// A demo account is reset instead: devices, keys and queues go but the
 	// login stays, so the credentials keep working for the next reviewer.
 	if s.isDemo(dev.AccountID) {
-		if _, err := s.store.ResetDemoAccount(dev.AccountID); err != nil {
+		_, segs, err := s.store.ResetDemoAccount(dev.AccountID)
+		if err != nil {
 			internalError(w, err)
 			return
 		}
+		s.dropHistoryBlobs(dev.AccountID, segs)
 		s.hub.DisconnectAccount(dev.AccountID, "account deleted")
 		s.reindexAccount(dev.AccountID)
 		w.WriteHeader(http.StatusNoContent)
@@ -2453,13 +2469,15 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request, dev
 		internalError(w, err)
 		return
 	}
-	if err := s.store.DeleteAccount(dev.AccountID); errors.Is(err, store.ErrNotFound) {
+	segs, err := s.store.DeleteAccount(dev.AccountID)
+	if errors.Is(err, store.ErrNotFound) {
 		httpError(w, http.StatusNotFound, "no such account")
 		return
 	} else if err != nil {
 		internalError(w, err)
 		return
 	}
+	s.dropHistoryBlobs(dev.AccountID, segs)
 	s.hub.DisconnectAccount(dev.AccountID, "account deleted")
 	// DeleteAccount queued the Supabase user; a failure here is retried later.
 	if supabaseUserID != "" && s.supabaseDeletionEnabled() {

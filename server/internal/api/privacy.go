@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/relayapp/relay-server/internal/history"
 )
 
 const (
@@ -47,6 +49,9 @@ const (
 	requestWriteTimeout    = 60 * time.Second
 	attachmentIOTimeout    = 10 * time.Minute
 	webSocketUpgradePrefix = "/v1/ws"
+	// A 2 MiB history segment needs longer than a JSON call on a slow link.
+	historyIOTimeout     = 3 * time.Minute
+	historySegmentPrefix = "/v1/history/"
 )
 
 func requestDeadlines(next http.Handler) http.Handler {
@@ -60,6 +65,9 @@ func requestDeadlines(next http.Handler) http.Handler {
 			// their own deadlines after the upgrade.
 		case strings.HasPrefix(r.URL.Path, "/v1/attachments/"):
 			read = time.Now().Add(attachmentIOTimeout)
+			write = read
+		case strings.HasPrefix(r.URL.Path, historySegmentPrefix):
+			read = time.Now().Add(historyIOTimeout)
 			write = read
 		default:
 			read = time.Now().Add(requestReadTimeout)
@@ -79,6 +87,14 @@ func limitRequestBody(next http.Handler) http.Handler {
 			limit := int64(defaultMaxRequestBodySize)
 			if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/attachments/") {
 				limit = attachmentMaxRequestBodySize
+			}
+			if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, historySegmentPrefix) {
+				limit = history.MaxSegmentBytes
+				// Refused before authentication buffers it.
+				if r.ContentLength > limit {
+					httpError(w, http.StatusRequestEntityTooLarge, "segment over 2 MiB")
+					return
+				}
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}

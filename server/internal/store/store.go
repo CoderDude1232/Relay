@@ -485,6 +485,16 @@ CREATE TABLE IF NOT EXISTS group_invites (
     user_id    TEXT PRIMARY KEY,
     created_at BIGINT NOT NULL
 )`,
+		// Chat-history backup segments (store/history.go); the blobs live in
+		// files named by a keyed hash, at location 'local' or 'remote'.
+		`CREATE TABLE IF NOT EXISTS history_segments (
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    seq        BIGINT NOT NULL,
+    size       INT NOT NULL,
+    location   TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (account_id, seq)
+)`,
 	} {
 		if err := s.migrationExec(ctx, stmt); err != nil {
 			return err
@@ -1653,32 +1663,34 @@ func (s *Store) SupabaseUserID(accountID string) (string, error) {
 
 // DeleteAccount removes an account and everything keyed to it in one
 // transaction: prekeys, queued envelopes, devices, contact invites, directory
-// rows, nuke commands, reports it filed, passkeys, and the account row. A linked Supabase user is queued in pending_supabase_deletions.
+// rows, nuke commands, reports it filed, passkeys, history segment rows, and
+// the account row. A linked Supabase user is queued in pending_supabase_deletions.
 // The username enters the reuse cooldown for everyone. Reports filed
-// against the account are kept. Returns ErrNotFound if the account does not
+// against the account are kept. It returns the removed history segments, whose
+// blobs the caller deletes. Returns ErrNotFound if the account does not
 // exist.
 //
 // Data with no stored account linkage is left to expire on its own:
 // provisioning sessions, group invites, attachment blobs, and envelopes the
 // account sent to others.
-func (s *Store) DeleteAccount(accountID string) error {
+func (s *Store) DeleteAccount(accountID string) ([]HistorySegment, error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
-	// Lock the account row so concurrent device-list changes serialize behind
-	// the delete.
+	// Lock the account row so concurrent device-list changes and history
+	// writes serialize behind the delete.
 	var username string
 	if err := tx.QueryRow(ctx, `SELECT username FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&username); errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	} else if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.releaseUsernameTx(ctx, tx, username, ""); err != nil {
-		return err
+		return nil, err
 	}
 	// Queue the linked Supabase user for deletion in the same transaction, so
 	// a failed or interrupted admin-API call is retried rather than lost.
@@ -1686,7 +1698,11 @@ func (s *Store) DeleteAccount(accountID string) error {
 		INSERT INTO pending_supabase_deletions (user_id, created_at)
 		SELECT supabase_user_id, $2 FROM accounts WHERE id = $1 AND COALESCE(supabase_user_id, '') <> ''
 		ON CONFLICT (user_id) DO NOTHING`, accountID, coarseDayMillis()); err != nil {
-		return err
+		return nil, err
+	}
+	history, err := deleteHistoryTx(ctx, tx, accountID)
+	if err != nil {
+		return nil, err
 	}
 	for _, stmt := range []string{
 		// Lock the device rows (see Enqueue) so no envelope lands after the
@@ -1707,10 +1723,10 @@ func (s *Store) DeleteAccount(accountID string) error {
 		`DELETE FROM accounts WHERE id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, stmt, accountID); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return tx.Commit(ctx)
+	return history, tx.Commit(ctx)
 }
 
 // AccountExists reports whether an account id is registered.

@@ -60,7 +60,7 @@ func TestUsernameReuseCooldown(t *testing.T) {
 	}
 
 	// Deletion blocks the name for everyone.
-	if err := s.DeleteAccount(alice); err != nil {
+	if _, err := s.DeleteAccount(alice); err != nil {
 		t.Fatal(err)
 	}
 	if taken, _ := s.UsernameTaken(old); !taken {

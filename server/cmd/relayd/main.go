@@ -23,6 +23,7 @@ import (
 	"github.com/relayapp/relay-server/internal/apns"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/fcm"
+	"github.com/relayapp/relay-server/internal/history"
 	"github.com/relayapp/relay-server/internal/hub"
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
@@ -78,6 +79,38 @@ func runSupabaseDeletionRetry(h *api.Server) {
 	defer ticker.Stop()
 	for range ticker.C {
 		h.RetrySupabaseDeletions(context.Background())
+	}
+}
+
+// openHistory sets up history backup storage. A misconfigured remote is fatal
+// (it was asked for); an unusable local directory only disables the feature,
+// so the relay itself keeps running.
+func openHistory(nameKey []byte, dir string, minFree int64, remoteURL, secretFile string) *history.Storage {
+	var remote *history.RemoteClient
+	if remoteURL != "" {
+		secret, err := history.LoadSecret(secretFile)
+		if err != nil {
+			slog.Error("-history-remote-url needs a readable -history-remote-secret-file", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		remote = history.NewRemote(remoteURL, secret)
+		go remote.Run(context.Background())
+	}
+	local, err := history.OpenDir(dir)
+	if err != nil {
+		slog.Error("history backup disabled: cannot open -history-dir", "err", privlog.Error(err))
+		return nil
+	}
+	slog.Info("history backup enabled", "dir", dir, "minFree", minFree, "remote", remoteURL != "")
+	return history.NewStorage(nameKey, local, minFree, remote)
+}
+
+// runHistorySweeper deletes history blobs no row refers to, hourly.
+func runHistorySweeper(h *api.Server) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.SweepHistory(context.Background())
 	}
 }
 
@@ -146,6 +179,10 @@ func main() {
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
 	passkeyRPID := flag.String("passkey-rp-id", api.DefaultPasskeyRPID, "WebAuthn relying party ID for passkey sign-in")
 	passkeyOrigins := flag.String("passkey-origins", api.DefaultPasskeyOrigin, "comma-separated origins accepted in passkey clientDataJSON")
+	historyDir := flag.String("history-dir", "/var/lib/relay/history", "directory for encrypted chat-history backup segments")
+	historyMinFree := flag.Int64("history-min-free", 2<<30, "free bytes to keep on the -history-dir filesystem; below it new segments go to -history-remote-url")
+	historyRemoteURL := flag.String("history-remote-url", "", "historyd base URL for segments when local disk is low (e.g. https://turn.example:9479)")
+	historyRemoteSecretFile := flag.String("history-remote-secret-file", "", "path to the secret shared with historyd")
 	flag.Parse()
 
 	level, err := parseLogLevel(*logLevel)
@@ -296,8 +333,15 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("blinded discovery enabled")
+		// Blob names are keyed from the OPRF key: no new secret to keep, and
+		// the names stay findable across restarts. Never sent to historyd.
+		if hs := openHistory(key.DeriveKey("history-blob-names"), *historyDir, *historyMinFree,
+			*historyRemoteURL, *historyRemoteSecretFile); hs != nil {
+			apiServer.SetHistory(hs)
+			go runHistorySweeper(apiServer)
+		}
 	} else {
-		slog.Warn("no -oprf-key: blinded discovery, email features and the 7-day username reuse cooldown are disabled")
+		slog.Warn("no -oprf-key: blinded discovery, email features, the 7-day username reuse cooldown and history backup are disabled")
 	}
 	apiHandler := apiServer.Handler()
 	go runRateLimiterGC(apiServer)

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/relayapp/relay-server/internal/history"
 )
 
 func TestStripVisitorIPHeaders(t *testing.T) {
@@ -47,5 +49,29 @@ func TestLimitRequestBody(t *testing.T) {
 
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+}
+
+func TestHistorySegmentBodyLimit(t *testing.T) {
+	var read int
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("a 2 MiB segment body was cut off: %v", err)
+		}
+		read = len(b)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	full := strings.Repeat("a", history.MaxSegmentBytes)
+	rr := httptest.NewRecorder()
+	limitRequestBody(inner).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/v1/history/1", strings.NewReader(full)))
+	if rr.Code != http.StatusNoContent || read != history.MaxSegmentBytes {
+		t.Fatalf("2 MiB segment: status %d, read %d", rr.Code, read)
+	}
+	// A declared length over the cap is refused before anything reads it.
+	rr = httptest.NewRecorder()
+	limitRequestBody(inner).ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/v1/history/1", strings.NewReader(full+"a")))
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized segment: status %d, want 413", rr.Code)
 	}
 }

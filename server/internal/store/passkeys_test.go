@@ -65,7 +65,7 @@ func TestPasskeyCRUD(t *testing.T) {
 		t.Fatalf("second delete: %v", err)
 	}
 
-	if err := s.DeleteAccount(acct); err != nil {
+	if _, err := s.DeleteAccount(acct); err != nil {
 		t.Fatalf("delete account with passkeys: %v", err)
 	}
 	if n := s.countRows(t, `SELECT count(*) FROM passkeys WHERE account_id = $1`, acct); n != 0 {

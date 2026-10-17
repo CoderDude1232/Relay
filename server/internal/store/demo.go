@@ -71,37 +71,41 @@ func (s *Store) DirectoryBucketsFor(buckets []uint16, demo bool) ([]BucketEntry,
 // ResetDemoAccount is what "delete account" does for a demo account: it drops
 // every device (keys, queues) like a fresh sign-in would, but keeps the account
 // and its login, so the same credentials work again. Returns the removed device
-// ids.
-func (s *Store) ResetDemoAccount(accountID string) ([]uint32, error) {
+// ids and history segments (whose blobs the caller deletes).
+func (s *Store) ResetDemoAccount(accountID string) ([]uint32, []HistorySegment, error) {
 	ctx := context.Background()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
 	var demo bool
 	if err := tx.QueryRow(ctx, `SELECT is_demo FROM accounts WHERE id = $1 FOR UPDATE`, accountID).Scan(&demo); errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
+		return nil, nil, ErrNotFound
 	} else if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !demo {
-		return nil, errors.New("store: not a demo account")
+		return nil, nil, errors.New("store: not a demo account")
 	}
 	removed, err := replaceDevicesTx(ctx, tx, accountID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE accounts SET device_list_version = device_list_version + 1 WHERE id = $1`, accountID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM account_storage WHERE account_id = $1`, accountID); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	history, err := deleteHistoryTx(ctx, tx, accountID)
+	if err != nil {
+		return nil, nil, err
 	}
 	if _, err := tx.Exec(ctx, clearAccessKeySQL, accountID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return removed, tx.Commit(ctx)
+	return removed, history, tx.Commit(ctx)
 }
 
 // SetDemoAccount marks or unmarks a demo account (operator use and tests).

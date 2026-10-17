@@ -88,7 +88,7 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.DeleteAccount(victim); err != nil {
+	if _, err := s.DeleteAccount(victim); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,7 +129,7 @@ func TestDeleteAccountRemovesEverything(t *testing.T) {
 		t.Fatalf("re-register freed username: %v", err)
 	}
 	// Deleting again is a clean not-found.
-	if err := s.DeleteAccount(victim); !errors.Is(err, ErrNotFound) {
+	if _, err := s.DeleteAccount(victim); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second delete: %v, want ErrNotFound", err)
 	}
 }

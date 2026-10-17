@@ -165,7 +165,7 @@ func TestRecoveryKeyHash(t *testing.T) {
 	if err := s.SetRecoveryKeyHash(other, h1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteAccount(other); err != nil {
+	if _, err := s.DeleteAccount(other); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.RecoveryKeyAccount(h1); !errors.Is(err, ErrNotFound) {

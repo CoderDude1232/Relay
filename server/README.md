@@ -31,10 +31,15 @@ falls back to plaintext). For a remote DB use `sslmode=verify-full`.
 | `-attachment-disk-cap` | `21474836480` (20 GiB) | Global attachment disk watermark: once the blob directory holds this many bytes, `POST /v1/attachments` and `PUT /v1/attachments/{id}` answer `507` until GC frees space. `0` = unlimited. Usage is measured at startup and tracked in memory; each upload reserves its declared `Content-Length` (or the 26 MiB request limit when chunked) against the cap before writing, so in-flight uploads can't overshoot it. |
 | `-passkey-rp-id` | `relaymsg.app` | WebAuthn relying party ID for passkeys (see *Passkeys*). Override for local testing (e.g. `localhost`). |
 | `-passkey-origins` | `https://relaymsg.app` | Comma-separated origins accepted in a passkey's `clientDataJSON`. |
+| `-history-dir` | `/var/lib/relay/history` | Directory for chat-history backup segments (created `0700`; must be writable by relayd). If it can't be opened, history backup is disabled and the routes answer `507`; the relay still starts. History backup also needs `-oprf-key` (see *History backup storage*). |
+| `-history-min-free` | `2147483648` (2 GiB) | Free bytes to keep on the `-history-dir` filesystem. Below it, new segments go to `-history-remote-url`. |
+| `-history-remote-url` | (none) | historyd base URL, e.g. `https://turn.relaymsg.app:9479`. Empty = no failover (a full local disk means `507`). |
+| `-history-remote-secret-file` | (none) | File holding the secret shared with historyd (≥ 32 bytes, e.g. `openssl rand -hex 32`). Required with `-history-remote-url`. |
 
 HTTP server limits: 10 s to read request headers, 16 KiB max headers, 120 s
 keep-alive idle timeout, and per-request deadlines of 30 s (read) / 60 s
-(write) — 10 min for attachment upload/download, none for the WebSocket.
+(write) — 10 min for attachment upload/download, 3 min for `/v1/history/{seq}`,
+none for the WebSocket.
 
 ### Retention
 
@@ -50,6 +55,7 @@ An hourly sweeper (also run at startup) deletes:
 | Released-username hashes (`released_usernames`) | 7 days (the reuse cooldown) |
 | Group invites, provisioning sessions | until expired |
 | Devices that never published an identity key (an unfinished link) | 1–2 days: reaped once created before yesterday (creation times are kept to the day), only on accounts that have a keyed device. Removed like `DELETE /v1/devices/{id}` (prekeys, queue, `device_list_version` bump, socket closed, `DEVICE_REMOVED` broadcast) |
+| History backup segments (`history_segments` + blobs) | until the client deletes them, the account is deleted, or a demo reset. Kept across sign-ins that replace devices. A separate hourly sweep (not at startup) deletes blobs, local or remote, that no row refers to and that are over an hour old |
 
 ### TLS (recommended for LAN / device testing)
 
@@ -130,7 +136,8 @@ expiry into 5-minute slots that are dropped whole, and lets one device hold at
 most 20 000 nonces per slot (~66 signed requests/s sustained); past that the
 device gets `429` until the slot expires.
 The server **always buffers and hashes the body itself** (bodies are capped at
-1 MiB); an `X-Relay-Content-SHA256` header, if sent, must equal that hash. The
+1 MiB, 2 MiB for `PUT /v1/history/{seq}`; an oversized body gets `413`, not
+`401`); an `X-Relay-Content-SHA256` header, if sent, must equal that hash. The
 only route on which a declared digest may instead be checked while the body
 streams (the read fails at EOF on mismatch) is `PUT /v1/attachments/{id}` — and
 that route is unauthenticated today. JSON bodies must hold **exactly one JSON
@@ -190,7 +197,7 @@ and device for routing and live only as long as the connection.
 **Coarse timestamps.** `accounts.created_at` / `devices.created_at` are stored
 at day granularity (existing rows were truncated); prekey rows store no upload
 time (it used to be rewritten on every upload, acting as a last-active log).
-`passkeys.created_at` is day-rounded too; `message_queue.created_at` stays exact because it drives ordering and
+`passkeys.created_at` and `history_segments.created_at` are day-rounded too; `message_queue.created_at` stays exact because it drives ordering and
 the 14-day TTL.
 
 The one exception to "ciphertext only" is an abuse report (`POST /v1/reports`):
@@ -369,6 +376,27 @@ StateDirectory) and reports overload from 90% of the host's allowance until the
 month rolls over. Cloudflare is not contacted while coturn is healthy, and
 the credential request to Cloudflare carries nothing about the user.
 
+### History backup
+
+Encrypted chat-history snapshots, as numbered opaque segments (see *History
+backup storage* for where they're kept). `seq` is a canonical decimal in
+1..2^53 (no sign, no leading zeros; else `400`). The client numbers segments
+itself (generation × 1000 + index, manifest at index 0); the relay only stores
+numbered blobs per account.
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `GET /v1/history` | sig | → `200 {segments: [{seq, size}], usedBytes, maxBytes}`, sorted by `seq`. `maxBytes` is the per-account quota (64 MiB). |
+| `PUT /v1/history/{seq}` | sig | raw `application/octet-stream` body, 1 byte to 2 MiB → `204`. Replaces an existing segment with that `seq`. `400` bad seq or empty body; `413` over 2 MiB (refused before authentication when `Content-Length` says so); `403` for demo accounts; `507` when the account would go over its quota (64 MiB total, the replaced segment's size not counted, and at most 512 segments) or when no storage is available. |
+| `GET /v1/history/{seq}` | sig | → `200` raw bytes (`Cache-Control: no-store`), or `404`. `503` when the store holding it can't be reached (retry later). |
+| `DELETE /v1/history/{seq}` | sig | → `204`, whether or not it existed. |
+| `DELETE /v1/history` | sig | → `204`; removes all of the account's segments. |
+
+Rate limits, per account per hour (`429` beyond): 600 `PUT`s, 600 `GET`s (list
+and segment reads together) and 600 `DELETE`s. Deleting the account removes its
+history; a demo reset does too. A sign-in that replaces the account's devices
+**keeps** it: restoring onto the new device is its purpose.
+
 ### Real-time
 
 | Method & path | Auth | Purpose |
@@ -512,10 +540,12 @@ same-side lookups hand out. So that a key learned before an account became a
 demo account stops working, the account's access key is cleared when it is
 marked demo (hence `access_key = NULL` above), on every review sign-in and on a
 reset; the signed-in device uploads its own.
-Username, account password, email change, password reset and email
-discoverability return `403 "This is a demo account, so this is turned off."`.
-`DELETE /v1/accounts/me` **resets** a demo account instead (devices, prekeys and
-queues removed, sockets closed, `204`) and keeps the account and its login.
+Username, account password, email change, password reset, email
+discoverability and history segment uploads return `403 "This is a demo
+account, so this is turned off."`.
+`DELETE /v1/accounts/me` **resets** a demo account instead (devices, prekeys,
+queues, chat list and history removed, sockets closed, `204`) and keeps the
+account and its login.
 
 Review sign-in: with `-demo-code-file` (a file holding a short code, e.g.
 `REVIEW-XXXXXX`), `POST /v1/accounts/demo-signin {code}` (unauthenticated,
@@ -537,6 +567,54 @@ zero padding to 4 KiB)` under a key from Argon2id(account password, salt =
 SHA-256("relay-account-storage-v1|" + accountId)[0..16]), and restores it after
 signing in with the account password. Deleted with the account; a demo reset
 clears it.
+
+## History backup storage
+
+Each segment's blob is a file named by
+`hex HMAC-SHA256(k, "relay-history-blob-v1\n" + accountId + "\n" + seq)`, so
+neither file names nor the remote store reveal account ids. `k` is derived from
+the OPRF key (`DeriveKey("history-blob-names")`), like the username-release key:
+it needs no new secret to generate, back up or rotate, it never leaves the API
+host (historyd can't compute names for a known account id), and it stays the
+same across restarts. History backup therefore needs `-oprf-key`. **Changing the
+OPRF key makes every stored segment unfindable**; the orphan sweep detects this
+(rows exist but none of their blobs do) and refuses to delete anything.
+
+The row (`history_segments`: account, seq, size, location, day-rounded
+`created_at`) records where the blob went: `local` or `remote`. Reads and deletes
+go to that location.
+
+**Choosing a location** for each `PUT`:
+
+1. **Local** (`-history-dir`, files written to a temp file, fsynced and renamed,
+   mode `0600`) while the filesystem's free space (`statfs`) is at least
+   `-history-min-free` and the write succeeds.
+2. Otherwise **remote** (historyd, `-history-remote-url`), if configured and
+   healthy.
+3. Otherwise `507`.
+
+Remote health comes from historyd's `GET /health` (`{freeBytes, usedBytes}`,
+where `freeBytes` is what it will still accept), probed in the background every
+30 s and right away after any failed remote request. It is healthy while the
+probe answers `200` with room for at least one 2 MiB segment; it starts
+unhealthy until the first probe. relayd logs once per change, at `warn`:
+`history: new segments go to the remote store` (with why),
+`history: new segments stored locally again`,
+`history: no storage available; segment uploads get 507` (`error`), and
+`history: remote store healthy` / `unhealthy`.
+
+A replaced segment overwrites its blob in place when it lands in the same
+location (the name depends only on account and seq) and deletes the old blob
+when it moved. Blob deletes (single delete, delete all, account deletion, demo
+reset, a replaced segment that moved) happen after the database change, best
+effort; bulk ones run in the background. An hourly sweep lists the local
+directory and historyd (`GET /v1/blobs`) and deletes blobs that no row refers to
+and that are over an hour old (an upload writes its blob before its row), plus
+temp files left by a crash.
+
+Remote calls carry `Relay-History-Auth: <unix>.<hex HMAC-SHA256(secret, METHOD
+"\n" PATH "\n" UNIX "\n" hex SHA-256(body))>`; historyd rejects bad MACs and
+timestamps more than 5 minutes off. See [`cmd/historyd/README.md`](cmd/historyd/README.md).
 
 ## Passkeys
 
