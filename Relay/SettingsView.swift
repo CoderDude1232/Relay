@@ -589,6 +589,9 @@ struct PrivacySettingsView: View {
                                           Task { await service.setHistoryBackupEnabled(enabled) }
                                       }))
                 }
+                #if DEBUG
+                NavigationLink("Scam Self-Test (debug)") { ScamSelfTestView() }
+                #endif
                 SettingsToggleRow(systemName: "exclamationmark.shield", title: "Scam Warnings",
                                   info: "Relay checks incoming messages with links, money or code requests on your iPhone (with Apple Intelligence where available) and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
                                   isOn: $scamWarnings)
