@@ -589,11 +589,9 @@ struct PrivacySettingsView: View {
                                           Task { await service.setHistoryBackupEnabled(enabled) }
                                       }))
                 }
-                if ScamCheck.isAvailable {
-                    SettingsToggleRow(systemName: "exclamationmark.shield", title: "Scam Warnings",
-                                      info: "Apple Intelligence checks incoming messages with links, money or code requests on your iPhone and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
-                                      isOn: $scamWarnings)
-                }
+                SettingsToggleRow(systemName: "exclamationmark.shield", title: "Scam Warnings",
+                                  info: "Relay checks incoming messages with links, money or code requests on your iPhone (with Apple Intelligence where available) and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
+                                  isOn: $scamWarnings)
                 SettingsToggleRow(systemName: "link", title: "Generate Link Previews",
                                   info: "When on, Relay fetches a preview for links you send, which connects your device to that website. Previews are never fetched for links you receive.",
                                   isOn: $linkPreviews)

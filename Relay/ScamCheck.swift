@@ -61,9 +61,109 @@ enum ScamCheck {
         UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
     }
 
-    static var isAvailable: Bool {
+    /// Whether Apple's on-device model can help. The rules below work without it.
+    static var isModelAvailable: Bool {
         guard #available(iOS 26.0, *) else { return false }
         return SystemLanguageModel.default.availability == .available
+    }
+
+    // MARK: Rules
+
+    /// Brands scammers pretend to be, as they appear in messages and domains.
+    private static let brands = [
+        "apple", "icloud", "appleid", "apple id", "paypal", "amazon", "netflix", "microsoft", "outlook",
+        "google", "gmail", "instagram", "facebook", "meta", "whatsapp", "telegram", "relay", "bank",
+        "chase", "wells fargo", "citi", "hsbc", "barclays", "commbank", "westpac", "anz", "nab",
+        "irs", "hmrc", "ato", "mygov", "medicare", "usps", "ups", "fedex", "dhl", "royal mail",
+        "auspost", "australia post", "evri", "coinbase", "binance", "metamask", "steam", "venmo",
+        "cash app", "zelle", "revolut", "wise",
+    ]
+    /// The brands' own domains, so their real links don't trip the look-alike rule.
+    private static let officialDomains = [
+        "apple.com", "icloud.com", "paypal.com", "amazon.com", "amazon.co.uk", "amazon.com.au",
+        "netflix.com", "microsoft.com", "live.com", "outlook.com", "google.com", "gmail.com",
+        "instagram.com", "facebook.com", "whatsapp.com", "telegram.org", "relaymsg.app", "usps.com",
+        "ups.com", "fedex.com", "dhl.com", "royalmail.com", "auspost.com.au", "coinbase.com",
+        "binance.com", "steampowered.com", "venmo.com", "cash.app", "revolut.com", "wise.com",
+        "irs.gov", "gov.uk", "ato.gov.au", "my.gov.au", "youtube.com", "youtu.be",
+    ]
+    private static let shorteners = [
+        "bit.ly", "tinyurl.com", "t.co", "goo.gl", "is.gd", "cutt.ly", "rb.gy", "ow.ly", "shorturl.at", "tiny.cc",
+    ]
+    private static let accountPressure = [
+        "verify", "verification", "locked", "suspended", "disabled", "unusual activity", "unusual sign",
+        "confirm your", "update your", "reactivate", "restore access", "will be closed", "will be deleted",
+        "unauthorized", "unauthorised", "security alert", "sign in to", "log in to", "login to",
+    ]
+
+    private static func hosts(in text: String) -> [String] {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return detector.matches(in: text, range: range).compactMap { $0.url?.host?.lowercased() }
+    }
+
+    private static func isOfficial(_ host: String) -> Bool {
+        officialDomains.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
+    /// Patterns clear enough to warn about without the model: a look-alike
+    /// or shortened link, a link with account pressure, a request for a code,
+    /// gift cards, a parcel fee, a prize to claim.
+    static func ruleVerdict(_ body: String) -> ScamKind? {
+        let text = body.lowercased()
+        let linkHosts = hosts(in: body)
+        let hasLink = !linkHosts.isEmpty
+        let mentionsBrand = brands.contains { text.contains($0) }
+        let pressure = accountPressure.contains { text.contains($0) }
+        func any(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
+
+        // Specific asks first, so the warning names what's being asked for.
+        if any(["gift card", "giftcard", "itunes card", "steam card", "google play card"])
+            && any(["buy", "send", "purchase", "get me", "scratch", "pictures of", "photo of", "photos of"]) {
+            return .moneyRequest
+        }
+        // Someone asking us for a code that was sent to us.
+        if any(["sent you a code", "sent you a 6", "sent you a six", "code i sent", "code that was sent", "code you received",
+                "code you got", "send me the code", "send me that code", "send it back", "share the code",
+                "give me the code", "tell me the code", "read me the code", "what's the code you", "verification code",
+                "one-time code", "one time code", "otp"])
+            && any(["send", "share", "give", "tell me", "read me", "forward", "what's", "whats"])
+            && !any(["didn't get", "didnt get", "isn't arriving", "not arriving", "never got"]) {
+            return .codeOrPasswordRequest
+        }
+        if any(["your password", "your passcode", "your login"]) && any(["send me", "tell me", "share", "give me", "what's", "whats"]) {
+            return .codeOrPasswordRequest
+        }
+        if any(["parcel", "package", "delivery", "shipment", "customs"])
+            && any(["fee", "pay", "held", "redeliver", "redelivery", "failed"]) && hasLink {
+            return .prizeOrDelivery
+        }
+        if any(["you won", "you've won", "you have won", "winner", "you've been selected", "selected to receive"])
+            && any(["claim", "prize", "reward", "gift card", "$", "£", "€"]) {
+            return .prizeOrDelivery
+        }
+        if any(["usdt", "bitcoin", "btc", "crypto", "forex", "trading platform"])
+            && any(["profit", "return", "invest", "earn", "guaranteed", "% weekly", "% daily", "double"]) {
+            return .cryptoOrInvestment
+        }
+        if any(["new number", "lost my phone", "phone broke", "broke my phone"])
+            && any(["pay", "money", "transfer", "bill", "send", "lend"]) {
+            return .impersonation
+        }
+        for host in linkHosts where !isOfficial(host) {
+            let compact = host.replacingOccurrences(of: "-", with: "")
+            // A brand in someone else's domain: apple-id-check.co, paypal.secure-login.net.
+            if brands.contains(where: { $0.count >= 4 && compact.contains($0.replacingOccurrences(of: " ", with: "")) }) {
+                return mentionsBrand && pressure ? .impersonation : .suspiciousLink
+            }
+            if shorteners.contains(host) && (pressure || mentionsBrand) { return .suspiciousLink }
+            if host.hasPrefix("xn--") || host.contains(".xn--") { return .suspiciousLink }
+            if host.allSatisfy({ $0.isNumber || $0 == "." }) { return .suspiciousLink }
+        }
+        if hasLink && pressure && linkHosts.contains(where: { !isOfficial($0) }) {
+            return mentionsBrand ? .impersonation : .suspiciousLink
+        }
+        return nil
     }
 
     /// Cheap filter before the model: scams nearly always carry a link, a
@@ -132,10 +232,12 @@ actor ScamChecker {
         government or support team; an unexpected prize, refund or parcel fee; or a job paying for simple tasks.
         """
 
-    /// The scam kind for this message, or nil when it looks fine or the model
-    /// can't say (unavailable, refused, or failed).
-    func assess(_ body: String, fromStranger: Bool) async -> ScamKind? {
-        guard SystemLanguageModel.default.availability == .available else { return nil }
+    enum Outcome { case scam(ScamKind), clean, failed }
+
+    /// The model's verdict, or `.failed` when it couldn't say (unavailable,
+    /// refused by its safety filters, or an error); that's not "clean".
+    func assess(_ body: String, fromStranger: Bool) async -> Outcome {
+        guard SystemLanguageModel.default.availability == .available else { return .failed }
         let session = LanguageModelSession(instructions: Self.instructions)
         let sender = fromStranger
             ? "The sender is someone the recipient hasn't chatted with before."
@@ -146,9 +248,9 @@ actor ScamChecker {
                 to: prompt, generating: ScamAssessment.self,
                 options: GenerationOptions(sampling: .greedy)
             )
-            return response.content.verdict.kind
+            return response.content.verdict.kind.map(Outcome.scam) ?? .clean
         } catch {
-            return nil
+            return .failed
         }
     }
 }
@@ -156,7 +258,8 @@ actor ScamChecker {
 // MARK: - Results, kept in the encrypted database
 
 extension MessagingService {
-    private static func scamKey(_ messageId: String) -> String { "scam:" + messageId }
+    // v2: earlier builds stored "clean" when the model failed.
+    private static func scamKey(_ messageId: String) -> String { "scam2:" + messageId }
     private static let scamClean = "clean"
     private static let scamDismissed = "dismissed"
 
@@ -186,10 +289,9 @@ extension MessagingService {
     /// to show. Recent messages only, so opening an old chat doesn't run the
     /// model over its history.
     func checkForScam(_ message: StoredMessage, in conversationId: String) async -> ScamKind? {
-        guard #available(iOS 26.0, *) else { return nil }
         if let stored = storedScamResult(message.id) { return ScamKind(rawValue: stored) }
         let ageMs = Int64(Date().timeIntervalSince1970 * 1000) - message.timestamp
-        guard ScamCheck.isEnabled, ScamCheck.isAvailable,
+        guard ScamCheck.isEnabled,
               !message.isOutgoing, !message.isDeleted,
               message.senderAccount != Self.systemSender,
               ageMs < 7 * 86_400_000,
@@ -200,10 +302,22 @@ extension MessagingService {
         if let peer = conversation?.peerAccount, peer == Self.relayOfficialAccount || peer == noteToSelfAccount {
             return nil
         }
+        if let kind = ScamCheck.ruleVerdict(message.body) {
+            storeScamResult(kind.rawValue, for: message.id)
+            return kind
+        }
+        guard #available(iOS 26.0, *), ScamCheck.isModelAvailable else { return nil }
         let fromStranger = conversation?.isRequest ?? true
-        let kind = await ScamChecker.shared.assess(message.body, fromStranger: fromStranger)
-        storeScamResult(kind?.rawValue ?? Self.scamClean, for: message.id)
-        return kind
+        switch await ScamChecker.shared.assess(message.body, fromStranger: fromStranger) {
+        case .scam(let kind):
+            storeScamResult(kind.rawValue, for: message.id)
+            return kind
+        case .clean:
+            storeScamResult(Self.scamClean, for: message.id)
+            return nil
+        case .failed:
+            return nil // asked again next time the message is shown
+        }
     }
 }
 
