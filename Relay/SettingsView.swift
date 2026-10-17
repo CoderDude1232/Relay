@@ -551,6 +551,7 @@ struct PrivacySettingsView: View {
     @AppStorage(PrivacyPreferences.spotlightIndexingKey) private var spotlightIndexing = false
     @AppStorage(PrivacyPreferences.shareSuggestionsKey) private var shareSuggestions = false
     @AppStorage(ScamCheck.enabledKey) private var scamWarnings = true
+    @AppStorage(MessagingService.historyBackupEnabledKey) private var historyBackup = true
 
     var body: some View {
         List {
@@ -580,6 +581,14 @@ struct PrivacySettingsView: View {
                 SettingsToggleRow(systemName: "keyboard", title: "Incognito Keyboard",
                                   info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
+                if service.keepsChatListWithAccount && !service.isDemoAccount {
+                    SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Back Up Message History",
+                                      info: "Keeps an encrypted copy of your messages (text only, no photos or files) with your account, so they come back when you sign in on a new phone. Only your password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy.",
+                                      isOn: Binding(get: { historyBackup }, set: { enabled in
+                                          historyBackup = enabled
+                                          Task { await service.setHistoryBackupEnabled(enabled) }
+                                      }))
+                }
                 if ScamCheck.isAvailable {
                     SettingsToggleRow(systemName: "exclamationmark.shield", title: "Scam Warnings",
                                       info: "Apple Intelligence checks incoming messages with links, money or code requests on your iPhone and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",

@@ -184,6 +184,45 @@ public struct RelayAPIClient: Sendable {
         return r.version
     }
 
+    // MARK: - History backup
+
+    /// One stored segment of the encrypted history backup.
+    public struct HistorySegment: Decodable, Sendable {
+        public let seq: Int64
+        public let size: Int
+    }
+
+    /// The account's history segments (opaque ciphertext numbered by the client).
+    public func historySegments() async throws -> [HistorySegment] {
+        struct Response: Decodable { let segments: [HistorySegment] }
+        let r: Response = try await request("GET", "v1/history", body: nil as String?)
+        return r.segments
+    }
+
+    public func putHistorySegment(_ seq: Int64, _ data: Data) async throws {
+        var request = makeRequest("PUT", "v1/history/\(seq)")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        _ = try await send(request, authenticated: true)
+    }
+
+    /// Largest history segment the relay stores (2 MiB).
+    public static let maxHistorySegmentBytes = 2 << 20
+
+    public func historySegment(_ seq: Int64) async throws -> Data {
+        let (data, _) = try await send(makeRequest("GET", "v1/history/\(seq)"), authenticated: true)
+        guard data.count <= Self.maxHistorySegmentBytes else { throw RelayAPIError.malformedResponse }
+        return data
+    }
+
+    public func deleteHistorySegment(_ seq: Int64) async throws {
+        _ = try await send(makeRequest("DELETE", "v1/history/\(seq)"), authenticated: true)
+    }
+
+    public func deleteAllHistory() async throws {
+        _ = try await send(makeRequest("DELETE", "v1/history"), authenticated: true)
+    }
+
     /// Whether this account is a demo account, and the other demo accounts.
     public func demoStatus() async throws -> (demo: Bool, peers: [String]) {
         struct Response: Decodable { let demo: Bool; let peers: [String] }

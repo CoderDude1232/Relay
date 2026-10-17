@@ -207,6 +207,16 @@ extension MessagingService {
     /// unlock it with the account password or a passkey).
     var keepsChatListWithAccount: Bool { contentKey != nil || passwordKey != nil }
 
+    /// Key for the message-history backup, derived from the chat list's content
+    /// key so the same sign-in methods (password, passkey, recovery key) unlock
+    /// both. Nil until this device has the content key.
+    var historyBackupKey: SymmetricKey? {
+        contentKey.map {
+            HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: $0),
+                                   info: Data("relay-history-v1".utf8), outputByteCount: 32)
+        }
+    }
+
     /// Remembers the key from the account password. If the content key is known
     /// (password change), the password slot is rewrapped so passkeys keep working.
     func setAccountStorageKey(password: String) async {
