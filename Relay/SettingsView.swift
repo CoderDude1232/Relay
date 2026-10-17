@@ -550,6 +550,7 @@ struct PrivacySettingsView: View {
     @AppStorage(PrivacyPreferences.linkPreviewsKey) private var linkPreviews = true
     @AppStorage(PrivacyPreferences.spotlightIndexingKey) private var spotlightIndexing = false
     @AppStorage(PrivacyPreferences.shareSuggestionsKey) private var shareSuggestions = false
+    @AppStorage(ScamCheck.enabledKey) private var scamWarnings = true
 
     var body: some View {
         List {
@@ -579,6 +580,11 @@ struct PrivacySettingsView: View {
                 SettingsToggleRow(systemName: "keyboard", title: "Incognito Keyboard",
                                   info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
+                if ScamCheck.isAvailable {
+                    SettingsToggleRow(systemName: "exclamationmark.shield", title: "Scam Warnings",
+                                      info: "Apple Intelligence checks incoming messages with links, money or code requests on your iPhone and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
+                                      isOn: $scamWarnings)
+                }
                 SettingsToggleRow(systemName: "link", title: "Generate Link Previews",
                                   info: "When on, Relay fetches a preview for links you send, which connects your device to that website. Previews are never fetched for links you receive.",
                                   isOn: $linkPreviews)

@@ -2287,6 +2287,10 @@ private struct MessageBubble: View {
                     }
                 }
                 .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
+            if !message.isOutgoing && !message.isDeleted {
+                ScamWarningView(message: message, conversationId: conversationId, service: service,
+                                senderAccount: senderAccount, senderName: avatarName)
+            }
         }
     }
 
