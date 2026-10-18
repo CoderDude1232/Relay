@@ -16,6 +16,10 @@ final class VoiceRecorder {
     private(set) var isRecording = false
     /// Seconds elapsed in the current recording, updated a few times a second.
     private(set) var elapsed: TimeInterval = 0
+    private(set) var isPaused = false
+    /// Recent input loudness, 0...1, oldest first, for the live waveform.
+    private(set) var levels: [Float] = []
+    static let levelCount = 36
 
     private var recorder: AVAudioRecorder?
     private var fileURL: URL?
@@ -40,10 +44,13 @@ final class VoiceRecorder {
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
             ]
             let rec = try AVAudioRecorder(url: url, settings: settings)
+            rec.isMeteringEnabled = true
             rec.record()
             recorder = rec
             fileURL = url
             elapsed = 0
+            levels = []
+            isPaused = false
             isRecording = true
             startTicking()
             return true
@@ -65,6 +72,16 @@ final class VoiceRecorder {
         )
     }
 
+    func togglePause() {
+        guard let recorder else { return }
+        if isPaused {
+            recorder.record()
+        } else {
+            recorder.pause()
+        }
+        isPaused.toggle()
+    }
+
     func cancel() {
         recorder?.stop()
         if let fileURL { cleanup(fileURL) }
@@ -76,6 +93,8 @@ final class VoiceRecorder {
         recorder = nil
         fileURL = nil
         isRecording = false
+        isPaused = false
+        levels = []
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -86,9 +105,16 @@ final class VoiceRecorder {
     private func startTicking() {
         ticker = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard let self, let recorder = self.recorder, recorder.isRecording else { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, let recorder = self.recorder else { break }
+                guard recorder.isRecording else { continue }
                 self.elapsed = recorder.currentTime
+                recorder.updateMeters()
+                // -50 dB and below reads as silence.
+                let power = recorder.averagePower(forChannel: 0)
+                let level = max(0.08, min(1, (power + 50) / 50))
+                self.levels.append(level)
+                if self.levels.count > Self.levelCount { self.levels.removeFirst(self.levels.count - Self.levelCount) }
             }
         }
     }

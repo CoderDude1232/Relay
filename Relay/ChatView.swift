@@ -1327,30 +1327,64 @@ struct ChatView: View {
 
     /// Replaces the compose row while a voice message is being recorded.
     private var recordingBar: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .bottom, spacing: 6) {
             Button {
                 recorder.cancel()
             } label: {
-                Image(systemName: "trash").font(.system(size: 20)).foregroundStyle(.red)
-                    .accessibilityLabel("Delete recording")
+                Image(systemName: "trash")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
+                    .contentShape(.capsule)
+                    .glassCompat(in: .capsule)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Delete recording")
 
-            Circle().fill(.red).frame(width: 9, height: 9)
-            Text(formatDuration(recorder.elapsed))
-                .font(.body.monospacedDigit())
-            Spacer()
+            HStack(spacing: 10) {
+                RecordingDot(isPaused: recorder.isPaused)
+                Text(formatDuration(recorder.elapsed))
+                    .font(.subheadline.monospacedDigit().weight(.medium))
+                    .contentTransition(.numericText())
+                RecordingLevels(levels: recorder.levels)
+                    .frame(height: 22)
+                    .accessibilityHidden(true)
+                Button {
+                    recorder.togglePause()
+                } label: {
+                    Image(systemName: recorder.isPaused ? "mic.fill" : "pause.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(recorder.isPaused ? .red : Color(.label))
+                        .frame(width: 30, height: 30)
+                        .contentShape(.circle)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(recorder.isPaused ? "Resume recording" : "Pause recording")
+            }
+            .padding(.leading, 14)
+            .padding(.trailing, 7)
+            .frame(maxWidth: .infinity, minHeight: Self.composerControlHeight)
+            .glassCompat(in: .capsule)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(recorder.isPaused ? "Recording paused" : "Recording")
+            .accessibilityValue(formatDuration(recorder.elapsed))
+
             Button {
                 finishRecording()
             } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 30))
-                    .accessibilityLabel("Send voice message")
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
+                    .contentShape(.capsule)
+                    .background(Color.accentColor, in: .capsule)
+                    .glassCompat(in: .capsule)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Send voice message")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .glassCompat()
+        .transition(.opacity)
     }
 
     private func composerAccessoryIcon(_ systemName: String) -> some View {
@@ -4212,4 +4246,42 @@ struct SafariView: UIViewControllerRepresentable {
 
 extension URL: @retroactive Identifiable {
     public var id: String { absoluteString }
+}
+
+/// The red recording light; pulses while recording, steady when paused.
+private struct RecordingDot: View {
+    let isPaused: Bool
+    @State private var dim = false
+
+    var body: some View {
+        Circle()
+            .fill(isPaused ? Color.secondary : Color.red)
+            .frame(width: 9, height: 9)
+            .opacity(dim && !isPaused ? 0.3 : 1)
+            .animation(isPaused ? .default : .easeInOut(duration: 0.7).repeatForever(), value: dim)
+            .onAppear { dim = true }
+    }
+}
+
+/// Live input levels while recording, newest on the right.
+private struct RecordingLevels: View {
+    let levels: [Float]
+
+    var body: some View {
+        GeometryReader { geo in
+            let count = VoiceRecorder.levelCount
+            let padded = Array(repeating: Float(0.08), count: max(0, count - levels.count)) + levels.suffix(count)
+            let spacing: CGFloat = 2
+            let width = max(1.5, (geo.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
+            HStack(alignment: .center, spacing: spacing) {
+                ForEach(Array(padded.enumerated()), id: \.offset) { _, level in
+                    Capsule()
+                        .fill(Color.secondary)
+                        .frame(width: width, height: max(3, geo.size.height * CGFloat(level)))
+                }
+            }
+            .frame(maxHeight: .infinity)
+            .animation(.linear(duration: 0.1), value: levels)
+        }
+    }
 }
