@@ -840,7 +840,7 @@ private struct NewChatSheet: View {
                                     DispatchQueue.main.async { onConversationStarted(conversationId) }
                                 }
                             } label: {
-                                actionLabel("New Group", icon: "person.3.fill", color: .accentColor)
+                                actionLabel("New Group", icon: "person.2.fill", color: .accentColor)
                             }
                             NavigationLink {
                                 UsernameSearchSheet(embedded: true, service: service) { convId in
@@ -857,6 +857,20 @@ private struct NewChatSheet: View {
                                 }
                             } label: {
                                 actionLabel("Scan QR Code", icon: "qrcode.viewfinder", color: .purple)
+                            }
+                            // Only after the user asks, and never on demo accounts
+                            // (they can't reach real users).
+                            if !service.isDemoAccount && !discoveryStarted {
+                                Button {
+                                    requestContactDiscovery()
+                                } label: {
+                                    actionLabel("Find Contacts on Relay", icon: "person.crop.circle.badge.checkmark", color: .green)
+                                }
+                                .tint(.primary)
+                            }
+                        } footer: {
+                            if !service.isDemoAccount && !discoveryStarted {
+                                Text("Find Contacts checks which of your contacts use Relay. Their addresses are blinded on your iPhone first.")
                             }
                         }
 
@@ -885,21 +899,8 @@ private struct NewChatSheet: View {
                         }
                     }
 
-                    // Only after the user asks, and never on demo accounts (they
-                    // can't reach real users).
-                    if service.isDemoAccount {
+                    if service.isDemoAccount || !discoveryStarted {
                         EmptyView()
-                    } else if !discoveryStarted {
-                        Section {
-                            Button {
-                                requestContactDiscovery()
-                            } label: {
-                                actionLabel("Find Contacts on Relay", icon: "person.crop.circle.badge.checkmark", color: .green)
-                            }
-                            .tint(.primary)
-                        } footer: {
-                            Text("Checks which of your contacts use Relay. Their addresses are blinded on your iPhone first.")
-                        }
                     } else if authDenied {
                         Section {
                             Label("Allow Contacts access in Settings → Relay to see who's on Relay.", systemImage: "person.slash")
@@ -1019,12 +1020,9 @@ private struct NewChatSheet: View {
     }
 
     private func actionLabel(_ title: String, icon: String, color: Color) -> some View {
+        // The same grey tiles as Settings.
         HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 30, height: 30)
-                .background(color.gradient, in: .rect(cornerRadius: 8))
+            SettingsIcon(systemName: icon, color: color)
             Text(title).foregroundStyle(.primary)
         }
     }

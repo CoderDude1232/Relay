@@ -173,10 +173,6 @@ struct ChatView: View {
                             Text(label)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 5)
-                                .background(.ultraThinMaterial, in: .capsule)
-                                .shadow(color: .black.opacity(0.06), radius: 4, y: 1)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
                                 .id(id)
@@ -233,18 +229,8 @@ struct ChatView: View {
             .scrollDismissesKeyboard(.interactively)
             .opacity(initialScrollDone ? 1 : 0)
             .onChange(of: service.messagesLoadedConversationId) { _, loaded in
-                guard loaded == conversationId, !initialScrollDone else { return }
-                // Scroll first (applied on the next layout pass), then reveal the
-                // view so the jump to the bottom isn't visible.
-                DispatchQueue.main.async {
-                    if let target = initialMessageId,
-                       service.activeMessages.contains(where: { $0.id == target }) {
-                        proxy.scrollTo(target, anchor: .center)
-                    } else {
-                        scrollToBottom(proxy, animated: false)
-                    }
-                    DispatchQueue.main.async { initialScrollDone = true }
-                }
+                guard loaded == conversationId else { return }
+                revealInitialPosition(proxy)
             }
             .onChange(of: service.activeMessages.first?.id) {
                 guard let anchor = earlierLoadAnchorId else { return }
@@ -282,6 +268,9 @@ struct ChatView: View {
             }
             .onAppear {
                 scrollViewProxy = proxy
+                // Reopening a chat quickly can finish loading before this view
+                // appears, so the change above never fires.
+                if service.messagesLoadedConversationId == conversationId { revealInitialPosition(proxy) }
             }
             .overlay {
                 if service.messagesLoadedConversationId == conversationId
@@ -290,6 +279,21 @@ struct ChatView: View {
                     chatEmptyState
                 }
             }
+        }
+    }
+
+    /// Scrolls to the first position (applied on the next layout pass), then
+    /// shows the messages, so the jump to the bottom isn't visible.
+    private func revealInitialPosition(_ proxy: ScrollViewProxy) {
+        guard !initialScrollDone else { return }
+        DispatchQueue.main.async {
+            if let target = initialMessageId,
+               service.activeMessages.contains(where: { $0.id == target }) {
+                proxy.scrollTo(target, anchor: .center)
+            } else {
+                scrollToBottom(proxy, animated: false)
+            }
+            DispatchQueue.main.async { initialScrollDone = true }
         }
     }
 
