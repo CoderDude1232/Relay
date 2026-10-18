@@ -602,7 +602,9 @@ final class MessagingService {
                     isDrainingQueue = false
                     connectionState = .connected
                     backoffSeconds = 1.0
-                    refreshConversations()
+                    // Includes the open chat: envelopes the NSE already stored are
+                    // skipped as duplicates and wouldn't refresh it themselves.
+                    reloadActiveConversation()
                     // With the socket live, send the receipts the NSE deferred.
                     await drainPendingControlMessages()
                     Task {
@@ -3968,7 +3970,16 @@ final class MessagingService {
     /// Messages the NSE stored while backgrounded are now on screen.
     func markActiveConversationReadOnForeground() {
         guard let conversationId = activeConversationId else { return }
+        // The notification extension stored messages while we were in the
+        // background; nothing else reloads the open chat from the database.
+        reloadActiveConversation()
         Task { await markVisibleMessagesRead(in: conversationId) }
+    }
+
+    /// Re-reads the open chat and the chat list from the database.
+    func reloadActiveConversation() {
+        refreshConversations()
+        if let conversationId = activeConversationId { refreshActiveMessages(ifShowing: conversationId) }
     }
 
     func markConversationRead(_ conversationId: String) {

@@ -1204,13 +1204,18 @@ final class AppModel {
         // the database key, whose database is deleted below) so the next account
         // starts clean.
         try? keychain.wipeAllSecrets()
-        Task { await SupabaseAuth.shared.signOut() }
         try? keychain.deleteSecret(for: Self.accountSecretName)
         wipeLocalFiles()
         // Clear App Group share state so the next account doesn't inherit
         // conversations, avatars or badge count in the share sheet, widgets and Siri.
         ShareBridge.clearAll()
-        phase = .onboarding
+        // The Supabase session goes before the sign-in screen appears: that
+        // screen reuses a stored session to sign straight back in, which
+        // after a sign-out failed with a confusing "Sign In Failed".
+        Task {
+            await SupabaseAuth.shared.signOut()
+            phase = .onboarding
+        }
     }
 
     /// Clears only the relay credentials and local database, keeping the Supabase

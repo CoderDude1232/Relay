@@ -103,7 +103,13 @@ struct ConversationListView: View {
             .onChange(of: model.pendingNotificationConversationId) { _, id in
                 guard let id else { return }
                 model.pendingNotificationConversationId = nil
-                openConversation(id)
+                if selectedConversationId == id {
+                    // Already open: selecting it again changes nothing, so
+                    // load what arrived while we were away.
+                    service.reloadActiveConversation()
+                } else {
+                    openConversation(id)
+                }
             }
             .onChange(of: searchText) { _, query in
                 let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
