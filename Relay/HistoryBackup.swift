@@ -159,6 +159,8 @@ extension MessagingService {
             setHistoryKV(Self.historyRestoredKV, Data([1]))
             return
         }
+        isRestoringHistory = true
+        defer { isRestoringHistory = false }
         do {
             let manifestBox = try AES.GCM.SealedBox(combined: try await apiClient.historySegment(generation * 1000))
             let manifest = try JSONDecoder().decode(
@@ -175,16 +177,37 @@ extension MessagingService {
                   let json = try? (compressed as NSData).decompressed(using: .lzfse) as Data
             else { throw RelayAPIError.malformedResponse }
             let snapshot = try JSONDecoder().decode(BackupSnapshot.self, from: json)
-            // The import marks chats read; chats that were already here keep
-            // their own read state (and unread messages).
+            // Restored messages were seen on the old phone: each chat's read
+            // marker covers at least its newest restored message. Messages that
+            // arrived here after the backup was made stay unread.
             let readState = ((try? storage.database.query("SELECT id, read_at FROM conversations")) ?? [])
                 .compactMap { row -> (String, Int64)? in
                     guard let id = row.first?.string else { return nil }
                     return (id, row.count > 1 ? (row[1].int64 ?? 0) : 0)
                 }
             importBackupSnapshot(snapshot)
+            var restoredUpTo: [String: Int64] = [:]
+            for conv in snapshot.conversations {
+                guard let newest = conv.messages.map(\.timestamp).max() else { continue }
+                let id: String? = if let gid = conv.groupId {
+                    (try? storage.messages.groupConversationId(groupId: gid)) ?? nil
+                } else {
+                    (try? storage.database.query(
+                        "SELECT id FROM conversations WHERE peer_account = ? AND group_id IS NULL",
+                        [.text(conv.peerAccount)]).first?.first?.string) ?? nil
+                }
+                if let id { restoredUpTo[id] = max(restoredUpTo[id] ?? 0, newest) }
+            }
             for (id, readAt) in readState {
-                try? storage.database.run("UPDATE conversations SET read_at = ? WHERE id = ?", [.integer(readAt), .text(id)])
+                let marker = max(readAt, restoredUpTo[id] ?? 0)
+                try? storage.database.run("UPDATE conversations SET read_at = ? WHERE id = ?", [.integer(marker), .text(id)])
+                // Read on the old phone, so opening the chat sends no read
+                // receipts for them.
+                if let upTo = restoredUpTo[id] {
+                    try? storage.database.run(
+                        "UPDATE messages SET status = 'read' WHERE conversation_id = ? AND is_outgoing = 0 AND status = 'received' AND timestamp <= ?",
+                        [.text(id), .integer(upTo)])
+                }
             }
             refreshConversations()
             setHistoryKV(Self.historyRestoredKV, Data([1]))

@@ -454,6 +454,19 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
 
+            if service.isRestoringHistory {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Restoring your messages…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+                .listRowSeparator(.hidden)
+                .accessibilityElement(children: .combine)
+            }
+
             if let status = model.proxyStatus, status.isProblem, !isEditing {
                 Button { showingProxySettings = true } label: {
                     HStack(spacing: 12) {
@@ -882,25 +895,26 @@ private struct NewChatSheet: View {
 
                         if !recentPeople.isEmpty {
                             Section("Recent") {
-                                ForEach(recentPeople) { conversation in
-                                    Button {
-                                        dismiss()
-                                        DispatchQueue.main.async { onConversationStarted(conversation.id) }
-                                    } label: {
-                                        HStack(spacing: 12) {
-                                            AvatarView(name: service.displayName(forAccount: conversation.peerAccount), size: 36,
-                                                       imageData: service.peerAvatarData(forAccount: conversation.peerAccount))
-                                            VStack(alignment: .leading, spacing: 1) {
-                                                Text(service.displayName(forAccount: conversation.peerAccount))
-                                                    .foregroundStyle(.primary)
-                                                if let username = conversation.peerUsername {
-                                                    Text("@\(username)").font(.caption).foregroundStyle(.secondary)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    .tint(.primary)
-                                }
+                                ForEach(recentPeople) { conversation in personRow(conversation) }
+                            }
+                        }
+                    }
+
+                    // Searching before (or without) contact discovery: the people
+                    // you already chat with, so the list is never just blank.
+                    if isSearching && (service.isDemoAccount || !discoveryStarted || authDenied) {
+                        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
+                        let matches = searchablePeople.filter {
+                            service.displayName(forAccount: $0.peerAccount).lowercased().contains(q)
+                                || ($0.peerUsername?.lowercased().contains(q) ?? false)
+                        }
+                        Section {
+                            if matches.isEmpty {
+                                Text("No chats match \"\(searchText)\". To start a new one, use Find by Username.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(matches) { conversation in personRow(conversation) }
                             }
                         }
                     }
@@ -1035,13 +1049,35 @@ private struct NewChatSheet: View {
 
     /// People with a 1:1 chat, most recent first, to message again quickly.
     private var recentPeople: [Conversation] {
+        Array(searchablePeople.prefix(8))
+    }
+
+    private var searchablePeople: [Conversation] {
         service.conversations
             .filter { !$0.isGroup && !$0.isRequest && !$0.archived
                 && $0.peerAccount != service.noteToSelfAccount && $0.peerAccount != service.relayOfficialAccount
                 && !PanicModeManager.shared.isHidden($0.id) }
             .sorted { ($0.lastMessageAt ?? 0) > ($1.lastMessageAt ?? 0) }
-            .prefix(8)
-            .map { $0 }
+    }
+
+    private func personRow(_ conversation: Conversation) -> some View {
+        Button {
+            dismiss()
+            DispatchQueue.main.async { onConversationStarted(conversation.id) }
+        } label: {
+            HStack(spacing: 12) {
+                AvatarView(name: service.displayName(forAccount: conversation.peerAccount), size: 36,
+                           imageData: service.peerAvatarData(forAccount: conversation.peerAccount))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(service.displayName(forAccount: conversation.peerAccount))
+                        .foregroundStyle(.primary)
+                    if let username = conversation.peerUsername {
+                        Text("@\(username)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .tint(.primary)
     }
 
     @ViewBuilder

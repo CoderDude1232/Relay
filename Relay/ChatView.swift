@@ -266,6 +266,10 @@ struct ChatView: View {
                 withAnimation(.spring(duration: 0.2)) { isAtBottom = atBottom }
                 if atBottom { withAnimation(.spring(duration: 0.3)) { newMessageBanner = nil } }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .relayRevealMessage)) { note in
+                guard let id = note.object as? String, service.activeMessages.last?.id == id else { return }
+                withAnimation(.snappy) { proxy.scrollTo(id, anchor: .bottom) }
+            }
             .onAppear {
                 scrollViewProxy = proxy
                 // Reopening a chat quickly can finish loading before this view
@@ -2027,6 +2031,18 @@ private struct MessageRow: View {
         VStack(alignment: .leading, spacing: 6) {
             content
                 .accessibilityElement(children: isPlainText && !isSelectionMode ? .combine : .contain)
+                // The long-press menu isn't reachable with VoiceOver; every action
+                // and reaction is offered in the actions rotor instead.
+                .accessibilityActions {
+                    if !isSelectionMode && !message.isDeleted {
+                        ForEach(menuActions.filter { $0.label != "Reply" && $0.label != "Forward" }) { action in
+                            Button(action.label) { action.action() }
+                        }
+                        ForEach(quickReactions, id: \.self) { emoji in
+                            Button("React \(emoji)") { service.toggleReaction(emoji, on: message) }
+                        }
+                    }
+                }
             // Below the row, not in the bubble: the avatar stays by the message
             // and a long-press menu shows only the message.
             if let scamKind, !message.isDeleted, !isSelectionMode {
@@ -2446,7 +2462,7 @@ private struct MessageBubble: View {
                                         fetchAllowed: message.isOutgoing && message.status != .received
                                             && abs(Date().timeIntervalSince1970 * 1000 - Double(message.timestamp)) < 120_000)
                     }
-                } else {
+                } else if !isLoneVoiceNote {
                     metadataRow
                         .padding(.top, -2)
                 }
@@ -2479,7 +2495,9 @@ private struct MessageBubble: View {
                     attachment: attachment, service: service,
                     conversationId: conversationId, isOutgoing: message.isOutgoing,
                     requiresBiometric: mediaRequiresBiometric
-                )
+                ) {
+                    if isLoneVoiceNote { metadataRow }
+                }
             } else if attachment.isVideo {
                 VideoPlayerBubble(
                     attachment: attachment, service: service,
@@ -2560,6 +2578,13 @@ private struct MessageBubble: View {
     }
 
     private var metadataRow: some View { metadataRow(onBubble: true) }
+
+    /// A voice message on its own: its time and status sit on the
+    /// player's duration line instead of a line of their own.
+    private var isLoneVoiceNote: Bool {
+        message.body.isEmpty && message.attachments.count == 1 && message.attachments[0].isAudio
+            && effectiveStatus != .failed
+    }
 
     /// `onBubble` is false when drawn on the chat background (image-only and
     /// emoji-only messages), where the outgoing bubble's white text would vanish.
@@ -2661,6 +2686,12 @@ private struct NativeMenuBubble: UIViewRepresentable {
         press.delegate = coord
         host.view.addGestureRecognizer(press)
 
+        // Right-click (Mac, iPad with a trackpad or mouse) opens the same menu.
+        let rightClick = UITapGestureRecognizer(target: coord, action: #selector(Coordinator.handleSecondaryClick(_:)))
+        rightClick.buttonMaskRequired = .secondary
+        rightClick.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        host.view.addGestureRecognizer(rightClick)
+
         let double = UITapGestureRecognizer(target: coord, action: #selector(Coordinator.handleDoubleTap))
         double.numberOfTapsRequired = 2
         host.view.addGestureRecognizer(double)
@@ -2697,9 +2728,19 @@ private struct NativeMenuBubble: UIViewRepresentable {
 
         @objc func handleDoubleTap() { parent.onDoubleTap() }
 
+        @objc func handleSecondaryClick(_ g: UITapGestureRecognizer) {
+            guard g.state == .ended else { return }
+            showMenu()
+        }
+
         @objc func handleLongPress(_ g: UILongPressGestureRecognizer) {
-            guard g.state == .began, let source = sourceView, !MessageMenuOverlay.isShowing else { return }
+            guard g.state == .began else { return }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            showMenu()
+        }
+
+        private func showMenu() {
+            guard let source = sourceView, !MessageMenuOverlay.isShowing else { return }
             MessageMenuOverlay.show(
                 from: source, isOutgoing: parent.isOutgoing,
                 reactions: parent.reactions, current: parent.currentReaction,
@@ -2757,11 +2798,15 @@ private enum MessageMenuOverlay {
         let w = UIWindow(windowScene: scene)
         w.windowLevel = .alert + 1
         w.backgroundColor = .clear
-        let root = UIViewController()
+        let root = DismissibleOverlayController()
         root.view.backgroundColor = .clear
+        root.view.accessibilityViewIsModal = true
         w.rootViewController = root
 
         let dim = UIVisualEffectView(effect: nil)
+        dim.isAccessibilityElement = true
+        dim.accessibilityLabel = "Close menu"
+        dim.accessibilityTraits = .button
         dim.frame = bounds
         dim.isUserInteractionEnabled = true
         dim.addGestureRecognizer(UITapGestureRecognizer(target: OverlayTarget.shared, action: #selector(OverlayTarget.dismissTap)))
@@ -2856,6 +2901,23 @@ private enum MessageMenuOverlay {
             source?.alpha = 1
             completion?()
         })
+    }
+
+    /// VoiceOver's two-finger scrub and Escape on a keyboard close the menu.
+    final class DismissibleOverlayController: UIViewController {
+        override func accessibilityPerformEscape() -> Bool {
+            MessageMenuOverlay.dismiss()
+            return true
+        }
+        override var keyCommands: [UIKeyCommand]? {
+            [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape))]
+        }
+        override var canBecomeFirstResponder: Bool { true }
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            becomeFirstResponder()
+        }
+        @objc private func escape() { MessageMenuOverlay.dismiss() }
     }
 
     /// Target for the background tap.

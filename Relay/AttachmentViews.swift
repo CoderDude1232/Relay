@@ -3,6 +3,7 @@
 //  Relay
 //
 
+import AVFoundation
 import AVKit
 import ImageIO
 import OSLog
@@ -20,12 +21,22 @@ extension StoredAttachment {
 
 // MARK: - Voice message
 
-struct VoiceNoteBubble: View {
+extension VoiceNoteBubble where Trailing == EmptyView {
+    init(attachment: StoredAttachment, service: MessagingService, conversationId: String,
+         isOutgoing: Bool, requiresBiometric: Bool) {
+        self.init(attachment: attachment, service: service, conversationId: conversationId,
+                  isOutgoing: isOutgoing, requiresBiometric: requiresBiometric) { EmptyView() }
+    }
+}
+
+struct VoiceNoteBubble<Trailing: View>: View {
     let attachment: StoredAttachment
     let service: MessagingService
     let conversationId: String
     let isOutgoing: Bool
     let requiresBiometric: Bool
+    /// Shown at the end of the duration line (the message's time and status).
+    @ViewBuilder var trailing: Trailing
 
     @State private var player = VoicePlayer()
     @State private var data: Data?
@@ -37,86 +48,90 @@ struct VoiceNoteBubble: View {
     @Environment(\.relayIsMessageRequest) private var inRequest
 
     private var tint: Color { isOutgoing ? .white : .primary }
+    /// Behind Face ID in this chat: shown as a locked player (no waveform,
+    /// no transcript) rather than blurred.
+    private var locked: Bool { requiresBiometric && !isUnlocked }
     /// Audio from someone not yet accepted isn't downloaded or parsed.
     private var heldForRequest: Bool { inRequest && !isOutgoing }
 
+    @State private var levels: [Float] = []
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Button {
                     Task { await unlockAndTogglePlayback() }
                 } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .frame(width: 34, height: 34)
-                        .background(tint.opacity(0.18), in: .circle)
+                    Image(systemName: locked ? "lock.fill" : player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(isOutgoing ? Color.accentColor : .white)
+                        .frame(width: 38, height: 38)
+                        .background(isOutgoing ? AnyShapeStyle(.white) : AnyShapeStyle(Color.accentColor), in: .circle)
+                        .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                .accessibilityLabel(locked ? "Unlock voice message" : player.isPlaying ? "Pause" : "Play voice message")
                 .disabled(data == nil && !failed)
 
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(tint.opacity(0.25)).frame(height: 4)
-                        Capsule().fill(tint).frame(width: geo.size.width * player.progress, height: 4)
+                VStack(alignment: .leading, spacing: 4) {
+                    VoiceWaveform(levels: locked ? [] : levels, progress: player.progress, tint: tint)
+                        .frame(height: 24)
+                        .accessibilityHidden(true)
+                    HStack(spacing: 6) {
+                        Text(heldForRequest ? "Accept to play" : locked ? "Tap to unlock" : failed ? "Couldn't load" : label)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(tint.opacity(0.75))
+                        Spacer(minLength: 0)
+                        if player.isPlaying || player.progress > 0 {
+                            Button {
+                                player.cycleRate()
+                            } label: {
+                                Text(rateLabel)
+                                    .font(.caption2.weight(.bold).monospacedDigit())
+                                    .foregroundStyle(tint)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .background(tint.opacity(0.18), in: .capsule)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Playback speed \(rateLabel)")
+                        }
+                        trailing
                     }
-                    .frame(maxHeight: .infinity, alignment: .center)
-                }
-                .frame(height: 34)
-
-                Text(heldForRequest ? "Accept to play" : failed ? "—" : label)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(tint.opacity(0.85))
-
-                if player.duration > 0 {
-                    Button {
-                        player.cycleRate()
-                    } label: {
-                        Text(rateLabel)
-                            .font(.caption2.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(tint.opacity(0.85))
-                            .frame(width: 30)
-                    }
-                    .buttonStyle(.plain)
                 }
             }
-            .frame(maxWidth: 260)
+            .frame(width: 220)
 
-            if let transcript {
+            if locked {
+                EmptyView()
+            } else if let transcript {
                 Text(transcript)
-                    .font(.caption)
-                    .foregroundStyle(tint.opacity(0.85))
+                    .font(.footnote)
+                    .foregroundStyle(tint.opacity(0.9))
                     .multilineTextAlignment(.leading)
-                    .frame(maxWidth: 260, alignment: .leading)
-            }
-
-            // Transcription runs on-device only; hide it where that's unsupported.
-            if #available(iOS 26.0, *), AIAssistant.isOnDeviceTranscriptionAvailable,
-               data != nil, transcript == nil {
+                    .frame(maxWidth: 220, alignment: .leading)
+            } else if #available(iOS 26.0, *), AIAssistant.isOnDeviceTranscriptionAvailable, data != nil {
+                // Transcription runs on-device only; hidden where that's unsupported.
                 Button {
                     Task { await transcribeVoiceNote() }
                 } label: {
-                    if isTranscribing {
-                        HStack(spacing: 4) {
+                    HStack(spacing: 4) {
+                        if isTranscribing {
                             ProgressView().controlSize(.mini).tint(tint)
-                            Text("Transcribing…").font(.caption2)
+                            Text("Transcribing…")
+                        } else {
+                            Image(systemName: "text.bubble")
+                            Text("Transcribe")
                         }
-                    } else {
-                        Label("Transcribe", systemImage: "waveform.and.mic")
-                            .font(.caption2)
                     }
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(tint.opacity(0.75))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(tint.opacity(0.7))
                 .disabled(isTranscribing)
             }
         }
-        .blur(radius: requiresBiometric && !isUnlocked ? 8 : 0)
-        .overlay {
-            if requiresBiometric && !isUnlocked {
-                AttachmentPrivacyOverlay(label: "Unlock voice note")
-            }
-        }
+        .padding(.vertical, 2)
         .contentShape(.rect)
         .onTapGesture { Task { await unlockAndTogglePlayback() } }
         .task(id: "\(attachment.id)|\(heldForRequest)") {
@@ -147,6 +162,7 @@ struct VoiceNoteBubble: View {
         if let plaintext = service.attachmentPlaintext(attachment) {
             data = plaintext
             player.prepare(plaintext)
+            levels = await VoiceWaveform.levels(for: plaintext)
         } else {
             failed = true
         }
@@ -769,5 +785,63 @@ struct ForwardPickerView: View {
             await service.sendMessage("", in: conversationId, attachments: [attachment])
             onDismiss()
         }
+    }
+}
+
+
+// MARK: - Voice waveform
+
+/// Bars drawn from the clip's loudness; the played part takes the full tint.
+struct VoiceWaveform: View {
+    let levels: [Float]
+    let progress: Double
+    let tint: Color
+
+    static let barCount = 32
+
+    var body: some View {
+        GeometryReader { geo in
+            let bars = levels.isEmpty ? Array(repeating: Float(0.15), count: Self.barCount) : levels
+            let spacing: CGFloat = 2
+            let width = max(1.5, (geo.size.width - spacing * CGFloat(bars.count - 1)) / CGFloat(bars.count))
+            HStack(alignment: .center, spacing: spacing) {
+                ForEach(Array(bars.enumerated()), id: \.offset) { index, level in
+                    let played = Double(index) / Double(bars.count) < progress
+                    Capsule()
+                        .fill(played ? tint : tint.opacity(0.35))
+                        .frame(width: width, height: max(3, geo.size.height * CGFloat(level)))
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+
+    /// Peak loudness in `barCount` slices, scaled to 0...1. Read from a
+    /// protected temp copy, off the main thread.
+    nonisolated static func levels(for data: Data) async -> [Float] {
+        await Task.detached(priority: .utility) { () -> [Float] in
+            guard let url = try? TempMediaFiles.write(data, originalName: nil, fallbackExtension: "m4a") else { return [] }
+            defer { TempMediaFiles.remove(url) }
+            guard let file = try? AVAudioFile(forReading: url),
+                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                                frameCapacity: AVAudioFrameCount(min(file.length, 48_000 * 600))),
+                  (try? file.read(into: buffer)) != nil,
+                  let samples = buffer.floatChannelData?[0]
+            else { return [] }
+            let count = Int(buffer.frameLength)
+            guard count > barCount else { return [] }
+            let slice = count / barCount
+            var peaks: [Float] = (0..<barCount).map { bar in
+                var peak: Float = 0
+                var i = bar * slice
+                let end = min(count, i + slice)
+                while i < end { peak = max(peak, abs(samples[i])); i += 4 }
+                return peak
+            }
+            let top = peaks.max() ?? 0
+            guard top > 0 else { return [] }
+            peaks = peaks.map { 0.12 + 0.88 * ($0 / top) }
+            return peaks
+        }.value
     }
 }

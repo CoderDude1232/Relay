@@ -59,6 +59,11 @@ enum ScamKind: String, Codable, CaseIterable {
     }
 }
 
+extension Notification.Name {
+    /// Scrolls the open chat so the message (an id) is fully on screen.
+    static let relayRevealMessage = Notification.Name("relay.revealMessage")
+}
+
 enum ScamCheck {
     static let enabledKey = "relay.scamWarnings"
 
@@ -513,51 +518,73 @@ struct ScamWarningView: View {
     let onDismiss: () -> Void
 
     @State private var reporting = false
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .frame(width: 22)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(kind.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(kind.advice)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            HStack(spacing: 8) {
-                if senderAccount != nil {
-                    Button(role: .destructive) { reporting = true } label: {
-                        Text("Report").frame(maxWidth: .infinity)
+            // One line until tapped, so a flagged message doesn't take over the chat.
+            Button {
+                withAnimation(.spring(duration: 0.3)) { expanded.toggle() }
+                if expanded {
+                    // The last message's card would open behind the composer.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        NotificationCenter.default.post(name: .relayRevealMessage, object: message.id)
                     }
-                    .tint(.red)
                 }
-                Button {
-                    service.dismissScamWarning(for: message.id)
-                    onDismiss()
-                } label: {
-                    Text("Not a Scam").frame(maxWidth: .infinity)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(kind.title)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 180 : 0))
                 }
-                .tint(.gray)
+                .contentShape(.rect)
             }
-            .font(.footnote.weight(.semibold))
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.capsule)
-            .controlSize(.small)
+            .buttonStyle(.plain)
+            .accessibilityHint(expanded ? "Hides the details" : "Shows why and what to do")
+
+            if expanded {
+                Text(kind.advice)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+                HStack(spacing: 8) {
+                    if senderAccount != nil {
+                        Button(role: .destructive) { reporting = true } label: {
+                            Text("Report").frame(maxWidth: .infinity)
+                        }
+                        .tint(.red)
+                    }
+                    Button {
+                        service.dismissScamWarning(for: message.id)
+                        onDismiss()
+                    } label: {
+                        Text("Not a Scam").frame(maxWidth: .infinity)
+                    }
+                    .tint(.gray)
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
+                .transition(.opacity)
+            }
         }
-        .padding(14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 18, style: .continuous))
+        .background(Color.orange.opacity(0.1), in: .rect(cornerRadius: 16, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.3), lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
         .sheet(isPresented: $reporting) {

@@ -136,6 +136,8 @@ final class MessagingService {
     /// Bumped on every reload of the open chat, including ones that change
     /// no message (a poll vote, a reaction), for views that read other tables.
     private(set) var activeMessagesRevision = 0
+    /// True while the message history backup is being restored after sign-in.
+    var isRestoringHistory = false
     /// Bumped whenever a scam check stores a result, so request banners and
     /// list labels refresh (see ScamCheck.swift).
     var scamFlagsRevision = 0
