@@ -2649,7 +2649,13 @@ private struct NativeMenuBubble: UIViewRepresentable {
             host.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
-        host.view.addInteraction(UIContextMenuInteraction(delegate: coord))
+        // Our own long-press menu (MessageMenuOverlay), not UIContextMenu: the
+        // system moves the message to fit its menu, which left a separately
+        // placed reaction bar on top of the menu.
+        let press = UILongPressGestureRecognizer(target: coord, action: #selector(Coordinator.handleLongPress(_:)))
+        press.minimumPressDuration = 0.35
+        press.delegate = coord
+        host.view.addGestureRecognizer(press)
 
         let double = UITapGestureRecognizer(target: coord, action: #selector(Coordinator.handleDoubleTap))
         double.numberOfTapsRequired = 2
@@ -2673,11 +2679,10 @@ private struct NativeMenuBubble: UIViewRepresentable {
         return context.coordinator.host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude))
     }
 
-    final class Coordinator: NSObject, UIContextMenuInteractionDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var parent: NativeMenuBubble
         let host: UIHostingController<AnyView>
         weak var sourceView: UIView?
-        private let reactionBar = ReactionBarWindowController()
 
         init(_ parent: NativeMenuBubble) {
             self.parent = parent
@@ -2687,6 +2692,16 @@ private struct NativeMenuBubble: UIViewRepresentable {
         }
 
         @objc func handleDoubleTap() { parent.onDoubleTap() }
+
+        @objc func handleLongPress(_ g: UILongPressGestureRecognizer) {
+            guard g.state == .began, let source = sourceView, !MessageMenuOverlay.isShowing else { return }
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            MessageMenuOverlay.show(
+                from: source, isOutgoing: parent.isOutgoing,
+                reactions: parent.reactions, current: parent.currentReaction,
+                actions: parent.actions, onReact: parent.onReact
+            )
+        }
 
         @objc func handlePan(_ g: UIPanGestureRecognizer) {
             guard let v = sourceView else { return }
@@ -2709,94 +2724,179 @@ private struct NativeMenuBubble: UIViewRepresentable {
             return abs(t.x) > abs(t.y)
         }
         func gestureRecognizer(_ g: UIGestureRecognizer,
-                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
-
-        // MARK: UIContextMenuInteractionDelegate
-
-        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
-                                    configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
-            UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                guard let self else { return nil }
-                let children = self.parent.actions.map { spec in
-                    UIAction(title: spec.label,
-                             image: UIImage(systemName: spec.icon),
-                             attributes: spec.role == .destructive ? .destructive : []) { _ in
-                        spec.action()
-                    }
-                }
-                return UIMenu(title: "", children: children)
-            }
-        }
-
-        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
-                                    willDisplayMenuFor configuration: UIContextMenuConfiguration,
-                                    animator: (any UIContextMenuInteractionAnimating)?) {
-            guard let source = sourceView else { return }
-            reactionBar.show(
-                from: source, isOutgoing: parent.isOutgoing,
-                reactions: parent.reactions, current: parent.currentReaction
-            ) { [weak self] emoji in
-                self?.parent.onReact(emoji)
-                self?.reactionBar.hide()
-            }
-        }
-
-        func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
-                                    willEndFor configuration: UIContextMenuConfiguration,
-                                    animator: (any UIContextMenuInteractionAnimating)?) {
-            reactionBar.hide()
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            // The long press mustn't fire mid-scroll or mid-swipe.
+            !(g is UILongPressGestureRecognizer)
         }
     }
 }
 
-/// Reaction bar shown in a small overlay window above the message while the
-/// context menu is open. Sized to its content so taps outside it reach the menu,
-/// whose dismissal (willEnd) hides the bar.
-private final class ReactionBarWindowController {
-    private var window: UIWindow?
-    private var hosting: UIHostingController<ReactionBarView>?
+/// The long-press menu: the chat dims, the message lifts, the reaction bar
+/// sits directly above it and the actions directly below (or above, when
+/// there's no room), all kept on screen. Laid out in one place so the pieces
+/// can never overlap.
+@MainActor
+private enum MessageMenuOverlay {
+    private static var window: UIWindow?
+    private static weak var source: UIView?
+    static var isShowing: Bool { window != nil }
 
-    func show(from source: UIView, isOutgoing: Bool, reactions: [String],
-              current: String?, onReact: @escaping (String) -> Void) {
-        guard window == nil, let scene = source.window?.windowScene else { return }
-
-        let hc = UIHostingController(rootView: ReactionBarView(reactions: reactions, current: current, onReact: onReact))
-        hc.view.backgroundColor = .clear
-        let size = hc.sizeThatFits(in: CGSize(width: 500, height: 80))
-
-        let src = source.convert(source.bounds, to: nil)
-        let screen = scene.screen.bounds
-        var x = isOutgoing ? src.maxX - size.width : src.minX
-        x = max(12, min(x, screen.width - size.width - 12))
-        var y = src.minY - size.height - 12
-        if y < 60 { y = src.maxY + 12 }  // no room above: place below
+    static func show(from source: UIView, isOutgoing: Bool, reactions: [String], current: String?,
+                     actions: [MessageActionSpec], onReact: @escaping (String) -> Void) {
+        guard window == nil, let scene = source.window?.windowScene,
+              let snapshot = source.snapshotView(afterScreenUpdates: false) else { return }
+        self.source = source
+        let bounds = scene.screen.bounds
+        let insets = source.window?.safeAreaInsets ?? .zero
+        let srcFrame = source.convert(source.bounds, to: nil)
 
         let w = UIWindow(windowScene: scene)
         w.windowLevel = .alert + 1
         w.backgroundColor = .clear
         let root = UIViewController()
         root.view.backgroundColor = .clear
-        hc.view.frame = CGRect(origin: .zero, size: size)
-        root.view.addSubview(hc.view)
         w.rootViewController = root
-        w.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
-        w.isHidden = false
 
-        hc.view.alpha = 0
-        hc.view.transform = CGAffineTransform(scaleX: 0.9, y: 0.9)
-        UIView.animate(withDuration: 0.2, delay: 0.03, options: [.curveEaseOut]) {
-            hc.view.alpha = 1
-            hc.view.transform = .identity
+        let dim = UIVisualEffectView(effect: nil)
+        dim.frame = bounds
+        dim.isUserInteractionEnabled = true
+        dim.addGestureRecognizer(UITapGestureRecognizer(target: OverlayTarget.shared, action: #selector(OverlayTarget.dismissTap)))
+        root.view.addSubview(dim)
+
+        let bar = UIHostingController(rootView: ReactionBarView(reactions: reactions, current: current) { emoji in
+            onReact(emoji)
+            dismiss()
+        })
+        bar.view.backgroundColor = .clear
+        let barSize = bar.sizeThatFits(in: CGSize(width: bounds.width - 24, height: 80))
+
+        let menu = UIHostingController(rootView: MessageActionMenu(actions: actions) { action in
+            dismiss { action.action() }
+        })
+        menu.view.backgroundColor = .clear
+        let menuSize = menu.sizeThatFits(in: CGSize(width: 250, height: bounds.height))
+
+        // Vertical layout: bar, gap, message, gap, menu. A message taller than
+        // the room left shows its top part.
+        let gap: CGFloat = 8
+        let top = insets.top + 8
+        let bottom = bounds.height - insets.bottom - 8
+        let room = bottom - top - barSize.height - menuSize.height - gap * 2
+        let bubbleHeight = min(srcFrame.height, max(80, room))
+        var bubbleY = srcFrame.minY
+        var menuBelow = true
+        if bubbleY - gap - barSize.height < top { bubbleY = top + barSize.height + gap }
+        if bubbleY + bubbleHeight + gap + menuSize.height > bottom {
+            // Not enough room below: try the menu above the bar instead.
+            let aboveTop = srcFrame.minY - gap - barSize.height - gap - menuSize.height
+            if aboveTop >= top, srcFrame.minY + bubbleHeight <= bottom {
+                menuBelow = false
+                bubbleY = srcFrame.minY
+            } else {
+                bubbleY = bottom - menuSize.height - gap - bubbleHeight
+            }
         }
+        bubbleY = max(bubbleY, top + barSize.height + gap + (menuBelow ? 0 : menuSize.height + gap))
 
+        let bubbleFrame = CGRect(x: srcFrame.minX, y: bubbleY, width: srcFrame.width, height: bubbleHeight)
+        func alignedX(_ width: CGFloat) -> CGFloat {
+            let x = isOutgoing ? bubbleFrame.maxX - width : bubbleFrame.minX
+            return max(12, min(x, bounds.width - width - 12))
+        }
+        let barFrame = CGRect(x: alignedX(barSize.width), y: bubbleFrame.minY - gap - barSize.height,
+                              width: barSize.width, height: barSize.height)
+        let menuFrame = CGRect(
+            x: alignedX(menuSize.width),
+            y: menuBelow ? bubbleFrame.maxY + gap : barFrame.minY - gap - menuSize.height,
+            width: menuSize.width, height: menuSize.height)
+
+        let clip = UIView(frame: srcFrame)
+        clip.clipsToBounds = true
+        snapshot.frame = CGRect(origin: .zero, size: srcFrame.size)
+        clip.addSubview(snapshot)
+        root.view.addSubview(clip)
+
+        root.addChild(bar)
+        bar.view.frame = barFrame
+        root.view.addSubview(bar.view)
+        root.addChild(menu)
+        menu.view.frame = menuFrame
+        root.view.addSubview(menu.view)
+
+        for v in [bar.view!, menu.view!] {
+            v.alpha = 0
+            v.transform = CGAffineTransform(scaleX: 0.85, y: 0.85)
+        }
+        w.isHidden = false
         window = w
-        hosting = hc
+        source.alpha = 0
+
+        UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.82, initialSpringVelocity: 0.4) {
+            dim.effect = UIBlurEffect(style: .systemUltraThinMaterial)
+            clip.frame = bubbleFrame
+            clip.transform = CGAffineTransform(scaleX: 1.02, y: 1.02)
+            for v in [bar.view!, menu.view!] {
+                v.alpha = 1
+                v.transform = .identity
+            }
+        }
     }
 
-    func hide() {
-        window?.isHidden = true
+    static func dismiss(then completion: (() -> Void)? = nil) {
+        guard let w = window else { completion?(); return }
         window = nil
-        hosting = nil
+        UIView.animate(withDuration: 0.18, animations: {
+            w.alpha = 0
+        }, completion: { _ in
+            w.isHidden = true
+            source?.alpha = 1
+            completion?()
+        })
+    }
+
+    /// Target for the background tap.
+    final class OverlayTarget: NSObject {
+        static let shared = OverlayTarget()
+        @objc func dismissTap() { MessageMenuOverlay.dismiss() }
+    }
+}
+
+private struct MessageActionMenu: View {
+    let actions: [MessageActionSpec]
+    let onSelect: (MessageActionSpec) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(actions.enumerated()), id: \.element.id) { index, action in
+                Button { onSelect(action) } label: {
+                    HStack(spacing: 12) {
+                        Text(action.label)
+                        Spacer(minLength: 16)
+                        Image(systemName: action.icon)
+                            .frame(width: 22)
+                    }
+                    .font(.body)
+                    .foregroundStyle(action.role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                    .padding(.horizontal, 16)
+                    .frame(height: 44)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(MenuRowStyle())
+                if index < actions.count - 1 {
+                    Divider().padding(.leading, 16)
+                }
+            }
+        }
+        .frame(width: 250)
+        .background(.regularMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+    }
+}
+
+private struct MenuRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Color.primary.opacity(0.08) : .clear)
     }
 }
 

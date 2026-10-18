@@ -249,27 +249,14 @@ struct ConversationListView: View {
             .fullScreenCover(isPresented: $showingQRScanner) {
                 ContactQRScanner { username in
                     showingQRScanner = false
-                    Task {
-                        do {
-                            let conversationId = try await service.startConversation(username: username)
-                            openConversation(conversationId)
-                        } catch RelayAPIError.http(status: 404, _) {
-                            qrStartError = "Couldn't find that user on Relay."
-                        } catch {
-                            qrStartError = FriendlyError.message(for: error)
-                        }
-                    }
+                    startConversationFromQR(username)
                 }
             }
             .sheet(isPresented: $showingNewChatSheet) {
                 NewChatSheet(service: service) { convId in
                     openConversation(convId)
-                } onNewGroup: {
-                    showingNewGroup = true
-                } onQRScan: {
-                    showingQRScanner = true
-                } onSelectChats: {
-                    isEditing = true
+                } onQRScanned: { username in
+                    startConversationFromQR(username)
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -345,6 +332,19 @@ struct ConversationListView: View {
     private func requestLooksLikeScam(_ conversationId: String) -> Bool {
         _ = service.scamFlagsRevision
         return service.scamFlag(forConversation: conversationId) != nil
+    }
+
+    private func startConversationFromQR(_ username: String) {
+        Task {
+            do {
+                let conversationId = try await service.startConversation(username: username)
+                openConversation(conversationId)
+            } catch RelayAPIError.http(status: 404, _) {
+                qrStartError = "Couldn't find that user on Relay."
+            } catch {
+                qrStartError = FriendlyError.message(for: error)
+            }
+        }
     }
 
     private var labelChips: some View {
@@ -782,11 +782,10 @@ struct ConversationListView: View {
 private struct NewChatSheet: View {
     let service: MessagingService
     let onConversationStarted: (String) -> Void
-    let onNewGroup: () -> Void
-    let onQRScan: () -> Void
-    let onSelectChats: () -> Void
+    let onQRScanned: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
     @State private var contacts: [ContactEntry] = []
     @State private var authDenied = false
     @State private var isLoadingContacts = false
@@ -794,7 +793,6 @@ private struct NewChatSheet: View {
     @State private var discoveryStarted = false
     @State private var showingDiscoveryConsent = false
     @State private var searchText = ""
-    @State private var showingUsernameSearch = false
     @State private var startingContactEmail: String?
     @State private var invitePayload: InvitePayload?
     @State private var addError: String?
@@ -834,20 +832,56 @@ private struct NewChatSheet: View {
         NavigationStack {
             ScrollViewReader { proxy in
                 List {
-                    Section {
-                        actionRow("Find by @username", icon: "magnifyingglass") { showingUsernameSearch = true }
-                        actionRow("New Group", icon: "person.3") {
-                            dismiss(); DispatchQueue.main.async { onNewGroup() }
-                        }
-                        actionRow("Note to Self", icon: "note.text") {
-                            Task {
-                                let id = await service.ensureNoteToSelf()
-                                guard !id.isEmpty else { return }
-                                dismiss(); DispatchQueue.main.async { onConversationStarted(id) }
+                    if !isSearching {
+                        Section {
+                            NavigationLink {
+                                NewGroupView(embedded: true, service: service) { conversationId in
+                                    dismiss()
+                                    DispatchQueue.main.async { onConversationStarted(conversationId) }
+                                }
+                            } label: {
+                                actionLabel("New Group", icon: "person.3.fill", color: .accentColor)
+                            }
+                            NavigationLink {
+                                UsernameSearchSheet(embedded: true, service: service) { convId in
+                                    dismiss()
+                                    DispatchQueue.main.async { onConversationStarted(convId) }
+                                } onDismiss: {}
+                            } label: {
+                                actionLabel("Find by Username", icon: "at", color: .blue)
+                            }
+                            NavigationLink {
+                                ContactQRScanner(embedded: true) { username in
+                                    dismiss()
+                                    DispatchQueue.main.async { onQRScanned(username) }
+                                }
+                            } label: {
+                                actionLabel("Scan QR Code", icon: "qrcode.viewfinder", color: .purple)
                             }
                         }
-                        actionRow("Scan QR Code", icon: "qrcode.viewfinder") {
-                            dismiss(); DispatchQueue.main.async { onQRScan() }
+
+                        if !recentPeople.isEmpty {
+                            Section("Recent") {
+                                ForEach(recentPeople) { conversation in
+                                    Button {
+                                        dismiss()
+                                        DispatchQueue.main.async { onConversationStarted(conversation.id) }
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            AvatarView(name: service.displayName(forAccount: conversation.peerAccount), size: 36,
+                                                       imageData: service.peerAvatarData(forAccount: conversation.peerAccount))
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(service.displayName(forAccount: conversation.peerAccount))
+                                                    .foregroundStyle(.primary)
+                                                if let username = conversation.peerUsername {
+                                                    Text("@\(username)").font(.caption).foregroundStyle(.secondary)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .tint(.primary)
+                                }
+                            }
                         }
                     }
 
@@ -860,10 +894,11 @@ private struct NewChatSheet: View {
                             Button {
                                 requestContactDiscovery()
                             } label: {
-                                Label("Find contacts on Relay", systemImage: "person.crop.circle.badge.checkmark")
+                                actionLabel("Find Contacts on Relay", icon: "person.crop.circle.badge.checkmark", color: .green)
                             }
+                            .tint(.primary)
                         } footer: {
-                            Text(ContactDiscoveryConsent.explanation)
+                            Text("Checks which of your contacts use Relay. Their addresses are blinded on your iPhone first.")
                         }
                     } else if authDenied {
                         Section {
@@ -902,7 +937,7 @@ private struct NewChatSheet: View {
                         }
                     }
                 }
-                .listStyle(.plain)
+                .listStyle(.insetGrouped)
                 .overlay(alignment: .trailing) {
                     if !isLoadingContacts && !authDenied && !isSearching && !sections.isEmpty {
                         AlphabetScrubber(letters: sections.map(\.letter)) { letter in
@@ -915,14 +950,16 @@ private struct NewChatSheet: View {
                 }
             }
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts").incognitoKeyboard()
-            .navigationTitle("New Conversation")
+            .navigationTitle("New Chat")
             .navigationBarTitleDisplayMode(.inline)
+            // A scanned invite code opens its own screen; get out of the way.
+            .onChange(of: model.pendingContactInviteToken) { _, token in if token != nil { dismiss() } }
+            .onChange(of: model.pendingGroupInviteToken) { _, token in if token != nil { dismiss() } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingUsernameSearch) { usernameSearchSheet }
             .sheet(item: $invitePayload) { payload in
                 MessageComposeView(recipients: payload.recipients, body: payload.body)
                     .ignoresSafeArea()
@@ -981,11 +1018,26 @@ private struct NewChatSheet: View {
         }
     }
 
-    @ViewBuilder
-    private func actionRow(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: icon)
+    private func actionLabel(_ title: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(color.gradient, in: .rect(cornerRadius: 8))
+            Text(title).foregroundStyle(.primary)
         }
+    }
+
+    /// People with a 1:1 chat, most recent first, to message again quickly.
+    private var recentPeople: [Conversation] {
+        service.conversations
+            .filter { !$0.isGroup && !$0.isRequest && !$0.archived
+                && $0.peerAccount != service.noteToSelfAccount && $0.peerAccount != service.relayOfficialAccount
+                && !PanicModeManager.shared.isHidden($0.id) }
+            .sorted { ($0.lastMessageAt ?? 0) > ($1.lastMessageAt ?? 0) }
+            .prefix(8)
+            .map { $0 }
     }
 
     @ViewBuilder
@@ -1001,17 +1053,6 @@ private struct NewChatSheet: View {
                 )
             }
         )
-    }
-
-    @ViewBuilder
-    private var usernameSearchSheet: some View {
-        UsernameSearchSheet(service: service) { convId in
-            showingUsernameSearch = false
-            dismiss()
-            onConversationStarted(convId)
-        } onDismiss: {
-            showingUsernameSearch = false
-        }
     }
 
     private func startContact(email: String) {
@@ -1242,6 +1283,8 @@ private struct MessageComposeView: UIViewControllerRepresentable {
 // MARK: - Username search sheet
 
 private struct UsernameSearchSheet: View {
+    /// Pushed inside another navigation stack (no stack or Cancel of its own).
+    var embedded = false
     let service: MessagingService
     let onConversationStarted: (String) -> Void
     let onDismiss: () -> Void
@@ -1256,7 +1299,7 @@ private struct UsernameSearchSheet: View {
     @State private var isStarting = false
 
     var body: some View {
-        NavigationStack {
+        OptionalNavigationStack(enabled: !embedded) {
             List {
                 Section {
                     HStack {
@@ -1310,11 +1353,13 @@ private struct UsernameSearchSheet: View {
                     }
                 }
             }
-            .navigationTitle("Find by @username")
+            .navigationTitle("Find by Username")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onDismiss() }
+                if !embedded {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { onDismiss() }
+                    }
                 }
             }
         }

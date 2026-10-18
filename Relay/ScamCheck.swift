@@ -551,10 +551,6 @@ struct ScamWarningView: View {
             .buttonStyle(.bordered)
             .buttonBorderShape(.capsule)
             .controlSize(.small)
-            Label("Checked on this iPhone. Nothing was sent.", systemImage: "lock.fill")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .labelStyle(.titleAndIcon)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

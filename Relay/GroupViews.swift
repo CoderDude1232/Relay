@@ -12,6 +12,8 @@ import SwiftUI
 
 /// Name a new group and pick members from existing 1:1 chats or by username.
 struct NewGroupView: View {
+    /// Pushed inside another navigation stack (no stack or Cancel of its own).
+    var embedded = false
     let service: MessagingService
     let onCreated: (String) -> Void
 
@@ -52,7 +54,7 @@ struct NewGroupView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        OptionalNavigationStack(enabled: !embedded) {
             Form {
                 Section("Group name") {
                     TextField("Name", text: $name).incognitoKeyboard()
@@ -114,8 +116,10 @@ struct NewGroupView: View {
             .navigationTitle("New Group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                if !embedded {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") { create() }
@@ -669,3 +673,17 @@ private struct GroupAvatarPickerSheet: View {
     }
 }
 
+
+/// A NavigationStack only when the view isn't already inside one.
+struct OptionalNavigationStack<Content: View>: View {
+    let enabled: Bool
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        if enabled {
+            NavigationStack { content }
+        } else {
+            content
+        }
+    }
+}

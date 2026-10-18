@@ -42,9 +42,6 @@ final class AppModel {
     static let identityProvisionedKey = "relay.identityProvisioned"
 
     private(set) var phase: Phase = .loading
-    /// Set when an existing account signs in on this device; the main screen
-    /// then offers an iCloud backup if one exists, and clears this.
-    var shouldOfferBackupRestore = false
     /// Show the one-time "create a passkey" prompt after a non-passkey sign-in.
     var shouldOfferPasskey = false
     /// The relay says this device was removed from the account (signed in
@@ -138,6 +135,7 @@ final class AppModel {
     }
 
     func boot() async {
+        Self.removeRetiredICloudBackup()
         if proxyMonitorTask == nil { startProxyMonitor() }
         do {
             guard let data = try keychain.loadSecret(for: Self.accountSecretName) else {
@@ -167,6 +165,23 @@ final class AppModel {
     }
 
     /// Retries `boot()` from the "Storage Unavailable" screen.
+    /// iCloud Backup was replaced by the message history backup on the relay.
+    /// Its key and settings are cleared from this device once; backups already
+    /// in the user's iCloud are left for them to delete.
+    private static func removeRetiredICloudBackup() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "relay.icloudBackup.enabled") != nil
+            || defaults.object(forKey: "relay.icloudBackup.lastAt") != nil else { return }
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: "relay.icloudBackup.recoveryKey",
+        ] as CFDictionary)
+        for key in ["relay.icloudBackup.enabled", "relay.icloudBackup.lastAt", "relay.icloudBackup.lastDigest",
+                    "relay.backup.failureNoticed"] {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
     func retryBoot() async {
         phase = .loading
         await boot()
@@ -463,7 +478,6 @@ final class AppModel {
             if created {
                 service.noteAccountCreated(username: resolvedUsername)
             } else {
-                shouldOfferBackupRestore = true
                 service.noteSignedIn(username: resolvedUsername)
             }
             offerPasskeyIfNeeded(service)
@@ -513,7 +527,6 @@ final class AppModel {
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
         service.start()
         phase = .ready(service)
-        shouldOfferBackupRestore = true
         service.noteSignedIn(username: signedIn.username)
         if let prf = assertion.prfOutput {
             Task { await service.restoreAccountStorage(passkeyCredentialId: assertion.credentialId, prfOutput: prf) }
@@ -597,7 +610,6 @@ final class AppModel {
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
         service.start()
         phase = .ready(service)
-        shouldOfferBackupRestore = true
         service.noteSignedIn(username: signedIn.username)
         Task { await service.restoreAccountStorage(recoveryKey: key) }
         uploadPushTokenIfReady()
@@ -843,7 +855,6 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountRecovered(username: username)
-        shouldOfferBackupRestore = true
         UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
@@ -951,7 +962,6 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountRecovered(username: username)
-        shouldOfferBackupRestore = true
         UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
@@ -1166,7 +1176,6 @@ final class AppModel {
     /// the relay so it doesn't keep collecting messages; that step is capped at a
     /// few seconds so being offline never blocks sign-out. Pass false when the
     /// device or account is already gone (remote wipe, account deletion).
-    /// `remoteWipe` also forgets this device's iCloud Backup key.
     func handleRemovedFromAccount() {
         if case .ready(let service) = phase { service.shutDown() }
         removedFromAccount = true
@@ -1174,7 +1183,6 @@ final class AppModel {
 
     func signOut(removeFromServer: Bool = true, remoteWipe: Bool = false) {
         removedFromAccount = false
-        if remoteWipe { CloudBackupManager.shared.forgetLocalKey() }
         guard removeFromServer, case .ready(let service) = phase else {
             finishSignOut()
             return

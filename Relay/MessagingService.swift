@@ -2367,7 +2367,7 @@ final class MessagingService {
 
     // MARK: - Backup snapshot
 
-    /// Local chat state; CloudBackupManager encrypts it before it leaves the device.
+    /// Local chat state; HistoryBackup and the chat-list blob encrypt it before it leaves the device.
     struct BackupSnapshot: Codable {
         struct Message: Codable {
             let id: String

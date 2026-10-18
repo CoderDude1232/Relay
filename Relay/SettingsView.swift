@@ -149,9 +149,9 @@ struct SettingsView: View {
                             model.signOut()
                         }
                     } message: {
-                        Text(CloudBackupManager.shared.isEnabled
-                             ? "Your account stays active — sign back in anytime. Chats are removed from this device, and you can restore them from your iCloud backup when you sign back in."
-                             : "Your account stays active — sign back in anytime. Chats are removed from this device and iCloud Backup is off, so they can't be restored. Turn on iCloud Backup first to keep them.")
+                        Text(service.keepsChatListWithAccount && MessagingService.isHistoryBackupEnabled
+                             ? "Your account stays active, so you can sign back in anytime. Chats are removed from this device and come back from your encrypted backup when you sign back in."
+                             : "Your account stays active, so you can sign back in anytime. Chats are removed from this device and can't be brought back, because message history backup is off. Turn it on in Data & Storage first to keep them.")
                     }
                 } footer: {
                     Text("Relay \(appVersion)")
@@ -503,6 +503,7 @@ private struct ChatsSettingsView: View {
 
 private struct DataStorageSettingsView: View {
     let service: MessagingService
+    @AppStorage(MessagingService.historyBackupEnabledKey) private var historyBackup = true
 
     var body: some View {
         List {
@@ -510,8 +511,25 @@ private struct DataStorageSettingsView: View {
                 NavigationLink(destination: StorageSettingsView(service: service)) {
                     SettingsNavRow(systemName: "internaldrive.fill", color: .accentColor, title: "Storage")
                 }
-                NavigationLink(destination: BackupView(service: service)) {
-                    SettingsNavRow(systemName: "arrow.clockwise.icloud.fill", color: .accentColor, title: "Backup & Restore")
+                if service.isDemoAccount {
+                    EmptyView()
+                } else if service.keepsChatListWithAccount {
+                    SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Back Up Message History",
+                                      info: "Keeps an encrypted copy of your messages (text only, no photos or files) with your account, so they come back when you sign in on a new phone. Only your account password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy.",
+                                      isOn: Binding(get: { historyBackup }, set: { enabled in
+                                          historyBackup = enabled
+                                          Task { await service.setHistoryBackupEnabled(enabled) }
+                                      }))
+                } else {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "clock.arrow.circlepath", color: .accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Message History Backup")
+                            Text("Add a passkey, recovery key or account password in Account to back up your messages.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 if !service.isDemoAccount {
                     NavigationLink(destination: ContactSyncView(service: service)) {
@@ -556,7 +574,6 @@ struct PrivacySettingsView: View {
     @AppStorage(PrivacyPreferences.spotlightIndexingKey) private var spotlightIndexing = false
     @AppStorage(PrivacyPreferences.shareSuggestionsKey) private var shareSuggestions = false
     @AppStorage(ScamCheck.enabledKey) private var scamWarnings = true
-    @AppStorage(MessagingService.historyBackupEnabledKey) private var historyBackup = true
 
     var body: some View {
         List {
@@ -586,14 +603,6 @@ struct PrivacySettingsView: View {
                 SettingsToggleRow(systemName: "keyboard", title: "Incognito Keyboard",
                                   info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
-                if service.keepsChatListWithAccount && !service.isDemoAccount {
-                    SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Back Up Message History",
-                                      info: "Keeps an encrypted copy of your messages (text only, no photos or files) with your account, so they come back when you sign in on a new phone. Only your password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy.",
-                                      isOn: Binding(get: { historyBackup }, set: { enabled in
-                                          historyBackup = enabled
-                                          Task { await service.setHistoryBackupEnabled(enabled) }
-                                      }))
-                }
                 #if DEBUG
                 NavigationLink("Scam Self-Test (debug)") { ScamSelfTestView() }
                 #endif

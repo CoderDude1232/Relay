@@ -18,7 +18,6 @@ struct ContentView: View {
     @State private var isLocked = UserDefaults.standard.bool(forKey: "relay.screenLockEnabled")
     @State private var backgroundedAt: Date? = nil
     @State private var isAuthenticating = false
-    @State private var foundBackup: CloudBackupManager.FoundBackup?
     @State private var showingPasskeyOffer = false
     @State private var passkeyError: String?
 
@@ -38,29 +37,9 @@ struct ContentView: View {
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()
                     }
-                    .task(id: model.shouldOfferBackupRestore) {
-                        guard model.shouldOfferBackupRestore else { return }
-                        model.shouldOfferBackupRestore = false
-                        // No backup: the account starts without history.
-                        foundBackup = await CloudBackupManager.shared
-                            .findBackupAfterSignIn(accountId: service.credentials.accountId)
-                    }
-                    .alert("Restore Your Messages?", isPresented: Binding(
-                        get: { foundBackup != nil },
-                        set: { if !$0 { foundBackup = nil } }
-                    ), presenting: foundBackup) { found in
-                        Button("Restore") {
-                            CloudBackupManager.shared.restore(found, into: service)
-                        }
-                        Button("Start Fresh", role: .cancel) {}
-                    } message: { found in
-                        Text("An iCloud backup from \(found.updatedAt.formatted(date: .abbreviated, time: .shortened)) was found for this account.")
-                    }
                     .task(id: model.shouldOfferPasskey) {
                         guard model.shouldOfferPasskey else { return }
-                        // After the iCloud restore offer, which is looked up first.
                         try? await Task.sleep(for: .seconds(3))
-                        while foundBackup != nil { try? await Task.sleep(for: .milliseconds(500)) }
                         showingPasskeyOffer = model.shouldOfferPasskey
                     }
                     .alert("Sign In Faster Next Time?", isPresented: $showingPasskeyOffer) {
@@ -194,7 +173,7 @@ private struct RemovedFromAccountView: View {
                 model.signOut(removeFromServer: false)
             }
         } message: {
-            Text("Messages that exist only on this iPhone can't be recovered afterwards, unless you have an iCloud backup.")
+            Text("Messages that aren't in your encrypted message history backup can't be recovered afterwards.")
         }
         .interactiveDismissDisabled()
     }
@@ -325,7 +304,7 @@ private struct StorageUnavailableView: View {
                     model.signOut(removeFromServer: false)
                 }
             } message: {
-                Text("Messages on this device will be deleted. You can restore them only from an iCloud backup or another linked device.")
+                Text("Messages on this device will be deleted. Messages in your encrypted backup come back when you sign in again.")
             }
         }
     }

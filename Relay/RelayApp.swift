@@ -154,9 +154,9 @@ struct RelayApp: App {
                             model.enterBackground()
                             appDelegate.scheduleBackgroundRefresh()
                         }
-                        // Refresh the iCloud backup, at most daily unless something changed.
+                        // Refresh the message history backup (at most every few hours).
                         if case .ready(let service) = model.phase {
-                            Task { await CloudBackupManager.shared.backupIfDue(service: service) }
+                            Task { await service.backUpHistoryIfDue() }
                         }
                     case .active:
                         PanicModeManager.shared.applyControlLockIfRequested()

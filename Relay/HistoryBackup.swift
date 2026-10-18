@@ -13,7 +13,7 @@
 //  manifest, uploaded last, that marks the generation complete. Older
 //  generations are deleted once a newer one is complete.
 //
-//  Left out, like the iCloud backup: attachments, disappearing and view-once
+//  Left out: attachments, disappearing and view-once
 //  messages, chats hidden by Panic Mode, message requests, live locations
 //  and the local Relay notices chat.
 //
@@ -62,7 +62,7 @@ extension MessagingService {
         Data("relay-history-v1|\(generation)|\(part)".utf8)
     }
 
-    /// What goes into the backup: the iCloud backup's snapshot minus requests,
+    /// What goes into the backup: the local snapshot minus requests,
     /// empty (attachment-only) messages, live locations and the notices chat.
     private func historySnapshot() -> BackupSnapshot {
         var snapshot = exportBackupSnapshot()

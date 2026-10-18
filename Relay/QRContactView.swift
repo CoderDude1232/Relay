@@ -564,6 +564,8 @@ private struct ActivitySheet: UIViewControllerRepresentable {
 // MARK: - QR scanner (wraps DataScannerViewController)
 
 struct ContactQRScanner: View {
+    /// Pushed inside another navigation stack (no stack or Cancel of its own).
+    var embedded = false
     let onScan: (String) -> Void
 
     @Environment(AppModel.self) private var model
@@ -574,7 +576,7 @@ struct ContactQRScanner: View {
     @State private var unrecognized = false
 
     var body: some View {
-        NavigationStack {
+        OptionalNavigationStack(enabled: !embedded) {
             Group {
                 if cameraStatus == .denied || cameraStatus == .restricted {
                     ContentUnavailableView {
@@ -613,8 +615,10 @@ struct ContactQRScanner: View {
             .navigationTitle("Scan QR Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                if !embedded {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
                 }
             }
             .task {

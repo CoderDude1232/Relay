@@ -49,20 +49,4 @@ extension MessagingService {
             postRelayNotice("Your username is now @\(new).")
         }
     }
-
-    func noteBackupRestored(from date: Date?) {
-        if let date {
-            postRelayNotice("Your messages were restored from the iCloud backup made \(date.formatted(date: .abbreviated, time: .shortened)).")
-        } else {
-            postRelayNotice("Your messages were restored from your iCloud backup.")
-        }
-    }
-
-    func noteFirstBackup() {
-        postRelayNotice("Your first encrypted iCloud backup is complete. Keep your Recovery Key safe — without it the backup can't be restored.")
-    }
-
-    func noteBackupFailing(_ reason: String) {
-        postRelayNotice("iCloud backup failed: \(reason) Relay will keep trying.")
-    }
 }
