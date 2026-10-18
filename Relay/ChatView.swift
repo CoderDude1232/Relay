@@ -1367,7 +1367,24 @@ struct ChatView: View {
     /// Replaces the composer for a chat someone else started.
     private var messageRequestBar: some View {
         let isGroup = conversation?.isGroup ?? false
+        _ = service.scamFlagsRevision // refresh when a check finishes
+        let scam = service.scamFlag(forConversation: conversationId)
         return VStack(spacing: 12) {
+            if scam != nil {
+                // The whole request, not just one message: a stranger whose
+                // messages match a scam.
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("This request looks like a scam", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text("\(peerName) isn't someone you chat with, and their messages match common scams. Don't send money, codes or personal details. You can block and report them below.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .background(.orange.opacity(0.12), in: .rect(cornerRadius: 12))
+            }
             Text(isGroup
                  ? "You were added to this group by someone you haven't chatted with. They won't see your name or photo, or know you've read anything, until you accept."
                  : "\(peerName) wants to message you. They won't see your name or photo, or know you've read their messages, until you accept.")
@@ -2161,6 +2178,7 @@ private struct MessageBubble: View {
     @Environment(\.openURL) private var parentOpenURL
     @State private var reactionDetailEmoji: String?
     @State private var pendingLinkURL: URL?
+    @State private var scamKind: ScamKind?
 
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
@@ -2287,9 +2305,20 @@ private struct MessageBubble: View {
                     }
                 }
                 .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
-            if !message.isOutgoing && !message.isDeleted {
-                ScamWarningView(message: message, conversationId: conversationId, service: service,
-                                senderAccount: senderAccount, senderName: avatarName)
+            if let scamKind, !message.isDeleted {
+                ScamWarningView(kind: scamKind, message: message, service: service,
+                                senderAccount: senderAccount, senderName: avatarName) {
+                    withAnimation { self.scamKind = nil }
+                }
+            }
+        }
+        // Checked once per incoming message, on the device (ScamCheck.swift).
+        .task(id: message.id) {
+            guard !message.isOutgoing, !message.isDeleted else { return }
+            if let known = service.scamWarning(for: message.id) {
+                scamKind = known
+            } else if let found = await service.checkForScam(message, in: conversationId) {
+                withAnimation { scamKind = found }
             }
         }
     }

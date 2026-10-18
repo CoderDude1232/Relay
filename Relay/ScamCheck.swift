@@ -20,9 +20,13 @@ import SecureStorage
 enum ScamKind: String, Codable, CaseIterable {
     case suspiciousLink, codeOrPasswordRequest, moneyRequest, cryptoOrInvestment
     case impersonation, prizeOrDelivery, jobOffer
+    /// Someone the user already chats with suddenly asking for money urgently,
+    /// a code, a login or an investment: their account may have been taken over.
+    case accountTakeover
 
     var title: String {
         switch self {
+        case .accountTakeover: "This might not really be them"
         case .suspiciousLink: "This link may be a scam"
         case .codeOrPasswordRequest: "Asks for a code or password"
         case .moneyRequest: "Asks for money"
@@ -35,6 +39,8 @@ enum ScamKind: String, Codable, CaseIterable {
 
     var advice: String {
         switch self {
+        case .accountTakeover:
+            "If this isn't like them, their account may have been taken over. Call them or check another way before sending money, codes or details."
         case .suspiciousLink:
             "Don't sign in or pay through links you weren't expecting."
         case .codeOrPasswordRequest:
@@ -126,9 +132,12 @@ enum ScamCheck {
     /// Only patterns that are almost never innocent warn without the model.
     /// Anything that needs judgement (a "suspended" or "verify" next to a
     /// link, a parcel, a prize) goes to the model with the facts below.
-    static func ruleVerdict(_ body: String) -> ScamKind? {
+    static func ruleVerdict(_ body: String, fromStranger: Bool = true) -> ScamKind? {
         let text = body.lowercased()
         func any(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
+        // From someone the user already chats with, a request for money or a
+        // code is more likely their account being misused than them.
+        let fromContact: (ScamKind) -> ScamKind = { fromStranger ? $0 : .accountTakeover }
 
         // Someone else's site dressed up as a brand, sent with a sign-in or
         // account story.
@@ -141,12 +150,21 @@ enum ScamCheck {
                 "code you got", "send me the code", "send me that code", "send it back to me", "share the code with me",
                 "give me the code", "tell me the code", "read me the code"])
             && !any(["didn't get", "didnt get", "isn't arriving", "not arriving", "never got"]) {
-            return .codeOrPasswordRequest
+            return fromContact(.codeOrPasswordRequest)
         }
         // Gift cards bought for someone and sent as photos or codes.
         if any(["gift card", "giftcard", "itunes card", "steam card", "google play card"])
             && any(["photo of", "photos of", "pictures of", "picture of", "scratch", "send me the code", "send the codes"]) {
-            return .moneyRequest
+            return fromContact(.moneyRequest)
+        }
+        // An urgent plea for money, the usual first message from a taken-over
+        // account ("send me money urgently, I need it"). Still checked by the
+        // model where there is one, but this works without it.
+        if any(["send me money", "send me some money", "transfer me", "lend me", "need money", "need some money",
+                "send me $", "send me £", "send me €", "pay this for me", "can you pay"])
+            && any(["urgent", "urgently", "asap", "right now", "emergency", "immediately", "quickly", "please hurry",
+                    "today", "tonight", "in trouble", "stuck"]) {
+            return fromContact(.moneyRequest)
         }
         // The "Mum, new number" story.
         if any(["this is my new number", "my new number", "lost my phone", "phone broke", "broke my phone"])
@@ -360,6 +378,21 @@ extension ScamCheck {
         let linkHosts = hosts(in: body)
         let unofficialLink = linkHosts.contains { !isOfficial($0) }
         let posing = reading.presentsAs == .organization
+        if !fromStranger && !posing {
+            // Someone the user already chats with. Asking for money is normal
+            // between friends; asking urgently, or for codes, logins or an
+            // investment, is how a taken-over account usually starts.
+            switch reading.requestedAction {
+            case .nothingInParticular:
+                return nil
+            case .sendMoneyOrGiftCards:
+                return reading.pressesForSpeed ? .accountTakeover : nil
+            case .shareCodeOrPassword, .investWithSender, .takeEasyPaidWork:
+                return .accountTakeover
+            case .signInOrPayThroughLink, .payToReceiveSomething:
+                return unofficialLink ? .accountTakeover : nil
+            }
+        }
         let suspicious = fromStranger || posing || reading.pressesForSpeed
         switch reading.requestedAction {
         case .nothingInParticular:
@@ -399,6 +432,26 @@ extension MessagingService {
     private func storeScamResult(_ value: String, for messageId: String) {
         try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
                                   [.text(Self.scamKey(messageId)), .blob(Data(value.utf8))])
+        scamFlagsRevision &+= 1
+    }
+
+    /// The first warning on any message in this chat, for flagging a whole
+    /// message request. Dismissed and clean messages don't count.
+    func scamFlag(forConversation conversationId: String) -> ScamKind? {
+        let rows = (try? storage.database.query("""
+            SELECT CAST(k.value AS TEXT) FROM kv k JOIN messages m ON k.key = 'scam3:' || m.id
+            WHERE m.conversation_id = ? AND m.is_outgoing = 0 AND m.deleted = 0
+            """, [.text(conversationId)])) ?? []
+        return rows.compactMap { $0.first?.string.flatMap(ScamKind.init(rawValue:)) }.first
+    }
+
+    /// Checks a message request's latest incoming messages without it being
+    /// opened, so the requests list can flag it.
+    func checkRequestForScam(_ conversationId: String) async {
+        guard let messages = try? storage.messages.messages(in: conversationId, limit: 20) else { return }
+        for message in messages.filter({ !$0.isOutgoing }).suffix(5) {
+            _ = await checkForScam(message, in: conversationId)
+        }
     }
 
     /// The warning to show under an incoming message, if any.
@@ -428,12 +481,12 @@ extension MessagingService {
         if let peer = conversation?.peerAccount, peer == Self.relayOfficialAccount || peer == noteToSelfAccount {
             return nil
         }
-        if let kind = ScamCheck.ruleVerdict(message.body) {
+        let fromStranger = conversation?.isRequest ?? true
+        if let kind = ScamCheck.ruleVerdict(message.body, fromStranger: fromStranger) {
             storeScamResult(kind.rawValue, for: message.id)
             return kind
         }
         guard #available(iOS 26.0, *), ScamCheck.isModelAvailable else { return nil }
-        let fromStranger = conversation?.isRequest ?? true
         let facts = ScamCheck.facts(for: message.body, fromStranger: fromStranger)
         switch await ScamChecker.shared.read(message.body, facts: facts) {
         case .reading(let reading):
@@ -451,57 +504,47 @@ extension MessagingService {
 import SwiftUI
 
 struct ScamWarningView: View {
+    let kind: ScamKind
     let message: StoredMessage
-    let conversationId: String
     let service: MessagingService
     /// Who to report: the 1:1 peer, or the sender in a group.
     let senderAccount: String?
     let senderName: String
+    let onDismiss: () -> Void
 
-    @State private var kind: ScamKind?
     @State private var reporting = false
 
     var body: some View {
-        Group {
-            if let kind {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(kind.title, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.orange)
-                    Text(kind.advice)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 16) {
-                        if senderAccount != nil {
-                            Button("Report") { reporting = true }
-                        }
-                        Button("Not a Scam") {
-                            service.dismissScamWarning(for: message.id)
-                            withAnimation { self.kind = nil }
-                        }
-                    }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.borderless)
-                    Text("Checked on your iPhone. Nothing was sent anywhere.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 6) {
+            Label(kind.title, systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.orange)
+            Text(kind.advice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 16) {
+                if senderAccount != nil {
+                    Button("Report") { reporting = true }
                 }
-                .padding(10)
-                .frame(maxWidth: 280, alignment: .leading)
-                .background(.orange.opacity(0.1), in: .rect(cornerRadius: 12))
-                .accessibilityElement(children: .combine)
-                .sheet(isPresented: $reporting) {
-                    if let senderAccount {
-                        ReportContactSheet(service: service, account: senderAccount, displayName: senderName)
-                    }
+                Button("Not a Scam") {
+                    service.dismissScamWarning(for: message.id)
+                    onDismiss()
                 }
             }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.borderless)
+            Text("Checked on your iPhone. Nothing was sent anywhere.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
-        .task(id: message.id) {
-            kind = service.scamWarning(for: message.id)
-            if kind == nil, let found = await service.checkForScam(message, in: conversationId) {
-                withAnimation { kind = found }
+        .padding(10)
+        .frame(maxWidth: 280, alignment: .leading)
+        .background(.orange.opacity(0.1), in: .rect(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
+        .sheet(isPresented: $reporting) {
+            if let senderAccount {
+                ReportContactSheet(service: service, account: senderAccount, displayName: senderName)
             }
         }
     }
@@ -528,6 +571,9 @@ struct ScamSelfTestView: View {
         ("here's the applebees menu https://www.applebees.com/en/menu", false),
         ("I won the raffle at work lol", false),
         ("Hey it's Sam from the gym, want to grab a coffee?", true),
+        ("Dad I need you to send me some money urgently, I'm stuck and can't explain right now", false),
+        ("hey can you send me the code that just came to your phone, it's for my account", false),
+        ("check out this crypto thing I'm making 40% a week, put in $500 and I'll double it", false),
     ]
 
     @State private var results: [String] = []
@@ -554,7 +600,7 @@ struct ScamSelfTestView: View {
         results = []
         for sample in Self.samples {
             var line = "\(sample.stranger ? "[stranger] " : "")\(sample.text.prefix(60))\n"
-            if let rule = ScamCheck.ruleVerdict(sample.text) {
+            if let rule = ScamCheck.ruleVerdict(sample.text, fromStranger: sample.stranger) {
                 line += "rule → \(rule.rawValue)"
             } else if #available(iOS 26.0, *), ScamCheck.isModelAvailable {
                 let facts = ScamCheck.facts(for: sample.text, fromStranger: sample.stranger)

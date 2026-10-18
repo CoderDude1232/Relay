@@ -136,6 +136,9 @@ final class MessagingService {
     /// Bumped on every reload of the open chat, including ones that change
     /// no message (a poll vote, a reaction), for views that read other tables.
     private(set) var activeMessagesRevision = 0
+    /// Bumped whenever a scam check stores a result, so request banners and
+    /// list labels refresh (see ScamCheck.swift).
+    var scamFlagsRevision = 0
     private(set) var activeConversationId: String?
     /// Set to the conversation ID whose messages have just finished loading.
     /// Lets ChatView distinguish "still loading" from "genuinely empty".

@@ -342,6 +342,11 @@ struct ConversationListView: View {
         }
     }
 
+    private func requestLooksLikeScam(_ conversationId: String) -> Bool {
+        _ = service.scamFlagsRevision
+        return service.scamFlag(forConversation: conversationId) != nil
+    }
+
     private var labelChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: DS.Spacing.sm) {
@@ -661,9 +666,17 @@ struct ConversationListView: View {
                                 showingRequests = false
                                 selectedConversationId = request.id
                             } label: {
-                                ConversationRow(conversation: request, service: service)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    ConversationRow(conversation: request, service: service)
+                                    if requestLooksLikeScam(request.id) {
+                                        Label("Possible scam", systemImage: "exclamationmark.triangle.fill")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
                             }
                             .buttonStyle(.plain)
+                            .task(id: request.id) { await service.checkRequestForScam(request.id) }
                             .swipeActions {
                                 Button("Delete", role: .destructive) { service.deleteConversation(request.id) }
                             }
