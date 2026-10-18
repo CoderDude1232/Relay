@@ -2001,6 +2001,7 @@ private struct MessageRow: View {
 
     @Environment(ChatAppearance.self) private var appearance
     @State private var confirmDelete = false
+    @State private var scamKind: ScamKind?
 
     private var bubble: some View {
         MessageBubble(
@@ -2019,8 +2020,32 @@ private struct MessageRow: View {
     }
 
     var body: some View {
-        content
-            .accessibilityElement(children: isPlainText && !isSelectionMode ? .combine : .contain)
+        VStack(alignment: .leading, spacing: 6) {
+            content
+                .accessibilityElement(children: isPlainText && !isSelectionMode ? .combine : .contain)
+            // Below the row, not in the bubble: the avatar stays by the message
+            // and a long-press menu shows only the message.
+            if let scamKind, !message.isDeleted, !isSelectionMode {
+                ScamWarningView(kind: scamKind, message: message, service: service,
+                                senderAccount: rowSenderAccount, senderName: rowAvatarName) {
+                    withAnimation { self.scamKind = nil }
+                }
+                // Lined up with the bubble: past the avatar, short of the far edge.
+                .padding(.leading, 36)
+                .padding(.trailing, 40)
+                .frame(maxWidth: Self.maxBubbleWidth + 76, alignment: .leading)
+                .transition(.opacity)
+            }
+        }
+            // Checked once per incoming message, on the device (ScamCheck.swift).
+            .task(id: message.id) {
+                guard !message.isOutgoing, !message.isDeleted else { return }
+                if let known = service.scamWarning(for: message.id) {
+                    scamKind = known
+                } else if let found = await service.checkForScam(message, in: conversationId) {
+                    withAnimation { scamKind = found }
+                }
+            }
             .accessibilityAction(named: "Reply") { onReply() }
             .accessibilityAction(named: "Forward") { onForward() }
             .padding(.vertical, isSelected ? 2 : 0)
@@ -2178,7 +2203,6 @@ private struct MessageBubble: View {
     @Environment(\.openURL) private var parentOpenURL
     @State private var reactionDetailEmoji: String?
     @State private var pendingLinkURL: URL?
-    @State private var scamKind: ScamKind?
 
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
@@ -2305,21 +2329,6 @@ private struct MessageBubble: View {
                     }
                 }
                 .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
-            if let scamKind, !message.isDeleted {
-                ScamWarningView(kind: scamKind, message: message, service: service,
-                                senderAccount: senderAccount, senderName: avatarName) {
-                    withAnimation { self.scamKind = nil }
-                }
-            }
-        }
-        // Checked once per incoming message, on the device (ScamCheck.swift).
-        .task(id: message.id) {
-            guard !message.isOutgoing, !message.isDeleted else { return }
-            if let known = service.scamWarning(for: message.id) {
-                scamKind = known
-            } else if let found = await service.checkForScam(message, in: conversationId) {
-                withAnimation { scamKind = found }
-            }
         }
     }
 

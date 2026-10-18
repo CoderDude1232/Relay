@@ -647,33 +647,23 @@ struct ConversationListView: View {
             }
         } // end List
         .listStyle(.plain)
-        .sheet(isPresented: $showingProxySettings) {
-            NavigationStack {
-                ProxySettingsView()
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showingProxySettings = false }
-                        }
-                    }
-            }
+        .navigationDestination(isPresented: $showingProxySettings) {
+            ProxySettingsView()
         }
-        .sheet(isPresented: $showingRequests) {
-            NavigationStack {
+        .navigationDestination(isPresented: $showingRequests) {
                 List {
                     Section {
                         ForEach(service.messageRequests.filter { !panicMode.isHidden($0.id) }) { request in
                             Button {
+                                // Back to the list first, then open the chat, so the
+                                // chat isn't pushed on top of this page.
                                 showingRequests = false
-                                selectedConversationId = request.id
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    ConversationRow(conversation: request, service: service)
-                                    if requestLooksLikeScam(request.id) {
-                                        Label("Possible scam", systemImage: "exclamationmark.triangle.fill")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.orange)
-                                    }
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                    selectedConversationId = request.id
                                 }
+                            } label: {
+                                ConversationRow(conversation: request, service: service,
+                                                scamFlagged: requestLooksLikeScam(request.id))
                             }
                             .buttonStyle(.plain)
                             .task(id: request.id) { await service.checkRequestForScam(request.id) }
@@ -687,23 +677,10 @@ struct ConversationListView: View {
                 }
                 .navigationTitle("Message Requests")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { showingRequests = false }
-                    }
-                }
                 .onChange(of: service.messageRequests.isEmpty) { _, empty in if empty { showingRequests = false } }
-            }
         }
-        .sheet(isPresented: $showingFolderManager) {
-            NavigationStack {
-                ChatFoldersView(service: service)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { showingFolderManager = false }
-                        }
-                    }
-            }
+        .navigationDestination(isPresented: $showingFolderManager) {
+            ChatFoldersView(service: service)
         }
         .alert("New Folder", isPresented: Binding(
             get: { newFolderForConversation != nil },
@@ -1384,6 +1361,8 @@ private struct ConversationRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let conversation: Conversation
     let service: MessagingService
+    /// A message request whose messages look like a scam (ScamCheck.swift).
+    var scamFlagged = false
 
     private var isRelayOfficial: Bool { conversation.peerAccount == service.relayOfficialAccount }
 
@@ -1574,6 +1553,15 @@ private struct ConversationRow: View {
                     if hasUnread {
                         CountBadge(count: conversation.unreadCount)
                     }
+                }
+                if scamFlagged {
+                    Label("Possible scam", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(.orange.opacity(0.14), in: .capsule)
+                        .padding(.top, 1)
                 }
             }
         }

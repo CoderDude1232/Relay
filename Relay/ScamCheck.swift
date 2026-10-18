@@ -515,33 +515,55 @@ struct ScamWarningView: View {
     @State private var reporting = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(kind.title, systemImage: "exclamationmark.triangle.fill")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.orange)
-            Text(kind.advice)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 16) {
-                if senderAccount != nil {
-                    Button("Report") { reporting = true }
-                }
-                Button("Not a Scam") {
-                    service.dismissScamWarning(for: message.id)
-                    onDismiss()
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 22)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(kind.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(kind.advice)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .font(.caption.weight(.semibold))
-            .buttonStyle(.borderless)
-            Text("Checked on your iPhone. Nothing was sent anywhere.")
+            HStack(spacing: 8) {
+                if senderAccount != nil {
+                    Button(role: .destructive) { reporting = true } label: {
+                        Text("Report").frame(maxWidth: .infinity)
+                    }
+                    .tint(.red)
+                }
+                Button {
+                    service.dismissScamWarning(for: message.id)
+                    onDismiss()
+                } label: {
+                    Text("Not a Scam").frame(maxWidth: .infinity)
+                }
+                .tint(.gray)
+            }
+            .font(.footnote.weight(.semibold))
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            Label("Checked on this iPhone. Nothing was sent.", systemImage: "lock.fill")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .labelStyle(.titleAndIcon)
         }
-        .padding(10)
-        .frame(maxWidth: 280, alignment: .leading)
-        .background(.orange.opacity(0.1), in: .rect(cornerRadius: 12))
-        .accessibilityElement(children: .combine)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
         .sheet(isPresented: $reporting) {
             if let senderAccount {
                 ReportContactSheet(service: service, account: senderAccount, displayName: senderName)

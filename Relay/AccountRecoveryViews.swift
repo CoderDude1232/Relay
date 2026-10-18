@@ -406,7 +406,7 @@ struct RemoveEmailSheet: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationStack {
+        Group {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Text("Your email is deleted from Relay and from our sign-in provider. After this, a legal demand to either couldn't link your account to an email address.")
@@ -438,9 +438,6 @@ struct RemoveEmailSheet: View {
             .navigationTitle("Remove Email")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.disabled(working)
-                }
             }
         }
     }

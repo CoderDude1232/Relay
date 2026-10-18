@@ -61,6 +61,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         .padding(.vertical, 6)
+                        .contentShape(.rect) // the whole row, not just the text
                     }
                     .buttonStyle(.plain)
                     .tint(.primary)
@@ -181,10 +182,10 @@ struct SettingsView: View {
                     try await service.createContactInviteLink()
                 })
             }
-            .sheet(isPresented: $showingEditProfile) {
+            .navigationDestination(isPresented: $showingEditProfile) {
                 EditProfileSheet(service: service) { avatarData = service.myAvatarData }
             }
-            .sheet(isPresented: $showingPanicSettings) {
+            .navigationDestination(isPresented: $showingPanicSettings) {
                 PanicModeSheet(manager: panicMode)
             }
         }
@@ -379,17 +380,21 @@ private struct AccountSettingsView: View {
         }
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingPasswordSheet, onDismiss: {
-            Task { methods = try? await service.apiClient.signInMethods() }
-        }) {
+        .navigationDestination(isPresented: $showingPasswordSheet) {
             AccountPasswordSheet(service: service, needsUpdate: methods?.accountPasswordNeedsUpdate == true)
         }
-        .sheet(isPresented: $showingEmailSheet, onDismiss: { accountEmail = model.accountEmail }) {
+        .onChange(of: showingPasswordSheet) { _, showing in
+            if !showing { Task { methods = try? await service.apiClient.signInMethods() } }
+        }
+        .navigationDestination(isPresented: $showingEmailSheet) {
             ChangeEmailSheet()
+        }
+        .onChange(of: showingEmailSheet) { _, showing in
+            if !showing { accountEmail = model.accountEmail }
         }
         .onAppear { accountEmail = model.accountEmail }
         .task { methods = try? await service.apiClient.signInMethods() }
-        .sheet(isPresented: $showingRemoveEmail) {
+        .navigationDestination(isPresented: $showingRemoveEmail) {
             RemoveEmailSheet {
                 accountEmail = nil
                 emailDiscoverable = false
@@ -407,7 +412,7 @@ private struct AccountSettingsView: View {
                 try await service.createContactInviteLink()
             })
         }
-        .sheet(isPresented: $showingDeleteAccount) {
+        .navigationDestination(isPresented: $showingDeleteAccount) {
             DeleteAccountSheet(service: service) {
                 model.signOut(removeFromServer: false) // the account is already gone
             }
@@ -973,7 +978,7 @@ private struct SecuritySettingsView: View {
         }
         .navigationTitle("Security")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingPanicSettings) {
+        .navigationDestination(isPresented: $showingPanicSettings) {
             PanicModeSheet(manager: panicMode)
         }
     }
@@ -1013,7 +1018,7 @@ private struct EditProfileSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        Group {
             Form {
                 Section {
                     HStack {
@@ -1114,9 +1119,6 @@ private struct EditProfileSheet: View {
             .navigationTitle("Edit Profile")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
                 ToolbarItem(placement: .confirmationAction) {
                     if loadingPhoto {
                         ProgressView()
@@ -1127,7 +1129,7 @@ private struct EditProfileSheet: View {
                 }
             }
             .onChange(of: profilePhoto) { _, item in loadPhoto(item) }
-            .sheet(isPresented: $showingChangeUsername) {
+            .navigationDestination(isPresented: $showingChangeUsername) {
                 ChangeUsernameSheet(currentUsername: service.username ?? "")
             }
         }
@@ -1291,7 +1293,7 @@ struct PanicModeSheet: View {
     @State private var showingPINSetup = false
 
     var body: some View {
-        NavigationStack {
+        Group {
             Form {
                 Section {
                     Toggle("Enable Panic Mode", isOn: Binding(
@@ -1323,7 +1325,6 @@ struct PanicModeSheet: View {
                 PanicSetupSheet(manager: manager)
             }
         }
-        .presentationDetents([.medium])
     }
 }
 
@@ -1424,7 +1425,7 @@ private struct ChangeUsernameSheet: View {
     private var trimmed: String { username.lowercased() }
 
     var body: some View {
-        NavigationStack {
+        Group {
             Form {
                 Section {
                     HStack {
@@ -1468,9 +1469,6 @@ private struct ChangeUsernameSheet: View {
             .navigationTitle("Change Username")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
                         .disabled(!canSave)
@@ -1670,7 +1668,7 @@ private struct DeleteAccountSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
+        Group {
             Form {
                 Section {
                     if service.isDemoAccount {
@@ -1739,13 +1737,7 @@ private struct DeleteAccountSheet: View {
             }
             .navigationTitle(service.isDemoAccount ? "Reset Demo Account" : "Delete Account")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        .disabled(isDeleting)
-                }
-            }
-            .interactiveDismissDisabled(isDeleting)
+            .navigationBarBackButtonHidden(isDeleting)
             .onAppear { focused = true }
         }
     }
@@ -1786,7 +1778,7 @@ private struct ChangeEmailSheet: View {
     private var normalizedEmail: String { newEmail.lowercased().trimmingCharacters(in: .whitespaces) }
 
     var body: some View {
-        NavigationStack {
+        Group {
             Form {
                 if !codeSent {
                     Section {
@@ -1820,9 +1812,6 @@ private struct ChangeEmailSheet: View {
             .navigationTitle("Change Email")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.disabled(working)
-                }
                 ToolbarItem(placement: .confirmationAction) {
                     if working {
                         ProgressView()
@@ -1833,7 +1822,7 @@ private struct ChangeEmailSheet: View {
                     }
                 }
             }
-            .interactiveDismissDisabled(working)
+            .navigationBarBackButtonHidden(working)
         }
     }
 
@@ -1883,7 +1872,7 @@ private struct AccountPasswordSheet: View {
     private var valid: Bool { password.count >= 8 && password == confirm }
 
     var body: some View {
-        NavigationStack {
+        Group {
             Form {
                 Section {
                     SecureField("New password", text: $password)
@@ -1900,9 +1889,6 @@ private struct AccountPasswordSheet: View {
             .navigationTitle("Account Password")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.disabled(saving)
-                }
                 ToolbarItem(placement: .confirmationAction) {
                     if saving {
                         ProgressView()
@@ -1911,7 +1897,7 @@ private struct AccountPasswordSheet: View {
                     }
                 }
             }
-            .interactiveDismissDisabled(saving)
+            .navigationBarBackButtonHidden(saving)
         }
     }
 
