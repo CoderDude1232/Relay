@@ -2378,10 +2378,21 @@ private struct MessageBubble: View {
                 let displayBody = message.body.hasPrefix("~once~")
                     ? String(message.body.dropFirst("~once~".count)) : message.body
                 if !displayBody.isEmpty {
-                    HStack(alignment: .lastTextBaseline, spacing: 7) {
-                        Text(formattedBody(displayBody))
-                            .fixedSize(horizontal: false, vertical: true)
-                        metadataRow
+                    if effectiveStatus == .failed {
+                        // The long "Not Delivered · Tap to Retry" beside the
+                        // text would squeeze it to a word per line.
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text(formattedBody(displayBody))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            metadataRow
+                        }
+                    } else {
+                        HStack(alignment: .lastTextBaseline, spacing: 7) {
+                            Text(formattedBody(displayBody))
+                                .fixedSize(horizontal: false, vertical: true)
+                            metadataRow
+                        }
                     }
                     if message.editedAt != nil {
                         Text("edited")
