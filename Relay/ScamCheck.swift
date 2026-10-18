@@ -210,7 +210,7 @@ enum ScamCheck {
 
 @available(iOS 26.0, *)
 @Generable
-enum RequestedAction {
+enum RequestedAction: CaseIterable {
     case nothingInParticular
     case signInOrPayThroughLink
     case shareCodeOrPassword
@@ -222,7 +222,7 @@ enum RequestedAction {
 
 @available(iOS 26.0, *)
 @Generable
-enum PresentedSender {
+enum PresentedSender: CaseIterable {
     case person
     case organization
     case unclear
@@ -276,29 +276,78 @@ actor ScamChecker {
         → payToReceiveSomething, organization, false
         <message>school is suspended today because of the storm, see the news</message> \
         → nothingInParticular, person, false
+        <message>Your account has been suspended. Restore access within 24 hours: secure-help.net</message> \
+        → signInOrPayThroughLink, organization, true
+        <message>We're hiring! Earn $300 a day liking videos, just pay a $40 starter fee</message> \
+        → takeEasyPaidWork, organization, false
+        <message>I can double your money in a week trading crypto, message me to start</message> \
+        → investWithSender, person, false
         """
 
-    enum Outcome { case reading(MessageReading), failed }
+    enum Outcome { case reading(MessageReading), failed(String) }
 
     /// The model's description of the message, or `.failed` when it couldn't
     /// give one (unavailable, refused, or an error); that's not "fine".
+    ///
+    /// Apple's safety filters sometimes refuse a message that merely talks
+    /// about accounts or money. A refusal is retried with the general model,
+    /// then in the permissive mode Apple offers for content transformations
+    /// (plain text, read back here), before giving up.
     func read(_ body: String, facts: String) async -> Outcome {
-        // The content-tagging variant is tuned for exactly this kind of
-        // labelling; fall back to the general model where it isn't offered.
-        let tagging = SystemLanguageModel(useCase: .contentTagging)
-        let model = tagging.availability == .available ? tagging : SystemLanguageModel.default
-        guard model.availability == .available else { return .failed }
-        let session = LanguageModelSession(model: model, instructions: Self.instructions)
         let prompt = "\(facts)\n\n<message>\(body.prefix(1500))</message>"
-        do {
-            let response = try await session.respond(
-                to: prompt, generating: MessageReading.self,
-                options: GenerationOptions(sampling: .greedy)
-            )
-            return .reading(response.content)
-        } catch {
-            return .failed
+        var errors: [String] = []
+        let tagging = SystemLanguageModel(useCase: .contentTagging)
+        var guided: [SystemLanguageModel] = []
+        if tagging.availability == .available { guided.append(tagging) }
+        if SystemLanguageModel.default.availability == .available { guided.append(.default) }
+        for model in guided {
+            let session = LanguageModelSession(model: model, instructions: Self.instructions)
+            do {
+                let response = try await session.respond(
+                    to: prompt, generating: MessageReading.self,
+                    options: GenerationOptions(sampling: .greedy)
+                )
+                return .reading(response.content)
+            } catch {
+                errors.append(Self.describe(error))
+            }
         }
+        let permissive = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+        guard permissive.availability == .available else { return .failed(errors.joined(separator: "; ")) }
+        let session = LanguageModelSession(model: permissive, instructions: Self.instructions + """
+
+            Answer on one line as: requestedAction, presentsAs, true or false. Nothing else.
+            """)
+        do {
+            let response = try await session.respond(to: prompt, options: GenerationOptions(sampling: .greedy))
+            if let reading = Self.parse(response.content) { return .reading(reading) }
+            errors.append("unreadable answer")
+        } catch {
+            errors.append(Self.describe(error))
+        }
+        return .failed(errors.joined(separator: "; "))
+    }
+
+    /// "signInOrPayThroughLink, organization, true" back into a reading.
+    private static func parse(_ line: String) -> MessageReading? {
+        let text = line.lowercased()
+        guard let action = RequestedAction.allCases.first(where: { text.contains(String(describing: $0).lowercased()) })
+        else { return nil }
+        let sender = PresentedSender.allCases.first { text.contains(String(describing: $0).lowercased()) } ?? .unclear
+        return MessageReading(requestedAction: action, presentsAs: sender, pressesForSpeed: text.contains("true"))
+    }
+
+    private static func describe(_ error: Error) -> String {
+        if let generation = error as? LanguageModelSession.GenerationError {
+            switch generation {
+            case .guardrailViolation: return "safety filter"
+            case .refusal: return "refused"
+            case .exceededContextWindowSize: return "too long"
+            case .unsupportedLanguageOrLocale: return "language not supported"
+            default: return "generation error"
+            }
+        }
+        return "error"
     }
 }
 
@@ -514,8 +563,8 @@ struct ScamSelfTestView: View {
                     let kind = ScamCheck.warning(for: r, body: sample.text, fromStranger: sample.stranger)
                     line += "model → \(r.requestedAction), \(r.presentsAs), rushed: \(r.pressesForSpeed)\n"
                     line += "warning → \(kind?.rawValue ?? "none")"
-                case .failed:
-                    line += "model → FAILED"
+                case .failed(let why):
+                    line += "model → FAILED (\(why))"
                 }
             } else {
                 line += "no rule; model unavailable"
