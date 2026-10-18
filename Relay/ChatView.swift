@@ -2866,8 +2866,8 @@ private struct MessageActionMenu: View {
     let onSelect: (MessageActionSpec) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(actions.enumerated()), id: \.element.id) { index, action in
+        VStack(spacing: 2) {
+            ForEach(actions) { action in
                 Button { onSelect(action) } label: {
                     HStack(spacing: 12) {
                         Text(action.label)
@@ -2877,26 +2877,27 @@ private struct MessageActionMenu: View {
                     }
                     .font(.body)
                     .foregroundStyle(action.role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-                    .padding(.horizontal, 16)
-                    .frame(height: 44)
+                    .padding(.horizontal, 14)
+                    .frame(height: 42)
                     .contentShape(.rect)
                 }
                 .buttonStyle(MenuRowStyle())
-                if index < actions.count - 1 {
-                    Divider().padding(.leading, 16)
-                }
             }
         }
+        .padding(6)
         .frame(width: 250)
-        .background(.regularMaterial, in: .rect(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+        .glassCompat(in: RoundedRectangle(cornerRadius: 26, style: .continuous))
     }
 }
 
+/// Rows highlight as a rounded pill inside the glass, with no dividers.
 private struct MenuRowStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .background(configuration.isPressed ? Color.primary.opacity(0.08) : .clear)
+            .background(
+                configuration.isPressed ? Color.primary.opacity(0.1) : .clear,
+                in: .rect(cornerRadius: 16, style: .continuous)
+            )
     }
 }
 
