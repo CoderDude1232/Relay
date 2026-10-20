@@ -464,6 +464,16 @@ public final class MessageStore: @unchecked Sendable {
         try db.run("UPDATE conversations SET read_at = MAX(read_at, ?) WHERE id = ?", [.integer(readAt), .text(conversationId)])
     }
 
+    /// Messages read on another of our devices: everything received up to
+    /// `upTo` is read here, without sending receipts.
+    public func markIncomingRead(conversationId: String, upTo: Int64) throws {
+        try db.run(
+            "UPDATE messages SET status = 'read' WHERE conversation_id = ? AND is_outgoing = 0 AND status = 'received' AND timestamp <= ?",
+            [.text(conversationId), .integer(upTo)]
+        )
+        try markConversationRead(conversationId, at: upTo)
+    }
+
     public func setConversationPinned(_ conversationId: String, pinned: Bool) throws {
         let value: SQLValue = pinned ? .integer(Int64(Date().timeIntervalSince1970 * 1000)) : .null
         try db.run("UPDATE conversations SET pinned_at = ? WHERE id = ?", [value, .text(conversationId)])

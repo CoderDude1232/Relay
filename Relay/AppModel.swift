@@ -1153,6 +1153,10 @@ final class AppModel {
         // This device has the account's shared identity, so its safety numbers are
         // verifiable; suppress the re-link nudge.
         UserDefaults.standard.set(true, forKey: Self.identityProvisionedKey)
+        if let chatListKey = payload.chatListKey {
+            // The message history is restored from the backup once connected.
+            await service.adoptLinkedChatListKey(chatListKey)
+        }
         if !payload.peers.isEmpty {
             service.importConversationStubs(payload.peers.map { (account: $0.account, username: $0.username) })
         }

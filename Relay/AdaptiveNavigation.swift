@@ -20,6 +20,7 @@ struct AdaptiveNavigation<Sidebar: View, Placeholder: View>: View {
         if horizontalSizeClass == .regular {
             NavigationSplitView {
                 sidebar
+                    .modifier(SidebarListBackground(useWallpaper: false))
                     .sidebarTabBar()
                     .navigationSplitViewColumnWidth(min: 300, ideal: 360)
             } detail: {
@@ -31,6 +32,30 @@ struct AdaptiveNavigation<Sidebar: View, Placeholder: View>: View {
             NavigationStack {
                 sidebar
             }
+        }
+    }
+}
+
+/// iPad list columns: plain black or white like the rest of the app (not the
+/// sidebar's grey), or for the chat list the chat wallpaper, so the list and
+/// the open chat share one background.
+struct SidebarListBackground: ViewModifier {
+    let useWallpaper: Bool
+    @Environment(ChatAppearance.self) private var appearance
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    func body(content: Content) -> some View {
+        if horizontalSizeClass == .regular {
+            content
+                .scrollContentBackground(.hidden)
+                .background {
+                    Group {
+                        if useWallpaper { appearance.background } else { Color(.systemBackground) }
+                    }
+                    .ignoresSafeArea()
+                }
+        } else {
+            content
         }
     }
 }

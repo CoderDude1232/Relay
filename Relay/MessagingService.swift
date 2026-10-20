@@ -1345,12 +1345,24 @@ final class MessagingService {
     }
     private var pendingReceipts: [ReceiptKey: [Int64]] = [:]
 
+    /// The last sync copy queued; each one waits for the one before, so they
+    /// arrive in order (an unsend can't overtake its message).
+    private var syncSendTail: Task<Void, Never>?
+    /// When this device last fetched its own device list for sync copies.
+    private var ownDevicesRefreshedAt: Date?
+
+    /// Sends a copy to our other devices straight away, so a chat open on
+    /// another device shows the message as soon as it's sent.
     private func sendSyncToOwnDevices(
         content: Relay_Content_Content,
         peer: String,
         timestamp: Int64
     ) async {
-        afterTimingJitter(seconds: 2...12) { [weak self] in
+        let previous = syncSendTail
+        syncSendTail = Task { @MainActor [weak self] in
+            let background = UIApplication.shared.beginBackgroundTask(withName: "relay-sync-copy")
+            defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
+            await previous?.value
             await self?.sendSyncToOwnDevicesNow(content: content, peer: peer, timestamp: timestamp)
         }
     }
@@ -1365,10 +1377,14 @@ final class MessagingService {
         guard let data = try? sync.serializedData(),
               let padded = try? ContentPadding.pad(data) else { return }
 
-        // Always fetch fresh to catch newly linked devices.
+        // Fetched fresh every few minutes to catch newly linked devices (a
+        // sealed send can't tell us about them), not before every copy.
         var devices: [PeerDevice]
         do {
-            try await refreshSessions(withPeer: credentials.accountId)
+            if ownDevicesRefreshedAt.map({ Date().timeIntervalSince($0) > 300 }) ?? true {
+                try await refreshSessions(withPeer: credentials.accountId)
+                ownDevicesRefreshedAt = Date()
+            }
             // Not knownMailboxDevices: an empty list (no other devices) isn't an error.
             devices = knownDevices(ofPeer: credentials.accountId)
                 .filter { $0.id != credentials.deviceId && !($0.mailboxId ?? "").isEmpty }
@@ -2235,13 +2251,19 @@ final class MessagingService {
 
             var peers: [LinkProvisioningPayload.PeerStub] = []
             let convList = conversations.filter { $0.groupId == nil && !$0.peerAccount.isEmpty }
-            if syncConversations {
-                peers = convList.prefix(50).map { .init(account: $0.peerAccount, username: $0.peerUsername) }
-            }
             var historyId: String?
             var historyKey: Data?
             var historyDigest: Data?
-            if syncHistory {
+            // With the encrypted chat list and history backup, the new device
+            // restores everything from them: bring both up to date first.
+            let chatListKey = chatListKeyForLinking
+            if chatListKey != nil {
+                await uploadAccountStorage()
+                await backUpHistoryIfDue(force: true)
+            } else if syncConversations {
+                peers = convList.prefix(50).map { .init(account: $0.peerAccount, username: $0.peerUsername) }
+            }
+            if chatListKey == nil, syncHistory {
                 if let (id, key, digest) = try? await buildAndUploadHistory(conversations: convList) {
                     historyId = id
                     historyKey = key
@@ -2270,6 +2292,7 @@ final class MessagingService {
                 historyId: historyId,
                 historyKey: historyKey,
                 historyDigest: historyDigest,
+                chatListKey: chatListKey,
                 signature: signature
             )
             let plaintext = try JSONEncoder().encode(payload)
@@ -2279,6 +2302,9 @@ final class MessagingService {
             await removeUnprovisionedDevice(deviceId)
             throw error
         }
+
+        // The next sync copy fetches the device list again, so it reaches the new device.
+        ownDevicesRefreshedAt = nil
 
         // Record the link in the Relay chat so it can't happen silently.
         postRelayNotice("A new device (device \(deviceId)) was linked to your account. \(Self.untrustedDeviceAdvice)")
@@ -3958,6 +3984,18 @@ final class MessagingService {
         let receiptable = unread.filter { $0.senderAccount != Self.systemSender }
         let peer = try? peerAccount(for: conversationId)
         let hasRealPeer = peer != relayOfficialAccount && peer != noteToSelfAccount
+        // Our other devices mark the chat read too, whatever the receipt setting.
+        if hasRealPeer, let upTo = unread.map(\.timestamp).max() {
+            var sync = Relay_Content_Content()
+            sync.receipt.type = .read
+            sync.receipt.messageTimestamps = [upTo]
+            if let group = group(for: conversationId) {
+                sync.groupID = group.id
+                await sendSyncToOwnDevices(content: sync, peer: group.id, timestamp: Int64(Date().timeIntervalSince1970 * 1000))
+            } else if let peer {
+                await sendSyncToOwnDevices(content: sync, peer: peer, timestamp: Int64(Date().timeIntervalSince1970 * 1000))
+            }
+        }
         guard sendReadReceipts, hasRealPeer, !receiptable.isEmpty else { return }
         if let group = group(for: conversationId) {
             let byAuthor = Dictionary(grouping: receiptable) { $0.senderAccount ?? "" }

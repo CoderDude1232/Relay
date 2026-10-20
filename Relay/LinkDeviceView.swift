@@ -86,6 +86,31 @@ struct LinkDeviceView: View {
                 description: Text("On your new device, choose “Link existing device” to show its code, then scan it here.")
             )
 
+            if service.chatListKeyForLinking != nil {
+                Label("Your chats and message history come across from your encrypted backup.",
+                      systemImage: "lock.icloud.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else {
+                legacySyncOptions
+            }
+
+            Spacer()
+
+            Button {
+                phase = .scanning
+            } label: {
+                Label("Scan Device Code", systemImage: "qrcode.viewfinder")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.horizontal)
+        }
+    }
+
+    /// Accounts without an encrypted chat list copy a little history across instead.
+    private var legacySyncOptions: some View {
             VStack(spacing: 0) {
                 Toggle(isOn: $syncConversations) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -111,18 +136,6 @@ struct LinkDeviceView: View {
             }
             .background(.ultraThinMaterial, in: .rect(cornerRadius: 14))
             .padding(.horizontal)
-
-            Spacer()
-
-            Button {
-                phase = .scanning
-            } label: {
-                Label("Scan Device Code", systemImage: "qrcode.viewfinder")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .padding(.horizontal)
-        }
         .padding(.top, 24)
     }
 
@@ -181,10 +194,12 @@ struct LinkDeviceView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("This device will receive").font(.headline)
                     Label("Your account identity — it can send and receive messages as you", systemImage: "key.fill")
-                    if syncConversations {
+                    if service.chatListKeyForLinking != nil {
+                        Label("Your chats and message history, from your encrypted backup", systemImage: "bubble.left.and.bubble.right.fill")
+                    } else if syncConversations {
                         Label("Your conversation list (up to 50 chats)", systemImage: "bubble.left.and.bubble.right.fill")
                     }
-                    if syncHistory {
+                    if service.chatListKeyForLinking == nil, syncHistory {
                         Label("Recent message history (up to 50 messages per chat)", systemImage: "clock.arrow.circlepath")
                     }
                     Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Profile → Linked Devices.")

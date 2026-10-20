@@ -115,7 +115,9 @@ extension MessagingService {
         guard (1...999).contains(chunks.count) else { return }
         do {
             let existing = try await apiClient.historySegments()
-            let generation = (existing.map { $0.seq / 1000 }.max() ?? 0) + 1
+            // Seconds since 1970, so two devices backing up at once don't
+            // write into the same generation; the newest complete one wins.
+            let generation = max((existing.map { $0.seq / 1000 }.max() ?? 0) + 1, Int64(now))
             for (index, chunk) in chunks.enumerated() {
                 let part = "\(index + 1)/\(chunks.count)"
                 let sealed = try AES.GCM.seal(chunk, using: key, authenticating: Self.historyAD(generation, part))

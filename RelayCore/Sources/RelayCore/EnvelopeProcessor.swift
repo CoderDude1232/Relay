@@ -828,6 +828,17 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         case .receipt(let receipt):
             let conversationId = try chatConversation()
             let status: MessageStatus = receipt.type == .read ? .read : .delivered
+            if isSyncMessage {
+                // Read on another of our devices: the chat is read here too,
+                // up to the newest message read there. Nothing is sent back.
+                guard receipt.type == .read, let upTo = receipt.messageTimestamps.max() else {
+                    return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount, conversationId: conversationId)
+                }
+                try storage.messages.markIncomingRead(conversationId: conversationId, upTo: upTo)
+                var result = ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, conversationId: conversationId)
+                result.removesNotifications = true
+                return result
+            }
             if groupId != nil {
                 // Group: record this member's state on the author's message.
                 try storage.messages.recordGroupReceipt(

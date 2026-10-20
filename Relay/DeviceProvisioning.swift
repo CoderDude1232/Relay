@@ -40,7 +40,8 @@ struct LinkQRPayload: Codable {
 }
 
 /// Sealed by the primary with `ProvisioningCipher`: the shared identity key,
-/// the new device's credentials, and optional history sync.
+/// the new device's credentials, and the key to the account's encrypted
+/// chat list and history (or, without one, an optional history copy).
 struct LinkProvisioningPayload: Codable {
     struct PeerStub: Codable {
         let account: String
@@ -59,6 +60,10 @@ struct LinkProvisioningPayload: Codable {
     let historyId: String?
     let historyKey: Data?
     let historyDigest: Data?
+    /// The chat list's content key. With it the new device opens the
+    /// encrypted chat list and message-history backup itself, so nothing
+    /// else is copied across. Nil for accounts without them.
+    var chatListKey: Data? = nil
     /// Signature by the account identity key over a transcript binding this
     /// session, the new device's ephemeral key, and the granted credentials.
     /// Optional only so legacy payloads decode; the new device rejects a

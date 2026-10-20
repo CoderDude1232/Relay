@@ -273,6 +273,7 @@ struct ConversationListView: View {
                 }
             }
             .animation(.spring(duration: 0.22), value: selectedIds.count)
+            .modifier(SidebarListBackground(useWallpaper: true))
             .sidebarTabBar()
             .navigationSplitViewColumnWidth(min: 300, ideal: 360)
         } detail: {
@@ -445,7 +446,7 @@ struct ConversationListView: View {
     private func rowBackground(for conversation: Conversation) -> some View {
         if horizontalSizeClass == .regular, !isEditing, conversation.id == selectedConversationId {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.accentColor.opacity(0.14))
+                .fill(Color.primary.opacity(0.1))
                 .padding(.horizontal, 8)
         } else if conversation.isPinned {
             RoundedRectangle(cornerRadius: 14, style: .continuous)

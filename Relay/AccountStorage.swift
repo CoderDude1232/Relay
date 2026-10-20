@@ -217,6 +217,17 @@ extension MessagingService {
         }
     }
 
+    /// The key a newly linked device needs to open the chat list and history.
+    var chatListKeyForLinking: Data? { contentKey }
+
+    /// A linked device: takes the key from the device that linked it, then
+    /// brings back the chat list (the message history follows once connected).
+    func adoptLinkedChatListKey(_ key: Data) async {
+        guard key.count == 32 else { return }
+        setKV(Self.contentKeyKV, key)
+        await restoreAccountStorage()
+    }
+
     /// Remembers the key from the account password. If the content key is known
     /// (password change), the password slot is rewrapped so passkeys keep working.
     func setAccountStorageKey(password: String) async {
