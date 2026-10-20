@@ -77,7 +77,7 @@ struct CallsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        AdaptiveNavigation {
             Group {
                 if service.callHistory.isEmpty {
                     ContentUnavailableView {
@@ -155,6 +155,8 @@ struct CallsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+        } placeholder: {
+            CallsPlaceholder(service: service)
         }
     }
 }
@@ -274,4 +276,24 @@ private struct CallHistoryRow: View {
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
+}
+
+/// Beside the call list on iPad.
+private struct CallsPlaceholder: View {
+    let service: MessagingService
+    @State private var showingCallLinks = false
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Call Links", systemImage: "link")
+        } description: {
+            Text("Share a link to start a group call with anyone on Relay.")
+        } actions: {
+            if !service.isDemoAccount {
+                Button("Open Call Links") { showingCallLinks = true }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .sheet(isPresented: $showingCallLinks) { CallLinksView(service: service) }
+    }
 }

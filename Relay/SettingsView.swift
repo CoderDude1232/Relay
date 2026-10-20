@@ -31,7 +31,7 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        AdaptiveNavigation {
             List {
 
                 // MARK: Profile
@@ -188,6 +188,12 @@ struct SettingsView: View {
             .navigationDestination(isPresented: $showingPanicSettings) {
                 PanicModeSheet(manager: panicMode)
             }
+        } placeholder: {
+            ContentUnavailableView(
+                "Settings",
+                systemImage: "gearshape",
+                description: Text("Choose a setting from the list.")
+            )
         }
     }
 

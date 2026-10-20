@@ -367,6 +367,7 @@ struct MainTabView: View {
     @State private var groupCallMinimized = false
     @State private var deepLinkError: String?
     @State private var selectedTab = 0
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var joinGroupError: String?
     @State private var inviteError: String?
     @State private var pendingLinkAction: PendingLinkAction?
@@ -507,8 +508,32 @@ struct MainTabView: View {
         service.myDisplayName ?? service.username ?? "?"
     }
 
-    var body: some View {
-        ZStack(alignment: .bottom) {
+    /// Room left under a minimized call bar for the tab bar (none beside the rail).
+    private var tabBarInset: CGFloat { horizontalSizeClass == .regular ? 12 : 49 }
+
+    /// iPhone: the standard tab bar. iPad (and other wide windows): each
+    /// tab is a split view and the tabs float at the foot of its list
+    /// column, so chats get the full height. All three stay alive so
+    /// switching keeps each one's place.
+    @ViewBuilder
+    private var tabs: some View {
+        if horizontalSizeClass == .regular {
+            ZStack {
+                ConversationListView(service: service)
+                    .railPage(selectedTab == 0)
+                CallsView(service: service)
+                    .railPage(selectedTab == 1)
+                SettingsView(service: service)
+                    .railPage(selectedTab == 2)
+            }
+            .environment(\.sidebarTabs, SidebarTabs(
+                selection: $selectedTab,
+                chatsBadge: totalUnread,
+                callsBadge: unseenMissedCalls,
+                avatarData: service.myAvatarData,
+                profileName: profileName
+            ))
+        } else {
             TabView(selection: $selectedTab) {
                 Tab("Chats", systemImage: "bubble.left.and.bubble.right.fill", value: 0) {
                     ConversationListView(service: service)
@@ -530,6 +555,12 @@ struct MainTabView: View {
                     }
                 }
             }
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            tabs
 
             // Floats above the tab bar without moving any content.
             if isCallActive && callMinimized {
@@ -538,7 +569,7 @@ struct MainTabView: View {
                     peerName: callPeerName,
                     onReturn: { withAnimation(.spring(duration: 0.3)) { callMinimized = false } }
                 )
-                .padding(.bottom, 49) // tab bar height
+                .padding(.bottom, tabBarInset)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(1)
             }
@@ -572,7 +603,7 @@ struct MainTabView: View {
                         : "\(callManager.groupPeers.count + 1) in call",
                     onEnd: { callManager.leaveGroupCall() }
                 )
-                .padding(.bottom, 49)
+                .padding(.bottom, tabBarInset)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(1)
             }
@@ -730,6 +761,15 @@ private struct ExpiredSessionView: View {
 // MARK: - Profile tab icon
 
 // .alwaysOriginal stops the tab bar from tinting the photo.
+private extension View {
+    /// One of the iPad tabs: kept alive, shown only when selected.
+    func railPage(_ selected: Bool) -> some View {
+        opacity(selected ? 1 : 0)
+            .allowsHitTesting(selected)
+            .accessibilityHidden(!selected)
+    }
+}
+
 private struct ProfileTabIcon: View {
     let data: Data?
     let name: String

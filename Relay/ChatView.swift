@@ -369,16 +369,6 @@ struct ChatView: View {
         .toolbarBackground(.clear, for: .navigationBar)
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .toolbar {
-            if horizontalSizeClass == .regular, let onClose {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        onClose()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .accessibilityLabel("Back")
-                    }
-                }
-            }
             ToolbarItem(placement: .principal) {
                 Button {
                     if isRelayOfficial { }

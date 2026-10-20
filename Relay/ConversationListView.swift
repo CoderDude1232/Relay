@@ -16,6 +16,7 @@ struct ConversationListView: View {
 
     @Environment(AppModel.self) private var model
     @Environment(ChatAppearance.self) private var appearance
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showingNewChatSheet = false
     @State private var showingNewGroup = false
     @State private var selectedConversationId: String?
@@ -272,6 +273,7 @@ struct ConversationListView: View {
                 }
             }
             .animation(.spring(duration: 0.22), value: selectedIds.count)
+            .sidebarTabBar()
             .navigationSplitViewColumnWidth(min: 300, ideal: 360)
         } detail: {
             if let conversationId = selectedConversationId {
@@ -435,6 +437,23 @@ struct ConversationListView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+    }
+
+    /// Beside the open chat (iPad), its row stays highlighted; pinned chats
+    /// keep their tint otherwise.
+    @ViewBuilder
+    private func rowBackground(for conversation: Conversation) -> some View {
+        if horizontalSizeClass == .regular, !isEditing, conversation.id == selectedConversationId {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.accentColor.opacity(0.14))
+                .padding(.horizontal, 8)
+        } else if conversation.isPinned {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.orange.opacity(0.07))
+                .padding(.horizontal, 8)
+        } else {
+            Color.clear
+        }
     }
 
     private func finishEditing() {
@@ -607,13 +626,7 @@ struct ConversationListView: View {
                     .tint(.gray)
                 }
                 .listRowSeparator(.hidden)
-                .listRowBackground(
-                    conversation.isPinned
-                        ? RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.orange.opacity(0.07))
-                            .padding(.horizontal, 8)
-                        : nil
-                )
+                .listRowBackground(rowBackground(for: conversation))
                 .contextMenu {
                     if panicMode.isEnabled {
                         Button {
