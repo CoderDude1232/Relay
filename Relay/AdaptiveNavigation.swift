@@ -20,43 +20,46 @@ struct AdaptiveNavigation<Sidebar: View, Placeholder: View>: View {
         if horizontalSizeClass == .regular {
             NavigationSplitView {
                 sidebar
-                    .modifier(SidebarListBackground(enabled: true, useWallpaper: false))
+                    .modifier(ThemedPageBackground(isSidebar: true))
                     .sidebarTabBar()
                     .navigationSplitViewColumnWidth(min: 300, ideal: 360)
             } detail: {
                 // Its own stack, so pages opened from a page get a back button.
-                NavigationStack { placeholder }
+                NavigationStack {
+                    placeholder
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .modifier(ThemedPageBackground())
+                }
             }
             .navigationSplitViewStyle(.balanced)
         } else {
             NavigationStack {
                 sidebar
+                    .modifier(ThemedPageBackground())
             }
         }
     }
 }
 
-/// iPad list columns: plain black or white like the rest of the app (not the
-/// sidebar's grey), or for the chat list the chat wallpaper, so the list and
-/// the open chat share one background.
+/// Behind a tab's lists and pages: the theme when one is set (on iPhone
+/// too), otherwise plain black or white in an iPad list column rather than
+/// the sidebar's grey.
 ///
-/// `enabled` comes from outside the split view: its list column is always
+/// `isSidebar` comes from outside the split view: its list column is always
 /// compact-width, even on iPad.
-struct SidebarListBackground: ViewModifier {
-    let enabled: Bool
-    let useWallpaper: Bool
+struct ThemedPageBackground: ViewModifier {
+    var isSidebar = false
     @Environment(ChatAppearance.self) private var appearance
 
     func body(content: Content) -> some View {
-        if enabled {
+        if appearance.hasWallpaper {
             content
                 .scrollContentBackground(.hidden)
-                .background {
-                    Group {
-                        if useWallpaper { appearance.background } else { Color(.systemBackground) }
-                    }
-                    .ignoresSafeArea()
-                }
+                .background { appearance.pageBackground.ignoresSafeArea() }
+        } else if isSidebar {
+            content
+                .scrollContentBackground(.hidden)
+                .background { Color(.systemBackground).ignoresSafeArea() }
         } else {
             content
         }

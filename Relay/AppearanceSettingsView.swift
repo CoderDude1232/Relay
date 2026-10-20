@@ -23,6 +23,7 @@ struct AppearanceSettingsView: View {
             .padding(.vertical, 20)
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .modifier(ThemedPageBackground())
         .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: wallpaperPhoto) { _, item in loadPhoto(item) }

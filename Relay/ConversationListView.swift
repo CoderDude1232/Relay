@@ -273,7 +273,7 @@ struct ConversationListView: View {
                 }
             }
             .animation(.spring(duration: 0.22), value: selectedIds.count)
-            .modifier(SidebarListBackground(enabled: horizontalSizeClass == .regular, useWallpaper: true))
+            .modifier(ThemedPageBackground(isSidebar: horizontalSizeClass == .regular))
             .sidebarTabBar()
             .navigationSplitViewColumnWidth(min: 300, ideal: 360)
         } detail: {
@@ -291,6 +291,8 @@ struct ConversationListView: View {
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text("Choose a conversation from the list.")
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(ThemedPageBackground())
             }
         }
         .onChange(of: model.pendingScanQR) { _, requested in
@@ -358,6 +360,7 @@ struct ConversationListView: View {
 
     private var labelChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
+            GlassContainer {
             HStack(spacing: DS.Spacing.sm) {
                 Pill(title: "All", isSelected: activeLabel == nil) { activeLabel = nil }
                 ForEach(usedLabels, id: \.self) { label in
@@ -370,7 +373,9 @@ struct ConversationListView: View {
             }
             .padding(.horizontal, DS.Spacing.lg)
             .padding(.vertical, DS.Spacing.sm)
+            }
         }
+        .scrollClipDisabled()
     }
 
     private var conversationSelectionBar: some View {

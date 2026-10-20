@@ -6,6 +6,7 @@
 //  Nothing here is shared or synced.
 //
 
+import CoreImage
 import SwiftUI
 import UIKit
 
@@ -97,11 +98,17 @@ final class ChatAppearance {
         didSet { defaults.set(bubbleTintHex, forKey: Keys.bubbleTint) }
     }
     private(set) var photoData: Data? {
-        didSet { photoImage = Self.decode(photoData) }
+        didSet {
+            photoImage = Self.decode(photoData)
+        softenedPhoto = Self.soften(photoImage)
+            softenedPhoto = Self.soften(photoImage)
+        }
     }
     /// `photoData` decoded once, so chat backgrounds don't re-decode the
     /// full-size photo on every render.
     private(set) var photoImage: UIImage?
+    /// A small, blurred copy of the photo for behind lists and pages.
+    private(set) var softenedPhoto: UIImage?
 
     private let defaults = UserDefaults.standard
     private enum Keys { static let wallpaper = "chat.wallpaper", bubbleTint = "chat.bubbleTint" }
@@ -124,6 +131,16 @@ final class ChatAppearance {
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
             ofItemAtPath: url.path
         )
+    }
+
+    /// Downscaled, then blurred once, so pages don't blur a full-size photo
+    /// on every render.
+    private static func soften(_ image: UIImage?) -> UIImage? {
+        guard let image, let small = image.preparingThumbnail(of: CGSize(width: 240, height: 240 * image.size.height / max(image.size.width, 1))),
+              let input = CIImage(image: small) else { return nil }
+        let blurred = input.clampedToExtent().applyingGaussianBlur(sigma: 14).cropped(to: input.extent)
+        guard let cg = CIContext().createCGImage(blurred, from: input.extent) else { return nil }
+        return UIImage(cgImage: cg)
     }
 
     private static func decode(_ data: Data?) -> UIImage? {
@@ -164,12 +181,26 @@ final class ChatAppearance {
         }
     }
 
+    /// Whether a wallpaper is in use (a photo wallpaper whose file is gone isn't).
+    var hasWallpaper: Bool {
+        switch wallpaper {
+        case .none: false
+        case .photo: photoImage != nil
+        default: true
+        }
+    }
+
+    /// Behind a chat: the wallpaper itself.
     @ViewBuilder
     var background: some View {
         switch wallpaper {
         case .photo:
             if let ui = photoImage {
-                Image(uiImage: ui).resizable().scaledToFill()
+                // Sized to the space it's given and clipped, so a portrait
+                // photo in a wide iPad column doesn't spill past it.
+                Color.clear
+                    .overlay { Image(uiImage: ui).resizable().scaledToFill() }
+                    .clipped()
             } else {
                 Color(.systemBackground)
             }
@@ -179,6 +210,20 @@ final class ChatAppearance {
             } else {
                 Color(.systemBackground)
             }
+        }
+    }
+
+    /// Behind lists and pages (chat list, calls, profile): the same theme,
+    /// with a photo softened so text on it stays readable.
+    @ViewBuilder
+    var pageBackground: some View {
+        if wallpaper == .photo, let soft = softenedPhoto {
+            Color.clear
+                .overlay { Image(uiImage: soft).resizable().scaledToFill() }
+                .clipped()
+                .overlay(Color(.systemBackground).opacity(0.55))
+        } else {
+            background
         }
     }
 

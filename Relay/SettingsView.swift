@@ -384,6 +384,7 @@ private struct AccountSettingsView: View {
                 }
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showingPasswordSheet) {
@@ -500,6 +501,7 @@ private struct ChatsSettingsView: View {
                 Text("Blocked accounts can't message or call you.")
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Chats")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -560,6 +562,7 @@ private struct DataStorageSettingsView: View {
                 }
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Data & Storage")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -717,6 +720,7 @@ struct PrivacySettingsView: View {
                 Text("Policies & Legal")
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -991,6 +995,7 @@ private struct SecuritySettingsView: View {
                 }
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Security")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showingPanicSettings) {
