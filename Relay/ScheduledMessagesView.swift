@@ -54,6 +54,7 @@ struct ScheduledMessagesView: View {
                 .listStyle(.insetGrouped)
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Scheduled")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { refresh() }

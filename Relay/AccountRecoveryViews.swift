@@ -125,6 +125,7 @@ struct RecoveryKeySignInSheet: View {
                         .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Recovery Key")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -273,6 +274,7 @@ struct RecoveryKeyView: View {
                 }
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Recovery Key")
         .navigationBarTitleDisplayMode(.inline)
         .overlay { if working { ProgressView() } }
@@ -435,6 +437,7 @@ struct RemoveEmailSheet: View {
                 }
                 .padding(24)
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Remove Email")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

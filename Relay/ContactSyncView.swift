@@ -133,6 +133,7 @@ struct ContactSyncView: View {
                 }
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Contact Syncing")
         .navigationBarTitleDisplayMode(.inline)
         .alert("Find Contacts on Relay?", isPresented: $showingConsent) {

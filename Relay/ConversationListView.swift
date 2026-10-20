@@ -17,6 +17,7 @@ struct ConversationListView: View {
     @Environment(AppModel.self) private var model
     @Environment(ChatAppearance.self) private var appearance
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @FocusState private var searchFocused: Bool
     @State private var showingNewChatSheet = false
     @State private var showingNewGroup = false
     @State private var selectedConversationId: String?
@@ -94,6 +95,8 @@ struct ConversationListView: View {
             }
             .navigationTitle("Chats")
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search messages").incognitoKeyboard()
+            .searchFocused($searchFocused)
+            .background { keyboardShortcuts }
             .onAppear {
                 // Notification taps that arrived while this view was off-screen.
                 if let id = model.pendingNotificationConversationId {
@@ -127,6 +130,7 @@ struct ConversationListView: View {
                         Button { showingNewChatSheet = true } label: {
                             Image(systemName: "square.and.pencil")
                         }
+                        .keyboardShortcut("n", modifiers: .command)
                         .accessibilityLabel("New Chat")
                     }
                 }
@@ -460,6 +464,29 @@ struct ConversationListView: View {
         } else {
             Color.clear
         }
+    }
+
+    /// Hardware-keyboard shortcuts with no button of their own: search, and
+    /// stepping through the chat list.
+    private var keyboardShortcuts: some View {
+        Group {
+            Button("Search") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+            Button("Previous Chat") { stepChat(by: -1) }
+                .keyboardShortcut(.upArrow, modifiers: .command)
+            Button("Next Chat") { stepChat(by: 1) }
+                .keyboardShortcut(.downArrow, modifiers: .command)
+        }
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    private func stepChat(by offset: Int) {
+        let list = visibleConversations
+        guard !list.isEmpty else { return }
+        let current = selectedConversationId.flatMap { id in list.firstIndex { $0.id == id } }
+        let next = current.map { min(max($0 + offset, 0), list.count - 1) } ?? (offset > 0 ? 0 : list.count - 1)
+        openConversation(list[next].id)
     }
 
     private func finishEditing() {

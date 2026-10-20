@@ -26,6 +26,7 @@ struct ChatView: View {
     var initialMessageId: String? = nil
 
     @Environment(ChatAppearance.self) private var appAppearance
+    @Environment(\.dynamicTypeSize) private var composerDynamicType
     /// This chat's own theme if it has one, otherwise the app's.
     private var appearance: ChatAppearance { appAppearance.theme(forChat: conversationId) ?? appAppearance }
     @Environment(CallManager.self) private var callManager
@@ -159,6 +160,7 @@ struct ChatView: View {
     private var rawScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
+                VStack(spacing: 0) {
                 LazyVStack(spacing: 0) {
                     if service.hasEarlierMessages && initialScrollDone {
                         Button("Load Earlier Messages") {
@@ -226,6 +228,13 @@ struct ChatView: View {
                             .id(Self.typingAnchor)
                             .transition(.opacity)
                     }
+                }
+                // Always laid out (it's outside the lazy stack), so scrolling
+                // to it reaches the real bottom even when rows above are
+                // still estimated.
+                Color.clear
+                    .frame(height: 1)
+                    .id(Self.bottomAnchor)
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
@@ -850,6 +859,7 @@ struct ChatView: View {
     }
 
     private static let typingAnchor = "typing-indicator"
+    private static let bottomAnchor = "chat-bottom"
     private static let maxDraftLines = 4
     private static let composerControlHeight: CGFloat = 44
     private static let composerAccessoryWidth: CGFloat = 48
@@ -858,11 +868,17 @@ struct ChatView: View {
         let action = {
             if service.typingConversations.contains(conversationId) {
                 proxy.scrollTo(Self.typingAnchor, anchor: .bottom)
-            } else if let last = service.activeMessages.last {
-                proxy.scrollTo(last.id, anchor: .bottom)
+            } else if !service.activeMessages.isEmpty {
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
         }
         if animated { withAnimation(.snappy) { action() } } else { action() }
+        // Rows not yet drawn are measured by estimate, so a jump can land short
+        // of the bottom (most with large text); later passes, once those rows
+        // have real heights, finish it.
+        for delay in animated ? [0.35] : [0.05, 0.2, 0.6] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { action() }
+        }
     }
 
     private var safetyNumberChangedBanner: some View {
@@ -1238,11 +1254,13 @@ struct ChatView: View {
 
                         FormattingTextEditor(
                             text: $draft,
-                            placeholder: isNoteToSelf ? "Write a note…" : "Message \(peerName)…",
+                            placeholder: isNoteToSelf ? "Write a note…"
+                                : composerDynamicType.isAccessibilitySize ? "Message" : "Message \(peerName)…",
                             maxLines: Self.maxDraftLines,
                             context: composerContext,
                             isFocused: $composerFocused,
-                            incognito: incognitoKeyboard
+                            incognito: incognitoKeyboard,
+                            onSubmit: { send() }
                         )
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(minHeight: Self.composerControlHeight)
@@ -1390,6 +1408,8 @@ struct ChatView: View {
             .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
             .contentShape(.capsule)
             .glassCompat(in: .capsule)
+            .contentShape(.hoverEffect, .capsule)
+            .hoverEffect(.highlight)
     }
 
     private var composerSendIcon: some View {
@@ -1400,6 +1420,8 @@ struct ChatView: View {
             .contentShape(.capsule)
             .background(Color.accentColor, in: .capsule)
             .glassCompat(in: .capsule)
+            .contentShape(.hoverEffect, .capsule)
+            .hoverEffect(.highlight)
     }
 
     /// Replaces the composer for a chat someone else started.
@@ -2019,6 +2041,10 @@ private extension VerificationState {
 /// Wraps a bubble with swipe-to-reply plus custom quick reactions and actions.
 private struct MessageRow: View {
     /// Bubbles never grow past this, so lines stay readable on iPad.
+    /// Space kept on the far side of a bubble; less at accessibility text
+    /// sizes so the text gets more of the row.
+    static func sideGap(_ size: DynamicTypeSize) -> CGFloat { size.isAccessibilitySize ? 12 : 56 }
+
     static let maxBubbleWidth: CGFloat = 560
     let message: StoredMessage
     let position: BubblePosition
@@ -2038,6 +2064,7 @@ private struct MessageRow: View {
     let onBeginSelection: () -> Void
 
     @Environment(ChatAppearance.self) private var appearance
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var confirmDelete = false
     @State private var scamKind: ScamKind?
 
@@ -2140,7 +2167,7 @@ private struct MessageRow: View {
             // the UIKit layer so they don't fight the interaction.
             HStack(alignment: .bottom, spacing: 8) {
                 if message.isOutgoing {
-                    Spacer(minLength: 56)
+                    Spacer(minLength: MessageRow.sideGap(dynamicTypeSize))
                 } else if position.closesGroup {
                     AvatarView(name: rowAvatarName, size: 28, imageData: rowAvatarData)
                 } else {
@@ -2174,7 +2201,7 @@ private struct MessageRow: View {
                 // Readable line length on iPad and wide windows.
                 .frame(maxWidth: Self.maxBubbleWidth, alignment: message.isOutgoing ? .trailing : .leading)
 
-                if !message.isOutgoing { Spacer(minLength: 56) }
+                if !message.isOutgoing { Spacer(minLength: MessageRow.sideGap(dynamicTypeSize)) }
             }
         }
     }
@@ -2248,6 +2275,7 @@ private struct MessageBubble: View {
     var embedsAlignment: Bool = true
 
     @Environment(ChatAppearance.self) private var appearance
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// Chat-level link opener (in-app Safari for http/https), used after the
     /// user confirms a link from a received message.
     @Environment(\.openURL) private var parentOpenURL
@@ -2287,7 +2315,7 @@ private struct MessageBubble: View {
             if embedsAlignment {
                 HStack(alignment: .bottom, spacing: 8) {
                     if message.isOutgoing {
-                        Spacer(minLength: 56)
+                        Spacer(minLength: MessageRow.sideGap(dynamicTypeSize))
                     } else if position.closesGroup {
                         // Avatar only on the last bubble of a run.
                         AvatarView(name: avatarName, size: 28, imageData: avatarData)
@@ -2299,7 +2327,7 @@ private struct MessageBubble: View {
                         .frame(maxWidth: MessageRow.maxBubbleWidth,
                                alignment: message.isOutgoing ? .trailing : .leading)
 
-                    if !message.isOutgoing { Spacer(minLength: 56) }
+                    if !message.isOutgoing { Spacer(minLength: MessageRow.sideGap(dynamicTypeSize)) }
                 }
             } else {
                 coreColumn
@@ -2371,14 +2399,22 @@ private struct MessageBubble: View {
                     .foregroundStyle(.tint)
                     .padding(.leading, 4)
             }
-            bubbleContent
-                .overlay(alignment: message.isOutgoing ? .bottomLeading : .bottomTrailing) {
-                    if !message.reactions.isEmpty {
-                        ReactionBadges(chips: reactionChips, onTap: { reactionDetailEmoji = $0 })
-                            .offset(x: message.isOutgoing ? -6 : 6, y: 14)
-                    }
+            if dynamicTypeSize.isAccessibilitySize, !message.reactions.isEmpty {
+                // Large reactions would cover the time; they go under the bubble.
+                VStack(alignment: message.isOutgoing ? .leading : .trailing, spacing: 4) {
+                    bubbleContent
+                    ReactionBadges(chips: reactionChips, onTap: { reactionDetailEmoji = $0 })
                 }
-                .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
+            } else {
+                bubbleContent
+                    .overlay(alignment: message.isOutgoing ? .bottomLeading : .bottomTrailing) {
+                        if !message.reactions.isEmpty {
+                            ReactionBadges(chips: reactionChips, onTap: { reactionDetailEmoji = $0 })
+                                .offset(x: message.isOutgoing ? -6 : 6, y: 14)
+                        }
+                    }
+                    .padding(.bottom, message.reactions.isEmpty ? 0 : 16)
+            }
         }
     }
 
@@ -2476,10 +2512,20 @@ private struct MessageBubble: View {
                             metadataRow
                         }
                     } else {
-                        HStack(alignment: .lastTextBaseline, spacing: 7) {
-                            Text(formattedBody(displayBody))
-                                .fixedSize(horizontal: false, vertical: true)
-                            metadataRow
+                        if dynamicTypeSize.isAccessibilitySize {
+                            // Large text gets the whole width; the time goes under it.
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Text(formattedBody(displayBody))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                metadataRow
+                            }
+                        } else {
+                            HStack(alignment: .lastTextBaseline, spacing: 7) {
+                                Text(formattedBody(displayBody))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                metadataRow
+                            }
                         }
                     }
                     if message.editedAt != nil {

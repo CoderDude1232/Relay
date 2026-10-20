@@ -42,6 +42,9 @@ struct FormattingTextEditor: UIViewRepresentable {
     /// Disables autocorrect, spell-check and smart punctuation so the keyboard
     /// doesn't learn from what's typed.
     var incognito: Bool = false
+    /// Return on a hardware keyboard sends (Shift-Return adds a line). The
+    /// on-screen keyboard's return key still adds a line.
+    var onSubmit: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -74,7 +77,8 @@ struct FormattingTextEditor: UIViewRepresentable {
     }
 
     func makeUIView(context ctx: Context) -> UITextView {
-        let tv = UITextView()
+        let tv = ComposerTextView()
+        tv.onSubmit = onSubmit
         tv.delegate = ctx.coordinator
         tv.backgroundColor = .clear
         tv.font = .preferredFont(forTextStyle: .body)
@@ -100,6 +104,7 @@ struct FormattingTextEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ tv: UITextView, context ctx: Context) {
+        (tv as? ComposerTextView)?.onSubmit = onSubmit
         context.textView = tv
         applyIncognito(to: tv)
         if tv.text != text { tv.text = text }
@@ -160,4 +165,27 @@ struct FormattingTextEditor: UIViewRepresentable {
             if !shouldHide { placeholderLabel?.isHidden = false }
         }
     }
+}
+
+/// Key commands only come from hardware keyboards, so this leaves the
+/// on-screen keyboard's return key alone.
+final class ComposerTextView: UITextView {
+    var onSubmit: (() -> Void)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard onSubmit != nil else { return super.keyCommands }
+        let send = UIKeyCommand(title: "Send", action: #selector(submit), input: "\r")
+        send.wantsPriorityOverSystemBehavior = true
+        let newline = UIKeyCommand(title: "New Line", action: #selector(insertNewline), input: "\r", modifierFlags: .shift)
+        newline.wantsPriorityOverSystemBehavior = true
+        return (super.keyCommands ?? []) + [send, newline]
+    }
+
+    @objc private func submit() {
+        // Mid-composition (e.g. Japanese input), Return confirms the text.
+        if markedTextRange != nil { unmarkText(); return }
+        onSubmit?()
+    }
+
+    @objc private func insertNewline() { insertText("\n") }
 }

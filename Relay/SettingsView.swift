@@ -24,6 +24,9 @@ struct SettingsView: View {
     @State private var versionTapCount = 0
     @State private var showingInvite = false
     @State private var showingQR = false
+    /// The page open beside the list on iPad, so its row stays highlighted.
+    @State private var openPage: String?
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var displayName: String {
         let name = service.myDisplayName ?? service.username
@@ -65,6 +68,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .tint(.primary)
+                    .listRowBackground(rowHighlight("profile"))
                     if !service.isDemoAccount, service.username != nil {
                         Button { showingQR = true } label: {
                             HStack(spacing: 14) {
@@ -81,25 +85,31 @@ struct SettingsView: View {
                 // storage/backup/sync inside Data & Storage, to keep this level short.
                 Section {
                     if service.username != nil {
-                        NavigationLink(destination: AccountSettingsView(service: service)) {
+                        NavigationLink(destination: AccountSettingsView(service: service).markOpen("account", in: $openPage)) {
                             SettingsNavRow(systemName: "person.crop.circle.fill", color: .accentColor, title: "Account")
                         }
+                        .listRowBackground(rowHighlight("account"))
                     }
-                    NavigationLink(destination: AppearanceSettingsView()) {
+                    NavigationLink(destination: AppearanceSettingsView().markOpen("appearance", in: $openPage)) {
                         SettingsNavRow(systemName: "paintbrush.fill", color: .accentColor, title: "Appearance")
                     }
-                    NavigationLink(destination: ChatsSettingsView(service: service)) {
+                    .listRowBackground(rowHighlight("appearance"))
+                    NavigationLink(destination: ChatsSettingsView(service: service).markOpen("chats", in: $openPage)) {
                         SettingsNavRow(systemName: "bubble.left.and.bubble.right.fill", color: .accentColor, title: "Chats")
                     }
-                    NavigationLink(destination: PrivacySettingsView(service: service)) {
+                    .listRowBackground(rowHighlight("chats"))
+                    NavigationLink(destination: PrivacySettingsView(service: service).markOpen("privacy", in: $openPage)) {
                         SettingsNavRow(systemName: "hand.raised.fill", color: .accentColor, title: "Privacy")
                     }
-                    NavigationLink(destination: SecuritySettingsView(service: service)) {
+                    .listRowBackground(rowHighlight("privacy"))
+                    NavigationLink(destination: SecuritySettingsView(service: service).markOpen("security", in: $openPage)) {
                         SettingsNavRow(systemName: "lock.shield.fill", color: .accentColor, title: "Security")
                     }
-                    NavigationLink(destination: DataStorageSettingsView(service: service)) {
+                    .listRowBackground(rowHighlight("security"))
+                    NavigationLink(destination: DataStorageSettingsView(service: service).markOpen("data", in: $openPage)) {
                         SettingsNavRow(systemName: "internaldrive.fill", color: .accentColor, title: "Data & Storage")
                     }
+                    .listRowBackground(rowHighlight("data"))
                 }
 
                 // MARK: Invite (hidden on demo accounts, which can't reach real users)
@@ -184,16 +194,43 @@ struct SettingsView: View {
             }
             .navigationDestination(isPresented: $showingEditProfile) {
                 EditProfileSheet(service: service) { avatarData = service.myAvatarData }
+                    .markOpen("profile", in: $openPage)
             }
             .navigationDestination(isPresented: $showingPanicSettings) {
                 PanicModeSheet(manager: panicMode)
             }
         } placeholder: {
-            ContentUnavailableView(
-                "Settings",
-                systemImage: "gearshape",
-                description: Text("Choose a setting from the list.")
-            )
+            profileCard
+                .onAppear { openPage = nil }
+        }
+    }
+
+    /// Beside the list on iPad, before a page is opened.
+    private var profileCard: some View {
+        VStack(spacing: 14) {
+            AvatarView(name: displayName, size: 110, imageData: avatarData)
+            VStack(spacing: 4) {
+                Text(displayName)
+                    .font(.title2.bold())
+                if let username = service.username {
+                    Text("@\(username)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Button("Edit Profile") { showingEditProfile = true }
+                .buttonStyle(.bordered)
+                .padding(.top, 4)
+        }
+        .padding()
+    }
+
+    /// The open page's row, highlighted on iPad like the open chat.
+    @ViewBuilder
+    private func rowHighlight(_ page: String) -> some View {
+        if horizontalSizeClass == .regular, openPage == page {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.1))
         }
     }
 
@@ -816,6 +853,7 @@ private struct DataRetentionView: View {
                     .padding(.top, 4)
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Data & Retention")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -876,6 +914,7 @@ private struct StorageSettingsView: View {
                 LabeledContent("Location", value: "App Group Container")
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { cacheSize = attachmentCacheSize() }
@@ -1136,6 +1175,7 @@ private struct EditProfileSheet: View {
                     }
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Edit Profile")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1334,6 +1374,7 @@ struct PanicModeSheet: View {
                     }
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Panic Mode")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1486,6 +1527,7 @@ private struct ChangeUsernameSheet: View {
                     }
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Change Username")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1664,6 +1706,7 @@ struct AcknowledgementsView: View {
                 Text("Relay is built on these open-source projects and their dependencies. Full licence texts are available at the linked repositories.")
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Acknowledgements")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -1829,6 +1872,7 @@ private struct ChangeEmailSheet: View {
                     }
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Change Email")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1906,6 +1950,7 @@ private struct AccountPasswordSheet: View {
                         .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Account Password")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1933,5 +1978,13 @@ private struct AccountPasswordSheet: View {
             }
             saving = false
         }
+    }
+}
+
+private extension View {
+    /// Records this page as the open one while it's on screen (and through
+    /// pages opened from it, until another takes its place).
+    func markOpen(_ page: String, in openPage: Binding<String?>) -> some View {
+        onAppear { openPage.wrappedValue = page }
     }
 }

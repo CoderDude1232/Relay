@@ -57,6 +57,7 @@ struct PasskeysView: View {
                 .disabled(isCreating || passkeys.count >= 10)
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Passkeys")
         .navigationBarTitleDisplayMode(.inline)
         .task { await reload() }

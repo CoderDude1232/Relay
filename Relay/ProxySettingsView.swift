@@ -94,6 +94,7 @@ struct ProxySettingsView: View {
                 }
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Proxy")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Do you trust whoever runs this proxy?", isPresented: $confirmingTrust, titleVisibility: .visible) {

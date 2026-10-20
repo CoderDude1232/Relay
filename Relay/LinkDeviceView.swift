@@ -488,6 +488,7 @@ struct LinkedDevicesView: View {
                 }
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Linked Devices")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

@@ -46,6 +46,7 @@ struct BlockedContactsView: View {
                 .listStyle(.insetGrouped)
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Blocked")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(

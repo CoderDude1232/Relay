@@ -123,6 +123,7 @@ struct ChatFoldersView: View {
                 Text("Long-press a chat in the list and choose Move to Folder. Folders are kept on this device only. Deleting a folder doesn't delete its chats.")
             }
         }
+        .modifier(ThemedPageBackground())
         .navigationTitle("Chat Folders")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { EditButton() }

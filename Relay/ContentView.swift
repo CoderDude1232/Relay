@@ -526,6 +526,7 @@ struct MainTabView: View {
                 SettingsView(service: service)
                     .railPage(selectedTab == 2)
             }
+            .background { tabShortcuts }
             .environment(\.sidebarTabs, SidebarTabs(
                 selection: $selectedTab,
                 chatsBadge: totalUnread,
@@ -556,6 +557,17 @@ struct MainTabView: View {
                 }
             }
         }
+    }
+
+    /// ⌘1–⌘3 switch tabs from a hardware keyboard.
+    private var tabShortcuts: some View {
+        Group {
+            Button("Chats") { selectedTab = 0 }.keyboardShortcut("1", modifiers: .command)
+            Button("Calls") { selectedTab = 1 }.keyboardShortcut("2", modifiers: .command)
+            Button("Profile") { selectedTab = 2 }.keyboardShortcut("3", modifiers: .command)
+        }
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     var body: some View {

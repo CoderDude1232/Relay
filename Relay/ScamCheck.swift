@@ -517,8 +517,28 @@ struct ScamWarningView: View {
     let senderName: String
     let onDismiss: () -> Void
 
+    private var warningIcon: some View {
+        Image(systemName: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+    }
+
+    private var title: some View {
+        Text(kind.title)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.primary)
+            .multilineTextAlignment(.leading)
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.down")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(expanded ? 180 : 0))
+    }
+
     @State private var reporting = false
     @State private var expanded = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -532,18 +552,25 @@ struct ScamWarningView: View {
                     }
                 }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(kind.title)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-                    Spacer(minLength: 4)
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        // Large text: the title gets its own full-width line.
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                warningIcon
+                                Spacer(minLength: 4)
+                                chevron
+                            }
+                            title
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            warningIcon
+                            title
+                            Spacer(minLength: 4)
+                            chevron
+                        }
+                    }
                 }
                 .contentShape(.rect)
             }

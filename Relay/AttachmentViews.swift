@@ -47,6 +47,7 @@ struct VoiceNoteBubble<Trailing: View>: View {
     @State private var showTranscript = false
     @Environment(\.relayIsMessageRequest) private var inRequest
     @Environment(ChatAppearance.self) private var appearance
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var tint: Color { isOutgoing ? .white : .primary }
     /// Behind Face ID in this chat: shown as a locked player (no waveform,
@@ -78,30 +79,11 @@ struct VoiceNoteBubble<Trailing: View>: View {
                     VoiceWaveform(levels: locked ? [] : levels, progress: player.progress, tint: tint)
                         .frame(height: 24)
                         .accessibilityHidden(true)
-                    HStack(spacing: 6) {
-                        Text(heldForRequest ? "Accept to play" : locked ? "Tap to unlock" : failed ? "Couldn't load" : label)
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(tint.opacity(0.75))
-                        Spacer(minLength: 0)
-                        if player.isPlaying || player.progress > 0 {
-                            Button {
-                                player.cycleRate()
-                            } label: {
-                                Text(rateLabel)
-                                    .font(.caption2.weight(.bold).monospacedDigit())
-                                    .foregroundStyle(tint)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 2)
-                                    .background(tint.opacity(0.18), in: .capsule)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Playback speed \(rateLabel)")
-                        }
-                        trailing
-                    }
+                    durationLine
                 }
             }
-            .frame(width: 220)
+            .frame(width: dynamicTypeSize.isAccessibilitySize ? nil : 220)
+            .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : nil, alignment: .leading)
 
             if locked {
                 EmptyView()
@@ -138,6 +120,53 @@ struct VoiceNoteBubble<Trailing: View>: View {
         .task(id: "\(attachment.id)|\(heldForRequest)") {
             guard !heldForRequest else { return }
             await load()
+        }
+    }
+
+    /// Duration (or status), the speed button while playing, and the time and
+    /// status passed in. At accessibility text sizes the time gets its own line.
+    @ViewBuilder
+    private var durationLine: some View {
+        let status = Text(heldForRequest ? "Accept to play" : locked ? "Tap to unlock" : failed ? "Couldn't load" : label)
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(tint.opacity(0.75))
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    status
+                    Spacer(minLength: 0)
+                    rateButton
+                }
+                HStack {
+                    Spacer(minLength: 0)
+                    trailing
+                }
+            }
+        } else {
+            HStack(spacing: 6) {
+                status
+                Spacer(minLength: 0)
+                rateButton
+                trailing
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var rateButton: some View {
+        if player.isPlaying || player.progress > 0 {
+            Button {
+                player.cycleRate()
+            } label: {
+                Text(rateLabel)
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(tint.opacity(0.18), in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Playback speed \(rateLabel)")
         }
     }
 
@@ -577,7 +606,6 @@ struct FullScreenImageView: View {
     let image: UIImage
     let service: MessagingService
     @Environment(\.dismiss) private var dismiss
-    @State private var scale: CGFloat = 1
     @State private var sharing = false
     @State private var forwarding = false
     @State private var chromeVisible = true
@@ -586,20 +614,10 @@ struct FullScreenImageView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .scaleEffect(scale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .gesture(
-                    MagnifyGesture()
-                        .onChanged { scale = max(1, $0.magnification) }
-                        .onEnded { _ in withAnimation(.spring(duration: 0.22)) { scale = 1 } }
-                )
-                .onTapGesture {
-                    guard scale == 1 else { return }
-                    withAnimation(.easeInOut(duration: 0.18)) { chromeVisible.toggle() }
-                }
+            ZoomableImageView(image: image) {
+                withAnimation(.easeInOut(duration: 0.18)) { chromeVisible.toggle() }
+            }
+            .ignoresSafeArea()
         }
         .overlay(alignment: .top) {
             if chromeVisible {
@@ -632,6 +650,7 @@ struct FullScreenImageView: View {
                     .glassCompat(in: .circle)
             }
             .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
             .accessibilityLabel("Close preview")
         }
         .padding(.horizontal, 20)
@@ -667,6 +686,98 @@ struct FullScreenImageView: View {
             .frame(width: 82, height: 62)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Zoomable image
+
+/// A photo that zooms like Photos: pinch (or trackpad pinch), pan when
+/// zoomed, double-tap to zoom in or back out; a single tap calls `onTap`.
+struct ZoomableImageView: UIViewRepresentable {
+    let image: UIImage
+    var onTap: () -> Void = {}
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = LayoutReportingScrollView()
+        scroll.onLayout = { [weak coordinator = context.coordinator, weak scroll] in
+            guard let coordinator, let scroll else { return }
+            coordinator.layout(in: scroll)
+        }
+        scroll.delegate = context.coordinator
+        scroll.minimumZoomScale = 1
+        scroll.maximumZoomScale = 6
+        scroll.showsVerticalScrollIndicator = false
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.backgroundColor = .clear
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFit
+        imageView.isAccessibilityElement = true
+        imageView.accessibilityLabel = "Photo"
+        imageView.accessibilityTraits = .image
+        scroll.addSubview(imageView)
+        context.coordinator.imageView = imageView
+
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTapped(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        scroll.addGestureRecognizer(doubleTap)
+        let singleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.singleTapped))
+        singleTap.require(toFail: doubleTap)
+        scroll.addGestureRecognizer(singleTap)
+        return scroll
+    }
+
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
+        context.coordinator.onTap = onTap
+        if context.coordinator.imageView?.image !== image {
+            context.coordinator.imageView?.image = image
+            scroll.zoomScale = 1
+        }
+        context.coordinator.layout(in: scroll)
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        weak var imageView: UIImageView?
+        var onTap: () -> Void = {}
+        private var laidOutFor: CGSize = .zero
+
+        /// Fits the image to the scroll view at zoom 1 (redone on rotation or resize).
+        func layout(in scroll: UIScrollView) {
+            guard let imageView, scroll.bounds.size != .zero, scroll.bounds.size != laidOutFor else { return }
+            laidOutFor = scroll.bounds.size
+            scroll.zoomScale = 1
+            imageView.frame = CGRect(origin: .zero, size: scroll.bounds.size)
+            scroll.contentSize = scroll.bounds.size
+        }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+
+        @objc func singleTapped() { onTap() }
+
+        @objc func doubleTapped(_ gesture: UITapGestureRecognizer) {
+            guard let scroll = gesture.view as? UIScrollView else { return }
+            if scroll.zoomScale > 1 {
+                scroll.setZoomScale(1, animated: true)
+            } else {
+                let point = gesture.location(in: imageView)
+                let size = CGSize(width: scroll.bounds.width / 3, height: scroll.bounds.height / 3)
+                scroll.zoom(to: CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
+                                       width: size.width, height: size.height), animated: true)
+            }
+        }
+    }
+}
+
+/// Calls back after layout, so the photo refits on rotation and window resizes.
+private final class LayoutReportingScrollView: UIScrollView {
+    var onLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
     }
 }
 
