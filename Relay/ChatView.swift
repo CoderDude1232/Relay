@@ -25,7 +25,9 @@ struct ChatView: View {
     /// Message to scroll to on open (e.g. a search hit) instead of the bottom.
     var initialMessageId: String? = nil
 
-    @Environment(ChatAppearance.self) private var appearance
+    @Environment(ChatAppearance.self) private var appAppearance
+    /// This chat's own theme if it has one, otherwise the app's.
+    private var appearance: ChatAppearance { appAppearance.theme(forChat: conversationId) ?? appAppearance }
     @Environment(CallManager.self) private var callManager
     @State private var isOnScreen = false
     @State private var confirmingBulkDelete = false
@@ -361,6 +363,8 @@ struct ChatView: View {
         .onAppear { isOnScreen = true }
         .onDisappear { isOnScreen = false }
         .background { appearance.background.ignoresSafeArea(.all) }
+        // Bubbles and labels in this chat follow its theme.
+        .environment(appearance)
         .environment(\.openURL, linkOpener)
         .sheet(item: $safariURL) { url in
             SafariView(url: url).ignoresSafeArea()

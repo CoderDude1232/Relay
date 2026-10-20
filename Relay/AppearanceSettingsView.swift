@@ -8,12 +8,35 @@ import SwiftUI
 import UIKit
 
 struct AppearanceSettingsView: View {
-    @Environment(ChatAppearance.self) private var appearance
+    /// Set when opened from a chat: changes apply to that chat only.
+    var chatId: String? = nil
+
+    @Environment(ChatAppearance.self) private var environmentAppearance
     @State private var wallpaperPhoto: PhotosPickerItem?
+
+    /// The app's theme (the environment may hold a chat's).
+    private var app: ChatAppearance {
+        environmentAppearance.scope == nil ? environmentAppearance : (ChatAppearance.app ?? environmentAppearance)
+    }
+
+    /// What's shown: the chat's own theme, or the one it inherits.
+    private var appearance: ChatAppearance {
+        chatId.flatMap { app.theme(forChat: $0) } ?? app
+    }
+
+    private var chatHasOwnTheme: Bool { chatId.map { app.themedChats.contains($0) } ?? false }
+
+    /// Applies a change: to the chat (giving it its own theme first) or the app.
+    private func edit(_ change: (ChatAppearance) -> Void) {
+        withAnimation(.spring(duration: 0.3)) {
+            if let chatId { change(app.startTheme(forChat: chatId)) } else { change(app) }
+        }
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
+                if chatId != nil { chatThemeHeader }
                 previewCard
                 themesSection
                 wallpaperSection
@@ -26,9 +49,29 @@ struct AppearanceSettingsView: View {
             if !appearance.hasWallpaper { Color(.systemGroupedBackground).ignoresSafeArea() }
         }
         .modifier(ThemedPageBackground())
-        .navigationTitle("Appearance")
+        .navigationTitle(chatId == nil ? "Appearance" : "Chat Appearance")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: wallpaperPhoto) { _, item in loadPhoto(item) }
+    }
+
+    // MARK: - This chat
+
+    private var chatThemeHeader: some View {
+        HStack(spacing: 12) {
+            Text(chatHasOwnTheme
+                 ? "This chat has its own theme."
+                 : "This chat uses your app theme. Changes here apply to this chat only.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if chatHasOwnTheme, let chatId {
+                Button("Use App Theme") {
+                    withAnimation(.spring(duration: 0.3)) { app.removeTheme(forChat: chatId) }
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.bordered)
+            }
+        }
     }
 
     // MARK: - Preview
@@ -71,9 +114,7 @@ struct AppearanceSettingsView: View {
                 HStack(spacing: 12) {
                     ForEach(ChatAppearance.themes) { theme in
                         ThemeCard(theme: theme, isSelected: isThemeSelected(theme)) {
-                            withAnimation(.spring(duration: 0.3)) {
-                                appearance.applyTheme(theme)
-                            }
+                            edit { $0.applyTheme(theme) }
                         }
                     }
                 }
@@ -107,7 +148,7 @@ struct AppearanceSettingsView: View {
 
     private func wallpaperSwatch(for style: WallpaperStyle) -> some View {
         Button {
-            withAnimation(.spring(duration: 0.3)) { appearance.wallpaper = style }
+            edit { $0.wallpaper = style }
         } label: {
             VStack(spacing: 6) {
                 swatchBackground(style)
@@ -195,7 +236,7 @@ struct AppearanceSettingsView: View {
     private func bubbleSwatch(name: String, key: String?, color: Color) -> some View {
         let isSelected = appearance.bubbleTintHex == key
         return Button {
-            withAnimation(.spring(duration: 0.3)) { appearance.bubbleTintHex = key }
+            edit { $0.bubbleTintHex = key }
         } label: {
             VStack(spacing: 6) {
                 Circle()
@@ -237,7 +278,7 @@ struct AppearanceSettingsView: View {
         Task {
             guard let data = try? await item.loadTransferable(type: Data.self),
                   UIImage(data: data) != nil else { return }
-            appearance.setPhoto(data)
+            edit { $0.setPhoto(data) }
         }
     }
 }

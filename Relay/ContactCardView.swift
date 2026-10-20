@@ -161,7 +161,7 @@ struct ContactCardView: View {
                         editingNickname = true
                     }
 
-                    NavigationLink(destination: AppearanceSettingsView()) {
+                    NavigationLink(destination: AppearanceSettingsView(chatId: conversationId)) {
                         SettingsNavRow(systemName: "paintbrush.fill", color: .purple, title: "Chat Appearance")
                     }
                     NavigationLink(destination: MediaGalleryView(service: service, conversationId: conversationId)) {

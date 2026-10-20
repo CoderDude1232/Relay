@@ -363,6 +363,11 @@ struct GroupInfoView: View {
                                 Label("Chat Settings", systemImage: "gearshape")
                             }
                         }
+                        NavigationLink {
+                            AppearanceSettingsView(chatId: conversationId)
+                        } label: {
+                            Label("Chat Appearance", systemImage: "paintbrush")
+                        }
                     }
 
                     if group.admins.contains(ownAccountId) || group.isAnnounceOnly {

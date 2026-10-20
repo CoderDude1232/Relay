@@ -2,8 +2,8 @@
 //  ChatAppearance.swift
 //  Relay
 //
-//  Device-local chat personalization (wallpaper and outgoing-bubble colour).
-//  Nothing here is shared or synced.
+//  Device-local chat personalization (wallpaper and outgoing-bubble colour),
+//  for the whole app or one chat. Nothing here is shared or synced.
 //
 
 import CoreImage
@@ -91,16 +91,15 @@ final class ChatAppearance {
     ]
 
     var wallpaper: WallpaperStyle {
-        didSet { defaults.set(wallpaper.rawValue, forKey: Keys.wallpaper) }
+        didSet { defaults.set(wallpaper.rawValue, forKey: wallpaperKey) }
     }
     /// Stored as "RRGGBB-RRGGBB" (equal stops); nil = accent color.
     var bubbleTintHex: String? {
-        didSet { defaults.set(bubbleTintHex, forKey: Keys.bubbleTint) }
+        didSet { defaults.set(bubbleTintHex, forKey: bubbleTintKey) }
     }
     private(set) var photoData: Data? {
         didSet {
             photoImage = Self.decode(photoData)
-        softenedPhoto = Self.soften(photoImage)
             softenedPhoto = Self.soften(photoImage)
         }
     }
@@ -111,18 +110,78 @@ final class ChatAppearance {
     private(set) var softenedPhoto: UIImage?
 
     private let defaults = UserDefaults.standard
-    private enum Keys { static let wallpaper = "chat.wallpaper", bubbleTint = "chat.bubbleTint" }
+    /// nil for the app's theme; a conversation id for one chat's own theme.
+    let scope: String?
+    private var wallpaperKey: String { scope.map { "chat.wallpaper.\($0)" } ?? "chat.wallpaper" }
+    private var bubbleTintKey: String { scope.map { "chat.bubbleTint.\($0)" } ?? "chat.bubbleTint" }
 
-    init() {
-        wallpaper = WallpaperStyle(rawValue: defaults.string(forKey: Keys.wallpaper) ?? "") ?? .none
-        bubbleTintHex = defaults.string(forKey: Keys.bubbleTint)
-        photoData = try? Data(contentsOf: Self.photoURL)
+    /// The app's theme, for code holding a chat's.
+    static weak var app: ChatAppearance?
+
+    init(scope: String? = nil) {
+        self.scope = scope
+        let wallpaperKey = scope.map { "chat.wallpaper.\($0)" } ?? "chat.wallpaper"
+        let bubbleTintKey = scope.map { "chat.bubbleTint.\($0)" } ?? "chat.bubbleTint"
+        wallpaper = WallpaperStyle(rawValue: defaults.string(forKey: wallpaperKey) ?? "") ?? .none
+        bubbleTintHex = defaults.string(forKey: bubbleTintKey)
+        photoData = try? Data(contentsOf: Self.photoURL(scope: scope))
         photoImage = Self.decode(photoData)
-        if photoData != nil { Self.protectPhotoFile() } // files saved by older builds
+        softenedPhoto = Self.soften(photoImage)
+        if scope == nil {
+            themedChats = Set(defaults.stringArray(forKey: Self.themedChatsKey) ?? [])
+            Self.app = self
+        }
+        if photoData != nil { protectPhotoFile() } // files saved by older builds
+    }
+
+    // MARK: Per-chat themes (on the app's theme object)
+
+    private static let themedChatsKey = "chat.themedChats"
+    /// Chats with a theme of their own.
+    private(set) var themedChats: Set<String> = []
+    @ObservationIgnored private var chatThemes: [String: ChatAppearance] = [:]
+
+    /// The chat's own theme, or nil when it follows the app's.
+    func theme(forChat id: String) -> ChatAppearance? {
+        guard themedChats.contains(id) else { return nil }
+        if let cached = chatThemes[id] { return cached }
+        let theme = ChatAppearance(scope: id)
+        chatThemes[id] = theme
+        return theme
+    }
+
+    /// Gives the chat its own theme, starting from the app's.
+    func startTheme(forChat id: String) -> ChatAppearance {
+        if let existing = theme(forChat: id) { return existing }
+        let theme = ChatAppearance(scope: id)
+        theme.bubbleTintHex = bubbleTintHex
+        if wallpaper == .photo, let photoData {
+            theme.setPhoto(photoData)
+        } else {
+            theme.wallpaper = wallpaper == .photo ? .none : wallpaper
+        }
+        chatThemes[id] = theme
+        themedChats.insert(id)
+        defaults.set(Array(themedChats), forKey: Self.themedChatsKey)
+        return theme
+    }
+
+    /// The chat goes back to the app's theme.
+    func removeTheme(forChat id: String) {
+        if let theme = theme(forChat: id) { theme.clearStored() }
+        chatThemes[id] = nil
+        themedChats.remove(id)
+        defaults.set(Array(themedChats), forKey: Self.themedChatsKey)
+    }
+
+    private func clearStored() {
+        defaults.removeObject(forKey: wallpaperKey)
+        defaults.removeObject(forKey: bubbleTintKey)
+        try? FileManager.default.removeItem(at: photoURL)
     }
 
     /// Excludes the wallpaper photo from backups and sets its protection class.
-    private static func protectPhotoFile() {
+    private func protectPhotoFile() {
         var url = photoURL
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
@@ -172,11 +231,11 @@ final class ChatAppearance {
         if let data {
             // Until-first-unlock, not complete: a VoIP push can launch the app
             // in the background while the device is locked.
-            try? data.write(to: Self.photoURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            Self.protectPhotoFile()
+            try? data.write(to: photoURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            protectPhotoFile()
             wallpaper = .photo
         } else {
-            try? FileManager.default.removeItem(at: Self.photoURL)
+            try? FileManager.default.removeItem(at: photoURL)
             if wallpaper == .photo { wallpaper = .none }
         }
     }
@@ -221,9 +280,14 @@ final class ChatAppearance {
         }
     }
 
-    private static var photoURL: URL {
+    private var photoURL: URL { Self.photoURL(scope: scope) }
+
+    private static func photoURL(scope: String?) -> URL {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appendingPathComponent("chat-wallpaper.jpg")
+        guard let scope else { return dir.appendingPathComponent("chat-wallpaper.jpg") }
+        // Conversation ids are ours, but keep the file name to safe characters.
+        let safe = String(scope.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "-" }.map(Character.init))
+        return dir.appendingPathComponent("chat-wallpaper-\(safe).jpg")
     }
 }
 

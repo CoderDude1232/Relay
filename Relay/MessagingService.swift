@@ -4183,6 +4183,8 @@ final class MessagingService {
     func deleteConversation(_ conversationId: String) {
         if activeConversationId == conversationId { closeConversation(id: conversationId) }
         LocationShareManager.shared.stop(in: conversationId)
+        // Its own theme (and wallpaper photo) goes with it.
+        ChatAppearance.app?.removeTheme(forChat: conversationId)
         do {
             try storage.messages.deleteConversation(id: conversationId)
             sweepAttachmentFiles()
