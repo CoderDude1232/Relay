@@ -273,7 +273,7 @@ struct ConversationListView: View {
                 }
             }
             .animation(.spring(duration: 0.22), value: selectedIds.count)
-            .modifier(SidebarListBackground(useWallpaper: true))
+            .modifier(SidebarListBackground(enabled: horizontalSizeClass == .regular, useWallpaper: true))
             .sidebarTabBar()
             .navigationSplitViewColumnWidth(min: 300, ideal: 360)
         } detail: {
