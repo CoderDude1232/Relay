@@ -147,8 +147,11 @@ public final class KeychainSecureStore {
     /// Public half of this device's auth key. The private key is created
     /// non-exportable in the Secure Enclave; the Simulator falls back to a
     /// Keychain-held key.
-    public func deviceAuthorizationPublicKey() throws -> Data {
-        let key = try deviceAuthorizationPrivateKey()
+    ///
+    /// Extensions pass `createIfMissing: false`: only the app creates the key,
+    /// so two processes can never each make one.
+    public func deviceAuthorizationPublicKey(createIfMissing: Bool = true) throws -> Data {
+        let key = try deviceAuthorizationPrivateKey(createIfMissing: createIfMissing)
         guard let publicKey = SecKeyCopyPublicKey(key) else {
             throw StorageError.secureEnclave("device auth public key unavailable")
         }
@@ -160,8 +163,65 @@ public final class KeychainSecureStore {
     }
 
     /// Signs a device-control or request payload with the auth key.
-    public func signDeviceAuthorizationPayload(_ payload: Data) throws -> Data {
-        let key = try deviceAuthorizationPrivateKey()
+    public func signDeviceAuthorizationPayload(_ payload: Data, createIfMissing: Bool = true) throws -> Data {
+        try sign(payload, with: try deviceAuthorizationPrivateKey(createIfMissing: createIfMissing))
+    }
+
+    /// Signs with the auth key whose public half is `publicKey` (see
+    /// `deviceAuthorizationPublicKeyCandidates`).
+    public func signDeviceAuthorizationPayload(_ payload: Data, usingPublicKey publicKey: Data) throws -> Data {
+        guard let key = try allDeviceAuthorizationKeys().first(where: { (try? Self.publicKeyData($0.key)) == publicKey })?.key else {
+            throw StorageError.secureEnclave("device auth key not found")
+        }
+        return try sign(payload, with: key)
+    }
+
+    /// Public halves of every auth key stored. More than one means two were
+    /// created at once (builds before the creation lock); only one of them is
+    /// registered with the relay.
+    public func deviceAuthorizationPublicKeyCandidates() throws -> [Data] {
+        try allDeviceAuthorizationKeys().compactMap { try? Self.publicKeyData($0.key) }
+    }
+
+    /// Deletes every auth key except the one whose public half is `publicKey`.
+    public func keepOnlyDeviceAuthorizationKey(publicKey: Data) throws {
+        for entry in try allDeviceAuthorizationKeys() where (try? Self.publicKeyData(entry.key)) != publicKey {
+            let status = SecItemDelete([kSecClass: kSecClassKey, kSecValuePersistentRef: entry.persistentRef] as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw StorageError.keychain(status: status)
+            }
+        }
+    }
+
+    private func allDeviceAuthorizationKeys() throws -> [(key: SecKey, persistentRef: Data)] {
+        var query = keyQuery(tag: Item.deviceAuthKeyTag)
+        query[kSecReturnRef] = true
+        query[kSecReturnPersistentRef] = true
+        query[kSecMatchLimit] = kSecMatchLimitAll
+        var result: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &result) {
+        case errSecSuccess:
+            return (result as? [[CFString: Any]] ?? []).compactMap { item in
+                guard let ref = item[kSecValueRef], CFGetTypeID(ref as CFTypeRef) == SecKeyGetTypeID(),
+                      let persistent = item[kSecValuePersistentRef] as? Data else { return nil }
+                return (unsafeDowncast(ref as AnyObject, to: SecKey.self), persistent)
+            }
+        case errSecItemNotFound:
+            return []
+        case let status:
+            throw StorageError.keychain(status: status)
+        }
+    }
+
+    private static func publicKeyData(_ privateKey: SecKey) throws -> Data {
+        guard let publicKey = SecKeyCopyPublicKey(privateKey),
+              let data = SecKeyCopyExternalRepresentation(publicKey, nil) else {
+            throw StorageError.secureEnclave("device auth public key unavailable")
+        }
+        return data as Data
+    }
+
+    private func sign(_ payload: Data, with key: SecKey) throws -> Data {
         guard SecKeyIsAlgorithmSupported(key, .sign, Self.signingAlgorithm) else {
             throw StorageError.secureEnclave("device auth signing unsupported")
         }
@@ -172,9 +232,21 @@ public final class KeychainSecureStore {
         return signature as Data
     }
 
-    private func deviceAuthorizationPrivateKey() throws -> SecKey {
+    /// Serializes find-or-create: many signed requests start at once right
+    /// after sign-in or linking, and without this each could find no key and
+    /// create its own, leaving several under one tag. The relay registers one;
+    /// after a relaunch the Keychain may return another, and every request
+    /// then fails as an expired session.
+    private static let authKeyLock = NSLock()
+
+    private func deviceAuthorizationPrivateKey(createIfMissing: Bool = true) throws -> SecKey {
+        Self.authKeyLock.lock()
+        defer { Self.authKeyLock.unlock() }
         if let existing = try loadDeviceAuthorizationPrivateKey() {
             return existing
+        }
+        guard createIfMissing else {
+            throw StorageError.secureEnclave("device auth key not created yet")
         }
         #if targetEnvironment(simulator)
         do {

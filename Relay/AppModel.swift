@@ -152,6 +152,7 @@ final class AppModel {
                 serverURL: saved.serverURL,
                 username: saved.username
             )
+            await keepRegisteredDeviceAuthKey(service)
             service.start()
             phase = .ready(service)
             uploadPushTokenIfReady()
@@ -162,6 +163,31 @@ final class AppModel {
                 .error("boot failed: \(PrivacyRedactor.error(error))")
             phase = .failed("Relay couldn't open the encrypted storage on this device. This can happen right after a restart, before the device has been unlocked — unlock it and try again.")
         }
+    }
+
+    /// Earlier builds could create the device auth key twice at once (see
+    /// KeychainSecureStore's creation lock), leaving two keys of which the
+    /// relay knows one. Finds the one the relay accepts and deletes the rest,
+    /// before anything else signs with the wrong one.
+    private func keepRegisteredDeviceAuthKey(_ service: MessagingService) async {
+        let keychain = self.keychain
+        guard let candidates = try? keychain.deviceAuthorizationPublicKeyCandidates(), candidates.count > 1 else { return }
+        let log = Logger(subsystem: "app.relaymsg", category: "account")
+        for publicKey in candidates {
+            let probe = RelayAPIClient(
+                baseURL: service.serverURL, credentials: service.credentials,
+                signer: RelayClosureSigner(
+                    sign: { try? keychain.signDeviceAuthorizationPayload($0, usingPublicKey: publicKey) },
+                    publicKey: { publicKey }
+                )
+            )
+            if (try? await probe.listDevices()) != nil {
+                try? keychain.keepOnlyDeviceAuthorizationKey(publicKey: publicKey)
+                log.notice("removed \(candidates.count - 1) unregistered device auth key(s)")
+                return
+            }
+        }
+        log.error("none of \(candidates.count) device auth keys is registered")
     }
 
     /// Retries `boot()` from the "Storage Unavailable" screen.

@@ -289,8 +289,9 @@ class NotificationService: UNNotificationServiceExtension {
                 password: account.password
             ),
             signer: RelayClosureSigner(
-                sign: { try? keychain.signDeviceAuthorizationPayload($0) },
-                publicKey: { try? keychain.deviceAuthorizationPublicKey() }
+                // Only the app creates the auth key.
+                sign: { try? keychain.signDeviceAuthorizationPayload($0, createIfMissing: false) },
+                publicKey: { try? keychain.deviceAuthorizationPublicKey(createIfMissing: false) }
             )
         )
         guard let envelopes = try? await api.fetchQueue(), !envelopes.isEmpty else { return nil }
