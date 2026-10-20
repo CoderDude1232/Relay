@@ -22,7 +22,9 @@ struct AppearanceSettingsView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 20)
         }
-        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .background {
+            if !appearance.hasWallpaper { Color(.systemGroupedBackground).ignoresSafeArea() }
+        }
         .modifier(ThemedPageBackground())
         .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)

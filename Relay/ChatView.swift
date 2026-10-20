@@ -173,6 +173,7 @@ struct ChatView: View {
                             Text(label)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
+                                .modifier(PhotoWallpaperLabel())
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
                                 .id(id)
@@ -190,6 +191,7 @@ struct ChatView: View {
                         case .message(let message, let position):
                             if message.senderAccount == MessagingService.systemSender {
                                 SystemMessageView(rawBody: message.body)
+                                    .modifier(PhotoWallpaperLabel())
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 4)
                                     .id(message.id)
@@ -3791,6 +3793,23 @@ private struct BubbleChrome: ViewModifier {
         appearance.wallpaper == .none
             ? Color(.systemBackground).opacity(0.92)
             : Color(.tertiarySystemBackground)
+    }
+}
+
+/// Date and event lines sit on the chat background as plain text; over a
+/// photo wallpaper they get a frosted capsule so they stay readable.
+private struct PhotoWallpaperLabel: ViewModifier {
+    @Environment(ChatAppearance.self) private var appearance
+
+    func body(content: Content) -> some View {
+        if appearance.wallpaper == .photo, appearance.hasWallpaper {
+            content
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.regularMaterial, in: .capsule)
+        } else {
+            content
+        }
     }
 }
 

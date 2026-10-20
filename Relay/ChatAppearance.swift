@@ -196,11 +196,7 @@ final class ChatAppearance {
         switch wallpaper {
         case .photo:
             if let ui = photoImage {
-                // Sized to the space it's given and clipped, so a portrait
-                // photo in a wide iPad column doesn't spill past it.
-                Color.clear
-                    .overlay { Image(uiImage: ui).resizable().scaledToFill() }
-                    .clipped()
+                WindowAnchoredImage(image: ui)
             } else {
                 Color(.systemBackground)
             }
@@ -218,9 +214,7 @@ final class ChatAppearance {
     @ViewBuilder
     var pageBackground: some View {
         if wallpaper == .photo, let soft = softenedPhoto {
-            Color.clear
-                .overlay { Image(uiImage: soft).resizable().scaledToFill() }
-                .clipped()
+            WindowAnchoredImage(image: soft)
                 .overlay(Color(.systemBackground).opacity(0.55))
         } else {
             background
@@ -257,5 +251,33 @@ extension Color {
             green: Double((v >> 8) & 0xFF) / 255,
             blue: Double(v & 0xFF) / 255
         )
+    }
+}
+
+/// A photo filling the whole window, of which this view shows its own part:
+/// side-by-side iPad columns show one continuous picture, not two crops.
+struct WindowAnchoredImage: View {
+    let image: UIImage
+
+    var body: some View {
+        GeometryReader { geo in
+            let frame = geo.frame(in: .global)
+            let size = Self.windowSize ?? geo.size
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size.width, height: size.height)
+                .clipped()
+                .offset(x: -frame.minX, y: -frame.minY)
+        }
+        .clipped()
+    }
+
+    /// Read when laid out, so it follows rotation and window resizing.
+    private static var windowSize: CGSize? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }?
+            .keyWindow?.bounds.size
     }
 }

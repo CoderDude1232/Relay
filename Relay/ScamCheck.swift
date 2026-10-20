@@ -582,6 +582,8 @@ struct ScamWarningView: View {
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.orange.opacity(0.1), in: .rect(cornerRadius: 16, style: .continuous))
+        // Frosted underneath, so it reads over a wallpaper too.
+        .background(.regularMaterial, in: .rect(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Color.orange.opacity(0.3), lineWidth: 1)
