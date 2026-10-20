@@ -51,9 +51,8 @@ struct AppearanceSettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
-                outgoing
-                    ? AnyShapeStyle(appearance.bubbleGradient)
-                    : AnyShapeStyle(Material.regularMaterial),
+                outgoing ? appearance.bubbleTint
+                    : appearance.wallpaper == .none ? Color(.secondarySystemBackground) : Color(.tertiarySystemBackground),
                 in: .rect(cornerRadius: 16)
             )
             .foregroundStyle(outgoing ? .white : .primary)
@@ -171,74 +170,54 @@ struct AppearanceSettingsView: View {
         }
     }
 
-    // MARK: - Bubble gradient
+    // MARK: - Bubble colour
 
     private var bubbleSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionHeader("Bubble Style")
+            sectionHeader("Bubble Colour")
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    bubbleGradientSwatch(pair: nil)
-                    ForEach(Array(ChatAppearance.bubblePalette.enumerated()), id: \.offset) { _, pair in
-                        bubbleGradientSwatch(pair: pair)
+                HStack(spacing: 14) {
+                    bubbleSwatch(name: "Default", key: nil, color: .accentColor)
+                    ForEach(ChatAppearance.bubblePalette, id: \.hex) { entry in
+                        bubbleSwatch(name: entry.name, key: ChatAppearance.bubbleKey(entry.hex),
+                                     color: Color(hex: entry.hex) ?? .accentColor)
                     }
                 }
-                .padding(.horizontal, 1)
+                .padding(.horizontal, 2)
                 .padding(.vertical, 4)
             }
         }
     }
 
-    private func bubbleGradientSwatch(pair: (String, String)?) -> some View {
-        let key: String? = pair.map { "\($0.0)-\($0.1)" }
+    private func bubbleSwatch(name: String, key: String?, color: Color) -> some View {
         let isSelected = appearance.bubbleTintHex == key
-        let gradient: AnyShapeStyle = {
-            if let pair, let a = Color(hex: pair.0), let b = Color(hex: pair.1) {
-                return AnyShapeStyle(LinearGradient(colors: [a, b], startPoint: .topLeading, endPoint: .bottomTrailing))
-            }
-            return AnyShapeStyle(Color.accentColor)
-        }()
-
-        let label: String = {
-            guard let pair else { return "Default" }
-            switch "\(pair.0)-\(pair.1)" {
-            case "0A84FF-5E5CE6": return "Blue"
-            case "30D158-00C7BE": return "Green"
-            case "BF5AF2-FF2D55": return "Purple"
-            case "FF3B30-FF9500": return "Red"
-            case "FF9500-FFCC00": return "Amber"
-            case "34C759-0A84FF": return "Ocean"
-            case "2C2C2E-48484A": return "Graphite"
-            case "FF2D55-FF6B35": return "Coral"
-            default: return "Custom"
-            }
-        }()
-
         return Button {
             withAnimation(.spring(duration: 0.3)) { appearance.bubbleTintHex = key }
         } label: {
             VStack(spacing: 6) {
-                ZStack {
-                    Capsule()
-                        .fill(gradient)
-                        .frame(width: 60, height: 34)
-                    if pair == nil {
-                        Text("A")
-                            .font(.caption.bold())
-                            .foregroundStyle(.white)
+                Circle()
+                    .fill(color)
+                    .frame(width: 40, height: 40)
+                    .overlay {
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
                     }
-                }
-                .overlay {
-                    Capsule()
-                        .strokeBorder(isSelected ? Color.primary : Color.clear, lineWidth: 2.5)
-                }
-                Text(label)
+                    .padding(3)
+                    .overlay {
+                        Circle().strokeBorder(isSelected ? color : .clear, lineWidth: 2)
+                    }
+                Text(name)
                     .font(.caption2)
                     .foregroundStyle(isSelected ? Color.primary : .secondary)
                     .lineLimit(1)
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(name) bubbles")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     // MARK: - Helpers
@@ -269,30 +248,38 @@ private struct ThemeCard: View {
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 0) {
-                ZStack(alignment: .bottomTrailing) {
+            VStack(spacing: 6) {
+                ZStack {
                     wallpaperFill
-                        .frame(width: 90, height: 130)
-                    // Mini bubble preview
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(bubbleGradient)
-                        .frame(width: 54, height: 22)
-                        .padding(8)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Capsule()
+                            .fill(Color(.tertiarySystemBackground))
+                            .frame(width: 46, height: 16)
+                        Capsule()
+                            .fill(bubbleColor)
+                            .frame(width: 52, height: 16)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Capsule()
+                            .fill(Color(.tertiarySystemBackground))
+                            .frame(width: 34, height: 16)
+                    }
+                    .padding(10)
+                }
+                .frame(width: 90, height: 120)
+                .clipShape(.rect(cornerRadius: 16))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(isSelected ? bubbleColor : Color.primary.opacity(0.08),
+                                      lineWidth: isSelected ? 3 : 1)
                 }
                 Text(theme.name)
                     .font(.caption)
-                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                    .padding(.top, 6)
-                    .padding(.bottom, 2)
+                    .foregroundStyle(isSelected ? Color.primary : .secondary)
             }
-            .clipShape(.rect(cornerRadius: 14))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
-            }
-            .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(theme.name) theme")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -304,13 +291,7 @@ private struct ThemeCard: View {
         }
     }
 
-    private var bubbleGradient: LinearGradient {
-        let parts = theme.bubbleKey.split(separator: "-", maxSplits: 1).map(String.init)
-        let a = parts.count > 0 ? Color(hex: parts[0]) : nil
-        let b = parts.count > 1 ? Color(hex: parts[1]) : nil
-        return LinearGradient(
-            colors: [a ?? .accentColor, b ?? a ?? .accentColor],
-            startPoint: .topLeading, endPoint: .bottomTrailing
-        )
+    private var bubbleColor: Color {
+        theme.bubbleKey.flatMap { Color(hex: String($0.prefix(6))) } ?? .accentColor
     }
 }

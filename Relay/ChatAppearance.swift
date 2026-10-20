@@ -2,7 +2,7 @@
 //  ChatAppearance.swift
 //  Relay
 //
-//  Device-local chat personalization (wallpaper and outgoing-bubble gradient).
+//  Device-local chat personalization (wallpaper and outgoing-bubble colour).
 //  Nothing here is shared or synced.
 //
 
@@ -17,28 +17,38 @@ enum WallpaperStyle: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .none: "None"
-        case .sunset: "Sunset"
-        case .ocean: "Ocean"
-        case .forest: "Forest"
-        case .twilight: "Twilight"
+        case .sunset: "Peach"
+        case .ocean: "Sky"
+        case .forest: "Mint"
+        case .twilight: "Lavender"
         case .rose: "Rose"
         case .graphite: "Graphite"
         case .photo: "Photo"
         }
     }
 
-    var gradient: LinearGradient? {
-        let stops: [String]? = switch self {
-        case .sunset:   ["FF7E5F", "FEB47B"]
-        case .ocean:    ["2193B0", "6DD5ED"]
-        case .forest:   ["134E5E", "71B280"]
-        case .twilight: ["4B2E83", "9D50BB"]
-        case .rose:     ["C94B8F", "F6A5C0"]
-        case .graphite: ["1C1C1E", "3A3A3C"]
+    /// Soft tints rather than full-strength colour, so bubbles (white or
+    /// coloured) sit on them cleanly: pale in light mode, deep in dark mode.
+    /// (Case names are the stored values from before the rename.)
+    private var stops: (light: [String], dark: [String])? {
+        switch self {
+        case .ocean:    (["EAF3FD", "D6E7F9"], ["0A1520", "0F2236"])
+        case .forest:   (["E9F6EF", "D5EEE1"], ["0A1812", "0F241B"])
+        case .twilight: (["F0ECFB", "E1D9F7"], ["130E20", "1D1630"])
+        case .sunset:   (["FDF0E8", "F9E0D2"], ["1F130D", "2B1A11"])
+        case .rose:     (["FCEBF1", "F6D8E3"], ["1F0D14", "2C131E"])
+        case .graphite: (["EFEFF2", "DEDEE3"], ["121214", "1D1D21"])
         case .none, .photo: nil
         }
-        guard let stops, let a = Color(hex: stops[0]), let b = Color(hex: stops[1]) else { return nil }
-        return LinearGradient(colors: [a, b], startPoint: .top, endPoint: .bottom)
+    }
+
+    var gradient: LinearGradient? {
+        guard let stops else { return nil }
+        let colors = zip(stops.light, stops.dark).compactMap { light, dark -> Color? in
+            guard let l = UIColor(relayHex: light), let d = UIColor(relayHex: dark) else { return nil }
+            return Color(UIColor { $0.userInterfaceStyle == .dark ? d : l })
+        }
+        return LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom)
     }
 }
 
@@ -47,37 +57,42 @@ struct AppearanceTheme: Identifiable {
     let id: String
     let name: String
     let wallpaper: WallpaperStyle
-    let bubbleKey: String  // "RRGGBB-RRGGBB"
+    let bubbleKey: String?  // "RRGGBB-RRGGBB"; nil = the app accent
 }
 
 @Observable
 final class ChatAppearance {
-    /// Curated bubble gradient palette stored as "startHex-endHex". nil = accent.
-    static let bubblePalette: [(String, String)] = [
-        ("0A84FF", "5E5CE6"),  // blue, indigo
-        ("30D158", "00C7BE"),  // green, teal
-        ("BF5AF2", "FF2D55"),  // purple, pink
-        ("FF3B30", "FF9500"),  // red, amber
-        ("FF9500", "FFCC00"),  // amber, gold
-        ("34C759", "0A84FF"),  // green, blue
-        ("2C2C2E", "48484A"),  // graphite
-        ("FF2D55", "FF6B35"),  // coral-red
+    /// Flat bubble colours, each dark enough for white text. Stored as
+    /// "RRGGBB-RRGGBB" (both stops equal) so older builds and the Watch,
+    /// which read two stops, still show the same colour.
+    static let bubblePalette: [(name: String, hex: String)] = [
+        ("Blue", "0A7AFF"),
+        ("Indigo", "5856D6"),
+        ("Purple", "8E4FE0"),
+        ("Pink", "E0457B"),
+        ("Red", "E5484D"),
+        ("Orange", "EE7A1F"),
+        ("Green", "1F9D55"),
+        ("Teal", "0E8F99"),
+        ("Graphite", "48484A"),
     ]
 
-    /// Wallpaper and bubble pairs chosen so the bubble contrasts with the wallpaper.
+    static func bubbleKey(_ hex: String) -> String { "\(hex)-\(hex)" }
+
+    /// A wallpaper with a bubble from the same colour family.
     static let themes: [AppearanceTheme] = [
-        AppearanceTheme(id: "ocean",    name: "Ocean",    wallpaper: .ocean,    bubbleKey: "30D158-00C7BE"),  // green on blue
-        AppearanceTheme(id: "forest",   name: "Forest",   wallpaper: .forest,   bubbleKey: "FF9500-FFCC00"),  // amber on dark green
-        AppearanceTheme(id: "twilight", name: "Twilight", wallpaper: .twilight, bubbleKey: "00C7BE-30D158"),  // teal on purple
-        AppearanceTheme(id: "sunset",   name: "Sunset",   wallpaper: .sunset,   bubbleKey: "BF5AF2-5E5CE6"),  // purple on orange
-        AppearanceTheme(id: "rose",     name: "Rose",     wallpaper: .rose,     bubbleKey: "0A84FF-5E5CE6"),  // blue on pink
-        AppearanceTheme(id: "dark",     name: "Dark",     wallpaper: .graphite, bubbleKey: "0A84FF-5E5CE6"),  // blue on graphite
+        AppearanceTheme(id: "sky",      name: "Sky",      wallpaper: .ocean,    bubbleKey: bubbleKey("0A7AFF")),
+        AppearanceTheme(id: "mint",     name: "Mint",     wallpaper: .forest,   bubbleKey: bubbleKey("1F9D55")),
+        AppearanceTheme(id: "lavender", name: "Lavender", wallpaper: .twilight, bubbleKey: bubbleKey("8E4FE0")),
+        AppearanceTheme(id: "peach",    name: "Peach",    wallpaper: .sunset,   bubbleKey: bubbleKey("EE7A1F")),
+        AppearanceTheme(id: "rose",     name: "Rose",     wallpaper: .rose,     bubbleKey: bubbleKey("E0457B")),
+        AppearanceTheme(id: "graphite", name: "Graphite", wallpaper: .graphite, bubbleKey: nil),
     ]
 
     var wallpaper: WallpaperStyle {
         didSet { defaults.set(wallpaper.rawValue, forKey: Keys.wallpaper) }
     }
-    /// Stored as "RRGGBB-RRGGBB" for a two-stop gradient; nil = accent color.
+    /// Stored as "RRGGBB-RRGGBB" (equal stops); nil = accent color.
     var bubbleTintHex: String? {
         didSet { defaults.set(bubbleTintHex, forKey: Keys.bubbleTint) }
     }
@@ -131,13 +146,9 @@ final class ChatAppearance {
         return (first, second)
     }
 
-    /// Flat outgoing-bubble color (first gradient stop).
+    /// The outgoing bubble colour. Bubbles are flat: a two-colour choice
+    /// from an older build uses its first colour.
     var bubbleTint: Color { parsedStops().0 }
-
-    var bubbleGradient: LinearGradient {
-        let (a, b) = parsedStops()
-        return LinearGradient(colors: [a, b], startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
 
     func setPhoto(_ data: Data?) {
         photoData = data
@@ -150,23 +161,6 @@ final class ChatAppearance {
         } else {
             try? FileManager.default.removeItem(at: Self.photoURL)
             if wallpaper == .photo { wallpaper = .none }
-        }
-    }
-
-    /// Subtle tint for non-chat views (chat list, calls, settings).
-    @ViewBuilder
-    var appBackground: some View {
-        switch wallpaper {
-        case .none:
-            EmptyView()
-        case .photo:
-            if let ui = photoImage {
-                Image(uiImage: ui).resizable().scaledToFill().opacity(0.08)
-            }
-        default:
-            if let gradient = wallpaper.gradient {
-                gradient.opacity(0.07)
-            }
         }
     }
 
@@ -192,6 +186,20 @@ final class ChatAppearance {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return dir.appendingPathComponent("chat-wallpaper.jpg")
     }
+}
+
+extension UIColor {
+    convenience init?(relayHex hex: String) {
+        guard s6(hex) != nil, let v = UInt32(s6(hex)!, radix: 16) else { return nil }
+        self.init(red: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+                  blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+    }
+}
+
+private func s6(_ hex: String) -> String? {
+    var s = hex.trimmingCharacters(in: .whitespaces)
+    if s.hasPrefix("#") { s.removeFirst() }
+    return s.count == 6 ? s : nil
 }
 
 extension Color {

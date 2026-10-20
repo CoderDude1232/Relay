@@ -46,6 +46,7 @@ struct VoiceNoteBubble<Trailing: View>: View {
     @State private var isTranscribing = false
     @State private var showTranscript = false
     @Environment(\.relayIsMessageRequest) private var inRequest
+    @Environment(ChatAppearance.self) private var appearance
 
     private var tint: Color { isOutgoing ? .white : .primary }
     /// Behind Face ID in this chat: shown as a locked player (no waveform,
@@ -64,7 +65,7 @@ struct VoiceNoteBubble<Trailing: View>: View {
                 } label: {
                     Image(systemName: locked ? "lock.fill" : player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(isOutgoing ? Color.accentColor : .white)
+                        .foregroundStyle(isOutgoing ? appearance.bubbleTint : .white)
                         .frame(width: 38, height: 38)
                         .background(isOutgoing ? AnyShapeStyle(.white) : AnyShapeStyle(Color.accentColor), in: .circle)
                         .contentTransition(.symbolEffect(.replace))

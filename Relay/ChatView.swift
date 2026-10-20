@@ -3772,7 +3772,7 @@ private struct BubbleChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(
-                isOutgoing ? AnyShapeStyle(appearance.bubbleGradient) : AnyShapeStyle(Color(.systemBackground).opacity(0.92)),
+                isOutgoing ? AnyShapeStyle(appearance.bubbleTint) : AnyShapeStyle(incomingFill),
                 in: .rect(cornerRadii: cornerRadii)
             )
             .overlay {
@@ -3781,11 +3781,16 @@ private struct BubbleChrome: ViewModifier {
                         .strokeBorder(.primary.opacity(0.07), lineWidth: 1)
                 }
             }
-            .shadow(
-                color: isOutgoing ? appearance.bubbleTint.opacity(0.30) : .black.opacity(0.05),
-                radius: 5, x: 0, y: 2
-            )
+            .shadow(color: .black.opacity(isOutgoing ? 0.08 : 0.05), radius: 4, x: 0, y: 1)
             .foregroundStyle(isOutgoing ? .white : .primary)
+    }
+
+    /// On a wallpaper, received bubbles are lifted (white, or dark grey in
+    /// dark mode) so they don't read as holes in it.
+    private var incomingFill: Color {
+        appearance.wallpaper == .none
+            ? Color(.systemBackground).opacity(0.92)
+            : Color(.tertiarySystemBackground)
     }
 }
 
