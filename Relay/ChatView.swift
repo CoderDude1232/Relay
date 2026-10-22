@@ -599,12 +599,16 @@ struct ChatView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 if isRelayOfficial {
+                    // A capsule rather than a full-width strip: a material
+                    // background runs into the safe area, under the iPad sidebar.
                     Label("You can't reply to Relay", systemImage: "checkmark.seal.fill")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glassCompat(in: .capsule)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(.ultraThinMaterial)
+                        .padding(.bottom, 6)
                 } else if isRequest, blockedPeer == nil {
                     messageRequestBar
                 } else if let blockedPeer {
