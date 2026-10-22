@@ -201,6 +201,7 @@ struct ComposerLinkPreview: View {
                     .scaledToFill()
                     .frame(width: 44, height: 44)
                     .clipShape(.rect(cornerRadius: 8))
+                    .accessibilityHidden(true)
             } else {
                 Image(systemName: "safari")
                     .frame(width: 44, height: 44)
@@ -215,6 +216,8 @@ struct ComposerLinkPreview: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Link preview: \(preview.title.isEmpty ? preview.url : preview.title)")
             Spacer(minLength: 0)
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")

@@ -200,6 +200,7 @@ struct ChatView: View {
                             HStack(spacing: 8) {
                                 Rectangle().fill(Color.accentColor.opacity(0.4)).frame(height: 1)
                                 Text("New Messages")
+                                    .accessibilityAddTraits(.isHeader)
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(Color.accentColor)
                                     .modifier(PhotoWallpaperLabel())
@@ -243,7 +244,7 @@ struct ChatView: View {
                         TypingIndicatorView(peerName: typingName, imageData: typingAvatar,
                                             label: isGroup ? service.typingDescription(for: conversationId) : nil)
                             .id(Self.typingAnchor)
-                            .transition(.asymmetric(
+                            .transition(reduceMotionSetting ? .opacity : .asymmetric(
                                 insertion: .scale(scale: 0.6, anchor: .bottomLeading).combined(with: .opacity),
                                 removal: .opacity))
                     }
@@ -600,6 +601,7 @@ struct ChatView: View {
                         if !inChatMatches.isEmpty, inChatMatches.indices.contains(inChatMatchIndex) {
                             VStack(alignment: .trailing, spacing: 0) {
                                 Text("\(inChatMatchIndex + 1) of \(inChatMatches.count)")
+                                    .accessibilityLabel("Match \(inChatMatchIndex + 1) of \(inChatMatches.count)")
                                     .font(.caption.monospacedDigit().weight(.medium))
                                 Text(Date(timeIntervalSince1970: Double(inChatMatches[inChatMatchIndex].timestamp) / 1000),
                                      format: .dateTime.day().month(.abbreviated))

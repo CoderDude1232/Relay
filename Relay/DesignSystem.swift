@@ -125,6 +125,7 @@ struct Pill: View {
                 .animation(DS.Motion.snappy, value: isSelected)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

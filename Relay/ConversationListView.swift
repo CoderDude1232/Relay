@@ -2016,6 +2016,7 @@ private struct ChatPeekView: View {
         }
         .frame(width: 320, height: 380)
         .background { appearance.background }
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

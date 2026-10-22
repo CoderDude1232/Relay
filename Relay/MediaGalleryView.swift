@@ -66,7 +66,7 @@ struct MediaGalleryView: View {
                 }
             } else {
                 VStack(spacing: 0) {
-                    Picker("Show", selection: $tab) {
+                    Picker("Media type", selection: $tab) {
                         ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
@@ -118,10 +118,11 @@ struct MediaGalleryView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 2) {
-                        ForEach(photos) { item in
+                        ForEach(Array(photos.enumerated()), id: \.element.id) { index, item in
                             GalleryThumbnail(attachment: item.attachment, service: service, conversationId: conversationId) { _ in
                                 viewerStart = item
                             }
+                            .accessibilityLabel("Photo \(index + 1) of \(photos.count), \(Self.date(item.message.timestamp))")
                         }
                     }
                     .padding(.horizontal, 2)
