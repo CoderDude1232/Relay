@@ -583,6 +583,29 @@ struct MainTabView: View {
         }
     }
 
+    private var inAppBannerLayer: some View {
+        ZStack {
+        if let banner = service.inAppBanner {
+            VStack {
+                InAppBannerView(banner: banner) {
+                    service.inAppBanner = nil
+                    selectedTab = 0
+                    model.pendingNotificationConversationId = banner.conversationId
+                } onDismiss: {
+                    if service.inAppBanner?.id == banner.id { service.inAppBanner = nil }
+                }
+                .padding(.top, 6)
+                .frame(maxWidth: 520)
+                Spacer()
+            }
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .zIndex(5)
+            .id(banner.id)
+        }
+        }
+        .animation(.spring(duration: 0.35, bounce: 0.2), value: service.inAppBanner?.id)
+    }
+
     /// ⌘1–⌘3 switch tabs from a hardware keyboard.
     private var tabShortcuts: some View {
         Group {
@@ -643,6 +666,8 @@ struct MainTabView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(1)
             }
+
+            inAppBannerLayer
 
             // Call links: host admit prompts, and the joiner's waiting card.
             if let request = callManager.linkJoinRequests.first {
@@ -926,4 +951,55 @@ private struct MinimizedCallBar: View {
 func formatCallDuration(_ s: Double) -> String {
     let t = Int(s)
     return String(format: "%d:%02d", t / 60, t % 60)
+}
+
+/// A glass banner at the top for a message in another chat. Tap opens the
+/// chat; swipe up (or wait) dismisses it.
+private struct InAppBannerView: View {
+    let banner: MessagingService.InAppBanner
+    let onOpen: () -> Void
+    let onDismiss: () -> Void
+    @State private var dragOffset: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AvatarView(name: banner.avatarName, size: 38, imageData: banner.avatarData)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(banner.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text(banner.body)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .glassCompat(in: .rect(cornerRadius: 22))
+        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+        .padding(.horizontal, 12)
+        .offset(y: min(0, dragOffset))
+        .contentShape(.rect)
+        .onTapGesture(perform: onOpen)
+        .gesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { dragOffset = $0.translation.height }
+                .onEnded { value in
+                    if value.translation.height < -24 { onDismiss() } else {
+                        withAnimation(.spring(duration: 0.25)) { dragOffset = 0 }
+                    }
+                }
+        )
+        .task {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            try? await Task.sleep(for: .seconds(4))
+            onDismiss()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Opens the chat")
+        .accessibilityAction(named: "Dismiss", onDismiss)
+    }
 }

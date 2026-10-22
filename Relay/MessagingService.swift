@@ -789,6 +789,10 @@ final class MessagingService {
             }
             if result.outcome == .stored, let conversationId = result.conversationId {
                 clearPeerTyping(for: conversationId) // a real message ends typing
+                if let note = result.notification {
+                    presentInAppBanner(conversationId: conversationId, senderAccount: note.senderAccount,
+                                       text: Self.bannerText(note.body))
+                }
                 // @mentions still notify in muted conversations.
                 if let body = result.notification?.body,
                    let me = username,
@@ -3482,6 +3486,14 @@ final class MessagingService {
         if let active = activeConversationId { refreshActiveMessages(ifShowing: active) }
     }
 
+    /// Readable text for a message body (location, notepad and similar
+    /// special messages have their own wording).
+    static func bannerText(_ body: String) -> String {
+        if body.hasPrefix(locationPrefix) { return "📍 Location" }
+        if body.hasPrefix(viewOncePrefix) { return "View-once media" }
+        return body
+    }
+
     /// The preview that came with (or was sent with) a message.
     func linkPreview(forMessage id: String) -> MessageStore.LinkPreview? {
         try? storage.messages.linkPreview(messageId: id)
@@ -4944,6 +4956,59 @@ final class MessagingService {
 
     /// Lets a group chat name who is typing.
     private(set) var typingSenders: [String: String] = [:]
+
+    // MARK: In-app banners
+
+    /// A message for another chat while the app is open, shown as a banner
+    /// at the top instead of the system notification.
+    struct InAppBanner: Identifiable, Equatable {
+        let id = UUID()
+        let conversationId: String
+        let title: String
+        let body: String
+        let avatarName: String
+        let avatarData: Data?
+    }
+    var inAppBanner: InAppBanner?
+    private var lastBannerAt: [String: Date] = [:]
+
+    /// True when this chat's banner was just shown (the system notification
+    /// for the same message should then stay quiet).
+    func bannerRecentlyShown(for conversationId: String) -> Bool {
+        lastBannerAt[conversationId].map { Date().timeIntervalSince($0) < 15 } ?? false
+    }
+
+    /// Shows a banner for a message in another chat, following the same rules
+    /// as notifications: nothing for the open chat, muted chats, requests or
+    /// chats hidden by Panic Mode; no text where previews are off.
+    func presentInAppBanner(conversationId: String, senderAccount: String?, text: String?, fallbackTitle: String? = nil) {
+        guard UIApplication.shared.applicationState == .active,
+              conversationId != activeConversationId,
+              !PanicModeManager.shared.isHidden(conversationId),
+              !isConversationMuted(conversationId),
+              let conv = conversations.first(where: { $0.id == conversationId }), !conv.isRequest
+        else { return }
+        let preview = NotificationPreviewSetting.current
+        let textAllowed = preview.showsContent && !conv.hidePreviews && !conv.requireBiometricChat
+            && conv.disappearingSeconds == 0
+        let sender = senderAccount.map { displayName(forAccount: $0) }
+        let group = conv.isGroup ? group(for: conversationId) : nil
+        let chatName = group?.name ?? sender ?? fallbackTitle.flatMap { $0.isEmpty ? nil : $0 }
+            ?? displayName(forAccount: conv.peerAccount)
+        var body = textAllowed ? (text ?? "") : "New message"
+        if body.isEmpty { body = "New message" }
+        if textAllowed, conv.isGroup, let sender { body = "\(sender): \(body)" }
+        lastBannerAt[conversationId] = Date()
+        inAppBanner = InAppBanner(
+            conversationId: conversationId,
+            title: preview.showsSenderName ? chatName : "Relay",
+            body: body,
+            avatarName: preview.showsSenderName ? chatName : "Relay",
+            avatarData: preview.showsSenderName
+                ? (group != nil ? group?.avatarData : senderAccount.flatMap { peerAvatarData(forAccount: $0) })
+                : nil
+        )
+    }
     /// Everyone typing in each chat (groups can have several), newest last.
     private(set) var typingPeople: [String: [String]] = [:]
     private var typingPersonResets: [String: Task<Void, Never>] = [:]

@@ -388,6 +388,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             completionHandler([])
             return
         }
+        // A message for another chat while Relay is open: the in-app banner
+        // instead of the system one.
+        if !conversationId.isEmpty,
+           notification.request.content.categoryIdentifier == "RELAY_MESSAGE",
+           let model, case .ready(let service) = model.phase,
+           UIApplication.shared.applicationState == .active {
+            if !service.bannerRecentlyShown(for: conversationId) {
+                let senderAccount = notification.request.content.userInfo["senderAccount"] as? String
+                service.presentInAppBanner(conversationId: conversationId, senderAccount: senderAccount,
+                                           text: notification.request.content.body,
+                                           fallbackTitle: notification.request.content.title)
+            }
+            completionHandler([])
+            return
+        }
         completionHandler([.banner, .sound, .badge])
     }
 
