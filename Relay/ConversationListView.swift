@@ -18,6 +18,8 @@ struct ConversationListView: View {
     @Environment(ChatAppearance.self) private var appearance
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @FocusState private var searchFocused: Bool
+    @State private var searchScope = SearchScope.all
+    @State private var expandedSearchChats: Set<String> = []
     @State private var showingNewChatSheet = false
     @State private var showingNewGroup = false
     @State private var selectedConversationId: String?
@@ -827,6 +829,10 @@ struct ConversationListView: View {
         }
     }
 
+    private enum SearchScope: String, CaseIterable {
+        case all = "All", chats = "Chats", messages = "Messages", links = "Links"
+    }
+
     private var searchList: some View {
         List(selection: Binding(
             get: { selectedConversationId },
@@ -841,33 +847,76 @@ struct ConversationListView: View {
             let lockedIds = Set(service.conversations.filter(\.requireBiometricChat).map(\.id))
             let messageResults = searchResults.filter {
                 !panicMode.isHidden($0.conversationId) && !lockedIds.contains($0.conversationId)
+                    && (searchScope != .links || $0.body.firstURL != nil)
             }
-            if !matchingConversations.isEmpty {
-                Section("Conversations") {
+            let showChats = (searchScope == .all || searchScope == .chats) && !matchingConversations.isEmpty
+            let showMessages = searchScope != .chats && !messageResults.isEmpty
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: DS.Spacing.sm) {
+                    ForEach(SearchScope.allCases, id: \.self) { scope in
+                        Pill(title: scope.rawValue, isSelected: searchScope == scope) { searchScope = scope }
+                    }
+                }
+                .padding(.horizontal, DS.Spacing.lg)
+                .padding(.vertical, DS.Spacing.sm)
+            }
+            .scrollClipDisabled()
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
+            .selectionDisabled()
+
+            if showChats {
+                Section("Chats") {
                     ForEach(matchingConversations) { conversation in
                         ConversationRow(conversation: conversation, service: service)
                             .tag(conversation.id as String?)
+                            .listRowBackground(Color.clear)
                     }
                 }
             }
-            if !messageResults.isEmpty {
-                Section("Messages") {
-                    ForEach(messageResults) { result in
-                        Button {
-                            searchTarget = (result.conversationId, result.messageId)
-                            openConversation(result.conversationId)
-                        } label: {
-                            SearchResultRow(result: result, service: service, query: searchText)
+            if showMessages {
+                // Grouped by chat, most recent match first; three per chat
+                // until expanded.
+                let groups = Dictionary(grouping: messageResults, by: \.conversationId)
+                let order = messageResults.map(\.conversationId).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+                ForEach(order, id: \.self) { conversationId in
+                    let results = groups[conversationId] ?? []
+                    let expanded = expandedSearchChats.contains(conversationId)
+                    Section {
+                        ForEach(expanded ? results : Array(results.prefix(3))) { result in
+                            Button {
+                                searchTarget = (result.conversationId, result.messageId)
+                                openConversation(result.conversationId)
+                            } label: {
+                                SearchResultRow(result: result, service: service, query: searchText, showsTitle: false)
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.clear)
                         }
-                        .buttonStyle(.plain)
+                        if results.count > 3 && !expanded {
+                            Button("Show \(results.count - 3) More") { expandedSearchChats.insert(conversationId) }
+                                .font(.subheadline.weight(.medium))
+                                .listRowBackground(Color.clear)
+                        }
+                    } header: {
+                        Text(searchChatTitle(conversationId) + " · \(results.count)")
                     }
                 }
             }
-            if matchingConversations.isEmpty && messageResults.isEmpty {
+            if !showChats && !showMessages {
                 ContentUnavailableView.search(text: searchText)
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .onChange(of: searchText) { _, _ in expandedSearchChats = [] }
+    }
+
+    private func searchChatTitle(_ conversationId: String) -> String {
+        guard let conversation = service.conversations.first(where: { $0.id == conversationId }) else { return "Chat" }
+        return displayName(for: conversation)
     }
 
     private func displayName(for conversation: Conversation) -> String {
@@ -1786,6 +1835,8 @@ private struct SearchResultRow: View {
     let result: MessageStore.SearchResult
     let service: MessagingService
     var query: String = ""
+    /// Off when results sit under their chat's heading.
+    var showsTitle = true
 
     private var conversation: Conversation? {
         service.conversations.first { $0.id == result.conversationId }
@@ -1799,7 +1850,7 @@ private struct SearchResultRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            if let conv = conversation {
+            if showsTitle, let conv = conversation {
                 AvatarView(
                     name: title,
                     size: 44,
@@ -1809,8 +1860,10 @@ private struct SearchResultRow: View {
                 )
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.headline)
+                if showsTitle {
+                    Text(title)
+                        .font(.headline)
+                }
                 highlighted(text: result.body, query: query)
                     .font(.subheadline)
                     .lineLimit(2)
