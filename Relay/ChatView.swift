@@ -29,6 +29,8 @@ struct ChatView: View {
     @Environment(ChatAppearance.self) private var appAppearance
     @Environment(\.dynamicTypeSize) private var composerDynamicType
     @State private var dropTargeted = false
+    /// Briefly highlighted after jumping to it from a reply.
+    @State private var flashedMessageId: String?
     /// This chat's own theme if it has one, otherwise the app's.
     private var appearance: ChatAppearance { appAppearance.theme(forChat: conversationId) ?? appAppearance }
     @Environment(CallManager.self) private var callManager
@@ -293,6 +295,10 @@ struct ChatView: View {
             } action: { _, atBottom in
                 withAnimation(.spring(duration: 0.2)) { isAtBottom = atBottom }
                 if atBottom { withAnimation(.spring(duration: 0.3)) { newMessageBanner = nil } }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .relayJumpToQuote)) { note in
+                guard let quote = note.object as? QuotedMessage else { return }
+                jumpToQuoted(quote, proxy: proxy, attemptsLeft: 10)
             }
             .onReceive(NotificationCenter.default.publisher(for: .relayRevealMessage)) { note in
                 guard let id = note.object as? String, service.activeMessages.last?.id == id else { return }
@@ -1050,7 +1056,34 @@ struct ChatView: View {
         withAnimation { scrollViewProxy?.scrollTo(id, anchor: .center) }
     }
 
+    /// Scrolls to the message a reply quotes and highlights it for a moment,
+    /// loading older pages until it's found (or there's nothing older).
+    private func jumpToQuoted(_ quote: QuotedMessage, proxy: ScrollViewProxy, attemptsLeft: Int) {
+        let me = service.credentials.accountId
+        let target = service.activeMessages.last { message in
+            message.timestamp == quote.targetTimestamp
+                && (quote.author == me ? message.isOutgoing : message.senderAccount == quote.author || !message.isOutgoing)
+        }
+        if let target {
+            withAnimation(.snappy) { proxy.scrollTo(target.id, anchor: .center) }
+            withAnimation(.easeOut(duration: 0.2)) { flashedMessageId = target.id }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                withAnimation(.easeOut(duration: 0.4)) {
+                    if flashedMessageId == target.id { flashedMessageId = nil }
+                }
+            }
+        } else if attemptsLeft > 0, service.hasEarlierMessages {
+            service.loadEarlierMessages()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                jumpToQuoted(quote, proxy: proxy, attemptsLeft: attemptsLeft - 1)
+            }
+        } else {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+    }
+
     private func isCurrentSearchMatch(_ message: StoredMessage) -> Bool {
+        if message.id == flashedMessageId { return true }
         guard inChatSearchActive, inChatMatches.indices.contains(inChatMatchIndex) else { return false }
         return inChatMatches[inChatMatchIndex].id == message.id
     }
@@ -2608,6 +2641,12 @@ private struct MessageBubble: View {
                         ? "You"
                         : service.displayName(forAccount: quote.author)
                     QuotedContentView(quote: quote, isOutgoing: message.isOutgoing, authorName: authorName)
+                        .contentShape(.rect)
+                        .onTapGesture {
+                            NotificationCenter.default.post(name: .relayJumpToQuote, object: quote)
+                        }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint("Shows the original message")
                 }
                 attachmentStack
                 let displayBody = message.body.hasPrefix("~once~")

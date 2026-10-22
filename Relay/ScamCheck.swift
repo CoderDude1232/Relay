@@ -62,6 +62,8 @@ enum ScamKind: String, Codable, CaseIterable {
 extension Notification.Name {
     /// Scrolls the open chat so the message (an id) is fully on screen.
     static let relayRevealMessage = Notification.Name("relay.revealMessage")
+    /// A reply's quote was tapped: the chat shows the original (a QuotedMessage).
+    static let relayJumpToQuote = Notification.Name("relay.jumpToQuote")
 }
 
 enum ScamCheck {
