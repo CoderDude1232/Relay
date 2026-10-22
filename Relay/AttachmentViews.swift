@@ -483,7 +483,7 @@ struct VideoPlayerBubble: View {
     }
 }
 
-private struct VideoPlayerSheet: View {
+struct VideoPlayerSheet: View {
     let url: URL
     @Environment(\.dismiss) private var dismiss
     /// Created once: building the AVPlayer in `body` would make a new player
