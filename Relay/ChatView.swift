@@ -31,6 +31,11 @@ struct ChatView: View {
     @State private var dropTargeted = false
     /// Briefly highlighted after jumping to it from a reply.
     @State private var flashedMessageId: String?
+    /// The chat's read marker when it was opened. Opening marks it read, so
+    /// the live marker would move the "New Messages" line straight away.
+    @State private var openedReadAt: Int64?
+    /// Unread when opened; shown on the scroll-down button until the bottom.
+    @State private var unreadAtOpen = 0
     /// This chat's own theme if it has one, otherwise the app's.
     private var appearance: ChatAppearance { appAppearance.theme(forChat: conversationId) ?? appAppearance }
     @Environment(CallManager.self) private var callManager
@@ -191,6 +196,7 @@ struct ChatView: View {
                                 Text("New Messages")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(Color.accentColor)
+                                    .modifier(PhotoWallpaperLabel())
                                     .fixedSize()
                                 Rectangle().fill(Color.accentColor.opacity(0.4)).frame(height: 1)
                             }
@@ -294,6 +300,7 @@ struct ChatView: View {
                 geo.contentSize.height - geo.contentOffset.y - geo.containerSize.height < 300
             } action: { _, atBottom in
                 withAnimation(.spring(duration: 0.2)) { isAtBottom = atBottom }
+                if atBottom && initialScrollDone { unreadAtOpen = 0 }
                 if atBottom { withAnimation(.spring(duration: 0.3)) { newMessageBanner = nil } }
             }
             .onReceive(NotificationCenter.default.publisher(for: .relayJumpToQuote)) { note in
@@ -305,6 +312,10 @@ struct ChatView: View {
                 withAnimation(.snappy) { proxy.scrollTo(id, anchor: .bottom) }
             }
             .onAppear {
+                if openedReadAt == nil, let conv = conversation {
+                    openedReadAt = conv.readAt
+                    unreadAtOpen = conv.unreadCount
+                }
                 scrollViewProxy = proxy
                 // Reopening a chat quickly can finish loading before this view
                 // appears, so the change above never fires.
@@ -328,6 +339,9 @@ struct ChatView: View {
             if let target = initialMessageId,
                service.activeMessages.contains(where: { $0.id == target }) {
                 proxy.scrollTo(target, anchor: .center)
+            } else if unreadAtOpen > 0, displayItems.contains(where: { if case .unreadSeparator = $0 { true } else { false } }) {
+                // Catch up from the first unread message, not the newest.
+                proxy.scrollTo("unread-separator", anchor: .top)
             } else {
                 scrollToBottom(proxy, animated: false)
             }
@@ -592,7 +606,8 @@ struct ChatView: View {
                                     .font(.callout.weight(.bold))
                                     .frame(width: 34, height: 34)
                                     .glassCompat(in: .circle)
-                                if let count = conversation?.unreadCount, count > 0 {
+                                let count = max(conversation?.unreadCount ?? 0, unreadAtOpen)
+                                if count > 0 {
                                     CountBadge(count: count)
                                         .offset(x: 6, y: -6)
                                 }
@@ -1895,7 +1910,7 @@ struct ChatView: View {
 
     private var displayItems: [DisplayItem] {
         let messages = service.activeMessages
-        let readAt = service.conversations.first { $0.id == conversationId }?.readAt ?? 0
+        let readAt = openedReadAt ?? service.conversations.first { $0.id == conversationId }?.readAt ?? 0
         var items: [DisplayItem] = []
         let calendar = Calendar.current
         var unreadSeparatorInserted = false
