@@ -29,6 +29,7 @@ struct ChatView: View {
     @Environment(ChatAppearance.self) private var appAppearance
     @Environment(\.dynamicTypeSize) private var composerDynamicType
     @State private var dropTargeted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotionSetting
     /// The preview for the first link in the draft, built while typing.
     @State private var draftLinkPreview: MessageStore.LinkPreview?
     /// Links whose preview was removed with ×, so it isn't fetched again.
@@ -235,6 +236,7 @@ struct ChatView: View {
                                 )
                                 .padding(.top, (position == .first || position == .single) ? 6 : 1)
                                 .id(message.id)
+                                .transition(Self.arrival(outgoing: message.isOutgoing))
                             }
                         }
                     }
@@ -302,6 +304,9 @@ struct ChatView: View {
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
             .animation(.spring(duration: 0.3), value: service.typingConversations.contains(conversationId))
+            // New messages animate in, but not the first load or older pages.
+            .animation(initialScrollDone && !reduceMotionSetting ? .spring(duration: 0.35, bounce: 0.15) : nil,
+                       value: service.activeMessages.last?.id)
             .onChange(of: service.typingConversations.contains(conversationId)) { _, isTyping in
                 if isTyping { scrollToBottom(proxy) }
             }
@@ -974,6 +979,17 @@ struct ChatView: View {
         service.activeMessages.reduce(0) { total, message in
             message.isOutgoing ? total + message.reactions.filter { !$0.isOutgoing }.count : total
         }
+    }
+
+    /// A sent message rises from the composer; a received one slides up and
+    /// fades in. Removals just fade.
+    private static func arrival(outgoing: Bool) -> AnyTransition {
+        .asymmetric(
+            insertion: outgoing
+                ? .move(edge: .bottom).combined(with: .opacity)
+                : .offset(y: 14).combined(with: .opacity).combined(with: .scale(scale: 0.97, anchor: .bottomLeading)),
+            removal: .opacity
+        )
     }
 
     private static let typingAnchor = "typing-indicator"
