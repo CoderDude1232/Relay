@@ -619,16 +619,20 @@ struct ChatView: View {
                         Button("Unblock") { service.unblockAccount(blockedPeer) }
                             .font(.footnote.weight(.semibold))
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .glassCompat(in: .capsule)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(.ultraThinMaterial)
+                    .padding(.bottom, 6)
                 } else if isAnnounceOnlyBlocked {
                     Label("Only admins can send messages", systemImage: "megaphone.fill")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glassCompat(in: .capsule)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(.ultraThinMaterial)
+                        .padding(.bottom, 6)
                 } else if isSelectingMessages {
                     selectionActionBar
                 } else {
@@ -1477,7 +1481,11 @@ struct ChatView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        .background(.ultraThinMaterial)
+        // A rounded card, not a strip: a material background would run into
+        // the safe area, under the iPad sidebar.
+        .glassCompat(in: .rect(cornerRadius: 24))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
         .confirmationDialog("Block \(requestBlockTarget.map { service.displayName(forAccount: $0) } ?? peerName)?",
                             isPresented: $confirmBlockRequest, titleVisibility: .visible) {
             Button("Block", role: .destructive) { blockRequest(report: false) }
@@ -1903,10 +1911,11 @@ private struct PinnedMessageBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .bottom) {
-            Divider()
-        }
+        // A floating card, kept inside the chat (a full-width bar ran under
+        // the iPad sidebar).
+        .glassCompat(in: .rect(cornerRadius: 16))
+        .padding(.horizontal, 10)
+        .padding(.top, 4)
     }
 }
 
