@@ -28,6 +28,7 @@ struct ChatView: View {
 
     @Environment(ChatAppearance.self) private var appAppearance
     @Environment(\.dynamicTypeSize) private var composerDynamicType
+    @State private var dropTargeted = false
     /// This chat's own theme if it has one, otherwise the app's.
     private var appearance: ChatAppearance { appAppearance.theme(forChat: conversationId) ?? appAppearance }
     @Environment(CallManager.self) private var callManager
@@ -386,6 +387,15 @@ struct ChatView: View {
         .onAppear { isOnScreen = true }
         .onDisappear { isOnScreen = false }
         .background { appearance.background.ignoresSafeArea(.all) }
+        .onDrop(of: [.image, .movie, .fileURL, .item], isTargeted: $dropTargeted) { handleDrop($0) }
+        .overlay {
+            if dropTargeted && acceptsDrops {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
+        }
         // Bubbles and labels in this chat follow its theme.
         .environment(appearance)
         .environment(\.openURL, linkOpener)
@@ -1638,6 +1648,74 @@ struct ChatView: View {
             width: clean.width,
             height: clean.height
         )
+    }
+
+    /// Whether this chat currently has a composer to attach to.
+    private var acceptsDrops: Bool {
+        !isRelayOfficial && !isRequest && blockedPeer == nil && !isAnnounceOnlyBlocked
+            && !isSelectingMessages && !recorder.isRecording && !isNoteToSelf
+    }
+
+    /// Photos, videos and files dropped onto the chat (iPad drag and drop)
+    /// become pending attachments, prepared the same way as picked ones.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard acceptsDrops, !providers.isEmpty else { return false }
+        Task {
+            var media: [MessagingService.PendingAttachment] = []
+            var file: MessagingService.PendingAttachment?
+            for provider in providers.prefix(10) {
+                if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+                    if let data = await Self.loadFile(provider, type: .movie),
+                       let clean = await MediaSanitizer.video(data.data, contentType: data.mime ?? "video/mp4") {
+                        let mime = data.mime ?? "video/mp4"
+                        media.append(.init(data: clean, contentType: mime,
+                                           filename: mime == "video/quicktime" ? "video.mov" : "video.mp4",
+                                           width: 0, height: 0))
+                    }
+                } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                    let isGIF = provider.hasItemConformingToTypeIdentifier(UTType.gif.identifier)
+                    if let data = await Self.loadData(provider, type: .image),
+                       let clean = MediaSanitizer.photo(data) {
+                        media.append(.init(data: clean.data, contentType: clean.contentType,
+                                           filename: isGIF ? "image.gif" : nil,
+                                           width: clean.width, height: clean.height))
+                    }
+                } else if file == nil, let data = await Self.loadFile(provider, type: .item) {
+                    file = .init(data: data.data, contentType: data.mime ?? "application/octet-stream",
+                                 filename: data.name, width: 0, height: 0)
+                }
+            }
+            if !media.isEmpty {
+                pendingAttachments = media
+                if !media.allSatisfy({ $0.contentType.hasPrefix("image/") }) { viewOnce = false }
+            } else if let file {
+                pendingAttachments = [file]
+                viewOnce = false
+            }
+        }
+        return true
+    }
+
+    private static func loadData(_ provider: NSItemProvider, type: UTType) async -> Data? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadDataRepresentation(for: type) { data, _ in continuation.resume(returning: data) }
+        }
+    }
+
+    /// Reads the file before the provider deletes its temporary copy.
+    private static func loadFile(_ provider: NSItemProvider, type: UTType) async -> (data: Data, mime: String?, name: String)? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadFileRepresentation(for: type, openInPlace: false) { url, _, _ in
+                guard let url, let data = try? Data(contentsOf: url) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                continuation.resume(returning: (data, mime, provider.suggestedName.map { name in
+                    url.pathExtension.isEmpty ? name : "\(name).\(url.pathExtension)"
+                } ?? url.lastPathComponent))
+            }
+        }
     }
 
     /// Reads a document-picker selection (a security-scoped URL) into a
@@ -3344,6 +3422,11 @@ private struct AttachmentImageView: View {
 
     private var isGIF: Bool { attachment.contentType == "image/gif" }
 
+    private var canDragOut: Bool {
+        image != nil && !coversSensitive
+            && !hiddenForRequest && !(requiresBiometric && !isUnlocked)
+    }
+
     private var height: CGFloat {
         guard attachment.width > 0, attachment.height > 0 else { return 240 }
         let aspect = CGFloat(attachment.width) / CGFloat(attachment.height)
@@ -3420,6 +3503,9 @@ private struct AttachmentImageView: View {
             }
         }
         .clipShape(.rect(cornerRadius: isSticker ? 0 : 16))
+        // iPad: drag the photo out to another app (with a pointer; a touch
+        // long-press opens the message menu instead).
+        .modifier(DragOutImage(image: canDragOut ? image : nil))
         .accessibilityElement(children: coversSensitive ? .contain : .ignore)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityAddTraits(coversSensitive ? [] : [.isButton, .isImage])
@@ -4397,5 +4483,19 @@ enum InChatSounds {
     static func play(_ kind: Kind) {
         guard isEnabled else { return }
         AudioServicesPlaySystemSound(kind == .sent ? 1004 : 1003)
+    }
+}
+
+/// Lets a photo be dragged out to another app. iPad only: on iPhone a long
+/// press belongs to the message menu.
+private struct DragOutImage: ViewModifier {
+    let image: UIImage?
+
+    func body(content: Content) -> some View {
+        if let image, UIDevice.current.userInterfaceIdiom == .pad {
+            content.onDrag { NSItemProvider(object: image) }
+        } else {
+            content
+        }
     }
 }
