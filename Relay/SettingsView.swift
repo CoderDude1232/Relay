@@ -1351,7 +1351,11 @@ struct AvatarView: View {
         name.first.map { String($0).uppercased() } ?? "?"
     }
 
-    private var avatarColor: Color {
+    private var avatarColor: Color { Self.color(for: name) }
+
+    /// A person's colour, from their name: the same on their avatar and on
+    /// their name in group chats.
+    static func color(for name: String) -> Color {
         let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
         var hash = 0
         for scalar in name.unicodeScalars { hash = (hash &* 31 &+ Int(scalar.value)) }

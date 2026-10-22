@@ -211,7 +211,6 @@ struct ChatView: View {
                         case .message(let message, let position):
                             if message.senderAccount == MessagingService.systemSender {
                                 SystemMessageView(rawBody: message.body)
-                                    .modifier(PhotoWallpaperLabel())
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 4)
                                     .id(message.id)
@@ -2665,10 +2664,12 @@ private struct MessageBubble: View {
     private var coreColumn: some View {
         VStack(alignment: message.isOutgoing ? .trailing : .leading, spacing: 3) {
             if showsSenderLabel {
-                Text(service.displayName(forAccount: message.senderAccount ?? ""))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.tint)
-                    .padding(.leading, 4)
+                let name = service.displayName(forAccount: message.senderAccount ?? "")
+                Text(name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AvatarView.color(for: name))
+                    .modifier(PhotoWallpaperLabel())
+                    .padding(.leading, 10)
             }
             if dynamicTypeSize.isAccessibilitySize, !message.reactions.isEmpty {
                 // Large reactions would cover the time; they go under the bubble.
@@ -3926,6 +3927,8 @@ private struct SystemMessageView: View {
         return "phone.fill"
     }
 
+    @Environment(ChatAppearance.self) private var appearance
+
     var body: some View {
         Group {
             if isCallMessage {
@@ -3933,14 +3936,23 @@ private struct SystemMessageView: View {
                     Image(systemName: callIcon)
                     Text(displayText)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             } else {
                 Text(displayText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        // A pill, frosted over a photo wallpaper so it stays readable.
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(
+            appearance.wallpaper == .photo && appearance.hasWallpaper
+                ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.fill.quaternary),
+            in: .capsule
+        )
+        .padding(.horizontal, 40)
+        .accessibilityElement(children: .combine)
     }
 }
 
