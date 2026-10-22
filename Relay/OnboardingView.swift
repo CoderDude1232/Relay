@@ -422,38 +422,51 @@ private struct WelcomeView: View {
                 }
                 .padding(.top, 4)
 
-                Button(action: onLinkDevice) {
-                    Label("Link to an existing device", systemImage: "qrcode.viewfinder")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .frame(minHeight: 32)
-                }
-
-                // Where Relay is blocked, sign-in only works through a proxy.
-                Button { showingProxy = true } label: {
-                    Text(RelayProxy.isEnabled ? "Using a proxy" : "Can't connect? Use a proxy")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.45))
-                        .frame(minHeight: 32)
-                }
-                .sheet(isPresented: $showingProxy) {
-                    NavigationStack {
-                        ProxySettingsView()
-                            .toolbar {
-                                ToolbarItem(placement: .cancellationAction) {
-                                    Button("Done") { showingProxy = false }
-                                }
-                            }
-                    }
-                    .preferredColorScheme(nil)
-                }
-
                 LegalFooter()
-                    .padding(.top, 12)
+                    .padding(.top, 8)
             }
             .frame(maxWidth: 420)
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
+        }
+        // Less common ways in live in one menu, keeping the area under the
+        // sign-in buttons to sign in and the legal line.
+        .overlay(alignment: .topTrailing) {
+            Menu {
+                Button(action: onLinkDevice) {
+                    Label("Link to an Existing Device", systemImage: "qrcode.viewfinder")
+                }
+                // Where Relay is blocked, sign-in only works through a proxy.
+                Button { showingProxy = true } label: {
+                    Label(RelayProxy.isEnabled ? "Proxy On" : "Connect Through a Proxy",
+                          systemImage: "network.badge.shield.half.filled")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .glassCompat(in: .circle)
+                    .overlay(alignment: .topTrailing) {
+                        if RelayProxy.isEnabled {
+                            Circle().fill(.green).frame(width: 9, height: 9)
+                        }
+                    }
+            }
+            .accessibilityLabel("More sign-in options")
+            .padding(.trailing, 20)
+            .padding(.top, 8)
+        }
+        .sheet(isPresented: $showingProxy) {
+            NavigationStack {
+                ProxySettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingProxy = false }
+                        }
+                    }
+            }
+            .preferredColorScheme(nil)
         }
     }
 
@@ -786,15 +799,19 @@ private struct AuthView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
 
-                Button("Skip the password — email me a code", action: onUseCode)
+                Menu {
+                    Button("Email Me a Code Instead", systemImage: "envelope", action: onUseCode)
+                    Button("Sign Up Without an Email", systemImage: "person.badge.key", action: onUsePasskey)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Other ways to sign up")
+                        Image(systemName: "chevron.down").font(.caption2.weight(.bold))
+                    }
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .padding(.top, 16)
-
-                Button("Sign up without an email", action: onUsePasskey)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .padding(.top, 12)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(minHeight: 44)
+                }
+                .padding(.top, 12)
 
                 LegalFooter()
                     .padding(.horizontal, 40)
@@ -1066,7 +1083,7 @@ private struct RecoveryView: View {
                     Text("Sign in")
                         .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
-                    Text("Recover access with your email and password.")
+                    Text("Use the email and password you signed up with.")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.6))
                         .multilineTextAlignment(.center)
@@ -1139,28 +1156,26 @@ private struct RecoveryView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
 
-                HStack(spacing: 20) {
-                    Button("Forgot password?") { showingForgotPassword = true }
-                    Button("Email me a code", action: onUseCode)
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white.opacity(0.8))
-                .padding(.top, 16)
+                Button("Forgot password?") { showingForgotPassword = true }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.top, 16)
 
-                Text("Only works if you created your account with email sign-up.")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.35))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-                    .padding(.top, 12)
-
-                HStack(spacing: 20) {
-                    Button("Use a recovery key") { showingRecoveryKey = true }
-                    Button("Review code") { showingReviewCode = true }
+                // The rarer ways in, in one place rather than a row of links.
+                Menu {
+                    Button("Email Me a Code", systemImage: "envelope", action: onUseCode)
+                    Button("Use a Recovery Key", systemImage: "key") { showingRecoveryKey = true }
+                    Button("Review Code", systemImage: "checkmark.seal") { showingReviewCode = true }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Other ways to sign in")
+                        Image(systemName: "chevron.down").font(.caption2.weight(.bold))
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(minHeight: 44)
                 }
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.white.opacity(0.45))
-                .padding(.top, 20)
+                .padding(.top, 4)
 
                 Spacer().frame(height: 40)
             }
