@@ -378,5 +378,28 @@ enum Schema {
                 """)
             try db.run("PRAGMA user_version = 24;")
         }
+        try step(db, to: 25) {
+            // Link previews that came with a message (built by its sender).
+            // Triggers drop a preview with its message, however it goes:
+            // deleted, unsent or expired.
+            try db.run("""
+                CREATE TABLE IF NOT EXISTS link_previews (
+                    message_id TEXT PRIMARY KEY,
+                    url        TEXT NOT NULL,
+                    title      TEXT NOT NULL,
+                    image      BLOB
+                );
+                """)
+            try db.run("""
+                CREATE TRIGGER IF NOT EXISTS link_previews_on_delete AFTER DELETE ON messages
+                BEGIN DELETE FROM link_previews WHERE message_id = OLD.id; END;
+                """)
+            try db.run("""
+                CREATE TRIGGER IF NOT EXISTS link_previews_on_unsend AFTER UPDATE OF deleted ON messages
+                WHEN NEW.deleted = 1
+                BEGIN DELETE FROM link_previews WHERE message_id = NEW.id; END;
+                """)
+            try db.run("PRAGMA user_version = 25;")
+        }
     }
 }

@@ -1093,7 +1093,8 @@ final class MessagingService {
         _ text: String,
         in conversationId: String,
         replyTo: QuotedMessage? = nil,
-        attachments pending: [PendingAttachment] = []
+        attachments pending: [PendingAttachment] = [],
+        linkPreview: MessageStore.LinkPreview? = nil
     ) async {
         if isMessageRequest(conversationId) { acceptMessageRequest(conversationId) }
         let group = try? groupForConversation(conversationId)
@@ -1145,6 +1146,10 @@ final class MessagingService {
                 replyTo: replyTo, attachments: stored,
                 senderAccount: group == nil ? nil : credentials.accountId
             )
+            // Only for a link that's still in what's sent.
+            if let linkPreview, text.contains(linkPreview.url) {
+                try? storage.messages.saveLinkPreview(linkPreview, messageId: localId)
+            }
         } catch {
             log.error("send: could not store outgoing message: \(PrivacyRedactor.error(error))")
             sendErrorMessage = (error as? MessagingError)?.errorDescription
@@ -1243,6 +1248,11 @@ final class MessagingService {
                 content.text.quote.text = replyTo.text
             }
             content.text.attachments = try await uploadAttachments(attachments)
+            if let preview = try? storage.messages.linkPreview(messageId: messageId) {
+                content.text.preview.url = preview.url
+                content.text.preview.title = preview.title
+                if let image = preview.image { content.text.preview.image = image }
+            }
             content.senderAccountID = credentials.accountId
             content.senderDeviceID = credentials.deviceId
             let disappearSecs = conversations.first(where: { $0.id == conversationId })?.disappearingSeconds ?? 0
@@ -3472,6 +3482,11 @@ final class MessagingService {
         if let active = activeConversationId { refreshActiveMessages(ifShowing: active) }
     }
 
+    /// The preview that came with (or was sent with) a message.
+    func linkPreview(forMessage id: String) -> MessageStore.LinkPreview? {
+        try? storage.messages.linkPreview(messageId: id)
+    }
+
     /// The newest few messages, oldest first, for the chat-list preview.
     func recentMessages(in conversationId: String, limit: Int) -> [StoredMessage] {
         (try? storage.messages.messages(in: conversationId, limit: limit)) ?? []
@@ -3497,7 +3512,8 @@ final class MessagingService {
             ))
         }
         guard !message.body.isEmpty || !pending.isEmpty else { return }
-        await sendMessage(message.body, in: conversationId, attachments: pending)
+        await sendMessage(message.body, in: conversationId, attachments: pending,
+                          linkPreview: try? storage.messages.linkPreview(messageId: message.id))
     }
 
     static let viewOncePrefix = "~once~"

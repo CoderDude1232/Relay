@@ -29,6 +29,11 @@ struct ChatView: View {
     @Environment(ChatAppearance.self) private var appAppearance
     @Environment(\.dynamicTypeSize) private var composerDynamicType
     @State private var dropTargeted = false
+    /// The preview for the first link in the draft, built while typing.
+    @State private var draftLinkPreview: MessageStore.LinkPreview?
+    /// Links whose preview was removed with ×, so it isn't fetched again.
+    @State private var dismissedPreviewURLs: Set<String> = []
+    @State private var draftPreviewTask: Task<Void, Never>?
     /// Briefly highlighted after jumping to it from a reply.
     @State private var flashedMessageId: String?
     /// The chat's read marker when it was opened. Opening marks it read, so
@@ -881,6 +886,7 @@ struct ChatView: View {
             service.clearBlockedSafetyWarning()
         }
         .onChange(of: draft) { _, newValue in
+            updateDraftLinkPreview()
             let normalized = normalizedDraft(newValue)
             if normalized != newValue {
                 draft = normalized
@@ -1356,6 +1362,15 @@ struct ChatView: View {
                         .padding(.horizontal)
                     }
                 }
+            }
+            if let draftLinkPreview, editingMessage == nil {
+                ComposerLinkPreview(preview: draftLinkPreview) {
+                    withAnimation(.spring(duration: 0.25)) {
+                        dismissedPreviewURLs.insert(draftLinkPreview.url)
+                        self.draftLinkPreview = nil
+                    }
+                }
+                .padding(.bottom, 6)
             }
             if showFormattingBar {
                 formattingBar
@@ -1925,11 +1940,32 @@ struct ChatView: View {
         }
         let attachments = pendingAttachments
         if viewOnce && !attachments.isEmpty { text = "~once~" + text }
+        let preview = draftLinkPreview.flatMap { text.contains($0.url) ? $0 : nil }
+        draftLinkPreview = nil
+        draftPreviewTask?.cancel()
         draft = ""
         replyingTo = nil
         viewOnce = false
         clearPendingAttachments()
-        Task { await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments) }
+        Task { await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments, linkPreview: preview) }
+    }
+
+    /// Builds a preview for the draft's first link, after typing pauses.
+    private func updateDraftLinkPreview() {
+        let link = draft.firstURLText
+        if draftLinkPreview?.url == link, link != nil { return }
+        draftPreviewTask?.cancel()
+        guard let link, !dismissedPreviewURLs.contains(link), !isRequest, editingMessage == nil else {
+            if draftLinkPreview != nil { withAnimation(.spring(duration: 0.25)) { draftLinkPreview = nil } }
+            return
+        }
+        draftPreviewTask = Task {
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let preview = await LinkPreviewBuilder.build(for: link),
+                  !Task.isCancelled, draft.firstURLText == link
+            else { return }
+            withAnimation(.spring(duration: 0.25)) { draftLinkPreview = preview }
+        }
     }
 
     /// Throttled typing broadcast: `.started` at most every few seconds while
@@ -2732,6 +2768,7 @@ private struct MessageBubble: View {
                         // text would squeeze it to a word per line.
                         VStack(alignment: .trailing, spacing: 4) {
                             Text(formattedBody(displayBody))
+                                .tint(message.isOutgoing ? .white : .accentColor)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             metadataRow
@@ -2741,6 +2778,7 @@ private struct MessageBubble: View {
                             // Large text gets the whole width; the time goes under it.
                             VStack(alignment: .trailing, spacing: 4) {
                                 Text(formattedBody(displayBody))
+                                .tint(message.isOutgoing ? .white : .accentColor)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 metadataRow
@@ -2748,6 +2786,7 @@ private struct MessageBubble: View {
                         } else {
                             HStack(alignment: .lastTextBaseline, spacing: 7) {
                                 Text(formattedBody(displayBody))
+                                .tint(message.isOutgoing ? .white : .accentColor)
                                     .fixedSize(horizontal: false, vertical: true)
                                 metadataRow
                             }
@@ -2760,8 +2799,7 @@ private struct MessageBubble: View {
                     }
                     if let url = displayBody.firstURL, message.isOutgoing || !inRequestChat {
                         LinkPreviewView(url: url, isOutgoing: message.isOutgoing,
-                                        fetchAllowed: message.isOutgoing && message.status != .received
-                                            && abs(Date().timeIntervalSince1970 * 1000 - Double(message.timestamp)) < 120_000)
+                                        preview: service.linkPreview(forMessage: message.id))
                     }
                 } else if !isLoneVoiceNote {
                     metadataRow
@@ -2867,6 +2905,10 @@ private struct MessageBubble: View {
                 }
                 searchIdx = found.upperBound
             }
+        }
+        // Underlined, so links read as links in white on a coloured bubble.
+        for run in base.runs where run.link != nil {
+            base[run.range].underlineStyle = .single
         }
         if Self.formattedBodyCache.count > 800 { Self.formattedBodyCache.removeAll() }
         Self.formattedBodyCache[cacheKey] = base

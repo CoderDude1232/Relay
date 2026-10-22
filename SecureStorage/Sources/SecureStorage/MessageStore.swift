@@ -1209,6 +1209,31 @@ public final class MessageStore: @unchecked Sendable {
         }
     }
 
+    public struct LinkPreview: Sendable, Equatable {
+        public let url: String
+        public let title: String
+        public let image: Data?
+        public init(url: String, title: String, image: Data?) {
+            self.url = url
+            self.title = title
+            self.image = image
+        }
+    }
+
+    public func saveLinkPreview(_ preview: LinkPreview, messageId: String) throws {
+        try db.run(
+            "INSERT OR REPLACE INTO link_previews (message_id, url, title, image) VALUES (?, ?, ?, ?)",
+            [.text(messageId), .text(preview.url), .text(preview.title), preview.image.map { .blob($0) } ?? .null]
+        )
+    }
+
+    public func linkPreview(messageId: String) throws -> LinkPreview? {
+        guard let row = try db.query(
+            "SELECT url, title, image FROM link_previews WHERE message_id = ?", [.text(messageId)]
+        ).first else { return nil }
+        return LinkPreview(url: row[0].string ?? "", title: row[1].string ?? "", image: row[2].data)
+    }
+
     /// Deletes a message and its reactions locally. The peer isn't notified.
     public func deleteMessage(id: String) throws {
         try db.transaction {

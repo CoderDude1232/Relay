@@ -783,6 +783,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                         body: text.body, timestamp: storable(text.timestamp), status: .sent,
                         replyTo: quote, attachments: attachments, senderAccount: nil
                     )
+                    saveLinkPreview(text, messageId: envelopeId)
                 } catch {
                     log.error("insertMessage (sync): \(error.localizedDescription)")
                 }
@@ -794,6 +795,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 replyTo: quote, attachments: attachments,
                 senderAccount: groupId == nil ? nil : attestedAccount
             )
+            if inserted { saveLinkPreview(text, messageId: envelopeId) }
             var effects = EnvelopeSideEffects()
             if inserted {
                 // Receipt goes to the author; the caller adds the group context.
@@ -1077,6 +1079,20 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         let model: String
         let region: String
         let updatedAt: Int64
+    }
+
+    /// Keeps the sender's preview of a link, only if it's for a link that's
+    /// actually in the message, with a sane title and a small image.
+    private func saveLinkPreview(_ text: Relay_Content_TextMessage, messageId: String) {
+        guard text.hasPreview else { return }
+        let preview = text.preview
+        guard let url = URL(string: preview.url), url.scheme == "https" || url.scheme == "http",
+              text.body.contains(preview.url), preview.url.count <= 2048
+        else { return }
+        let title = String(preview.title.prefix(300))
+        let image = preview.image.isEmpty || preview.image.count > 48 * 1024 ? nil : preview.image
+        guard !title.isEmpty || image != nil else { return }
+        try? storage.messages.saveLinkPreview(.init(url: preview.url, title: title, image: image), messageId: messageId)
     }
 
     private func recordDeviceLabel(_ info: Relay_Content_DeviceInfo, forDevice deviceId: UInt32) {

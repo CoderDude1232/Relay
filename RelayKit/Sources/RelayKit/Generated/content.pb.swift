@@ -8,15 +8,14 @@
 // For information on using the generated types, please see the documentation:
 //   https://github.com/apple/swift-protobuf/
 
-// content.proto — the CLIENT-ONLY plaintext structure of a message.
+// Client-only plaintext structure of a message.
 //
 // A serialized Content message is what gets encrypted with the Double
 // Ratchet (or a sender key, for groups). The relay server never parses
-// this; it only ever sees the resulting ciphertext bytes inside
-// relay.v1.Envelope.content / DeviceMessage.content.
+// this; it only sees the resulting ciphertext in Envelope.content and
+// DeviceMessage.content.
 //
-// Both the iOS client and future clients (Windows, Android) must codegen
-// from this exact file — wire compatibility depends on it.
+// Every client must generate its code from this file.
 
 #if canImport(FoundationEssentials)
 import FoundationEssentials
@@ -166,7 +165,7 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
   }
 
   /// Set when this content belongs to a group; empty for 1:1. Group messages
-  /// are encrypted with the sender's sender key (senderKey ciphertext);
+  /// are encrypted with the sender's sender key;
   /// control content (SKDM, group updates) is sent over pairwise sessions.
   public var groupID: String {
     get {_storage._groupID}
@@ -182,8 +181,8 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
 
   /// Sealed sender: sender's own account id and device id, encrypted inside the
   /// Content so the relay's stored envelope can omit them without breaking decryption.
-  /// Clients MUST set these on every outgoing message. Recipients prefer these over
-  /// the Envelope's (server-stamped) sender fields.
+  /// Clients set these on every outgoing message, and recipients prefer them over
+  /// the server-stamped sender fields on the Envelope.
   public var senderAccountID: String {
     get {_storage._senderAccountID}
     set {_uniqueStorage()._senderAccountID = newValue}
@@ -195,8 +194,8 @@ public nonisolated struct Relay_Content_Content: @unchecked Sendable {
   }
 
   /// Disappearing-messages timer the sender had set for this conversation when the
-  /// message was composed, in milliseconds. 0 means no timer / no change. Recipients
-  /// sync their local timer to this value so both sides stay in lockstep.
+  /// message was composed, in milliseconds. 0 means no timer. Recipients set their
+  /// local timer to this value.
   public var expiresAfterMs: Int64 {
     get {_storage._expiresAfterMs}
     set {_uniqueStorage()._expiresAfterMs = newValue}
@@ -255,9 +254,8 @@ public nonisolated struct Relay_Content_SenderKeyDistribution: Sendable {
   public init() {}
 }
 
-/// Notifies members that a group's roster/metadata changed; recipients
-/// re-sync the authoritative roster from the relay. `revision` lets clients
-/// drop stale updates; the rest drives a human-readable system line.
+/// Notifies members that a group's roster or metadata changed. revision lets
+/// clients drop stale updates; the rest drives a human-readable system line.
 public nonisolated struct Relay_Content_GroupUpdate: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -332,19 +330,17 @@ public nonisolated struct Relay_Content_GroupUpdate: @unchecked Sendable {
     set {_uniqueStorage()._screenSecurity = newValue}
   }
 
-  /// The group's current sender-key epoch. Carried E2E (was server-managed) so
-  /// clients agree on it without a server round-trip. On member REMOVE the actor
-  /// rotates this to a fresh id, forcing new sender keys the removed member can't
-  /// read. Empty on metadata-only actions (recipients keep their current id).
+  /// The group's current sender-key epoch. On REMOVE the actor rotates it to a
+  /// fresh id, forcing new sender keys the removed member can't read. Empty on
+  /// metadata-only actions; recipients keep their current id.
   public var distributionID: String {
     get {_storage._distributionID}
     set {_uniqueStorage()._distributionID = newValue}
   }
 
-  /// Group invite capability. Carried on normal updates so every member stores
-  /// it, and echoed by a link-joiner in their self-add so members can verify the
-  /// joiner actually held a valid invite link (they never learn the joiner is an
-  /// admin). Rotating it revokes outstanding links. Empty when the group has no
+  /// Group invite capability. Every member stores it, and a link-joiner echoes
+  /// it in their self-add so members can check the joiner held a valid invite
+  /// link. Rotating it revokes outstanding links. Empty when the group has no
   /// active invite link.
   public var inviteKey: Data {
     get {_storage._inviteKey}
@@ -455,7 +451,7 @@ public nonisolated struct Relay_Content_TextMessage: Sendable {
   /// that receipts refer back to (Signal's convention).
   public var timestamp: Int64 = 0
 
-  /// Optional: set when this message is a reply to an earlier one.
+  /// Set when this message is a reply to an earlier one.
   public var quote: Relay_Content_Quote {
     get {_quote ?? Relay_Content_Quote()}
     set {_quote = newValue}
@@ -468,15 +464,46 @@ public nonisolated struct Relay_Content_TextMessage: Sendable {
   /// Optional media; a message may carry text and/or attachments.
   public var attachments: [Relay_Content_AttachmentPointer] = []
 
+  /// A preview of the first link in `body`, fetched by the sender so that
+  /// receivers never contact the site. Unset when previews are off.
+  public var preview: Relay_Content_LinkPreview {
+    get {_preview ?? Relay_Content_LinkPreview()}
+    set {_preview = newValue}
+  }
+  /// Returns true if `preview` has been explicitly set.
+  public var hasPreview: Bool {self._preview != nil}
+  /// Clears the value of `preview`. Subsequent reads from it will return its default value.
+  public mutating func clearPreview() {self._preview = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _quote: Relay_Content_Quote? = nil
+  fileprivate var _preview: Relay_Content_LinkPreview? = nil
+}
+
+/// Built by the sender from the page's metadata. Everything here is shown as
+/// untrusted text; `url` must match a link in the message body to be shown.
+public nonisolated struct Relay_Content_LinkPreview: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var url: String = String()
+
+  public var title: String = String()
+
+  /// A small JPEG (the page's image, scaled down), at most 48 KiB.
+  public var image: Data = Data()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
 }
 
 /// Points at an encrypted blob on the relay. The relay stores only the
-/// opaque ciphertext (AES-256-GCM: nonce‖ciphertext‖tag); the key and digest
+/// opaque ciphertext (AES-256-GCM, nonce || ciphertext || tag); the key and digest
 /// travel end-to-end inside the encrypted Content, never to the server.
 public nonisolated struct Relay_Content_AttachmentPointer: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
@@ -511,11 +538,9 @@ public nonisolated struct Relay_Content_AttachmentPointer: Sendable {
   public init() {}
 }
 
-/// A sender's self-set profile (display name + optional avatar). Sent over a
-/// pairwise session to a peer so it stays end-to-end encrypted — the relay
-/// only ever sees the ciphertext and the (already-encrypted) avatar blob. The
-/// avatar reuses the AttachmentPointer/AES-256-GCM blob pipeline. Recipients
-/// keep the newest by `timestamp`.
+/// A sender's profile: display name and optional avatar. Sent over a pairwise
+/// session, so the relay sees only ciphertext and the encrypted avatar blob,
+/// which is an ordinary attachment. Recipients keep the newest by timestamp.
 public nonisolated struct Relay_Content_ProfileUpdate: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -559,7 +584,7 @@ public nonisolated struct Relay_Content_ProfileUpdate: Sendable {
 }
 
 /// A single labelled link on a profile (e.g. label "Website", url
-/// "https://example.com"). Distributed inside ProfileUpdate, so E2E.
+/// "https://example.com"). Distributed inside ProfileUpdate.
 public nonisolated struct Relay_Content_ProfileLink: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -574,15 +599,14 @@ public nonisolated struct Relay_Content_ProfileLink: Sendable {
   public init() {}
 }
 
-/// A snapshot of the message being replied to. Self-contained (carries the
-/// quoted text) so the reply renders without a lookup and survives the
-/// original being deleted, following Signal's model.
+/// A snapshot of the message being replied to. It carries the quoted text so
+/// the reply renders without a lookup and survives the original being deleted.
 public nonisolated struct Relay_Content_Quote: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Sender clock (== message id) of the quoted message.
+  /// Sender clock (the message id) of the quoted message.
   public var targetTimestamp: Int64 = 0
 
   /// Account id of the quoted message's author.
@@ -596,18 +620,16 @@ public nonisolated struct Relay_Content_Quote: Sendable {
   public init() {}
 }
 
-/// "Unsend" / delete-for-everyone: instructs the recipient to remove a
-/// message the sender previously sent. Delivered like any message (queued
-/// when offline) so it applies even if the peer wasn't online. Only the
-/// original author may delete their own message; the recipient locates it by
-/// (conversation with the sender, target_timestamp). The client leaves a
-/// "message was deleted" tombstone rather than erasing the row.
+/// Delete for everyone. Queued like any message, so it applies even if the
+/// peer was offline. Only the original author may delete a message; the
+/// recipient finds it by conversation and target_timestamp and leaves a
+/// tombstone in its place.
 public nonisolated struct Relay_Content_DeleteMessage: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  /// Sender clock (== message id) of the message to delete.
+  /// Sender clock (the message id) of the message to delete.
   public var targetTimestamp: Int64 = 0
 
   /// Account id of the message's author (always the sender of this delete).
@@ -618,10 +640,9 @@ public nonisolated struct Relay_Content_DeleteMessage: Sendable {
   public init() {}
 }
 
-/// An emoji reaction attached to an earlier message. Delivered like any
-/// message (queued when offline) rather than ephemerally, so reactions
-/// aren't lost. One reaction per author per message; a new one replaces the
-/// previous, and remove = true retracts it.
+/// An emoji reaction to an earlier message. Queued rather than ephemeral so
+/// reactions aren't lost. One reaction per author per message; a new one
+/// replaces the previous, and remove retracts it.
 public nonisolated struct Relay_Content_ReactionMessage: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -630,7 +651,7 @@ public nonisolated struct Relay_Content_ReactionMessage: Sendable {
   /// The emoji applied. Ignored when remove = true.
   public var emoji: String = String()
 
-  /// Identifies the reacted-to message: its author + sender clock.
+  /// The reacted-to message: its author and sender clock.
   public var targetAuthor: String = String()
 
   public var targetTimestamp: Int64 = 0
@@ -702,8 +723,7 @@ public nonisolated struct Relay_Content_ReceiptMessage: Sendable {
   public init() {}
 }
 
-/// Call signalling — all types use the same message; the type field selects
-/// the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
+/// Call signalling. The type field selects the interpretation. OFFER and HANGUP are non-ephemeral so they queue for
 /// offline devices. ANSWER, ICE, RINGING, and BUSY are sent ephemeral.
 /// GROUP_RING is non-ephemeral (must wake offline devices). GROUP_JOIN and
 /// GROUP_LEAVE are ephemeral.
@@ -723,7 +743,7 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
   /// JSON-encoded RTCIceCandidate for ICE
   public var ice: String = String()
 
-  /// Group call fields — empty for 1:1 calls.
+  /// Group call fields, empty for 1:1 calls.
   public var groupID: String = String()
 
   /// mesh OFFER/ANSWER/ICE: which peer this is for
@@ -743,26 +763,26 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
     case busy // = 4
     case ringing // = 5
 
-    /// initiator → all members: "join this group call"
+    /// initiator to all members: join this group call
     case groupRing // = 6
 
-    /// member → all: "I joined; initiate mesh SDP with me"
+    /// member to all: joined; start mesh SDP with me
     case groupJoin // = 7
 
-    /// member → all: "I left the call"
+    /// member to all: left the call
     case groupLeave // = 8
 
     /// Call links (group_id = "link:<call_id>"). The link's creator is the host;
     /// no server state is involved.
     case linkJoinRequest // = 9
 
-    /// host → admitted joiner: participants = others in the call
+    /// host to admitted joiner; participants are the others in the call
     case linkAdmit // = 10
 
-    /// host → members: participants = everyone now in the call
+    /// host to members; participants is everyone in the call
     case linkRoster // = 11
 
-    /// host → joiner: not admitted (or the link was revoked)
+    /// host to joiner; not admitted or the link was revoked
     case linkDeny // = 12
     case UNRECOGNIZED(Int)
 
@@ -830,7 +850,7 @@ public nonisolated struct Relay_Content_CallMessage: Sendable {
   public init() {}
 }
 
-/// Edits a previously sent message in-place. Only the original author may edit;
+/// Edits a previously sent message in place. Only the original author may edit;
 /// the recipient locates the target by (conversation, target_timestamp) and
 /// replaces its body. Attachments are not editable.
 public nonisolated struct Relay_Content_EditMessage: Sendable {
@@ -895,9 +915,9 @@ public nonisolated struct Relay_Content_PollVote: Sendable {
   public init() {}
 }
 
-/// Sent (always, regardless of the hide setting) when the sender takes a
-/// screenshot while a conversation is open. `group_id` (Content field 8) routes
-/// group vs 1:1. Recipients show an in-chat notice; non-ephemeral so it queues.
+/// Sent whenever the sender takes a screenshot while a conversation is open,
+/// regardless of the hide setting. Content.group_id routes group vs 1:1.
+/// Non-ephemeral, so it queues.
 public nonisolated struct Relay_Content_ScreenshotAlert: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -911,9 +931,9 @@ public nonisolated struct Relay_Content_ScreenshotAlert: Sendable {
   public init() {}
 }
 
-/// Syncs the sender's per-CHAT screenshot-hide preference to a 1:1 peer. The
-/// effective hide state on each device is the OR of both sides' preferences, so
-/// content stays hidden unless BOTH disable it. Groups instead use the
+/// Syncs the sender's per-chat screenshot-hide preference to a 1:1 peer. The
+/// effective state is the OR of both sides' preferences, so content stays
+/// hidden unless both disable it. Groups instead use the
 /// admin-controlled GroupUpdate.SET_SCREEN_SECURITY flag.
 public nonisolated struct Relay_Content_ScreenSecurityUpdate: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
@@ -983,10 +1003,9 @@ public nonisolated struct Relay_Content_TypingMessage: Sendable {
   public init() {}
 }
 
-/// A device's human-readable label, shared ONLY with the sender's own other
-/// devices (sealed, end-to-end) so Linked Devices can say "iPhone 17 Pro ·
-/// Queensland, Australia". The relay never sees model or location: it stores
-/// no device names at all. Recipients accept it only from their own account.
+/// A device's human-readable label, shared only with the sender's own other
+/// devices for the Linked Devices list. The relay never sees model or
+/// location. Recipients accept it only from their own account.
 public nonisolated struct Relay_Content_DeviceInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -1577,7 +1596,7 @@ nonisolated extension Relay_Content_GroupUpdate.Action: SwiftProtobuf._ProtoName
 
 nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TextMessage"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}body\0\u{1}timestamp\0\u{1}quote\0\u{1}attachments\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}body\0\u{1}timestamp\0\u{1}quote\0\u{1}attachments\0\u{1}preview\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1589,6 +1608,7 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
       case 2: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
       case 3: try { try decoder.decodeSingularMessageField(value: &self._quote) }()
       case 4: try { try decoder.decodeRepeatedMessageField(value: &self.attachments) }()
+      case 5: try { try decoder.decodeSingularMessageField(value: &self._preview) }()
       default: break
       }
     }
@@ -1611,6 +1631,9 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
     if !self.attachments.isEmpty {
       try visitor.visitRepeatedMessageField(value: self.attachments, fieldNumber: 4)
     }
+    try { if let v = self._preview {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1619,6 +1642,47 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
     if lhs.timestamp != rhs.timestamp {return false}
     if lhs._quote != rhs._quote {return false}
     if lhs.attachments != rhs.attachments {return false}
+    if lhs._preview != rhs._preview {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_LinkPreview: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".LinkPreview"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}url\0\u{1}title\0\u{1}image\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.url) }()
+      case 2: try { try decoder.decodeSingularStringField(value: &self.title) }()
+      case 3: try { try decoder.decodeSingularBytesField(value: &self.image) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.url.isEmpty {
+      try visitor.visitSingularStringField(value: self.url, fieldNumber: 1)
+    }
+    if !self.title.isEmpty {
+      try visitor.visitSingularStringField(value: self.title, fieldNumber: 2)
+    }
+    if !self.image.isEmpty {
+      try visitor.visitSingularBytesField(value: self.image, fieldNumber: 3)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_LinkPreview, rhs: Relay_Content_LinkPreview) -> Bool {
+    if lhs.url != rhs.url {return false}
+    if lhs.title != rhs.title {return false}
+    if lhs.image != rhs.image {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

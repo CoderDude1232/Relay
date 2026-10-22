@@ -115,6 +115,18 @@ message TextMessage {
   Quote quote = 3;
   // Optional media; a message may carry text and/or attachments.
   repeated AttachmentPointer attachments = 4;
+  // A preview of the first link in `body`, fetched by the sender so that
+  // receivers never contact the site. Unset when previews are off.
+  LinkPreview preview = 5;
+}
+
+// Built by the sender from the page's metadata. Everything here is shown as
+// untrusted text; `url` must match a link in the message body to be shown.
+message LinkPreview {
+  string url = 1;
+  string title = 2;
+  // A small JPEG (the page's image, scaled down), at most 48 KiB.
+  bytes image = 3;
 }
 
 // Points at an encrypted blob on the relay. The relay stores only the
