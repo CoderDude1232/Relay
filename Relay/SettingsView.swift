@@ -225,12 +225,15 @@ struct SettingsView: View {
         .padding()
     }
 
-    /// The open page's row, highlighted on iPad like the open chat.
+    /// The open page's row, highlighted on iPad like the open chat; every
+    /// other row keeps the list's card background.
     @ViewBuilder
     private func rowHighlight(_ page: String) -> some View {
         if horizontalSizeClass == .regular, openPage == page {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.1))
+            Color(.systemGray4)
+        } else {
+            // The list's normal card, so these rows match the rest.
+            Color(.secondarySystemGroupedBackground)
         }
     }
 

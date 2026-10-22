@@ -213,6 +213,7 @@ final class PrivacyShield {
 
     private let state = State()
     private var window: UIWindow?
+    private weak var shieldLogo: UIImageView?
 
     func update(obscured: Bool, locked: Bool, authenticating: Bool, onUnlock: @escaping () -> Void) {
         state.obscured = obscured
@@ -241,10 +242,33 @@ final class PrivacyShield {
             window.rootViewController = host
             self.window = window
         }
-        // Opaque, and set through UIKit so it's in the very next frame: the
-        // app-switcher snapshot can be taken before SwiftUI renders, and a
-        // blur still shows the shape of photos and large text.
-        window?.rootViewController?.view.backgroundColor = locked ? .clear : .systemBackground
+        // A heavy blur put in place through UIKit, so it's there in the very
+        // next frame: the app-switcher snapshot can be taken before SwiftUI
+        // renders. Strong enough that photos and text aren't readable.
+        if let root = window?.rootViewController?.view, !(root.subviews.first is UIVisualEffectView) {
+            let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterialDark))
+            blur.frame = root.bounds
+            blur.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            let dim = UIView(frame: blur.bounds)
+            dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            dim.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+            blur.contentView.addSubview(dim)
+            // The logo is added here too (not only in SwiftUI) so it's in
+            // the snapshot.
+            let logo = UIImageView(image: UIImage(named: "RelayLogo"))
+            logo.contentMode = .scaleAspectFit
+            logo.translatesAutoresizingMaskIntoConstraints = false
+            blur.contentView.addSubview(logo)
+            NSLayoutConstraint.activate([
+                logo.centerXAnchor.constraint(equalTo: blur.contentView.centerXAnchor),
+                logo.centerYAnchor.constraint(equalTo: blur.contentView.centerYAnchor),
+                logo.widthAnchor.constraint(equalToConstant: 170),
+            ])
+            shieldLogo = logo
+            root.insertSubview(blur, at: 0)
+        }
+        // The lock screen draws its own logo, with the unlock button.
+        shieldLogo?.isHidden = locked
         window?.isHidden = false
     }
 
@@ -255,11 +279,11 @@ final class PrivacyShield {
             ZStack {
                 if state.locked {
                     ScreenLockView(isAuthenticating: state.authenticating, onUnlock: state.onUnlock)
-                } else if state.obscured {
-                    Color(uiColor: .systemBackground)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
+            .environment(\.colorScheme, .dark)
         }
     }
 }
@@ -316,17 +340,17 @@ private struct ScreenLockView: View {
 
     var body: some View {
         ZStack {
-            Rectangle()
-                .fill(.regularMaterial)
-
+            // The shield window's blur sits behind this.
             VStack(spacing: 28) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 52, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.secondary)
+                Image("RelayLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 170)
+                    .accessibilityLabel("Relay")
 
-                Text("Relay is Locked")
-                    .font(.title2.weight(.bold))
+                Label("Locked", systemImage: "lock.fill")
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.75))
 
                 Button(action: onUnlock) {
                     HStack(spacing: 8) {
