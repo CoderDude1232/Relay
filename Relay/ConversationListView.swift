@@ -568,7 +568,7 @@ struct ConversationListView: View {
                 .accessibilityElement(children: .combine)
             }
 
-            if visibleConversations.isEmpty {
+            if visibleConversations.isEmpty && service.hasLoadedConversations {
                 ContentUnavailableView(
                     "No Conversations",
                     systemImage: "bubble.left.and.bubble.right",

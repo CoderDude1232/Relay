@@ -110,6 +110,9 @@ final class MessagingService {
     private let session: URLSession
 
     private(set) var conversations: [Conversation] = []
+    /// False until the chat list has been read from storage once, so the list
+    /// doesn't flash "No Conversations" while it loads.
+    private(set) var hasLoadedConversations = false
     /// Encrypted chat-list sync (AccountStorage.swift).
     @ObservationIgnored var accountStorageUploadTask: Task<Void, Never>?
     @ObservationIgnored var lastChatListFingerprint: String?
@@ -5083,6 +5086,7 @@ final class MessagingService {
                     self.conversationsRefreshDirty = false
                     self.refreshConversations()
                 }
+                self.hasLoadedConversations = true
                 // On failure keep conversations, so injected entries like Note to
                 // Self stay visible.
                 guard case .success(let convs) = result else { return [] }
