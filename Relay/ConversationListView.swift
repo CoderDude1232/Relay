@@ -548,6 +548,39 @@ struct ConversationListView: View {
         .listRowSeparator(.hidden)
         .listRowBackground(rowBackground(for: conversation))
         .contextMenu {
+            Button {
+                if conversation.unreadCount > 0 {
+                    service.markConversationRead(conversation.id)
+                } else {
+                    service.markConversationUnread(conversation.id)
+                }
+            } label: {
+                if conversation.unreadCount > 0 {
+                    Label("Mark as Read", systemImage: "checkmark.circle")
+                } else {
+                    Label("Mark as Unread", systemImage: "envelope.badge")
+                }
+            }
+            Button {
+                service.setConversationPinned(conversation.id, pinned: !conversation.isPinned)
+            } label: {
+                Label(conversation.isPinned ? "Unpin" : "Pin", systemImage: conversation.isPinned ? "pin.slash" : "pin")
+            }
+            Button {
+                if service.isConversationMuted(conversation.id) {
+                    service.setConversationMuted(conversation.id, muted: false)
+                } else {
+                    mutingConversationId = conversation.id
+                }
+            } label: {
+                let muted = service.isConversationMuted(conversation.id)
+                Label(muted ? "Unmute" : "Mute", systemImage: muted ? "bell" : "bell.slash")
+            }
+            Button {
+                service.setConversationArchived(conversation.id, archived: true)
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+            }
             if panicMode.isEnabled {
                 Button {
                     panicMode.hide(conversation.id)
@@ -582,6 +615,9 @@ struct ConversationListView: View {
             } label: {
                 Label("Move to Folder", systemImage: "folder")
             }
+        } preview: {
+            // The preview is hosted outside this view tree: no environment.
+            ChatPeekView(service: service, conversation: conversation, appAppearance: appearance)
         }
         } // end else (not editing)
     }
@@ -1874,5 +1910,97 @@ struct ConnectionBadge: View {
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Offline")
         }
+    }
+}
+
+/// The long-press preview of a chat in the list: its newest messages on the
+/// chat's own background. Locked chats and chats with previews hidden show a
+/// lock instead.
+private struct ChatPeekView: View {
+    let service: MessagingService
+    let conversation: Conversation
+    let appAppearance: ChatAppearance
+
+    private var appearance: ChatAppearance { appAppearance.theme(forChat: conversation.id) ?? appAppearance }
+    private var isPrivate: Bool { conversation.requireBiometricChat || conversation.hidePreviews }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                AvatarView(name: service.displayName(forAccount: conversation.groupId ?? conversation.peerAccount),
+                           size: 32,
+                           imageData: conversation.isGroup
+                               ? service.group(for: conversation.id)?.avatarData
+                               : service.peerAvatarData(forAccount: conversation.peerAccount))
+                Text(conversation.isGroup
+                     ? (service.group(for: conversation.id)?.name ?? "Group")
+                     : service.displayName(forAccount: conversation.peerAccount))
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(.regularMaterial)
+
+            if isPrivate {
+                VStack(spacing: 8) {
+                    Image(systemName: "lock.fill").font(.title2)
+                    Text("Open the chat to see messages").font(.footnote)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    ForEach(service.recentMessages(in: conversation.id, limit: 8)) { message in
+                        peekBubble(message)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(width: 320, height: 380)
+        .background { appearance.background }
+    }
+
+    @ViewBuilder
+    private func peekBubble(_ message: StoredMessage) -> some View {
+        let text = Self.summary(message)
+        if message.senderAccount == MessagingService.systemSender {
+            // Call and group lines, as in the chat: small centred text.
+            Text(message.body.hasPrefix("call:") ? String(message.body.dropFirst("call:".count)) : message.body)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity)
+        } else {
+            bubble(message, text: text)
+        }
+    }
+
+    private func bubble(_ message: StoredMessage, text: String) -> some View {
+        HStack {
+            if message.isOutgoing { Spacer(minLength: 40) }
+            Text(text)
+                .font(.subheadline)
+                .lineLimit(4)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .foregroundStyle(message.isOutgoing ? .white : .primary)
+                .background(message.isOutgoing ? appearance.bubbleTint : Color(.secondarySystemBackground),
+                            in: .rect(cornerRadius: 16))
+            if !message.isOutgoing { Spacer(minLength: 40) }
+        }
+    }
+
+    private static func summary(_ message: StoredMessage) -> String {
+        if message.body.hasPrefix(MessagingService.viewOncePrefix) { return "View-once media" }
+        if !message.body.isEmpty { return message.body }
+        guard let first = message.attachments.first else { return "Message" }
+        if first.isAudio { return "Voice message" }
+        if first.isVideo { return "Video" }
+        if first.isImage { return "Photo" }
+        return first.filename ?? "File"
     }
 }

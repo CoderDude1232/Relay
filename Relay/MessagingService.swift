@@ -3472,6 +3472,11 @@ final class MessagingService {
         if let active = activeConversationId { refreshActiveMessages(ifShowing: active) }
     }
 
+    /// The newest few messages, oldest first, for the chat-list preview.
+    func recentMessages(in conversationId: String, limit: Int) -> [StoredMessage] {
+        (try? storage.messages.messages(in: conversationId, limit: limit)) ?? []
+    }
+
     /// For MediaGalleryView, which can open while another conversation is active.
     func allMessages(in conversationId: String) throws -> [StoredMessage] {
         try storage.messages.messages(in: conversationId)
