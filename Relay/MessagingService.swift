@@ -764,6 +764,11 @@ final class MessagingService {
     }
 
     private func applyProcessed(_ result: ProcessedEnvelope, outerSender: String) async {
+        // A cached page could show an edited, unsent or expired message for a
+        // moment; anything arriving for a chat drops its page.
+        if let conversationId = result.conversationId, conversationId != activeConversationId {
+            forgetMessagePage(conversationId)
+        }
         if result.removesNotifications, let conversationId = result.conversationId {
             removeDeliveredNotifications(forConversations: [conversationId],
                                          messageIds: result.removedMessageId.map { [$0] })
@@ -3897,12 +3902,40 @@ final class MessagingService {
 
     // MARK: - Read state
 
+    /// The last page of the few most recently opened chats, so reopening one
+    /// shows its messages at once while the fresh copy loads.
+    private var recentMessagePages: [String: (messages: [StoredMessage], hasEarlier: Bool)] = [:]
+    private var recentMessagePageOrder: [String] = []
+
+    private func rememberMessagePage(_ conversationId: String, _ messages: [StoredMessage], hasEarlier: Bool) {
+        recentMessagePages[conversationId] = (messages, hasEarlier)
+        recentMessagePageOrder.removeAll { $0 == conversationId }
+        recentMessagePageOrder.append(conversationId)
+        while recentMessagePageOrder.count > 6 {
+            recentMessagePages[recentMessagePageOrder.removeFirst()] = nil
+        }
+    }
+
+    func forgetMessagePage(_ conversationId: String) {
+        recentMessagePages[conversationId] = nil
+        recentMessagePageOrder.removeAll { $0 == conversationId }
+    }
+
     func openConversation(_ conversationId: String) {
         activeConversationId = conversationId
-        activeMessages = []
         activeMessageLimit = Self.messagePageSize
-        hasEarlierMessages = false
-        messagesLoadedConversationId = nil
+        // Not for disappearing chats: messages may have expired since.
+        let disappearing = (conversations.first { $0.id == conversationId }?.disappearingSeconds ?? 0) > 0
+        if !disappearing, let cached = recentMessagePages[conversationId] {
+            activeMessages = cached.messages
+            hasEarlierMessages = cached.hasEarlier
+            activeMessagesRevision &+= 1
+            messagesLoadedConversationId = conversationId
+        } else {
+            activeMessages = []
+            hasEarlierMessages = false
+            messagesLoadedConversationId = nil
+        }
         cachedActiveGroup = group(for: conversationId)  // avoids per-message DB queries
         refreshActiveMessages(ifShowing: conversationId)
         Task { await markVisibleMessagesRead(in: conversationId) }
@@ -4185,6 +4218,7 @@ final class MessagingService {
 
     func deleteConversation(_ conversationId: String) {
         if activeConversationId == conversationId { closeConversation(id: conversationId) }
+        forgetMessagePage(conversationId)
         LocationShareManager.shared.stop(in: conversationId)
         // Its own theme (and wallpaper photo) goes with it.
         ChatAppearance.app?.removeTheme(forChat: conversationId)
@@ -5132,6 +5166,9 @@ final class MessagingService {
                 self.hasEarlierMessages = hasEarlier
                 self.activeMessagesRevision &+= 1
                 self.messagesLoadedConversationId = conversationId
+                if limit == Self.messagePageSize {
+                    self.rememberMessagePage(conversationId, msgs, hasEarlier: hasEarlier)
+                }
             }
         }
     }

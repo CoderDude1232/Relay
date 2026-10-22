@@ -240,6 +240,9 @@ struct ChatView: View {
                 .padding(.top, 8)
             }
             .scrollDismissesKeyboard(.interactively)
+            // Lays out from the bottom on first show, so the jump there is
+            // already done when the messages appear.
+            .defaultScrollAnchor(initialMessageId == nil ? .bottom : nil, for: .initialOffset)
             .opacity(initialScrollDone ? 1 : 0)
             .onChange(of: service.messagesLoadedConversationId) { _, loaded in
                 guard loaded == conversationId else { return }
