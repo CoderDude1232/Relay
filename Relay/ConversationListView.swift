@@ -1781,7 +1781,8 @@ private struct ConversationRow: View {
                                                                     AnyShapeStyle(.secondary)
                     Group {
                         if isTypingHere {
-                            Label("Typing\u{2026}", systemImage: "ellipsis.bubble")
+                            Label(conversation.isGroup ? (service.typingDescription(for: conversation.id) ?? "Typing\u{2026}") : "Typing\u{2026}",
+                                  systemImage: "ellipsis.bubble")
                         } else if let symbol = preview.symbol {
                             HStack(spacing: 4) {
                                 Image(systemName: symbol)

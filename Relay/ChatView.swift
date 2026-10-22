@@ -234,9 +234,12 @@ struct ChatView: View {
                         }
                     }
                     if service.typingConversations.contains(conversationId) {
-                        TypingIndicatorView(peerName: typingName, imageData: typingAvatar)
+                        TypingIndicatorView(peerName: typingName, imageData: typingAvatar,
+                                            label: isGroup ? service.typingDescription(for: conversationId) : nil)
                             .id(Self.typingAnchor)
-                            .transition(.opacity)
+                            .transition(.asymmetric(
+                                insertion: .scale(scale: 0.6, anchor: .bottomLeading).combined(with: .opacity),
+                                removal: .opacity))
                     }
                 }
                 // Always laid out (it's outside the lazy stack), so scrolling
@@ -293,6 +296,7 @@ struct ChatView: View {
                 guard initialScrollDone, new > old else { return }
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
+            .animation(.spring(duration: 0.3), value: service.typingConversations.contains(conversationId))
             .onChange(of: service.typingConversations.contains(conversationId)) { _, isTyping in
                 if isTyping { scrollToBottom(proxy) }
             }
@@ -3856,12 +3860,22 @@ private struct SystemMessageView: View {
 private struct TypingIndicatorView: View {
     let peerName: String
     var imageData: Data? = nil
+    /// Groups: who is typing, shown above the dots.
+    var label: String? = nil
     @State private var phase = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             AvatarView(name: peerName, size: 28, imageData: imageData)
+            VStack(alignment: .leading, spacing: 3) {
+            if let label {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 6)
+                    .modifier(PhotoWallpaperLabel())
+            }
             HStack(spacing: 5) {
                 ForEach(0..<3, id: \.self) { index in
                     Circle()
@@ -3875,10 +3889,11 @@ private struct TypingIndicatorView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .background(.fill.secondary, in: .rect(cornerRadius: DS.Radius.bubble))
+            }
             Spacer(minLength: 56)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(peerName) is typing")
+        .accessibilityLabel(label ?? "\(peerName) is typing")
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(400))

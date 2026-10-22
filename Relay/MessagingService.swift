@@ -3976,9 +3976,7 @@ final class MessagingService {
         activeMessages = []
         messagesLoadedConversationId = nil
         cachedActiveGroup = nil
-        typingResetTasks[id]?.cancel()
-        typingResetTasks.removeValue(forKey: id)
-        typingConversations.remove(id)
+        clearPeerTyping(for: id)
         stopPresencePolling()
     }
 
@@ -4930,13 +4928,50 @@ final class MessagingService {
 
     /// Lets a group chat name who is typing.
     private(set) var typingSenders: [String: String] = [:]
+    /// Everyone typing in each chat (groups can have several), newest last.
+    private(set) var typingPeople: [String: [String]] = [:]
+    private var typingPersonResets: [String: Task<Void, Never>] = [:]
+
+    /// "Sam is typing…", "Sam and Alex are typing…", "3 people are typing…".
+    func typingDescription(for conversationId: String) -> String? {
+        let people = (typingPeople[conversationId] ?? []).map { displayName(forAccount: $0) }
+        switch people.count {
+        case 0: return nil
+        case 1: return "\(people[0]) is typing\u{2026}"
+        case 2: return "\(people[0]) and \(people[1]) are typing\u{2026}"
+        default: return "\(people.count) people are typing\u{2026}"
+        }
+    }
+
+    private func setPersonTyping(_ account: String, in conversationId: String, _ typing: Bool) {
+        let key = conversationId + "|" + account
+        typingPersonResets[key]?.cancel()
+        typingPersonResets[key] = nil
+        var people = typingPeople[conversationId] ?? []
+        people.removeAll { $0 == account }
+        if typing {
+            people.append(account)
+            typingPersonResets[key] = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(6))
+                guard !Task.isCancelled else { return }
+                self?.setPersonTyping(account, in: conversationId, false)
+            }
+        }
+        typingPeople[conversationId] = people.isEmpty ? nil : people
+    }
 
     private func applyPeerTyping(started: Bool, peerAccount: String?, groupConversationId: String? = nil) {
         guard let peerAccount,
               let conversationId = groupConversationId ?? existingConversation(withPeer: peerAccount) else { return }
+        setPersonTyping(peerAccount, in: conversationId, started)
         typingResetTasks[conversationId]?.cancel()
         typingResetTasks.removeValue(forKey: conversationId)
         if !started {
+            // In a group, others may still be typing.
+            if let still = typingPeople[conversationId]?.last {
+                typingSenders[conversationId] = still
+                return
+            }
             typingConversations.remove(conversationId)
             typingSenders.removeValue(forKey: conversationId)
             return
@@ -4954,6 +4989,9 @@ final class MessagingService {
     }
 
     private func clearPeerTyping(for conversationId: String) {
+        for account in typingPeople[conversationId] ?? [] {
+            setPersonTyping(account, in: conversationId, false)
+        }
         typingResetTasks[conversationId]?.cancel()
         typingResetTasks.removeValue(forKey: conversationId)
         typingConversations.remove(conversationId)
