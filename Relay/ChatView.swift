@@ -124,7 +124,7 @@ struct ChatView: View {
     // In-chat search
     @State private var inChatSearchActive = false
     @State private var inChatQuery = ""
-    @State private var inChatMatches: [StoredMessage] = []
+    @State private var inChatMatches: [MessageStore.SearchResult] = []
     @State private var inChatMatchIndex = 0
     @State private var composerFocused = false
     @State private var composerContext = ComposerContext()
@@ -553,11 +553,17 @@ struct ChatView: View {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                         TextField("Search in conversation…", text: $inChatQuery)
                             .autocorrectionDisabled()
-                            .onSubmit { runInChatSearch() }
-                        if !inChatMatches.isEmpty {
-                            Text("\(inChatMatchIndex + 1)/\(inChatMatches.count)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                            .submitLabel(.search)
+                            .onSubmit { stepInChatMatch(by: -1) }
+                        if !inChatMatches.isEmpty, inChatMatches.indices.contains(inChatMatchIndex) {
+                            VStack(alignment: .trailing, spacing: 0) {
+                                Text("\(inChatMatchIndex + 1) of \(inChatMatches.count)")
+                                    .font(.caption.monospacedDigit().weight(.medium))
+                                Text(Date(timeIntervalSince1970: Double(inChatMatches[inChatMatchIndex].timestamp) / 1000),
+                                     format: .dateTime.day().month(.abbreviated))
+                                    .font(.caption2)
+                            }
+                            .foregroundStyle(.secondary)
                             Button { stepInChatMatch(by: -1) } label: {
                                 Image(systemName: "chevron.up")
                                     .accessibilityLabel("Previous match")
@@ -568,7 +574,21 @@ struct ChatView: View {
                                     .accessibilityLabel("Next match")
                             }
                             .buttonStyle(.plain)
+                        } else if !inChatQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+                            Text("No results")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
+                        Button {
+                            inChatSearchActive = false
+                            inChatQuery = ""
+                            inChatMatches = []
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Close search")
+                        }
+                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
@@ -1052,9 +1072,7 @@ struct ChatView: View {
     private func runInChatSearch() {
         let q = inChatQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { inChatMatches = []; return }
-        inChatMatches = service.activeMessages.filter {
-            $0.body.localizedCaseInsensitiveContains(q)
-        }
+        inChatMatches = service.searchMessages(query: q, in: conversationId)
         inChatMatchIndex = inChatMatches.isEmpty ? 0 : inChatMatches.count - 1
         scrollToMatch()
     }
@@ -1065,10 +1083,19 @@ struct ChatView: View {
         scrollToMatch()
     }
 
-    private func scrollToMatch() {
+    /// Older matches may be outside the loaded page: pages load until the
+    /// match is on screen.
+    private func scrollToMatch(attemptsLeft: Int = 20) {
         guard inChatMatchIndex < inChatMatches.count else { return }
-        let id = inChatMatches[inChatMatchIndex].id
-        withAnimation { scrollViewProxy?.scrollTo(id, anchor: .center) }
+        let id = inChatMatches[inChatMatchIndex].messageId
+        if service.activeMessages.contains(where: { $0.id == id }) {
+            withAnimation { scrollViewProxy?.scrollTo(id, anchor: .center) }
+        } else if attemptsLeft > 0, service.hasEarlierMessages {
+            service.loadEarlierMessages()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                scrollToMatch(attemptsLeft: attemptsLeft - 1)
+            }
+        }
     }
 
     /// Scrolls to the message a reply quotes and highlights it for a moment,
@@ -1100,7 +1127,7 @@ struct ChatView: View {
     private func isCurrentSearchMatch(_ message: StoredMessage) -> Bool {
         if message.id == flashedMessageId { return true }
         guard inChatSearchActive, inChatMatches.indices.contains(inChatMatchIndex) else { return false }
-        return inChatMatches[inChatMatchIndex].id == message.id
+        return inChatMatches[inChatMatchIndex].messageId == message.id
     }
 
     private func beginReply(_ message: StoredMessage) {

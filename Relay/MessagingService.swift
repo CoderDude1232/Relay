@@ -4516,6 +4516,16 @@ final class MessagingService {
         refreshActiveMessages(ifShowing: conversationId)
     }
 
+    /// Every match in one chat, oldest first (the whole chat, not just the
+    /// loaded page).
+    func searchMessages(query: String, in conversationId: String) -> [MessageStore.SearchResult] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        return ((try? storage.messages.searchMessages(query: trimmed, conversationId: conversationId, limit: 500)) ?? [])
+            .filter { !$0.body.hasPrefix(Self.viewOncePrefix) }
+            .reversed()
+    }
+
     func searchMessages(query: String) -> [MessageStore.SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }

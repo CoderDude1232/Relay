@@ -625,7 +625,8 @@ public final class MessageStore: @unchecked Sendable {
         public let timestamp: Int64
     }
 
-    public func searchMessages(query: String, limit: Int = 100) throws -> [SearchResult] {
+    /// Newest first. With `conversationId`, only that chat is searched.
+    public func searchMessages(query: String, conversationId: String? = nil, limit: Int = 100) throws -> [SearchResult] {
         // `%`, `_` and the escape character itself match literally.
         let escaped = query.lowercased()
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -638,10 +639,13 @@ public final class MessageStore: @unchecked Sendable {
             FROM messages
             WHERE deleted = 0 AND body != '' AND lower(body) LIKE ? ESCAPE '\\'
               AND (expires_at IS NULL OR expires_at > CAST(strftime('%s','now') AS INTEGER) * 1000)
+              AND (? IS NULL OR conversation_id = ?)
             ORDER BY timestamp DESC
             LIMIT ?
             """,
-            [.text(pattern), .integer(Int64(limit))]
+            [.text(pattern),
+             conversationId.map { .text($0) } ?? .null, conversationId.map { .text($0) } ?? .null,
+             .integer(Int64(limit))]
         )
         return rows.map {
             let messageId = $0[0].string ?? ""
