@@ -449,17 +449,149 @@ struct ConversationListView: View {
         .accessibilityLabel(label)
     }
 
-    /// Beside the open chat (iPad), its row stays highlighted; pinned chats
-    /// keep their tint otherwise.
+    private func listSectionLabel(_ title: String, systemImage: String?) -> some View {
+        HStack(spacing: 5) {
+            if let systemImage { Image(systemName: systemImage) }
+            Text(title)
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .listRowInsets(EdgeInsets(top: 10, leading: 20, bottom: 2, trailing: 20))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .selectionDisabled()
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    @ViewBuilder
+    private func conversationRow(_ conversation: Conversation) -> some View {
+        if isEditing {
+            Button {
+                if selectedIds.contains(conversation.id) {
+                    selectedIds.remove(conversation.id)
+                } else {
+                    selectedIds.insert(conversation.id)
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: selectedIds.contains(conversation.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selectedIds.contains(conversation.id) ? Color.accentColor : Color.secondary)
+                        .font(.title3)
+                        .frame(width: 30, height: 30)
+                        .contentTransition(.symbolEffect(.replace))
+                    ConversationRow(conversation: conversation, service: service)
+                }
+                .padding(.vertical, 2)
+                .background {
+                    if selectedIds.contains(conversation.id) {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.10))
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .tag(conversation.id as String?)
+        } else {
+        ConversationRow(conversation: conversation, service: service)
+        .tag(conversation.id as String?)
+        .selectionDisabled()
+        .onTapGesture { selectedConversationId = conversation.id }
+        .accessibilityAddTraits(.isButton)
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                service.setConversationPinned(conversation.id, pinned: !conversation.isPinned)
+            } label: {
+                Label(conversation.isPinned ? "Unpin" : "Pin", systemImage: conversation.isPinned ? "pin.slash" : "pin.fill")
+            }
+            .tint(.orange)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                conversationToDelete = conversation.id
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            if conversation.unreadCount > 0 {
+                Button {
+                    service.markConversationRead(conversation.id)
+                } label: {
+                    Label("Read", systemImage: "checkmark.circle")
+                }
+                .tint(.blue)
+            } else {
+                Button {
+                    service.markConversationUnread(conversation.id)
+                } label: {
+                    Label("Unread", systemImage: "envelope.badge")
+                }
+                .tint(.blue)
+            }
+            Button {
+                if service.isConversationMuted(conversation.id) {
+                    service.setConversationMuted(conversation.id, muted: false)
+                } else {
+                    mutingConversationId = conversation.id
+                }
+            } label: {
+                let muted = service.isConversationMuted(conversation.id)
+                Label(muted ? "Unmute" : "Mute", systemImage: muted ? "bell" : "bell.slash")
+            }
+            .tint(.gray)
+            Button {
+                service.setConversationArchived(conversation.id, archived: true)
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+            }
+            .tint(.gray)
+        }
+        .listRowSeparator(.hidden)
+        .listRowBackground(rowBackground(for: conversation))
+        .contextMenu {
+            if panicMode.isEnabled {
+                Button {
+                    panicMode.hide(conversation.id)
+                    SpotlightIndexer.deindex(conversationId: conversation.id)
+                    ShareBridge.removeConversation(conversation.id)
+                } label: {
+                    Label("Hide in Panic Mode", systemImage: "eye.slash")
+                }
+            }
+            Menu {
+                ForEach(folderStore.folders, id: \.self) { folder in
+                    Button {
+                        service.setConversationLabel(conversation.id, label: folder)
+                    } label: {
+                        if conversation.label == folder {
+                            Label(folder, systemImage: "checkmark")
+                        } else {
+                            Text(folder)
+                        }
+                    }
+                }
+                if conversation.label != nil {
+                    Button("Remove from Folder") { service.setConversationLabel(conversation.id, label: nil) }
+                }
+                Divider()
+                Button {
+                    newFolderName = ""
+                    newFolderForConversation = conversation.id
+                } label: {
+                    Label("New Folder…", systemImage: "folder.badge.plus")
+                }
+            } label: {
+                Label("Move to Folder", systemImage: "folder")
+            }
+        }
+        } // end else (not editing)
+    }
+
+    /// Beside the open chat (iPad), its row stays highlighted.
     @ViewBuilder
     private func rowBackground(for conversation: Conversation) -> some View {
         if horizontalSizeClass == .regular, !isEditing, conversation.id == selectedConversationId {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.primary.opacity(0.1))
-                .padding(.horizontal, 8)
-        } else if conversation.isPinned {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.orange.opacity(0.07))
                 .padding(.horizontal, 8)
         } else {
             Color.clear
@@ -578,125 +710,20 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
             }
 
-            ForEach(visibleConversations) { conversation in
-                if isEditing {
-                    Button {
-                        if selectedIds.contains(conversation.id) {
-                            selectedIds.remove(conversation.id)
-                        } else {
-                            selectedIds.insert(conversation.id)
-                        }
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: selectedIds.contains(conversation.id) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(selectedIds.contains(conversation.id) ? Color.accentColor : Color.secondary)
-                                .font(.title3)
-                                .frame(width: 30, height: 30)
-                                .contentTransition(.symbolEffect(.replace))
-                            ConversationRow(conversation: conversation, service: service)
-                        }
-                        .padding(.vertical, 2)
-                        .background {
-                            if selectedIds.contains(conversation.id) {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(Color.accentColor.opacity(0.10))
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .tag(conversation.id as String?)
-                } else {
-                ConversationRow(conversation: conversation, service: service)
-                .tag(conversation.id as String?)
-                .selectionDisabled()
-                .onTapGesture { selectedConversationId = conversation.id }
-                .accessibilityAddTraits(.isButton)
-                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                    Button {
-                        service.setConversationPinned(conversation.id, pinned: !conversation.isPinned)
-                    } label: {
-                        Label(conversation.isPinned ? "Unpin" : "Pin", systemImage: conversation.isPinned ? "pin.slash" : "pin.fill")
-                    }
-                    .tint(.orange)
-                }
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    Button(role: .destructive) {
-                        conversationToDelete = conversation.id
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    if conversation.unreadCount > 0 {
-                        Button {
-                            service.markConversationRead(conversation.id)
-                        } label: {
-                            Label("Read", systemImage: "checkmark.circle")
-                        }
-                        .tint(.blue)
-                    } else {
-                        Button {
-                            service.markConversationUnread(conversation.id)
-                        } label: {
-                            Label("Unread", systemImage: "envelope.badge")
-                        }
-                        .tint(.blue)
-                    }
-                    Button {
-                        if service.isConversationMuted(conversation.id) {
-                            service.setConversationMuted(conversation.id, muted: false)
-                        } else {
-                            mutingConversationId = conversation.id
-                        }
-                    } label: {
-                        let muted = service.isConversationMuted(conversation.id)
-                        Label(muted ? "Unmute" : "Mute", systemImage: muted ? "bell" : "bell.slash")
-                    }
-                    .tint(.gray)
-                    Button {
-                        service.setConversationArchived(conversation.id, archived: true)
-                    } label: {
-                        Label("Archive", systemImage: "archivebox")
-                    }
-                    .tint(.gray)
-                }
-                .listRowSeparator(.hidden)
-                .listRowBackground(rowBackground(for: conversation))
-                .contextMenu {
-                    if panicMode.isEnabled {
-                        Button {
-                            panicMode.hide(conversation.id)
-                            SpotlightIndexer.deindex(conversationId: conversation.id)
-                            ShareBridge.removeConversation(conversation.id)
-                        } label: {
-                            Label("Hide in Panic Mode", systemImage: "eye.slash")
-                        }
-                    }
-                    Menu {
-                        ForEach(folderStore.folders, id: \.self) { folder in
-                            Button {
-                                service.setConversationLabel(conversation.id, label: folder)
-                            } label: {
-                                if conversation.label == folder {
-                                    Label(folder, systemImage: "checkmark")
-                                } else {
-                                    Text(folder)
-                                }
-                            }
-                        }
-                        if conversation.label != nil {
-                            Button("Remove from Folder") { service.setConversationLabel(conversation.id, label: nil) }
-                        }
-                        Divider()
-                        Button {
-                            newFolderName = ""
-                            newFolderForConversation = conversation.id
-                        } label: {
-                            Label("New Folder…", systemImage: "folder.badge.plus")
-                        }
-                    } label: {
-                        Label("Move to Folder", systemImage: "folder")
-                    }
-                }
-                } // end else (not editing)
+            // Pinned chats get their own group at the top.
+            let pinned = visibleConversations.filter(\.isPinned)
+            let others = visibleConversations.filter { !$0.isPinned }
+            if !pinned.isEmpty && !isEditing {
+                listSectionLabel("Pinned", systemImage: "pin.fill")
+            }
+            ForEach(pinned) { conversation in
+                conversationRow(conversation)
+            }
+            if !pinned.isEmpty && !others.isEmpty && !isEditing {
+                listSectionLabel("Chats", systemImage: nil)
+            }
+            ForEach(others) { conversation in
+                conversationRow(conversation)
             } // end ForEach
 
             if !isEditing && !archivedConversations.isEmpty {
@@ -712,6 +739,8 @@ struct ConversationListView: View {
             }
         } // end List
         .listStyle(.plain)
+        // Lets the Pinned / Chats labels be shorter than a chat row.
+        .environment(\.defaultMinListRowHeight, 0)
         .navigationDestination(isPresented: $showingProxySettings) {
             ProxySettingsView()
         }
