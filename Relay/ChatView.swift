@@ -380,9 +380,38 @@ struct ChatView: View {
                 .padding(.vertical, 7)
                 .background(.ultraThinMaterial, in: Capsule())
             }
+            if acceptsDrops {
+                // One-tap openers, so a new chat doesn't start blank.
+                HStack(spacing: 10) {
+                    starter("👋", label: "Wave") { quickSend("👋") }
+                    starter("Hi!", label: "Say hi") { quickSend("Hi!") }
+                    if !isGroup, let username = service.username {
+                        starter("📇", label: "Share my contact") {
+                            quickSend("Add me on Relay: https://relaymsg.app/add/\(username)")
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .allowsHitTesting(false)
+    }
+
+    private func starter(_ text: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(text.count <= 2 ? .title2 : .subheadline.weight(.semibold))
+                .padding(.horizontal, 16)
+                .frame(minWidth: 56, minHeight: 44)
+                .glassCompat(in: .capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func quickSend(_ text: String) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Task { await service.sendMessage(text, in: conversationId, replyTo: nil, attachments: []) }
     }
 
     private var linkOpener: OpenURLAction {
