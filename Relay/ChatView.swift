@@ -14,6 +14,7 @@ import OSLog
 import PhotosUI
 import RelayKit
 import SecureStorage
+import AudioToolbox
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -271,7 +272,17 @@ struct ChatView: View {
                     }
                 }
                 fetchSmartReplies(for: last)
-                if !last.isOutgoing { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+                if last.isOutgoing {
+                    InChatSounds.play(.sent)
+                } else {
+                    UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+                    InChatSounds.play(.received)
+                }
+            }
+            // Someone reacted to one of my messages while the chat is open.
+            .onChange(of: reactionsOnMyMessages) { old, new in
+                guard initialScrollDone, new > old else { return }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
             }
             .onChange(of: service.typingConversations.contains(conversationId)) { _, isTyping in
                 if isTyping { scrollToBottom(proxy) }
@@ -866,6 +877,12 @@ struct ChatView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
+        }
+    }
+
+    private var reactionsOnMyMessages: Int {
+        service.activeMessages.reduce(0) { total, message in
+            message.isOutgoing ? total + message.reactions.filter { !$0.isOutgoing }.count : total
         }
     }
 
@@ -4363,5 +4380,22 @@ private struct RecordingLevels: View {
             .frame(maxHeight: .infinity)
             .animation(.linear(duration: 0.1), value: levels)
         }
+    }
+}
+
+/// Short sounds for messages sent and received while the chat is open. They
+/// follow the ring/silent switch and can be turned off in Settings → Chats.
+enum InChatSounds {
+    static let enabledKey = "relay.inChatSounds"
+
+    enum Kind { case sent, received }
+
+    static var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+    }
+
+    static func play(_ kind: Kind) {
+        guard isEnabled else { return }
+        AudioServicesPlaySystemSound(kind == .sent ? 1004 : 1003)
     }
 }

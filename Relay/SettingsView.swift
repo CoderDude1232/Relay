@@ -511,9 +511,21 @@ private struct AccountSettingsView: View {
 
 private struct ChatsSettingsView: View {
     let service: MessagingService
+    @AppStorage(InChatSounds.enabledKey) private var inChatSounds = true
 
     var body: some View {
         List {
+            Section {
+                Toggle(isOn: $inChatSounds) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "speaker.wave.2.fill", color: .accentColor)
+                        Text("In-Chat Sounds")
+                    }
+                }
+            } footer: {
+                Text("A short sound when a message is sent or arrives in the chat you have open. Follows your ring/silent switch.")
+            }
+
             Section {
                 NavigationLink(destination: ChatFoldersView(service: service)) {
                     SettingsNavRow(systemName: "folder.fill", color: .accentColor, title: "Chat Folders")
