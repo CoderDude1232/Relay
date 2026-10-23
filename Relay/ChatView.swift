@@ -2791,9 +2791,11 @@ private struct MessageBubble: View {
                     // Just a Relay link: the card alone, no raw URL above it.
                     RelayLinkCard(link: relayLink, url: url,
                                   preview: service.linkPreview(forMessage: message.id),
-                                  isOutgoing: message.isOutgoing, service: service)
+                                  isOutgoing: message.isOutgoing, service: service, standalone: true)
+                        .padding(.top, 4)
                     metadataRow
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .frame(maxWidth: 240, alignment: .trailing)
+                        .padding(.top, -4)
                 } else if !displayBody.isEmpty {
                     if effectiveStatus == .failed {
                         // The long "Not Delivered · Tap to Retry" beside the

@@ -125,8 +125,12 @@ struct RelayLinkCard: View {
     let preview: MessageStore.LinkPreview?
     let isOutgoing: Bool
     let service: MessagingService
+    /// The message is only this link: the bubble itself is the card, with
+    /// no inner box.
+    var standalone = false
 
     @Environment(AppModel.self) private var model
+    @Environment(ChatAppearance.self) private var appearance
 
     private var title: String {
         preview.flatMap { $0.title.isEmpty ? nil : $0.title } ?? link.fallbackTitle
@@ -142,12 +146,12 @@ struct RelayLinkCard: View {
     }
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             HStack(spacing: 12) {
                 icon
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.headline)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                     Label(link.kindLabel, systemImage: "lock.fill")
@@ -162,19 +166,20 @@ struct RelayLinkCard: View {
                     Text(link.actionTitle)
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .foregroundStyle(isOutgoing ? AnyShapeStyle(.white) : AnyShapeStyle(.tint))
+                        .padding(.vertical, 9)
+                        .foregroundStyle(isOutgoing ? AnyShapeStyle(appearance.bubbleTint) : AnyShapeStyle(.white))
                         .background(
-                            isOutgoing ? AnyShapeStyle(.white.opacity(0.2)) : AnyShapeStyle(.tint.opacity(0.14)),
+                            isOutgoing ? AnyShapeStyle(.white) : AnyShapeStyle(appearance.bubbleTint),
                             in: .capsule
                         )
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(11)
-        .frame(maxWidth: 270)
-        .background(isOutgoing ? AnyShapeStyle(.white.opacity(0.14)) : AnyShapeStyle(.fill.tertiary),
+        .padding(standalone ? 0 : 11)
+        .frame(width: 240)
+        .background(standalone ? AnyShapeStyle(.clear)
+                        : isOutgoing ? AnyShapeStyle(.white.opacity(0.14)) : AnyShapeStyle(.fill.tertiary),
                     in: .rect(cornerRadius: 14))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(link.kindLabel): \(title)")
@@ -190,11 +195,14 @@ struct RelayLinkCard: View {
                 .frame(width: 46, height: 46)
                 .clipShape(.circle)
         } else {
+            // Like the voice-message button: white on your bubble, the
+            // bubble colour on theirs.
             Image(systemName: link.symbol)
                 .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(isOutgoing ? appearance.bubbleTint : .white)
                 .frame(width: 46, height: 46)
-                .background(Color.accentColor.gradient, in: .circle)
+                .background(isOutgoing ? AnyShapeStyle(.white) : AnyShapeStyle(appearance.bubbleTint.gradient),
+                            in: .circle)
         }
     }
 
