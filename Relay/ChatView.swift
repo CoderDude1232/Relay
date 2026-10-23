@@ -12,6 +12,7 @@ import Foundation
 import MapKit
 import OSLog
 import PhotosUI
+import RelayCore
 import RelayKit
 import SecureStorage
 import AudioToolbox
@@ -66,6 +67,17 @@ struct ChatView: View {
     @State private var showingFileImporter = false
     @State private var showingCamera = false
     @State private var recorder = VoiceRecorder()
+    /// Hold-to-record: when the press began (nil when not holding), how far
+    /// the finger has moved, and whether the recording carries on hands-free.
+    @State private var holdStartedAt: Date?
+    @State private var holdDrag: CGSize = .zero
+    @State private var recordingLocked = true
+    /// Set when a hold is cancelled by sliding, until the finger lifts.
+    @State private var holdCancelled = false
+    @State private var micFrame: CGRect = .zero
+    /// True while any touch on the composer is down; resets even when the
+    /// system cancels the gesture (onEnded isn't called then).
+    @GestureState private var composerTouchDown = false
     @State private var recordDenied = false
     @State private var showingVerification = false
     @State private var showingContactCard = false
@@ -772,7 +784,11 @@ struct ChatView: View {
             GroupInfoView(
                 service: service,
                 conversationId: conversationId,
-                ownAccountId: service.credentials.accountId
+                ownAccountId: service.credentials.accountId,
+                onActivateSearch: {
+                    showingGroupInfo = false
+                    inChatSearchActive = true
+                }
             )
         }
         .sheet(isPresented: $showingContactCard, onDismiss: {
@@ -1327,6 +1343,9 @@ struct ChatView: View {
             FormatButton(symbol: "chevron.left.forwardslash.chevron.right", tip: "Code") {
                 composerContext.applyFormat(prefix: "`", suffix: "`")
             }
+            FormatButton(symbol: "eye.slash", tip: "Spoiler") {
+                composerContext.applyFormat(prefix: "||", suffix: "||")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
@@ -1423,12 +1442,20 @@ struct ChatView: View {
                         .accessibilityLabel("More message options")
 
                         if showRecordButton {
-                            Button { startRecording() } label: {
-                                composerAccessoryIcon("mic.fill")
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Record voice message")
-                            .transition(.opacity)
+                            // Hold to record (release sends, slide left cancels,
+                            // slide up locks); a tap records hands-free. The
+                            // gesture lives on the composer so it survives the
+                            // switch to the recording bar.
+                            composerAccessoryIcon("mic.fill")
+                                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.composerSpace)) } action: {
+                                    micFrame = $0
+                                }
+                                .accessibilityElement()
+                                .accessibilityLabel("Record voice message")
+                                .accessibilityHint("Hold to record, or double-tap to record hands-free.")
+                                .accessibilityAddTraits(.isButton)
+                                .accessibilityAction { recordingLocked = true; startRecording() }
+                                .transition(.opacity)
                         }
 
                         FormattingTextEditor(
@@ -1463,14 +1490,24 @@ struct ChatView: View {
                                     showingSchedulePicker = true
                                 }
                             )
-                            .transition(.opacity)
+                            .transition(.scale(scale: 0.4).combined(with: .opacity))
                         }
                     }
                     .animation(.easeOut(duration: 0.12), value: showRecordButton)
-                    .animation(.easeOut(duration: 0.12), value: showSendButton)
+                    .animation(.spring(duration: 0.3, bounce: 0.35), value: showSendButton)
                     .padding(.horizontal)
                     .padding(.bottom, 6)
                 }
+            }
+            .coordinateSpace(.named(Self.composerSpace))
+            .simultaneousGesture(holdToRecordGesture)
+            .onChange(of: composerTouchDown) { _, down in
+                // The hold was cancelled (e.g. by the microphone prompt):
+                // keep the recording hands-free rather than stuck mid-hold.
+                guard !down, holdStartedAt != nil else { return }
+                holdStartedAt = nil
+                holdDrag = .zero
+                withAnimation(.spring(duration: 0.3)) { recordingLocked = true }
             }
         }
         .onChange(of: photoItems) { _, items in loadPickedPhotos(items) }
@@ -1518,8 +1555,178 @@ struct ChatView: View {
         Task { await service.sendMessage("", in: conversationId, replyTo: nil, attachments: [photo]) }
     }
 
+    private static let composerSpace = "composer"
+
+    private var holdToRecordGesture: some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.composerSpace))
+            .updating($composerTouchDown) { _, down, _ in down = true }
+            .onChanged { value in
+                if holdStartedAt == nil {
+                    guard !holdCancelled, showRecordButton, !recorder.isRecording,
+                          micFrame.contains(value.startLocation) else { return }
+                    holdStartedAt = Date()
+                    holdDrag = .zero
+                    recordingLocked = false
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    startRecording()
+                    return
+                }
+                guard !recordingLocked else { return }
+                holdDrag = value.translation
+                if value.translation.height < -80 {
+                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                    withAnimation(.spring(duration: 0.3)) { recordingLocked = true; holdDrag = .zero }
+                } else if value.translation.width < -55 {
+                    // The mic sits near the left edge, so a short slide cancels.
+                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                    recorder.cancel()
+                    holdStartedAt = nil
+                    holdDrag = .zero
+                    holdCancelled = true
+                }
+            }
+            .onEnded { _ in
+                defer { holdCancelled = false }
+                guard let started = holdStartedAt else { return }
+                holdStartedAt = nil
+                holdDrag = .zero
+                if recordingLocked { return }
+                // A quick tap: carry on hands-free, as tapping the mic used to.
+                if Date().timeIntervalSince(started) < 0.35 {
+                    withAnimation(.spring(duration: 0.3)) { recordingLocked = true }
+                    return
+                }
+                finishRecording()
+            }
+    }
+
     /// Replaces the compose row while a voice message is being recorded.
+    @ViewBuilder
     private var recordingBar: some View {
+        if recorder.isReviewing {
+            reviewRecordingBar
+        } else if !recordingLocked {
+            holdingRecordingBar
+        } else {
+            lockedRecordingBar
+        }
+    }
+
+    /// While the mic is held: slide left to cancel, up to lock. The red
+    /// mic sits where the finger is, at the left.
+    private var holdingRecordingBar: some View {
+        let slide = min(0, holdDrag.width)
+        let lift = min(0, holdDrag.height)
+        let cancelProgress = min(1, Double(-slide) / 55)
+        return HStack(alignment: .bottom, spacing: 6) {
+            Image(systemName: cancelProgress > 0.8 ? "trash.fill" : "mic.fill")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
+                .background(Color.red, in: .capsule)
+                .scaleEffect(1.12 + CGFloat(recorder.levels.last ?? 0) * 0.2)
+                .animation(.easeOut(duration: 0.1), value: recorder.levels.last)
+                .offset(x: slide * 0.5, y: lift * 0.4)
+                .overlay(alignment: .top) {
+                    VStack(spacing: 4) {
+                        Image(systemName: lift < -40 ? "lock.fill" : "lock.open.fill")
+                            .contentTransition(.symbolEffect(.replace))
+                        Image(systemName: "chevron.up")
+                            .font(.caption2.weight(.bold))
+                    }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 10)
+                    .frame(width: 40)
+                    .glassCompat(in: .capsule)
+                    .offset(y: -82 + lift * 0.3)
+                }
+                .zIndex(1)
+
+            HStack(spacing: 10) {
+                RecordingDot(isPaused: false)
+                Text(formatDuration(recorder.elapsed))
+                    .font(.subheadline.monospacedDigit().weight(.medium))
+                    .contentTransition(.numericText())
+                RecordingLevels(levels: recorder.levels)
+                    .frame(height: 22)
+                Label("Slide to cancel", systemImage: "chevron.left")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .opacity(1 - cancelProgress)
+            }
+            .padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, minHeight: Self.composerControlHeight)
+            .glassCompat(in: .capsule)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Recording")
+        .accessibilityValue(formatDuration(recorder.elapsed))
+        .transition(.opacity)
+    }
+
+    /// Stopped: play it back, then send or delete.
+    private var reviewRecordingBar: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            Button {
+                recorder.cancel()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
+                    .contentShape(.capsule)
+                    .glassCompat(in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete recording")
+
+            HStack(spacing: 10) {
+                Button {
+                    recorder.togglePreview()
+                } label: {
+                    Image(systemName: recorder.isPreviewPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color(.label))
+                        .frame(width: 30, height: 30)
+                        .contentShape(.circle)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(recorder.isPreviewPlaying ? "Pause" : "Play recording")
+                RecordingReview(levels: recorder.allLevels, progress: recorder.previewProgress)
+                    .frame(height: 22)
+                    .accessibilityHidden(true)
+                Text(formatDuration(recorder.elapsed))
+                    .font(.subheadline.monospacedDigit().weight(.medium))
+            }
+            .padding(.leading, 7)
+            .padding(.trailing, 14)
+            .frame(maxWidth: .infinity, minHeight: Self.composerControlHeight)
+            .glassCompat(in: .capsule)
+
+            Button {
+                finishRecording()
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: Self.composerAccessoryWidth, height: Self.composerControlHeight)
+                    .contentShape(.capsule)
+                    .background(Color.accentColor, in: .capsule)
+                    .glassCompat(in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Send voice message")
+        }
+        .transition(.opacity)
+    }
+
+    /// Hands-free recording (tapped, or slid up to lock).
+    private var lockedRecordingBar: some View {
         HStack(alignment: .bottom, spacing: 6) {
             Button {
                 recorder.cancel()
@@ -1554,6 +1761,17 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(recorder.isPaused ? "Resume recording" : "Pause recording")
+                Button {
+                    withAnimation(.spring(duration: 0.3)) { recorder.stopForReview() }
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.red)
+                        .frame(width: 30, height: 30)
+                        .contentShape(.circle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stop and listen")
             }
             .padding(.leading, 14)
             .padding(.trailing, 7)
@@ -2348,6 +2566,11 @@ private struct MessageRow: View {
     /// above the current text. Kept here, outside the hosted bubble, so the
     /// row resizes when they appear.
     @State private var editVersions: [String]?
+    @State private var spoilersRevealed = false
+
+    private func revealSpoilers() {
+        withAnimation(.easeOut(duration: 0.25)) { spoilersRevealed = true }
+    }
 
     private func toggleEditHistory() {
         withAnimation(.snappy) {
@@ -2367,7 +2590,8 @@ private struct MessageRow: View {
             message: message, position: position, peerName: peerName,
             service: service, conversationId: conversationId, isGroup: isGroup,
             isCurrentSearchMatch: isCurrentSearchMatch, onInfo: onInfo,
-            editVersions: editVersions, onToggleEditHistory: toggleEditHistory
+            editVersions: editVersions, onToggleEditHistory: toggleEditHistory,
+            spoilersRevealed: spoilersRevealed, onRevealSpoilers: revealSpoilers
         )
     }
 
@@ -2477,6 +2701,7 @@ private struct MessageRow: View {
                             service: service, conversationId: conversationId, isGroup: isGroup,
                             isCurrentSearchMatch: isCurrentSearchMatch, onInfo: onInfo,
                             editVersions: editVersions, onToggleEditHistory: toggleEditHistory,
+                            spoilersRevealed: spoilersRevealed, onRevealSpoilers: revealSpoilers,
                             embedsAlignment: false
                         )
                         .environment(appearance)
@@ -2570,6 +2795,10 @@ private struct MessageBubble: View {
     /// Earlier versions to show above the text (nil while hidden).
     var editVersions: [String]? = nil
     var onToggleEditHistory: () -> Void = {}
+    /// Spoilers in this message have been tapped open (kept by the row, as
+    /// revealing can change the bubble's size).
+    var spoilersRevealed = false
+    var onRevealSpoilers: () -> Void = {}
     /// When false, renders only the bubble core, without spacers or avatar, so
     /// the row can align it and use it as the context-menu source view.
     var embedsAlignment: Bool = true
@@ -2660,6 +2889,10 @@ private struct MessageBubble: View {
         // Links in received messages never open directly: markdown lets a sender
         // show one URL and link another, so the real host is confirmed first.
         .environment(\.openURL, OpenURLAction { url in
+            if url.scheme == Self.spoilerScheme {
+                onRevealSpoilers()
+                return .handled
+            }
             guard !message.isOutgoing else { return .systemAction }
             pendingLinkURL = url
             return .handled
@@ -2828,8 +3061,7 @@ private struct MessageBubble: View {
                                 .opacity(0.55)
                         }
                         ForEach(Array(editVersions.enumerated()), id: \.offset) { _, version in
-                            Text(formattedBody(version))
-                                .tint(message.isOutgoing ? .white : .accentColor)
+                            bodyText(version)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .opacity(0.5)
                                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -2839,8 +3071,7 @@ private struct MessageBubble: View {
                         // The long "Not Delivered · Tap to Retry" beside the
                         // text would squeeze it to a word per line.
                         VStack(alignment: .trailing, spacing: 4) {
-                            Text(formattedBody(displayBody))
-                                .tint(message.isOutgoing ? .white : .accentColor)
+                            bodyText(displayBody)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             metadataRow
@@ -2849,16 +3080,14 @@ private struct MessageBubble: View {
                         if dynamicTypeSize.isAccessibilitySize {
                             // Large text gets the whole width; the time goes under it.
                             VStack(alignment: .trailing, spacing: 4) {
-                                Text(formattedBody(displayBody))
-                                .tint(message.isOutgoing ? .white : .accentColor)
+                                bodyText(displayBody)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 metadataRow
                             }
                         } else {
                             HStack(alignment: .lastTextBaseline, spacing: 7) {
-                                Text(formattedBody(displayBody))
-                                .tint(message.isOutgoing ? .white : .accentColor)
+                                bodyText(displayBody)
                                     .fixedSize(horizontal: false, vertical: true)
                                 metadataRow
                             }
@@ -2968,8 +3197,54 @@ private struct MessageBubble: View {
     /// and `body` re-runs on every scroll. Bounded; main-actor only.
     private static var formattedBodyCache: [String: AttributedString] = [:]
 
+    /// A message's text, with spoilers hidden until tapped.
+    private func bodyText(_ text: String) -> some View {
+        let hasSpoilers = Spoilers.contains(text)
+        return Text(formattedBody(text))
+            .tint(message.isOutgoing ? .white : .accentColor)
+            .accessibilityLabel(hasSpoilers && !spoilersRevealed
+                                ? Spoilers.redact(text).replacingOccurrences(of: Spoilers.placeholder, with: "spoiler")
+                                : Spoilers.reveal(text))
+            .accessibilityAction(named: "Reveal Spoiler") {
+                if hasSpoilers { onRevealSpoilers() }
+            }
+    }
+
+    static let spoilerScheme = "relay-spoiler"
+
+    /// Hidden spoiler text: a run of dot patterns as long as the text, as a
+    /// link so tapping it reveals the message's spoilers.
+    private static func spoilerNoise(length: Int) -> AttributedString {
+        let dots = Array("⣿⣷⣯⣟⡿⢿⣻⣽⣾⣶")
+        // Braille cells are wider than most letters.
+        let count = max(Int((Double(length) * 0.6).rounded()), 3)
+        var noise = AttributedString(String((0..<count).map { dots[($0 * 7 + 3) % dots.count] }))
+        noise.link = URL(string: "\(spoilerScheme):reveal")
+        return noise
+    }
+
+    /// Replaces each ||spoiler|| with its text (revealed) or noise.
+    private static func applySpoilers(_ input: AttributedString, revealed: Bool, onBubble: Bool) -> AttributedString {
+        var result = input
+        while let match = String(result.characters).firstMatch(of: Spoilers.regex),
+              let lower = AttributedString.Index(match.range.lowerBound, within: result),
+              let upper = AttributedString.Index(match.range.upperBound, within: result) {
+            let innerLower = result.characters.index(lower, offsetBy: 2)
+            let innerUpper = result.characters.index(upper, offsetBy: -2)
+            var inner = AttributedString(result[innerLower..<innerUpper])
+            if revealed {
+                inner.backgroundColor = onBubble ? Color.white.opacity(0.18) : Color.primary.opacity(0.08)
+            } else {
+                inner = spoilerNoise(length: inner.characters.count)
+            }
+            result.replaceSubrange(lower..<upper, with: inner)
+        }
+        return result
+    }
+
     private func formattedBody(_ text: String) -> AttributedString {
-        let cacheKey = "\(service.username ?? "")\u{1}\(text)"
+        let spoilerState = Spoilers.contains(text) ? (spoilersRevealed ? "\u{2}r" : "\u{2}h") : ""
+        let cacheKey = "\(service.username ?? "")\u{1}\(text)\(spoilerState)"
         if let cached = Self.formattedBodyCache[cacheKey] { return cached }
 
         var base = (try? AttributedString(
@@ -2997,6 +3272,9 @@ private struct MessageBubble: View {
         // Underlined, so links read as links in white on a coloured bubble.
         for run in base.runs where run.link != nil {
             base[run.range].underlineStyle = .single
+        }
+        if !spoilerState.isEmpty {
+            base = Self.applySpoilers(base, revealed: spoilersRevealed, onBubble: message.isOutgoing)
         }
         if Self.formattedBodyCache.count > 800 { Self.formattedBodyCache.removeAll() }
         Self.formattedBodyCache[cacheKey] = base
@@ -3512,7 +3790,7 @@ private struct QuotedContentView: View {
                     .font(.caption2.weight(.semibold))
                     .opacity(isOutgoing ? 1 : 0.8)
                 Text(quote.text.isEmpty ? "Message"
-                     : quote.text == MessagingService.stickerMarker ? "Sticker" : quote.text)
+                     : quote.text == MessagingService.stickerMarker ? "Sticker" : Spoilers.redact(quote.text))
                     .font(.footnote)
                     .lineLimit(2)
                     .opacity(isOutgoing ? 0.8 : 0.7)
@@ -4713,6 +4991,39 @@ private struct RecordingDot: View {
 }
 
 /// Live input levels while recording, newest on the right.
+/// The whole recording, shrunk to fit, filling in as it plays.
+private struct RecordingReview: View {
+    let levels: [Float]
+    let progress: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let spacing: CGFloat = 2
+            let count = max(12, min(48, Int(geo.size.width / 4)))
+            let bars = Self.resample(levels, to: count)
+            let width = max(1.5, (geo.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
+            HStack(alignment: .center, spacing: spacing) {
+                ForEach(Array(bars.enumerated()), id: \.offset) { index, level in
+                    Capsule()
+                        .fill(Double(index) / Double(count) < progress ? Color.accentColor : Color.secondary.opacity(0.6))
+                        .frame(width: width, height: max(3, geo.size.height * CGFloat(level)))
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+
+    /// Peak level per bar.
+    static func resample(_ levels: [Float], to count: Int) -> [Float] {
+        guard !levels.isEmpty else { return Array(repeating: 0.08, count: count) }
+        return (0..<count).map { i in
+            let lower = i * levels.count / count
+            let upper = max(lower + 1, (i + 1) * levels.count / count)
+            return levels[lower..<min(upper, levels.count)].max() ?? 0.08
+        }
+    }
+}
+
 private struct RecordingLevels: View {
     let levels: [Float]
 

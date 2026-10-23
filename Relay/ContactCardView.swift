@@ -73,24 +73,20 @@ struct ContactCardView: View {
                 // MARK: Header
                 Section {
                     VStack(spacing: 10) {
-                        Button {
-                            withAnimation(.spring(duration: 0.4, bounce: 0.2)) { photoExpanded = true }
-                        } label: {
-                            AvatarView(
-                                name: displayName, size: 82,
-                                imageData: service.peerAvatarData(forAccount: account)
-                            )
-                            .matchedGeometryEffect(id: "photo", in: photoNamespace, isSource: !photoExpanded)
-                            .opacity(photoExpanded ? 0 : 1)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(displayName)'s photo")
-                        .accessibilityHint("Shows it larger")
-                        Text(displayName).font(.title2.bold())
-                        if let username {
-                            Text("@\(username)")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                        InfoHeader(name: displayName, subtitle: username.map { "@\($0)" }) {
+                            Button {
+                                withAnimation(.spring(duration: 0.4, bounce: 0.2)) { photoExpanded = true }
+                            } label: {
+                                AvatarView(
+                                    name: displayName, size: 104,
+                                    imageData: service.peerAvatarData(forAccount: account)
+                                )
+                                .matchedGeometryEffect(id: "photo", in: photoNamespace, isSource: !photoExpanded)
+                                .opacity(photoExpanded ? 0 : 1)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(displayName)'s photo")
+                            .accessibilityHint("Shows it larger")
                         }
                         if !peerBio.isEmpty {
                             Text(peerBio)
@@ -111,14 +107,14 @@ struct ContactCardView: View {
                 Section {
                     HStack(spacing: 10) {
                         if !isNoteToSelf {
-                            quickAction(icon: "video.fill", label: "Video") {
+                            InfoQuickAction(icon: "video.fill", label: "Video") {
                                 dismiss()
                                 Task {
                                     await callManager.startCall(
                                         peerAccount: account, peerName: displayName, kind: .video)
                                 }
                             }
-                            quickAction(icon: "phone.fill", label: "Voice") {
+                            InfoQuickAction(icon: "phone.fill", label: "Voice") {
                                 dismiss()
                                 Task {
                                     await callManager.startCall(
@@ -126,11 +122,11 @@ struct ContactCardView: View {
                                 }
                             }
                         }
-                        quickAction(icon: service.isConversationMuted(conversationId) ? "bell.fill" : "bell.slash.fill",
+                        InfoQuickAction(icon: service.isConversationMuted(conversationId) ? "bell.fill" : "bell.slash.fill",
                                     label: service.isConversationMuted(conversationId) ? "Unmute" : "Mute") {
                             service.setConversationMuted(conversationId, muted: !service.isConversationMuted(conversationId))
                         }
-                        quickAction(icon: "magnifyingglass", label: "Search") {
+                        InfoQuickAction(icon: "magnifyingglass", label: "Search") {
                             dismiss()
                             onActivateSearch?()
                         }
@@ -140,6 +136,11 @@ struct ContactCardView: View {
                 }
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
+
+                // MARK: Shared media
+                Section {
+                    SharedMediaRow(service: service, conversationId: conversationId)
+                }
 
                 // MARK: Conversation settings
                 Section {
@@ -163,9 +164,6 @@ struct ContactCardView: View {
 
                     NavigationLink(destination: AppearanceSettingsView(chatId: conversationId)) {
                         SettingsNavRow(systemName: "paintbrush.fill", color: .purple, title: "Chat Appearance")
-                    }
-                    NavigationLink(destination: MediaGalleryView(service: service, conversationId: conversationId)) {
-                        SettingsNavRow(systemName: "photo.stack.fill", color: .teal, title: "Media")
                     }
                     NavigationLink(destination: StarredMessagesView(service: service, conversationId: conversationId, peerName: displayName)) {
                         SettingsNavRow(systemName: "star.fill", color: .yellow, title: "Starred Messages")
@@ -325,22 +323,6 @@ struct ContactCardView: View {
     }
 
     // MARK: - Helpers
-
-    @ViewBuilder
-    private func quickAction(icon: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 7) {
-                Image(systemName: icon)
-                    .font(.system(size: 19, weight: .semibold))
-                    .frame(width: 72, height: 46)
-                    .glassCompat(in: .rect(cornerRadius: 18))
-                Text(label)
-                    .font(.caption.weight(.medium))
-            }
-            .foregroundStyle(.primary)
-        }
-        .buttonStyle(.plain)
-    }
 
     @ViewBuilder
     private func linkRow(label: String, url: String, tappable: Bool) -> some View {

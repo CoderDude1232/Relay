@@ -73,6 +73,8 @@ final class AppModel {
     var pendingNotificationConversationId: String?
     /// relay://scan (the Scan QR Code control): open the scanner.
     var pendingScanQR = false
+    /// relay://compose (New Message control or shortcut): open the new-chat sheet.
+    var pendingCompose = false
     /// A proxy link that was opened, waiting for the user to confirm it.
     var pendingProxy: RelayProxy.Address?
     /// The latest check of the proxy in use; nil when there's no proxy.

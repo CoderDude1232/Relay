@@ -63,7 +63,7 @@ public struct RecentChatsSnapshot: Codable, Sendable {
             if type.hasPrefix("audio/") { return "Voice message" }
             return "Attachment"
         }
-        return String(body.prefix(240))
+        return String(Spoilers.redact(body).prefix(240))
     }
 }
 

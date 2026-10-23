@@ -241,6 +241,7 @@ final class PanicModeManager {
         hiddenIds.insert(conversationId)
         Self.saveHiddenIds(hiddenIds)
         syncSharedHiddenIds()
+        ShareBridge.removeConversation(conversationId)
         // Siri/share-sheet suggestions live outside the encrypted store. Older
         // donations carry no per-chat group id, so clear all of Relay's; they refill
         // as the user sends.
@@ -255,6 +256,12 @@ final class PanicModeManager {
 
     func isHidden(_ conversationId: String) -> Bool {
         !isActive && isEnabled && hiddenIds.contains(conversationId)
+    }
+
+    /// Marked hidden, whether or not hidden chats are showing right now. The
+    /// share sheet, widget and Shortcuts never list these.
+    func isMarkedHidden(_ conversationId: String) -> Bool {
+        isEnabled && hiddenIds.contains(conversationId)
     }
 
     // MARK: Rate limiting

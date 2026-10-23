@@ -20,8 +20,17 @@ final class VoiceRecorder {
     /// Recent input loudness, 0...1, oldest first, for the live waveform.
     private(set) var levels: [Float] = []
     static let levelCount = 36
+    /// Every level since the start, for the waveform shown on review.
+    private(set) var allLevels: [Float] = []
+    /// Stopped and waiting to be played back, sent or deleted.
+    private(set) var isReviewing = false
+    private(set) var isPreviewPlaying = false
+    /// Review playback position, 0...1.
+    private(set) var previewProgress: Double = 0
 
     private var recorder: AVAudioRecorder?
+    private var previewPlayer: AVAudioPlayer?
+    private var reviewDuration: TimeInterval = 0
     private var fileURL: URL?
     private var ticker: Task<Void, Never>?
 
@@ -50,6 +59,7 @@ final class VoiceRecorder {
             fileURL = url
             elapsed = 0
             levels = []
+            allLevels = []
             isPaused = false
             isRecording = true
             startTicking()
@@ -61,9 +71,9 @@ final class VoiceRecorder {
 
     /// Nil if the clip is under 1s or couldn't be read.
     func finish() -> MessagingService.PendingAttachment? {
-        guard let recorder, let fileURL else { cancel(); return nil }
-        let duration = recorder.currentTime
-        recorder.stop()
+        guard let fileURL, recorder != nil || isReviewing else { cancel(); return nil }
+        let duration = isReviewing ? reviewDuration : recorder?.currentTime ?? 0
+        recorder?.stop()
         teardown()
         defer { cleanup(fileURL) }
         guard duration >= 1, let data = try? Data(contentsOf: fileURL) else { return nil }
@@ -82,6 +92,51 @@ final class VoiceRecorder {
         isPaused.toggle()
     }
 
+    /// Stops recording and keeps the clip to listen to before sending.
+    func stopForReview() {
+        guard let recorder, !isReviewing else { return }
+        reviewDuration = recorder.currentTime
+        elapsed = reviewDuration
+        recorder.stop()
+        stopTicking()
+        self.recorder = nil
+        isPaused = false
+        isReviewing = true
+        previewProgress = 0
+    }
+
+    func togglePreview() {
+        guard isReviewing, let fileURL else { return }
+        if let previewPlayer, previewPlayer.isPlaying {
+            previewPlayer.pause()
+            isPreviewPlaying = false
+            stopTicking()
+            return
+        }
+        if previewPlayer == nil {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            previewPlayer = try? AVAudioPlayer(contentsOf: fileURL)
+        }
+        guard let previewPlayer else { return }
+        if previewProgress >= 0.999 { previewPlayer.currentTime = 0 }
+        previewPlayer.play()
+        isPreviewPlaying = true
+        ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard let self, let player = self.previewPlayer else { break }
+                let total = max(player.duration, 0.01)
+                if player.isPlaying {
+                    self.previewProgress = min(1, player.currentTime / total)
+                } else {
+                    self.previewProgress = 1
+                    self.isPreviewPlaying = false
+                    break
+                }
+            }
+        }
+    }
+
     func cancel() {
         recorder?.stop()
         if let fileURL { cleanup(fileURL) }
@@ -91,10 +146,16 @@ final class VoiceRecorder {
     private func teardown() {
         stopTicking()
         recorder = nil
+        previewPlayer?.stop()
+        previewPlayer = nil
         fileURL = nil
         isRecording = false
         isPaused = false
+        isReviewing = false
+        isPreviewPlaying = false
+        previewProgress = 0
         levels = []
+        allLevels = []
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -114,6 +175,7 @@ final class VoiceRecorder {
                 let power = recorder.averagePower(forChannel: 0)
                 let level = max(0.08, min(1, (power + 50) / 50))
                 self.levels.append(level)
+                self.allLevels.append(level)
                 if self.levels.count > Self.levelCount { self.levels.removeFirst(self.levels.count - Self.levelCount) }
             }
         }

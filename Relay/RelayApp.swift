@@ -88,6 +88,13 @@ struct RelayApp: App {
                     } else if url.host == "scan" {
                         // relay://scan, from the Scan QR Code control.
                         model.pendingScanQR = true
+                    } else if url.host == "compose" {
+                        // relay://compose, from the New Message control.
+                        model.pendingCompose = true
+                    } else if url.host == "note-to-self" {
+                        // relay://note-to-self, from the Note to Self control.
+                        guard case .ready(let service) = model.phase else { return }
+                        Task { model.pendingNotificationConversationId = await service.ensureNoteToSelf() }
                     } else if url.host == "conversation" {
                         // relay://conversation/<conversationId> (widget tap)
                         let convId = url.pathComponents.dropFirst().first ?? ""
@@ -160,6 +167,7 @@ struct RelayApp: App {
                         }
                     case .active:
                         PanicModeManager.shared.applyControlLockIfRequested()
+                        FocusFilterState.shared.reload()
                         model.enterForeground()
                     default:
                         break
@@ -266,6 +274,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     let callManager = CallManager()
     let pushKitDelegate = PushKitDelegate()
     weak var model: AppModel?
+    /// For App Intents, which run in the app but outside the SwiftUI tree.
+    static weak var current: AppDelegate?
 
     /// Siri/CarPlay "send a message", handled in the app so it sends immediately.
     func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
@@ -285,6 +295,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        Self.current = self
         // Drains Siri-queued messages when the socket is closed. Must be
         // registered before launch finishes.
         BGTaskScheduler.shared.register(

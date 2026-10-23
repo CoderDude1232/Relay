@@ -2,8 +2,8 @@
 //  RelayControls.swift
 //  RelayWidgetExtension
 //
-//  Control Center / Lock Screen / Action button controls: Scan QR Code, and
-//  Panic Mode, which re-hides the chats marked hidden without opening Relay.
+//  Control Center / Lock Screen / Action button controls: Scan QR Code, New
+//  Message, Note to Self, and Panic Mode, which re-hides the chats marked hidden without opening Relay.
 //
 
 import AppIntents
@@ -20,6 +20,30 @@ struct ScanQRControl: ControlWidget {
         }
         .displayName("Scan QR Code")
         .description("Open Relay's scanner to add someone.")
+    }
+}
+
+struct NewMessageControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "app.relaymsg.control.compose") {
+            ControlWidgetButton(action: OpenURLIntent(URL(string: "relay://compose")!)) {
+                Label("New Message", systemImage: "square.and.pencil")
+            }
+        }
+        .displayName("New Message")
+        .description("Start a new chat in Relay.")
+    }
+}
+
+struct NoteToSelfControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "app.relaymsg.control.note") {
+            ControlWidgetButton(action: OpenURLIntent(URL(string: "relay://note-to-self")!)) {
+                Label("Note to Self", systemImage: "note.text")
+            }
+        }
+        .displayName("Note to Self")
+        .description("Open your Note to Self chat in Relay.")
     }
 }
 

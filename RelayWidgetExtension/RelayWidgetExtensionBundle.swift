@@ -13,6 +13,8 @@ struct RelayWidgetExtensionBundle: WidgetBundle {
     var body: some Widget {
         RelayWidgetExtension()
         ScanQRControl()
+        NewMessageControl()
+        NoteToSelfControl()
         PanicModeControl()
     }
 }

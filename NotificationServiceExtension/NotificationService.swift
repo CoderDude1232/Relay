@@ -101,6 +101,11 @@ class NotificationService: UNNotificationServiceExtension {
                 content.userInfo = info
                 content.threadIdentifier = conversationId
             }
+            // A Focus filter that leaves this chat out: delivered quietly.
+            let quiet = FocusChatFilter.load().map {
+                $0.silencesOtherChats && !conversationId.isEmpty && !$0.allows(conversationId)
+            } ?? false
+            if quiet { content.interruptionLevel = .passive }
             // Wrap in INSendMessageIntent so iOS shows the sender's avatar, but only
             // when the preview level allows the name. In "none" mode nothing about
             // the sender goes to the system.
@@ -110,9 +115,13 @@ class NotificationService: UNNotificationServiceExtension {
                 contentHandler(content)
                 return
             }
-            contentHandler(enriched(content: content,
-                                    senderName: title,
-                                    conversationId: conversationId))
+            let communication = enriched(content: content, senderName: title, conversationId: conversationId)
+            if quiet, let copy = communication.mutableCopy() as? UNMutableNotificationContent {
+                copy.interruptionLevel = .passive
+                contentHandler(copy)
+            } else {
+                contentHandler(communication)
+            }
         case .suppress, .none:
             // Call signalling (handled by VoIP push), a duplicate the app already
             // drained, a control message, or nothing to fetch. Suppress instead of
@@ -419,7 +428,7 @@ class NotificationService: UNNotificationServiceExtension {
         let previewBody = notification.body.hasPrefix(PendingControlStore.notepadPrefix)
             ? "📝 Updated the shared notepad"
             : notification.body == "__sticker__" ? "Sent a sticker"
-            : notification.body
+            : Spoilers.redact(notification.body)
 
         // Never show any part of the sender's account id.
         let title = displayName(for: notification.conversationId, in: storage) ?? "Relay"

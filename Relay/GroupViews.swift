@@ -190,8 +190,10 @@ struct GroupInfoView: View {
     let service: MessagingService
     let conversationId: String
     let ownAccountId: String
+    var onActivateSearch: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(CallManager.self) private var callManager
     @State private var newMember = ""
     @State private var editingName = false
     @State private var draftName = ""
@@ -233,49 +235,85 @@ struct GroupInfoView: View {
             List {
                 if let group {
                     Section {
-                        HStack(spacing: 16) {
+                        InfoHeader(name: group.name, subtitle: "\(group.members.count) members") {
                             if isAdmin {
                                 Button {
                                     showingAvatarPicker = true
                                 } label: {
-                                    GroupAvatarView(data: group.avatarData, name: group.name, size: 64)
+                                    GroupAvatarView(data: group.avatarData, name: group.name, size: 104)
                                         .overlay(alignment: .bottomTrailing) {
-                                            AvatarEditBadge(systemImage: "pencil", diameter: 24)
-                                                .offset(x: 4, y: 4)
+                                            AvatarEditBadge(systemImage: "pencil", diameter: 30)
+                                                .offset(x: 2, y: 2)
                                         }
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Change group photo")
                             } else {
-                                GroupAvatarView(data: group.avatarData, name: group.name, size: 64)
+                                GroupAvatarView(data: group.avatarData, name: group.name, size: 104)
                                     .accessibilityHidden(true)
                             }
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(group.name)
-                                    .font(.headline)
-                                Text("\(group.members.count) members")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
+                        } accessory: {
                             if isAdmin {
                                 Button {
                                     draftName = group.name
                                     editingName = true
                                 } label: {
-                                    Image(systemName: "pencil")
-                                        .foregroundStyle(.blue)
+                                    Image(systemName: "pencil.circle.fill")
+                                        .font(.title3)
+                                        .foregroundStyle(.secondary)
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Rename group")
                             }
                         }
-                        .padding(.vertical, 4)
                     } footer: {
                         if !isAdmin {
                             Text("Only admins can change group info.")
+                                .frame(maxWidth: .infinity)
                         }
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+
+                    Section {
+                        let muted = service.isConversationMuted(conversationId)
+                        let others = group.members.filter { $0 != ownAccountId }
+                        HStack(spacing: 10) {
+                            InfoQuickAction(icon: "phone.fill", label: "Call",
+                                            isDisabled: callManager.isInGroupCall || others.isEmpty) {
+                                dismiss()
+                                Task {
+                                    await callManager.startGroupCall(groupId: group.id, groupName: group.name,
+                                                                     participants: others, kind: .audio)
+                                }
+                            }
+                            InfoQuickAction(icon: "video.fill", label: "Video",
+                                            isDisabled: callManager.isInGroupCall || others.isEmpty) {
+                                dismiss()
+                                Task {
+                                    await callManager.startGroupCall(groupId: group.id, groupName: group.name,
+                                                                     participants: others, kind: .video)
+                                }
+                            }
+                            InfoQuickAction(icon: muted ? "bell.fill" : "bell.slash.fill",
+                                            label: muted ? "Unmute" : "Mute") {
+                                service.setConversationMuted(conversationId, muted: !muted)
+                            }
+                            if let onActivateSearch {
+                                InfoQuickAction(icon: "magnifyingglass", label: "Search") {
+                                    dismiss()
+                                    onActivateSearch()
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 2)
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+
+                    Section {
+                        SharedMediaRow(service: service, conversationId: conversationId)
                     }
 
                     Section("Description") {
@@ -350,12 +388,6 @@ struct GroupInfoView: View {
                     }
 
                     Section("Chat") {
-                        Toggle(isOn: Binding(
-                            get: { service.isConversationMuted(conversationId) },
-                            set: { service.setConversationMuted(conversationId, muted: $0) }
-                        )) {
-                            Label("Mute Notifications", systemImage: "bell.slash")
-                        }
                         if let conversation {
                             NavigationLink {
                                 ChatPrivacySettingsView(service: service, conversation: conversation)

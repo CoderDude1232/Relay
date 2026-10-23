@@ -26,6 +26,7 @@ struct ConversationListView: View {
     @State private var searchText = ""
     @State private var showingQRScanner = false
     @State private var panicMode = PanicModeManager.shared
+    @State private var focus = FocusFilterState.shared
     @State private var showingPanicPIN = false
     @State private var panicPINInput = ""
     @State private var mutingConversationId: String?
@@ -60,7 +61,7 @@ struct ConversationListView: View {
 
     private var visibleConversations: [Conversation] {
         service.conversations.filter { c in
-            guard !panicMode.isHidden(c.id) && !c.archived && !c.isRequest else { return false }
+            guard !panicMode.isHidden(c.id) && !c.archived && !c.isRequest && !focus.hides(c.id) else { return false }
             guard let filter = activeLabel else { return true }
             switch filter {
             case "Unread": return c.unreadCount > 0
@@ -311,6 +312,15 @@ struct ConversationListView: View {
                 model.pendingScanQR = false
                 showingQRScanner = true
             }
+            if model.pendingCompose {
+                model.pendingCompose = false
+                showingNewChatSheet = true
+            }
+        }
+        .onChange(of: model.pendingCompose) { _, requested in
+            guard requested else { return }
+            model.pendingCompose = false
+            showingNewChatSheet = true
         }
         .onChange(of: panicMode.isActive) { _, active in
             // Locking (including from the Panic Mode control) closes a hidden chat.
@@ -451,6 +461,35 @@ struct ConversationListView: View {
         .accessibilityLabel(label)
     }
 
+    /// Shown while a Focus filter limits the list.
+    private func focusRow(_ filter: FocusChatFilter) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "moon.fill")
+                .foregroundStyle(.indigo)
+                .accessibilityHidden(true)
+            Text(focus.showingAll
+                 ? "Focus is on. Showing all chats."
+                 : "Focus is on. Showing \(filter.chatIds.count == 1 ? "1 chat" : "\(filter.chatIds.count) chats").")
+                .font(.subheadline)
+            Spacer(minLength: 0)
+            Button(focus.showingAll ? "Focus Chats" : "Show All") {
+                withAnimation(.snappy) { focus.showingAll.toggle() }
+            }
+            .font(.subheadline.weight(.semibold))
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.indigo.opacity(0.12), in: .rect(cornerRadius: 14, style: .continuous))
+        .selectionDisabled()
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private func swipeFeedback() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
     private func listSectionLabel(_ title: String, systemImage: String?) -> some View {
         HStack(spacing: 5) {
             if let systemImage { Image(systemName: systemImage) }
@@ -500,36 +539,36 @@ struct ConversationListView: View {
         .selectionDisabled()
         .onTapGesture { selectedConversationId = conversation.id }
         .accessibilityAddTraits(.isButton)
+        // Right swipe: read state (full swipe) and pin. Left swipe: delete
+        // (it asks first), mute, archive.
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            let unread = conversation.unreadCount > 0
             Button {
+                swipeFeedback()
+                if unread { service.markConversationRead(conversation.id) } else { service.markConversationUnread(conversation.id) }
+            } label: {
+                Label(unread ? "Read" : "Unread", systemImage: unread ? "envelope.open.fill" : "envelope.badge.fill")
+            }
+            .tint(appearance.bubbleTint)
+            Button {
+                swipeFeedback()
                 service.setConversationPinned(conversation.id, pinned: !conversation.isPinned)
             } label: {
-                Label(conversation.isPinned ? "Unpin" : "Pin", systemImage: conversation.isPinned ? "pin.slash" : "pin.fill")
+                Label(conversation.isPinned ? "Unpin" : "Pin", systemImage: conversation.isPinned ? "pin.slash.fill" : "pin.fill")
             }
             .tint(.orange)
         }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            // Not role: .destructive, which removes the row before the
+            // confirmation is answered.
+            Button {
                 conversationToDelete = conversation.id
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label("Delete", systemImage: "trash.fill")
             }
-            if conversation.unreadCount > 0 {
-                Button {
-                    service.markConversationRead(conversation.id)
-                } label: {
-                    Label("Read", systemImage: "checkmark.circle")
-                }
-                .tint(.blue)
-            } else {
-                Button {
-                    service.markConversationUnread(conversation.id)
-                } label: {
-                    Label("Unread", systemImage: "envelope.badge")
-                }
-                .tint(.blue)
-            }
+            .tint(.red)
             Button {
+                swipeFeedback()
                 if service.isConversationMuted(conversation.id) {
                     service.setConversationMuted(conversation.id, muted: false)
                 } else {
@@ -537,13 +576,14 @@ struct ConversationListView: View {
                 }
             } label: {
                 let muted = service.isConversationMuted(conversation.id)
-                Label(muted ? "Unmute" : "Mute", systemImage: muted ? "bell" : "bell.slash")
+                Label(muted ? "Unmute" : "Mute", systemImage: muted ? "bell.fill" : "bell.slash.fill")
             }
-            .tint(.gray)
+            .tint(.indigo)
             Button {
+                swipeFeedback()
                 service.setConversationArchived(conversation.id, archived: true)
             } label: {
-                Label("Archive", systemImage: "archivebox")
+                Label("Archive", systemImage: "archivebox.fill")
             }
             .tint(.gray)
         }
@@ -675,6 +715,10 @@ struct ConversationListView: View {
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
+
+            if let filter = focus.filter, filter.hidesOtherChats, !isEditing {
+                focusRow(filter)
+            }
 
             if service.isRestoringHistory {
                 HStack(spacing: 10) {
@@ -1654,7 +1698,7 @@ private struct ConversationRow: View {
             return ("phone.fill", String((body ?? "").dropFirst(5)))
         case let body:
             let fallback = isNoteToSelf ? "Tap to write a note" : "No messages yet"
-            return (nil, body.map { "\(prefix)\($0)" } ?? fallback)
+            return (nil, body.map { "\(prefix)\(Spoilers.redact($0))" } ?? fallback)
         }
     }
 

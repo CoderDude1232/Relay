@@ -6,6 +6,7 @@
 //  the incoming-envelope pipeline, receipts, and per-device fan-out.
 //
 
+import AppIntents
 import CryptoCore
 import CryptoKit
 import Foundation
@@ -3492,7 +3493,7 @@ final class MessagingService {
     static func bannerText(_ body: String) -> String {
         if body.hasPrefix(locationPrefix) { return "📍 Location" }
         if body.hasPrefix(viewOncePrefix) { return "View-once media" }
-        return body
+        return Spoilers.redact(body)
     }
 
     /// The voice message after `clip` in its chat, decrypted, for playing on.
@@ -4046,7 +4047,7 @@ final class MessagingService {
         let preview = NotificationPreviewSetting.current
         let textAllowed = preview.showsContent && !conv.hidePreviews && !conv.requireBiometricChat && conv.disappearingSeconds == 0
         content.title = "You were mentioned"
-        content.body = textAllowed ? body
+        content.body = textAllowed ? Spoilers.redact(body)
             : (preview.showsSenderName ? "by \(displayName(forAccount: senderAccount))" : "")
         content.sound = .default
         let id = "mention-\(senderAccount)-\(Int64(Date().timeIntervalSince1970 * 1000))"
@@ -5006,6 +5007,7 @@ final class MessagingService {
               conversationId != activeConversationId,
               !PanicModeManager.shared.isHidden(conversationId),
               !isConversationMuted(conversationId),
+              !FocusFilterState.shared.silences(conversationId),
               let conv = conversations.first(where: { $0.id == conversationId }), !conv.isRequest
         else { return }
         let preview = NotificationPreviewSetting.current
@@ -5131,10 +5133,14 @@ final class MessagingService {
 
     // Unencrypted list in App Group storage so the Share Extension can show a
     // picker without the database keys.
+    private var lastShortcutChats = ""
     private var lastWidgetFingerprint = ""
 
     private func updateShareConversationList() {
-        let summaries = conversations.filter { !$0.archived }.map { conv -> ShareConversationSummary in
+        let panic = PanicModeManager.shared
+        let summaries = conversations.filter {
+            !$0.archived && !$0.isRequest && !panic.isMarkedHidden($0.id)
+        }.map { conv -> ShareConversationSummary in
             let name: String
             if let gid = conv.groupId {
                 name = displayName(forAccount: gid)
@@ -5157,6 +5163,11 @@ final class MessagingService {
         if fingerprint != lastWidgetFingerprint {
             lastWidgetFingerprint = fingerprint
             WidgetCenter.shared.reloadAllTimelines()
+        }
+        let chatNames = summaries.map { "\($0.id):\($0.displayName)" }.joined(separator: "|")
+        if chatNames != lastShortcutChats {
+            lastShortcutChats = chatNames
+            RelayShortcuts.updateAppShortcutParameters()
         }
         for conv in conversations {
             if let data = peerAvatarData(forAccount: conv.peerAccount) {
