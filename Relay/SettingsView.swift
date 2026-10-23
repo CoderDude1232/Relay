@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var versionTapCount = 0
     @State private var showingInvite = false
     @State private var showingQR = false
+    @State private var settingsQuery = ""
     /// The page open beside the list on iPad, so its row stays highlighted.
     @State private var openPage: String?
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -179,6 +180,13 @@ struct SettingsView: View {
                         }
                 }
             }
+            .overlay {
+                if !settingsQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+                    settingsSearchResults
+                }
+            }
+            .searchable(text: $settingsQuery, placement: .navigationBarDrawer(displayMode: .automatic),
+                        prompt: "Search settings")
             .navigationTitle("Profile")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -202,6 +210,104 @@ struct SettingsView: View {
         } placeholder: {
             profileCard
                 .onAppear { openPage = nil }
+        }
+    }
+
+    // MARK: Search
+
+    private enum SettingsPage: String {
+        case profile = "Profile", account = "Account", appearance = "Appearance", chats = "Chats"
+        case privacy = "Privacy", security = "Security", data = "Data & Storage"
+        case passkeys = "Passkeys", linkedDevices = "Linked Devices", blocked = "Blocked Contacts"
+        case folders = "Chat Folders", scheduled = "Scheduled Messages", storage = "Storage"
+        case proxy = "Proxy", contactSync = "Contact Syncing"
+    }
+
+    /// Every setting worth finding, with the page it lives on.
+    private static let settingsIndex: [(title: String, keywords: String, page: SettingsPage)] = [
+        ("Edit Profile", "name photo picture avatar bio about status links", .profile),
+        ("Username", "handle change username", .profile),
+        ("Account Password", "password sign in", .account),
+        ("Email", "email address change remove find me by email", .account),
+        ("Passkeys", "passkey face id sign in", .passkeys),
+        ("Recovery Key", "recovery key backup sign in lost", .account),
+        ("Linked Devices", "devices ipad mac link computer", .linkedDevices),
+        ("Emergency Wipe All Devices", "nuke remote wipe erase", .account),
+        ("Delete Account", "delete close account", .account),
+        ("Theme", "theme colour color look", .appearance),
+        ("Wallpaper", "wallpaper background photo", .appearance),
+        ("Bubble Colour", "bubble color colour message", .appearance),
+        ("In-Chat Sounds", "sound sounds audio", .chats),
+        ("Chat Folders", "folders labels organise", .folders),
+        ("Scheduled Messages", "schedule later send", .scheduled),
+        ("Blocked Contacts", "block blocked unblock", .blocked),
+        ("Read Receipts", "read receipts seen blue ticks", .privacy),
+        ("Typing Indicators", "typing", .privacy),
+        ("Link Previews", "link preview", .privacy),
+        ("Incognito Keyboard", "keyboard autocorrect learning", .privacy),
+        ("Notification Previews", "notifications lock screen preview banner", .privacy),
+        ("Relay-Only Calls", "calls ip address relay turn direct", .privacy),
+        ("Scam Warnings", "scam fraud warning", .privacy),
+        ("Send Delay", "delay timing jitter", .privacy),
+        ("Proxy", "proxy blocked censorship connect", .proxy),
+        ("Data & Retention", "retention server stores policy legal", .privacy),
+        ("Screen Lock", "lock face id touch id passcode", .security),
+        ("Panic Mode", "panic hide chats pin", .security),
+        ("Message History Backup", "backup history restore", .data),
+        ("Storage", "storage space cache media", .storage),
+        ("Contact Syncing", "contacts sync address book", .contactSync),
+    ]
+
+    private var settingsMatches: [(title: String, keywords: String, page: SettingsPage)] {
+        let q = settingsQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        return Self.settingsIndex.filter {
+            $0.title.lowercased().contains(q) || $0.keywords.contains(q) || $0.page.rawValue.lowercased().contains(q)
+        }
+    }
+
+    private var settingsSearchResults: some View {
+        List {
+            if settingsMatches.isEmpty {
+                ContentUnavailableView.search(text: settingsQuery)
+                    .listRowBackground(Color.clear)
+            }
+            ForEach(settingsMatches, id: \.title) { match in
+                NavigationLink {
+                    page(match.page)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(match.title)
+                        if match.page.rawValue != match.title {
+                            Text(match.page.rawValue)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .modifier(ThemedPageBackground())
+        .background { if !appearance.hasWallpaper { Color(.systemGroupedBackground).ignoresSafeArea() } }
+    }
+
+    @ViewBuilder
+    private func page(_ page: SettingsPage) -> some View {
+        switch page {
+        case .profile: EditProfileSheet(service: service) { avatarData = service.myAvatarData }
+        case .account: AccountSettingsView(service: service)
+        case .appearance: AppearanceSettingsView()
+        case .chats: ChatsSettingsView(service: service)
+        case .privacy: PrivacySettingsView(service: service)
+        case .security: SecuritySettingsView(service: service)
+        case .data: DataStorageSettingsView(service: service)
+        case .passkeys: PasskeysView(service: service)
+        case .linkedDevices: LinkedDevicesView(service: service)
+        case .blocked: BlockedContactsView(service: service)
+        case .folders: ChatFoldersView(service: service)
+        case .scheduled: ScheduledMessagesView(service: service)
+        case .storage: StorageSettingsView(service: service)
+        case .proxy: ProxySettingsView()
+        case .contactSync: ContactSyncView(service: service)
         }
     }
 
