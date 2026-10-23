@@ -201,3 +201,119 @@ func formatDuration(_ seconds: TimeInterval) -> String {
     let total = Int(min(max(seconds, 0), 359_999).rounded())
     return String(format: "%d:%02d", total / 60, total % 60)
 }
+
+/// The one voice message playing in the app. It keeps going when its chat
+/// scrolls away or closes (a mini player shows it then), and moves on to the
+/// next voice message in the chat when it ends. Decrypted audio stays in
+/// memory.
+@MainActor
+@Observable
+final class VoicePlaybackCenter: NSObject, AVAudioPlayerDelegate {
+    static let shared = VoicePlaybackCenter()
+
+    struct Clip: Equatable {
+        let attachmentId: String
+        let conversationId: String
+        let timestamp: Int64
+        let title: String
+    }
+
+    private(set) var clip: Clip?
+    private(set) var isPlaying = false
+    private(set) var progress: Double = 0
+    private(set) var duration: TimeInterval = 0
+    private(set) var rate: Double = 1.0
+
+    /// Finds the voice message after a clip (nil when there's none).
+    var nextClip: ((Clip) async -> (Clip, Data)?)?
+
+    @ObservationIgnored private var player: AVAudioPlayer?
+    @ObservationIgnored private var ticker: Task<Void, Never>?
+
+    func isCurrent(_ attachmentId: String) -> Bool { clip?.attachmentId == attachmentId }
+
+    /// Plays `data`, or pauses/resumes it if it's the current clip.
+    func toggle(_ clip: Clip, data: Data) {
+        if self.clip == clip, let player {
+            if player.isPlaying { pause() } else { resume() }
+            return
+        }
+        start(clip, data: data)
+    }
+
+    func pause() {
+        player?.pause()
+        isPlaying = false
+        stopTicking()
+    }
+
+    func resume() {
+        guard let player else { return }
+        try? AVAudioSession.sharedInstance().setCategory(.playback)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        player.rate = Float(rate)
+        player.play()
+        isPlaying = true
+        startTicking()
+    }
+
+    func stop() {
+        player?.stop()
+        player = nil
+        clip = nil
+        isPlaying = false
+        progress = 0
+        stopTicking()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    func cycleRate() {
+        rate = rate < 1.2 ? 1.5 : rate < 1.8 ? 2.0 : 1.0
+        player?.rate = Float(rate)
+    }
+
+    private func start(_ clip: Clip, data: Data) {
+        player?.stop()
+        stopTicking()
+        guard let next = try? AVAudioPlayer(data: data) else { return }
+        next.enableRate = true
+        next.delegate = self
+        next.prepareToPlay()
+        player = next
+        let reported = next.duration
+        duration = reported.isFinite && reported > 0 ? reported : 0
+        progress = 0
+        self.clip = clip
+        resume()
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in await self.finished() }
+    }
+
+    private func finished() async {
+        isPlaying = false
+        stopTicking()
+        guard let clip else { return }
+        if let (next, data) = await nextClip?(clip) {
+            start(next, data: data)
+        } else {
+            stop()
+        }
+    }
+
+    private func startTicking() {
+        ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard let self, let player = self.player, player.isPlaying else { break }
+                self.progress = self.duration > 0 ? min(max(player.currentTime / self.duration, 0), 1) : 0
+            }
+        }
+    }
+
+    private func stopTicking() {
+        ticker?.cancel()
+        ticker = nil
+    }
+}

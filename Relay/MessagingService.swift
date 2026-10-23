@@ -3494,6 +3494,21 @@ final class MessagingService {
         return body
     }
 
+    /// The voice message after `clip` in its chat, decrypted, for playing on.
+    func nextVoiceClip(after clip: VoicePlaybackCenter.Clip) async -> (VoicePlaybackCenter.Clip, Data)? {
+        guard let messages = try? storage.messages.messages(in: clip.conversationId) else { return nil }
+        guard let next = messages.first(where: {
+            $0.timestamp > clip.timestamp && !$0.isDeleted
+                && !$0.body.hasPrefix(Self.viewOncePrefix) && $0.attachments.contains(where: \.isAudio)
+        }), let audio = next.attachments.first(where: \.isAudio) else { return nil }
+        if !audio.isDownloaded { await downloadAttachment(audio, in: clip.conversationId) }
+        guard let data = attachmentPlaintext(audio) else { return nil }
+        let title = next.isOutgoing ? "You" : displayName(forAccount: next.senderAccount
+            ?? conversations.first { $0.id == clip.conversationId }?.peerAccount ?? "")
+        return (.init(attachmentId: audio.id, conversationId: clip.conversationId,
+                      timestamp: next.timestamp, title: title), data)
+    }
+
     /// The preview that came with (or was sent with) a message.
     func linkPreview(forMessage id: String) -> MessageStore.LinkPreview? {
         try? storage.messages.linkPreview(messageId: id)

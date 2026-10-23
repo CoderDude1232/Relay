@@ -25,7 +25,7 @@ extension VoiceNoteBubble where Trailing == EmptyView {
     init(attachment: StoredAttachment, service: MessagingService, conversationId: String,
          isOutgoing: Bool, requiresBiometric: Bool) {
         self.init(attachment: attachment, service: service, conversationId: conversationId,
-                  isOutgoing: isOutgoing, requiresBiometric: requiresBiometric) { EmptyView() }
+                  isOutgoing: isOutgoing, requiresBiometric: requiresBiometric, trailing: { EmptyView() })
     }
 }
 
@@ -35,10 +35,18 @@ struct VoiceNoteBubble<Trailing: View>: View {
     let conversationId: String
     let isOutgoing: Bool
     let requiresBiometric: Bool
+    /// For the mini player and for finding the next voice message.
+    var messageTimestamp: Int64 = 0
+    var senderTitle: String = "Voice message"
     /// Shown at the end of the duration line (the message's time and status).
     @ViewBuilder var trailing: Trailing
 
+    /// Only for the duration before playing; playback is the app-wide player.
     @State private var player = VoicePlayer()
+    private var center: VoicePlaybackCenter { VoicePlaybackCenter.shared }
+    private var isCurrent: Bool { center.isCurrent(attachment.id) }
+    private var isPlaying: Bool { isCurrent && center.isPlaying }
+    private var progress: Double { isCurrent ? center.progress : 0 }
     @State private var data: Data?
     @State private var failed = false
     @State private var isUnlocked = false
@@ -64,7 +72,7 @@ struct VoiceNoteBubble<Trailing: View>: View {
                 Button {
                     Task { await unlockAndTogglePlayback() }
                 } label: {
-                    Image(systemName: locked ? "lock.fill" : player.isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: locked ? "lock.fill" : isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(isOutgoing ? appearance.bubbleTint : .white)
                         .frame(width: 38, height: 38)
@@ -72,11 +80,11 @@ struct VoiceNoteBubble<Trailing: View>: View {
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(locked ? "Unlock voice message" : player.isPlaying ? "Pause" : "Play voice message")
+                .accessibilityLabel(locked ? "Unlock voice message" : isPlaying ? "Pause" : "Play voice message")
                 .disabled(data == nil && !failed)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    VoiceWaveform(levels: locked ? [] : levels, progress: player.progress, tint: tint)
+                    VoiceWaveform(levels: locked ? [] : levels, progress: progress, tint: tint)
                         .frame(height: 24)
                         .accessibilityHidden(true)
                     durationLine
@@ -154,9 +162,9 @@ struct VoiceNoteBubble<Trailing: View>: View {
 
     @ViewBuilder
     private var rateButton: some View {
-        if player.isPlaying || player.progress > 0 {
+        if isCurrent {
             Button {
-                player.cycleRate()
+                center.cycleRate()
             } label: {
                 Text(rateLabel)
                     .font(.caption2.weight(.bold).monospacedDigit())
@@ -171,14 +179,14 @@ struct VoiceNoteBubble<Trailing: View>: View {
     }
 
     private var label: String {
-        if player.isPlaying || player.progress > 0 {
-            return formatDuration(player.progress * player.duration)
+        if isCurrent {
+            return formatDuration(center.progress * center.duration)
         }
         return player.duration > 0 ? formatDuration(player.duration) : "Voice"
     }
 
     private var rateLabel: String {
-        switch player.rate {
+        switch center.rate {
         case 1.5: return "1.5x"
         case 2.0: return "2x"
         default:  return "1x"
@@ -204,7 +212,8 @@ struct VoiceNoteBubble<Trailing: View>: View {
             guard await BiometricGate.authenticate(reason: "Unlock this voice note in Relay.") else { return }
             isUnlocked = true
         }
-        player.toggle(data)
+        center.toggle(.init(attachmentId: attachment.id, conversationId: conversationId,
+                            timestamp: messageTimestamp, title: senderTitle), data: data)
     }
 
     private func transcribeVoiceNote() async {

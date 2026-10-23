@@ -583,6 +583,30 @@ struct MainTabView: View {
         }
     }
 
+    /// The voice message still playing after leaving its chat.
+    private var voiceMiniPlayerLayer: some View {
+        let center = VoicePlaybackCenter.shared
+        return ZStack {
+            if let clip = center.clip, service.activeConversationId != clip.conversationId,
+               service.inAppBanner == nil {
+                VStack {
+                    VoiceMiniPlayer(center: center, clip: clip) {
+                        selectedTab = 0
+                        model.pendingNotificationConversationId = clip.conversationId
+                    }
+                    .padding(.top, 6)
+                    .frame(maxWidth: 520)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(duration: 0.35, bounce: 0.15), value: center.clip?.attachmentId)
+        .onAppear {
+            center.nextClip = { [weak service] clip in await service?.nextVoiceClip(after: clip) }
+        }
+    }
+
     private var inAppBannerLayer: some View {
         ZStack {
         if let banner = service.inAppBanner {
@@ -668,6 +692,8 @@ struct MainTabView: View {
             }
 
             inAppBannerLayer
+
+            voiceMiniPlayerLayer
 
             // Call links: host admit prompts, and the joiner's waiting card.
             if let request = callManager.linkJoinRequests.first {
@@ -1001,5 +1027,69 @@ private struct InAppBannerView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens the chat")
         .accessibilityAction(named: "Dismiss", onDismiss)
+    }
+}
+
+/// A glass capsule with the playing voice message: play/pause, speed and
+/// stop. Tapping it opens the chat.
+private struct VoiceMiniPlayer: View {
+    let center: VoicePlaybackCenter
+    let clip: VoicePlaybackCenter.Clip
+    let onOpen: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                if center.isPlaying { center.pause() } else { center.resume() }
+            } label: {
+                Image(systemName: center.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(Color.accentColor, in: .circle)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(center.isPlaying ? "Pause" : "Play")
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(clip.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                ProgressView(value: center.progress)
+                    .tint(.accentColor)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(.rect)
+            .onTapGesture(perform: onOpen)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Voice message from \(clip.title)")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Opens the chat")
+
+            Button { center.cycleRate() } label: {
+                Text(center.rate == 1 ? "1×" : center.rate == 1.5 ? "1.5×" : "2×")
+                    .font(.caption.weight(.bold).monospacedDigit())
+                    .frame(minWidth: 36, minHeight: 28)
+                    .background(.fill.tertiary, in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Playback speed")
+
+            Button { center.stop() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop")
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .padding(.vertical, 8)
+        .glassCompat(in: .capsule)
+        .shadow(color: .black.opacity(0.1), radius: 10, y: 3)
+        .padding(.horizontal, 12)
     }
 }

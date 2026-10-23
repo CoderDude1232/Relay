@@ -1212,6 +1212,7 @@ final class AppModel {
     }
 
     func signOut(removeFromServer: Bool = true, remoteWipe: Bool = false) {
+        VoicePlaybackCenter.shared.stop()
         removedFromAccount = false
         guard removeFromServer, case .ready(let service) = phase else {
             finishSignOut()

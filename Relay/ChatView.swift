@@ -2873,7 +2873,9 @@ private struct MessageBubble: View {
                 VoiceNoteBubble(
                     attachment: attachment, service: service,
                     conversationId: conversationId, isOutgoing: message.isOutgoing,
-                    requiresBiometric: mediaRequiresBiometric
+                    requiresBiometric: mediaRequiresBiometric,
+                    messageTimestamp: message.timestamp,
+                    senderTitle: message.isOutgoing ? "You" : avatarName
                 ) {
                     if isLoneVoiceNote { metadataRow }
                 }
