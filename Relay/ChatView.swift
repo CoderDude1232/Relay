@@ -1978,7 +1978,11 @@ struct ChatView: View {
         }
         draftPreviewTask = Task {
             try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled, let preview = await LinkPreviewBuilder.build(for: link),
+            let isRelayLink = URL(string: link).flatMap(RelayLink.init) != nil
+            let built = isRelayLink
+                ? await RelayLink.preview(for: link, service: service)
+                : await LinkPreviewBuilder.build(for: link)
+            guard !Task.isCancelled, let preview = built,
                   !Task.isCancelled, draft.firstURLText == link
             else { return }
             withAnimation(.spring(duration: 0.25)) { draftLinkPreview = preview }
@@ -2781,7 +2785,16 @@ private struct MessageBubble: View {
                 attachmentStack
                 let displayBody = message.body.hasPrefix("~once~")
                     ? String(message.body.dropFirst("~once~".count)) : message.body
-                if !displayBody.isEmpty {
+                if let url = displayBody.firstURL, let relayLink = RelayLink(url),
+                   displayBody.trimmingCharacters(in: .whitespacesAndNewlines) == displayBody.firstURLText,
+                   message.isOutgoing || !inRequestChat {
+                    // Just a Relay link: the card alone, no raw URL above it.
+                    RelayLinkCard(link: relayLink, url: url,
+                                  preview: service.linkPreview(forMessage: message.id),
+                                  isOutgoing: message.isOutgoing, service: service)
+                    metadataRow
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                } else if !displayBody.isEmpty {
                     if effectiveStatus == .failed {
                         // The long "Not Delivered · Tap to Retry" beside the
                         // text would squeeze it to a word per line.
@@ -2817,8 +2830,14 @@ private struct MessageBubble: View {
                             .foregroundStyle(message.isOutgoing ? .white.opacity(0.65) : .secondary)
                     }
                     if let url = displayBody.firstURL, message.isOutgoing || !inRequestChat {
-                        LinkPreviewView(url: url, isOutgoing: message.isOutgoing,
-                                        preview: service.linkPreview(forMessage: message.id))
+                        if let relayLink = RelayLink(url) {
+                            RelayLinkCard(link: relayLink, url: url,
+                                          preview: service.linkPreview(forMessage: message.id),
+                                          isOutgoing: message.isOutgoing, service: service)
+                        } else {
+                            LinkPreviewView(url: url, isOutgoing: message.isOutgoing,
+                                            preview: service.linkPreview(forMessage: message.id))
+                        }
                     }
                 } else if !isLoneVoiceNote {
                     metadataRow

@@ -51,6 +51,8 @@ enum LinkPreviewBuilder {
         guard PrivacyPreferences.linkPreviewsEnabled, RelayProxy.active == nil else { return nil }
         let normalized = urlText.lowercased().hasPrefix("http") ? urlText : "https://" + urlText
         guard let url = URL(string: normalized) else { return nil }
+        // Relay's own links get an embed built on this device instead.
+        if url.host() == "relaymsg.app" { return nil }
         let provider = LPMetadataProvider()
         provider.timeout = 8
         guard let meta = try? await provider.startFetchingMetadata(for: url) else { return nil }
@@ -73,7 +75,7 @@ enum LinkPreviewBuilder {
     }
 
     /// Scaled down and compressed to fit the 48 KiB limit receivers accept.
-    private static func thumbnail(_ image: UIImage) -> Data? {
+    static func thumbnail(_ image: UIImage) -> Data? {
         for side: CGFloat in [600, 420, 300] {
             let scale = min(1, side / max(image.size.width, image.size.height))
             let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
@@ -203,7 +205,7 @@ struct ComposerLinkPreview: View {
                     .clipShape(.rect(cornerRadius: 8))
                     .accessibilityHidden(true)
             } else {
-                Image(systemName: "safari")
+                Image(systemName: URL(string: preview.url).flatMap(RelayLink.init)?.symbol ?? "safari")
                     .frame(width: 44, height: 44)
                     .background(Color(.secondarySystemFill), in: .rect(cornerRadius: 8))
             }
