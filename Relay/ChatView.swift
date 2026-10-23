@@ -2344,12 +2344,30 @@ private struct MessageRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var confirmDelete = false
     @State private var scamKind: ScamKind?
+    /// Earlier versions of an edited message, oldest first, while shown
+    /// above the current text. Kept here, outside the hosted bubble, so the
+    /// row resizes when they appear.
+    @State private var editVersions: [String]?
+
+    private func toggleEditHistory() {
+        withAnimation(.snappy) {
+            editVersions = editVersions == nil ? service.editHistory(of: message.id).map(\.body) : nil
+        }
+        if editVersions != nil {
+            let id = message.id
+            Task {
+                try? await Task.sleep(for: .milliseconds(80))
+                NotificationCenter.default.post(name: .relayRevealMessage, object: id)
+            }
+        }
+    }
 
     private var bubble: some View {
         MessageBubble(
             message: message, position: position, peerName: peerName,
             service: service, conversationId: conversationId, isGroup: isGroup,
-            isCurrentSearchMatch: isCurrentSearchMatch, onInfo: onInfo
+            isCurrentSearchMatch: isCurrentSearchMatch, onInfo: onInfo,
+            editVersions: editVersions, onToggleEditHistory: toggleEditHistory
         )
     }
 
@@ -2364,6 +2382,7 @@ private struct MessageRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             content
+                .onChange(of: message.editedAt) { editVersions = nil }
                 .accessibilityElement(children: isPlainText && !isSelectionMode ? .combine : .contain)
                 // The long-press menu isn't reachable with VoiceOver; every action
                 // and reaction is offered in the actions rotor instead.
@@ -2457,6 +2476,7 @@ private struct MessageRow: View {
                             message: message, position: position, peerName: peerName,
                             service: service, conversationId: conversationId, isGroup: isGroup,
                             isCurrentSearchMatch: isCurrentSearchMatch, onInfo: onInfo,
+                            editVersions: editVersions, onToggleEditHistory: toggleEditHistory,
                             embedsAlignment: false
                         )
                         .environment(appearance)
@@ -2547,6 +2567,9 @@ private struct MessageBubble: View {
     let isGroup: Bool
     var isCurrentSearchMatch = false
     var onInfo: () -> Void = {}
+    /// Earlier versions to show above the text (nil while hidden).
+    var editVersions: [String]? = nil
+    var onToggleEditHistory: () -> Void = {}
     /// When false, renders only the bubble core, without spacers or avatar, so
     /// the row can align it and use it as the context-menu source view.
     var embedsAlignment: Bool = true
@@ -2558,7 +2581,6 @@ private struct MessageBubble: View {
     @Environment(\.openURL) private var parentOpenURL
     @State private var reactionDetailEmoji: String?
     @State private var pendingLinkURL: URL?
-    @State private var showingEditHistory = false
 
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
@@ -2799,6 +2821,20 @@ private struct MessageBubble: View {
                         .frame(maxWidth: 240, alignment: .trailing)
                         .padding(.top, -4)
                 } else if !displayBody.isEmpty {
+                    if let editVersions {
+                        if editVersions.isEmpty {
+                            Text("Earlier versions aren't on this device.")
+                                .font(.caption)
+                                .opacity(0.55)
+                        }
+                        ForEach(Array(editVersions.enumerated()), id: \.offset) { _, version in
+                            Text(formattedBody(version))
+                                .tint(message.isOutgoing ? .white : .accentColor)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .opacity(0.5)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+                    }
                     if effectiveStatus == .failed {
                         // The long "Not Delivered · Tap to Retry" beside the
                         // text would squeeze it to a word per line.
@@ -2829,20 +2865,17 @@ private struct MessageBubble: View {
                         }
                     }
                     if message.editedAt != nil {
-                        Button { showingEditHistory = true } label: {
+                        Button(action: onToggleEditHistory) {
                             HStack(spacing: 3) {
                                 Image(systemName: "pencil")
-                                Text("edited")
+                                Text("Edited")
                             }
                             .font(.caption2)
                             .foregroundStyle(message.isOutgoing ? .white.opacity(0.75) : .secondary)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Edited")
-                        .accessibilityHint("Shows earlier versions")
-                        .sheet(isPresented: $showingEditHistory) {
-                            EditHistoryView(current: message, versions: service.editHistory(of: message.id))
-                        }
+                        .accessibilityHint(editVersions == nil ? "Shows earlier versions" : "Hides earlier versions")
                     }
                     if let url = displayBody.firstURL, message.isOutgoing || !inRequestChat {
                         if let relayLink = RelayLink(url) {
@@ -3524,55 +3557,6 @@ private struct EditPreviewBar: View {
         }
         .padding(10)
         .glassCompat(in: .rect(cornerRadius: 14))
-    }
-}
-
-/// Every version of an edited message, newest first.
-private struct EditHistoryView: View {
-    let current: StoredMessage
-    let versions: [(body: String, replacedAt: Int64)]
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Now") {
-                    entry(current.body, time: current.editedAt ?? current.timestamp)
-                }
-                if versions.isEmpty {
-                    Section {
-                        Text("Earlier versions aren't on this device. They're kept only for edits made after this update.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Section("Before") {
-                        ForEach(Array(versions.reversed().enumerated()), id: \.offset) { index, version in
-                            // Each version was shown from the edit before it (or the original send).
-                            let shownSince = index + 1 < versions.count
-                                ? versions.reversed()[index + 1].replacedAt : current.timestamp
-                            entry(version.body, time: shownSince)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Edit History")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func entry(_ text: String, time: Int64) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(text)
-            Text(Date(timeIntervalSince1970: Double(time) / 1000), format: .dateTime.month(.abbreviated).day().hour().minute())
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
     }
 }
 
