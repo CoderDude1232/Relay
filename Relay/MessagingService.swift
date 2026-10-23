@@ -5166,8 +5166,9 @@ final class MessagingService {
 
     private func sendPendingShare(_ share: PendingShare) async -> String {
         let conversationId = share.conversationId
+        let caption = share.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if let text = share.text, !text.isEmpty {
-            await sendMessage(text, in: conversationId)
+            await sendMessage(caption.isEmpty ? text : caption + "\n" + text, in: conversationId)
         } else if let imageData = share.imageData {
             // Shared photos carry the original file's EXIF/GPS; re-encode.
             guard let clean = MediaSanitizer.photo(imageData) else {
@@ -5178,7 +5179,7 @@ final class MessagingService {
                 data: clean.data, contentType: clean.contentType, filename: nil,
                 width: clean.width, height: clean.height
             )
-            await sendMessage("", in: conversationId, attachments: [attachment])
+            await sendMessage(caption, in: conversationId, attachments: [attachment])
         } else if let fileData = share.fileData, let name = share.filename {
             let type = UTType(filenameExtension: (name as NSString).pathExtension)
             let ct = type?.preferredMIMEType ?? "application/octet-stream"
@@ -5195,7 +5196,7 @@ final class MessagingService {
             let attachment = PendingAttachment(
                 data: data, contentType: ct, filename: name, width: 0, height: 0
             )
-            await sendMessage("", in: conversationId, attachments: [attachment])
+            await sendMessage(caption, in: conversationId, attachments: [attachment])
         }
         return conversationId
     }

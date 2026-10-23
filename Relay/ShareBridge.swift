@@ -49,6 +49,8 @@ struct PendingShare: Codable {
     let imageUTI: String?
     let fileData: Data?
     let filename: String?
+    /// Typed in the share sheet: sent with the photo or file, or before a link.
+    var caption: String? = nil
 }
 
 nonisolated enum ShareBridge {

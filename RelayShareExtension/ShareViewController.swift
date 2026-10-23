@@ -20,18 +20,30 @@ final class ShareViewController: UIViewController {
         }
 
         let conversations = ShareBridge.readConversations()
+        let model = SharePreviewModel()
+        self.previewModel = model
         let picker = SharePickerView(
             conversations: conversations,
             preselectedAccount: preselectedAccount,
+            preview: model,
             onCancel: { [weak self] in
                 self?.extensionContext?.cancelRequest(
                     withError: NSError(domain: "com.relay.share", code: NSUserCancelledError)
                 )
             },
-            onPick: { [weak self] conversationId in
-                self?.submit(conversationId: conversationId)
+            onPick: { [weak self] conversationId, caption in
+                self?.submit(conversationId: conversationId, caption: caption)
             }
         )
+        // Read what's being shared up front, to show it above the chats.
+        if let items = extensionContext?.inputItems as? [NSExtensionItem] {
+            Task { [weak self] in
+                guard let self else { return }
+                let share = await self.extractShare(from: items, conversationId: "")
+                model.share = share
+                model.loaded = true
+            }
+        }
         let host = UIHostingController(rootView: picker)
         addChild(host)
         host.view.translatesAutoresizingMaskIntoConstraints = false
@@ -45,7 +57,9 @@ final class ShareViewController: UIViewController {
         host.didMove(toParent: self)
     }
 
-    private func submit(conversationId: String) {
+    private var previewModel: SharePreviewModel?
+
+    private func submit(conversationId: String, caption: String) {
         guard let items = extensionContext?.inputItems as? [NSExtensionItem] else {
             extensionContext?.cancelRequest(
                 withError: NSError(domain: "com.relay.share", code: 1)
@@ -53,8 +67,19 @@ final class ShareViewController: UIViewController {
             return
         }
         let ctx = extensionContext
+        let loaded = previewModel?.share
         Task {
-            let share = await extractShare(from: items, conversationId: conversationId)
+            let base: PendingShare
+            if let loaded {
+                base = loaded
+            } else {
+                base = await extractShare(from: items, conversationId: conversationId)
+            }
+            var share = PendingShare(conversationId: conversationId, text: base.text,
+                                     imageData: base.imageData, imageUTI: base.imageUTI,
+                                     fileData: base.fileData, filename: base.filename)
+            let trimmed = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { share.caption = trimmed }
             if share.text == nil, share.imageData == nil, share.fileData == nil, sawTooLarge {
                 showTooLarge()
                 return
@@ -181,13 +206,26 @@ final class ShareViewController: UIViewController {
 
 // MARK: - SwiftUI conversation picker
 
+/// Relay's accent (the app's AccentColor; the extension has no asset of its own).
+private let relayAccent = Color(red: 0xF6 / 255, green: 0x3B / 255, blue: 1)
+
+/// What's being shared, read when the sheet opens.
+@Observable
+final class SharePreviewModel {
+    var share: PendingShare?
+    var loaded = false
+}
+
 private struct SharePickerView: View {
     let conversations: [ShareConversationSummary]
     let preselectedAccount: String?
+    let preview: SharePreviewModel
     let onCancel: () -> Void
-    let onPick: (String) -> Void
+    let onPick: (String, String) -> Void
 
     @State private var query = ""
+    @State private var caption = ""
+    @State private var selected: String?
     @State private var sending = false
 
     private var filtered: [ShareConversationSummary] {
@@ -205,59 +243,169 @@ private struct SharePickerView: View {
                         description: Text("Open Relay and send a message first.")
                     )
                 } else {
-                    List(filtered) { conv in
-                        Button {
-                            guard !sending else { return }
-                            sending = true
-                            onPick(conv.id)
-                        } label: {
-                            HStack(spacing: 12) {
-                                Group {
-                                    if let data = ShareBridge.readAvatar(forConversationId: conv.id),
-                                       let ui = UIImage(data: data) {
-                                        Image(uiImage: ui)
-                                            .resizable()
-                                            .scaledToFill()
-                                    } else {
-                                        ZStack {
-                                            Color.accentColor.opacity(0.2)
-                                            Text(conv.initials)
-                                                .font(.subheadline.weight(.semibold))
-                                                .foregroundStyle(Color.accentColor)
+                    List {
+                        Section {
+                            sharedItem
+                            TextField("Add a message…", text: $caption, axis: .vertical)
+                                .lineLimit(1...4)
+                        }
+                        if query.isEmpty, conversations.count > 3 {
+                            Section("Recent") {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 16) {
+                                        ForEach(conversations.prefix(8)) { conv in
+                                            Button { toggle(conv.id) } label: {
+                                                VStack(spacing: 6) {
+                                                    avatar(conv, size: 54)
+                                                        .overlay(alignment: .bottomTrailing) { checkmark(conv.id) }
+                                                    Text(conv.displayName)
+                                                        .font(.caption)
+                                                        .lineLimit(1)
+                                                        .frame(width: 64)
+                                                }
+                                            }
+                                            .buttonStyle(.plain)
+                                            .accessibilityAddTraits(selected == conv.id ? .isSelected : [])
                                         }
                                     }
+                                    .padding(.vertical, 4)
                                 }
-                                .frame(width: 40, height: 40)
-                                .clipShape(.circle)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(conv.displayName).font(.body).foregroundStyle(.primary)
-                                    if conv.isGroup {
-                                        Text("Group").font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer(minLength: 0)
-                                if sending { ProgressView().controlSize(.small) }
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                             }
                         }
-                        .buttonStyle(.plain)
-                        .onAppear {
-                            if !(preselectedAccount?.isEmpty ?? true),
-                               conv.id == preselectedAccount, !sending {  // customIdentifier is the opaque conversation id
-                                sending = true
-                                onPick(conv.id)
+                        Section(query.isEmpty ? "All Chats" : "Results") {
+                            ForEach(filtered) { conv in
+                                Button { toggle(conv.id) } label: {
+                                    HStack(spacing: 12) {
+                                        avatar(conv, size: 40)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(conv.displayName).font(.body).foregroundStyle(.primary)
+                                            if conv.isGroup {
+                                                Text("Group").font(.caption).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        Spacer(minLength: 0)
+                                        Image(systemName: selected == conv.id ? "checkmark.circle.fill" : "circle")
+                                            .font(.title3)
+                                            .foregroundStyle(selected == conv.id ? relayAccent : Color(.tertiaryLabel))
+                                    }
+                                    .contentShape(.rect)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(selected == conv.id ? .isSelected : [])
                             }
                         }
                     }
-                    .searchable(text: $query, prompt: "Search conversations")
+                    .searchable(text: $query, prompt: "Search chats")
                 }
             }
-            .navigationTitle("Share via Relay")
+            .tint(relayAccent)
+            .navigationTitle("Send with Relay")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
                 }
+                ToolbarItem(placement: .confirmationAction) {
+                    if sending {
+                        ProgressView()
+                    } else {
+                        Button("Send") {
+                            guard let selected else { return }
+                            sending = true
+                            onPick(selected, caption)
+                        }
+                        .bold()
+                        .disabled(selected == nil)
+                    }
+                }
+            }
+            .onAppear {
+                // Siri suggestion: that chat is chosen already.
+                if let preselectedAccount, conversations.contains(where: { $0.id == preselectedAccount }) {
+                    selected = preselectedAccount
+                }
             }
         }
+    }
+
+    private static func avatarColor(_ name: String) -> Color {
+        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
+        var hash = 0
+        for scalar in name.unicodeScalars { hash = (hash &* 31 &+ Int(scalar.value)) }
+        return palette[Int(hash.magnitude % UInt(palette.count))]
+    }
+
+    private func toggle(_ id: String) {
+        selected = selected == id ? nil : id
+    }
+
+    @ViewBuilder
+    private var sharedItem: some View {
+        HStack(spacing: 12) {
+            if let share = preview.share {
+                if let data = share.imageData, let image = UIImage(data: data) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 56, height: 56)
+                        .clipShape(.rect(cornerRadius: 10))
+                    Text("Photo").foregroundStyle(.secondary)
+                } else if let name = share.filename {
+                    Image(systemName: "doc.fill")
+                        .font(.title2)
+                        .foregroundStyle(relayAccent)
+                        .frame(width: 56, height: 56)
+                        .background(Color(.secondarySystemFill), in: .rect(cornerRadius: 10))
+                    Text(name).lineLimit(2)
+                } else if let text = share.text {
+                    Image(systemName: text.hasPrefix("http") ? "link" : "text.alignleft")
+                        .font(.title3)
+                        .foregroundStyle(relayAccent)
+                        .frame(width: 56, height: 56)
+                        .background(Color(.secondarySystemFill), in: .rect(cornerRadius: 10))
+                    Text(text).lineLimit(3).font(.subheadline)
+                } else {
+                    Text("Nothing to share").foregroundStyle(.secondary)
+                }
+            } else {
+                ProgressView()
+                    .frame(width: 56, height: 56)
+                Text("Loading…").foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func checkmark(_ id: String) -> some View {
+        if selected == id {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(.white, relayAccent)
+                .background(Circle().fill(.background))
+        }
+    }
+
+    private func avatar(_ conv: ShareConversationSummary, size: CGFloat) -> some View {
+        Group {
+            if let data = ShareBridge.readAvatar(forConversationId: conv.id),
+               let ui = UIImage(data: data) {
+                Image(uiImage: ui)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                // The same colours as avatars in the app.
+                ZStack {
+                    Rectangle().fill(Self.avatarColor(conv.displayName).gradient)
+                    Text(conv.initials)
+                        .font(size > 48 ? .headline : .subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(.circle)
     }
 }
