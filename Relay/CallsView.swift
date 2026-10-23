@@ -19,19 +19,34 @@ struct CallsView: View {
     @State private var showingClearConfirm = false
     @State private var showingCallLinks = false
     @AppStorage(CallsView.missedCallsSeenAtKey) private var missedCallsSeenAt: Double = 0
+    @State private var missedOnly = false
+
+    /// A row: back-to-back calls with the same person that went the same way
+    /// (all missed, or all not) share one row with a count.
+    struct CallGroup: Identifiable {
+        var calls: [StoredCall]
+        var id: String { calls[0].id }
+        var latest: StoredCall { calls[0] }
+    }
 
     /// Call history grouped into day sections, most recent first.
-    private var sections: [(id: Int, title: String, calls: [StoredCall])] {
+    private var sections: [(id: Int, title: String, groups: [CallGroup])] {
         let cal = Calendar.current
-        var result: [(id: Int, title: String, calls: [StoredCall])] = []
-        for call in service.callHistory {
+        var result: [(id: Int, title: String, groups: [CallGroup])] = []
+        for call in service.callHistory where !missedOnly || call.outcome == .missed {
             let date = Date(timeIntervalSince1970: Double(call.startedAt) / 1000)
             let title = Self.sectionTitle(date, cal: cal)
-            if result.last?.title == title {
-                result[result.count - 1].calls.append(call)
-            } else {
-                result.append((id: result.count, title: title, calls: [call]))
+            if result.last?.title != title {
+                result.append((id: result.count, title: title, groups: []))
             }
+            var groups = result[result.count - 1].groups
+            if let last = groups.last?.latest, last.peerAccount == call.peerAccount,
+               (last.outcome == .missed) == (call.outcome == .missed) {
+                groups[groups.count - 1].calls.append(call)
+            } else {
+                groups.append(CallGroup(calls: [call]))
+            }
+            result[result.count - 1].groups = groups
         }
         return result
     }
@@ -87,10 +102,24 @@ struct CallsView: View {
                     }
                 } else {
                     List {
+                        Picker("Show", selection: $missedOnly) {
+                            Text("All").tag(false)
+                            Text("Missed").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        if missedOnly && sections.isEmpty {
+                            ContentUnavailableView("No Missed Calls", systemImage: "phone.badge.checkmark",
+                                                   description: Text("Calls you miss will show here."))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                        }
                         ForEach(sections, id: \.id) { section in
                             Section {
-                                ForEach(section.calls) { call in
-                                    CallHistoryRow(call: call, service: service) { kind in
+                                ForEach(section.groups) { group in
+                                    let call = group.latest
+                                    CallHistoryRow(call: call, count: group.calls.count, service: service) { kind in
                                         callBack(call, kind: kind)
                                     }
                                     .onTapGesture { handleTap(call) }
@@ -163,6 +192,8 @@ struct CallsView: View {
 
 private struct CallHistoryRow: View {
     let call: StoredCall
+    /// Back-to-back calls this row stands for.
+    var count = 1
     let service: MessagingService
     let onCall: (CallKind) -> Void
 
@@ -183,6 +214,12 @@ private struct CallHistoryRow: View {
                     Text(displayName)
                         .font(call.outcome == .missed ? .headline.weight(.bold) : .headline)
                         .lineLimit(1)
+                    if count > 1 {
+                        Text("(\(count))")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("\(count) calls")
+                    }
                     if call.outcome == .missed {
                         Label("Missed", systemImage: "phone.down.fill")
                             .font(.caption2.weight(.bold))
