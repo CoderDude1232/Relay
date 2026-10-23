@@ -25,12 +25,15 @@ struct ShareConversationSummary: Codable, Identifiable {
     let displayName: String
     let initials: String
     let isGroup: Bool
+    /// For the widget's badges. Optional so older stored lists still decode.
+    var unreadCount: Int? = nil
 
-    init(id: String, displayName: String, initials: String, isGroup: Bool) {
+    init(id: String, displayName: String, initials: String, isGroup: Bool, unreadCount: Int? = nil) {
         self.id = id
         self.displayName = displayName
         self.initials = initials
         self.isGroup = isGroup
+        self.unreadCount = unreadCount
     }
 
     /// Source-compatible initializer: `peerAccount` is accepted but NOT stored.

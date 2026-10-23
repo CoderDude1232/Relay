@@ -19,6 +19,7 @@ import RelayKit
 import SwiftProtobuf
 import SecureStorage
 import UIKit
+import WidgetKit
 import UserNotifications
 import os
 
@@ -5130,6 +5131,8 @@ final class MessagingService {
 
     // Unencrypted list in App Group storage so the Share Extension can show a
     // picker without the database keys.
+    private var lastWidgetFingerprint = ""
+
     private func updateShareConversationList() {
         let summaries = conversations.filter { !$0.archived }.map { conv -> ShareConversationSummary in
             let name: String
@@ -5142,10 +5145,19 @@ final class MessagingService {
                 id: conv.id,
                 displayName: name,
                 initials: ShareBridge.makeInitials(name),
-                isGroup: conv.groupId != nil
+                isGroup: conv.groupId != nil,
+                // Muted chats don't light up the widget, as on the app badge.
+                unreadCount: isConversationMuted(conv.id) ? 0 : conv.unreadCount
             )
         }
         ShareBridge.writeConversations(summaries)
+        // The widget redraws only when what it shows changed.
+        let fingerprint = summaries.prefix(4).map { "\($0.id):\($0.displayName):\($0.unreadCount ?? 0)" }.joined(separator: "|")
+            + "|\(summaries.reduce(0) { $0 + ($1.unreadCount ?? 0) })"
+        if fingerprint != lastWidgetFingerprint {
+            lastWidgetFingerprint = fingerprint
+            WidgetCenter.shared.reloadAllTimelines()
+        }
         for conv in conversations {
             if let data = peerAvatarData(forAccount: conv.peerAccount) {
                 ShareBridge.writeAvatar(data, forConversationId: conv.id)

@@ -18,6 +18,8 @@ struct ShareConversationSummary: Codable, Identifiable {
     let displayName: String
     let initials: String
     let isGroup: Bool
+    /// For the widget's badges. Optional so older stored lists still decode.
+    var unreadCount: Int? = nil
 }
 
 struct PendingShare: Codable {
