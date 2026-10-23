@@ -401,5 +401,27 @@ enum Schema {
                 """)
             try db.run("PRAGMA user_version = 25;")
         }
+        try step(db, to: 26) {
+            // Earlier versions of edited messages, for "edited" → history.
+            // Dropped with the message, as link previews are.
+            try db.run("""
+                CREATE TABLE IF NOT EXISTS message_edits (
+                    message_id TEXT NOT NULL,
+                    body       TEXT NOT NULL,
+                    replaced_at INTEGER NOT NULL
+                );
+                """)
+            try db.run("CREATE INDEX IF NOT EXISTS message_edits_by_message ON message_edits(message_id);")
+            try db.run("""
+                CREATE TRIGGER IF NOT EXISTS message_edits_on_delete AFTER DELETE ON messages
+                BEGIN DELETE FROM message_edits WHERE message_id = OLD.id; END;
+                """)
+            try db.run("""
+                CREATE TRIGGER IF NOT EXISTS message_edits_on_unsend AFTER UPDATE OF deleted ON messages
+                WHEN NEW.deleted = 1
+                BEGIN DELETE FROM message_edits WHERE message_id = NEW.id; END;
+                """)
+            try db.run("PRAGMA user_version = 26;")
+        }
     }
 }

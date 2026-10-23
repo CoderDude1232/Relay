@@ -497,10 +497,29 @@ public final class MessageStore: @unchecked Sendable {
     /// and author: timestamps are chosen by senders and can collide.
     public func editMessage(id: String, newBody: String) throws {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
-        try db.run(
-            "UPDATE messages SET body = ?, edited_at = ? WHERE id = ? AND deleted = 0",
-            [.text(newBody), .integer(now), .text(id)]
-        )
+        try db.transaction {
+            // Keep the version being replaced (unless nothing changes).
+            try db.run(
+                """
+                INSERT INTO message_edits (message_id, body, replaced_at)
+                SELECT id, body, ? FROM messages WHERE id = ? AND deleted = 0 AND body != ?
+                """,
+                [.integer(now), .text(id), .text(newBody)]
+            )
+            try db.run(
+                "UPDATE messages SET body = ?, edited_at = ? WHERE id = ? AND deleted = 0",
+                [.text(newBody), .integer(now), .text(id)]
+            )
+        }
+    }
+
+    /// Earlier versions of an edited message, oldest first, with when each
+    /// was replaced.
+    public func editHistory(messageId: String) throws -> [(body: String, replacedAt: Int64)] {
+        try db.query(
+            "SELECT body, replaced_at FROM message_edits WHERE message_id = ? ORDER BY replaced_at",
+            [.text(messageId)]
+        ).map { ($0[0].string ?? "", $0[1].int64 ?? 0) }
     }
 
     public func setMessageStarred(id: String, starred: Bool) throws {

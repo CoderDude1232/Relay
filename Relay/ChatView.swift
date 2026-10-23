@@ -1181,7 +1181,8 @@ struct ChatView: View {
     }
 
     private func isCurrentSearchMatch(_ message: StoredMessage) -> Bool {
-        if message.id == flashedMessageId { return true }
+        // Also lights up the message being edited.
+        if message.id == flashedMessageId || message.id == editingMessage?.id { return true }
         guard inChatSearchActive, inChatMatches.indices.contains(inChatMatchIndex) else { return false }
         return inChatMatches[inChatMatchIndex].messageId == message.id
     }
@@ -2557,6 +2558,7 @@ private struct MessageBubble: View {
     @Environment(\.openURL) private var parentOpenURL
     @State private var reactionDetailEmoji: String?
     @State private var pendingLinkURL: URL?
+    @State private var showingEditHistory = false
 
     private var showsSenderLabel: Bool {
         isGroup && !message.isOutgoing && (position == .single || position == .first)
@@ -2827,9 +2829,20 @@ private struct MessageBubble: View {
                         }
                     }
                     if message.editedAt != nil {
-                        Text("edited")
+                        Button { showingEditHistory = true } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: "pencil")
+                                Text("edited")
+                            }
                             .font(.caption2)
-                            .foregroundStyle(message.isOutgoing ? .white.opacity(0.65) : .secondary)
+                            .foregroundStyle(message.isOutgoing ? .white.opacity(0.75) : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Edited")
+                        .accessibilityHint("Shows earlier versions")
+                        .sheet(isPresented: $showingEditHistory) {
+                            EditHistoryView(current: message, versions: service.editHistory(of: message.id))
+                        }
                     }
                     if let url = displayBody.firstURL, message.isOutgoing || !inRequestChat {
                         if let relayLink = RelayLink(url) {
@@ -3491,7 +3504,7 @@ private struct EditPreviewBar: View {
                 .fill(.tint)
                 .frame(width: 3, height: 34)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Edit message")
+                Label("Editing", systemImage: "pencil")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tint)
                 Text(message.body)
@@ -3511,6 +3524,55 @@ private struct EditPreviewBar: View {
         }
         .padding(10)
         .glassCompat(in: .rect(cornerRadius: 14))
+    }
+}
+
+/// Every version of an edited message, newest first.
+private struct EditHistoryView: View {
+    let current: StoredMessage
+    let versions: [(body: String, replacedAt: Int64)]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Now") {
+                    entry(current.body, time: current.editedAt ?? current.timestamp)
+                }
+                if versions.isEmpty {
+                    Section {
+                        Text("Earlier versions aren't on this device. They're kept only for edits made after this update.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section("Before") {
+                        ForEach(Array(versions.reversed().enumerated()), id: \.offset) { index, version in
+                            // Each version was shown from the edit before it (or the original send).
+                            let shownSince = index + 1 < versions.count
+                                ? versions.reversed()[index + 1].replacedAt : current.timestamp
+                            entry(version.body, time: shownSince)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func entry(_ text: String, time: Int64) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(text)
+            Text(Date(timeIntervalSince1970: Double(time) / 1000), format: .dateTime.month(.abbreviated).day().hour().minute())
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
     }
 }
 

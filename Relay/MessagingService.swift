@@ -3509,6 +3509,10 @@ final class MessagingService {
                       timestamp: next.timestamp, title: title), data)
     }
 
+    func editHistory(of messageId: String) -> [(body: String, replacedAt: Int64)] {
+        (try? storage.messages.editHistory(messageId: messageId)) ?? []
+    }
+
     /// The preview that came with (or was sent with) a message.
     func linkPreview(forMessage id: String) -> MessageStore.LinkPreview? {
         try? storage.messages.linkPreview(messageId: id)
