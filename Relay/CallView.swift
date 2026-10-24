@@ -126,12 +126,19 @@ struct CallView: View {
         Color.black.ignoresSafeArea()
 
         if let data = peerAvatar, let uiImage = DecodedImageCache.image(for: data) {
-            Image(uiImage: uiImage)
-                .resizable()
-                .scaledToFill()
-                .blur(radius: 80, opaque: true)
-                .saturation(2.2)
-                .brightness(-0.05)
+            // In an overlay so the filled photo can't widen the screen: a bare
+            // scaledToFill image sizes the whole ZStack to the photo, which
+            // pushed the Speaker and End buttons off the sides.
+            Color.clear
+                .overlay {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFill()
+                        .blur(radius: 80, opaque: true)
+                        .saturation(2.2)
+                        .brightness(-0.05)
+                }
+                .clipped()
                 .overlay(Color.black.opacity(0.38))
                 .ignoresSafeArea()
         } else {

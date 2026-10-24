@@ -451,11 +451,16 @@ private struct TileBackdrop: View {
 
     var body: some View {
         if let photo, let image = DecodedImageCache.image(for: photo) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .blur(radius: 40, opaque: true)
-                .saturation(1.8)
+            // In an overlay so the filled photo takes the tile's size, not its own.
+            Color.clear
+                .overlay {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .blur(radius: 40, opaque: true)
+                        .saturation(1.8)
+                }
+                .clipped()
                 .overlay(Color.black.opacity(0.3))
         } else {
             LinearGradient(colors: [color.opacity(0.85), color.opacity(0.45)], startPoint: .top, endPoint: .bottom)
@@ -484,12 +489,18 @@ private struct CallBackdrop: View {
         ZStack {
             Color.black
             if let photo, let image = DecodedImageCache.image(for: photo) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 80, opaque: true)
-                    .saturation(2.2)
-                    .brightness(-0.05)
+                // In an overlay so the filled photo can't widen the call
+                // screen and push its buttons off the sides.
+                Color.clear
+                    .overlay {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .blur(radius: 80, opaque: true)
+                            .saturation(2.2)
+                            .brightness(-0.05)
+                    }
+                    .clipped()
                     .overlay(Color.black.opacity(0.38))
             } else if matchAvatar {
                 LinearGradient(
