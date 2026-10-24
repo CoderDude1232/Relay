@@ -8,6 +8,7 @@ import MessageUI
 import RelayCore
 import RelayKit
 import SecureStorage
+import StoreKit
 import SwiftUI
 import TipKit
 import UIKit
@@ -30,6 +31,16 @@ struct ConversationListView: View {
     @State private var panicMode = PanicModeManager.shared
     @State private var focus = FocusFilterState.shared
     @State private var notifications = NotificationPermission.shared
+    @Environment(\.requestReview) private var requestReview
+    @AppStorage(InviteCard.dismissedKey) private var inviteCardDismissed = false
+    @State private var showingInviteSheet = false
+
+    /// Chats with real people (not Note to Self or Relay's notices).
+    private var peopleChatCount: Int {
+        service.conversations.filter {
+            $0.peerAccount != service.noteToSelfAccount && $0.peerAccount != service.relayOfficialAccount && !$0.isRequest
+        }.count
+    }
     /// The chat a drag is hovering over, and a drop waiting for confirmation.
     @State private var dropTargetId: String?
     @State private var pendingDrop: PendingDrop?
@@ -350,6 +361,21 @@ struct ConversationListView: View {
                 } else {
                     Text("A photo will be sent.")
                 }
+            }
+        }
+        .sheet(isPresented: $showingInviteSheet) {
+            InviteShareSheet(username: service.username)
+                .ignoresSafeArea()
+                .presentationDetents([.medium, .large])
+        }
+        // Back from a chat is a calm moment to ask for a rating, and only
+        // for people who clearly use Relay (see ReviewPrompt).
+        .onChange(of: selectedConversationId) { old, new in
+            guard old != nil, new == nil, ReviewPrompt.shouldAsk else { return }
+            ReviewPrompt.noteAsked()
+            Task {
+                try? await Task.sleep(for: .seconds(1))
+                requestReview()
             }
         }
         .onChange(of: model.pendingCompose) { _, requested in
@@ -873,6 +899,18 @@ struct ConversationListView: View {
 
             if notifications.isOff, !notifications.deferredThisSession, !isEditing, !isSearching {
                 notificationsOffRow
+            }
+
+            if !inviteCardDismissed, !service.isDemoAccount, service.hasLoadedConversations,
+               peopleChatCount < 3, activeLabel == nil, !isEditing {
+                InviteFriendsCard {
+                    showingInviteSheet = true
+                } onDismiss: {
+                    withAnimation(.snappy) { inviteCardDismissed = true }
+                }
+                .selectionDisabled()
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
 
             if service.isRestoringHistory {

@@ -2323,6 +2323,7 @@ struct ChatView: View {
         var text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if editingMessage == nil { ReviewPrompt.noteMessageSent() }
         if let target = editingMessage {
             guard !text.isEmpty else { return }
             draft = ""

@@ -120,6 +120,23 @@ PERMISSIONS: Camera (calls, photos, QR scanning), Microphone (calls, voice
 notes), Contacts (optional: finds friends via blinded lookups; the address book is
 never uploaded), Location (only when the user shares a location in a chat).
 
+BACKGROUND LOCATION (UIBackgroundModes "location", 2.5.4): used only for live
+location sharing, which the user starts explicitly in a chat (+ → Location →
+"Share for" 15 minutes, 1 hour or 8 hours → Start). While it
+runs, iOS shows the blue location indicator and a Live Activity on the Lock
+Screen; it stops when the timer ends or the user taps Stop. Relay only asks for
+"While Using" permission and never collects location in the background
+otherwise. Shared locations are end-to-end encrypted to the chat; Relay's
+servers can't see them. To try it: open the demo chat → + → Location → pick a
+duration → Start.
+
+VOICE AND VIDEO CALLS use CallKit and VoIP push only to ring for incoming
+Relay calls.
+
+SHORTCUTS, SIRI AND FOCUS: "Send Message", "Start Call" and "Open Chat" need
+the device unlocked. The Focus filter (Settings → Focus → a Focus → Relay)
+lets the user choose which chats show and notify during that Focus.
+
 ENCRYPTION: Standard algorithms only (Signal Protocol / AES / ECDH via libsignal
 and Apple CryptoKit), used to protect user communications.
 

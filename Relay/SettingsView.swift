@@ -1797,7 +1797,7 @@ private struct ChangeUsernameSheet: View {
 
 // MARK: - Invite share sheet
 
-private struct InviteShareSheet: UIViewControllerRepresentable {
+struct InviteShareSheet: UIViewControllerRepresentable {
     let username: String?
 
     private var items: [Any] {

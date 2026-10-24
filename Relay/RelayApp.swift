@@ -52,6 +52,7 @@ struct RelayApp: App {
                         // per update. Notifications re-register when already
                         // allowed; if never decided, the chat list offers them.
                         WhatsNew.noteExistingUser()
+                        ReviewPrompt.noteFirstUse()
                         if WhatsNew.shouldShow { model.showWhatsNew = true }
                         let settings = await UNUserNotificationCenter.current().notificationSettings()
                         if settings.authorizationStatus != .notDetermined {
@@ -65,6 +66,7 @@ struct RelayApp: App {
                         // Right after registration/sign-in: nothing is "new" yet,
                         // and notifications are explained before the system asks.
                         WhatsNew.markSeen()
+                        ReviewPrompt.noteFirstUse()
                         Task {
                             let settings = await UNUserNotificationCenter.current().notificationSettings()
                             if settings.authorizationStatus == .notDetermined {

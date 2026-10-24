@@ -1286,6 +1286,9 @@ final class CallManager: NSObject {
         reportToCallKit: Bool = true,
         outcomeOverride: StoredCallOutcome? = nil
     ) {
+        if case .active(_, let startedAt) = state, Date().timeIntervalSince(startedAt) >= 60 {
+            ReviewPrompt.noteGoodCall()
+        }
         noteCallEnded(storedCallId)
         stopRingtone()
         offerWaitTask?.cancel()
