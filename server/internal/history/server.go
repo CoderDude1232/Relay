@@ -30,6 +30,9 @@ func NewBlobServer(store *DirStore, secret []byte, maxBytes int64) *BlobServer {
 	return &BlobServer{store: store, secret: secret, maxBytes: maxBytes, freeBytes: FreeBytes, now: time.Now}
 }
 
+// SetFreeBytesFunc replaces how free disk space is measured (tests).
+func (s *BlobServer) SetFreeBytesFunc(f func(dir string) (int64, error)) { s.freeBytes = f }
+
 func (s *BlobServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /v1/blob/{key}", s.authed(s.handlePut))

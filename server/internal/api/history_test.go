@@ -338,7 +338,11 @@ func TestHistoryFailoverToRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := []byte("history-test-secret-0123456789abcdef")
-	historyd := httptest.NewServer(history.NewBlobServer(remoteDir, secret, 0).Handler())
+	blobs := history.NewBlobServer(remoteDir, secret, 0)
+	// Plenty of room whatever the test machine's disk (a small /tmp would
+	// otherwise fail historyd's free-space floor).
+	blobs.SetFreeBytesFunc(func(string) (int64, error) { return 1 << 40, nil })
+	historyd := httptest.NewServer(blobs.Handler())
 	t.Cleanup(historyd.Close)
 	remote := history.NewRemote(historyd.URL, secret)
 	if !remote.Probe(context.Background()) {
