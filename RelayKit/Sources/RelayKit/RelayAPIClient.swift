@@ -922,6 +922,9 @@ public struct RelayAPIClient: Sendable {
         }
         do {
             return try await perform(try signed(request, credentials: credentials, signer: signer), on: session)
+        } catch RelayAPIError.http(status: 425, _) {
+            // Signed before the relay restarted: a fresh signature goes through.
+            return try await perform(try signed(request, credentials: credentials, signer: signer), on: session)
         } catch RelayAPIError.http(status: 401, let message) {
             // The relay may have no key for this device. Register it via Basic at most
             // once per process, then retry once with a fresh signature; even if our

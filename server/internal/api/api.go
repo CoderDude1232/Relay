@@ -455,6 +455,12 @@ func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerF
 				httpError(w, http.StatusRequestEntityTooLarge, "request body too large")
 				return
 			}
+			if errors.Is(err, errSignedBeforeStart) {
+				// A genuine signature from before a restart (or a slow clock),
+				// not a failed authentication: re-signing fixes it.
+				httpError(w, http.StatusTooEarly, errSignedBeforeStart.Error())
+				return
+			}
 			if errors.Is(err, errNonceBudget) {
 				// A valid signature from a device over its replay-cache budget.
 				httpError(w, http.StatusTooManyRequests, errNonceBudget.Error())

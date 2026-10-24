@@ -96,7 +96,17 @@ const (
 var (
 	errReplayedNonce = errors.New("replayed nonce")
 	errNonceBudget   = errors.New("too many signed requests from this device; slow down")
+	// errSignedBeforeStart: a valid signature made before this process
+	// started. The replay cache lives in memory, so a request captured just
+	// before a restart could otherwise be replayed once just after it.
+	errSignedBeforeStart = errors.New("request signed before the relay restarted; sign it again")
 )
+
+// signedSinceMs is when this process started (unix ms). Signatures with an
+// earlier timestamp are refused: the replay cache can't vouch for them. A
+// client whose clock runs slow sees this only until its clock passes the
+// start time, and gets 425 (retry), never 401.
+var signedSinceMs = time.Now().UnixMilli()
 
 type nonceSlot struct {
 	nonces    map[string]struct{} // hashed (account, device, nonce)
@@ -330,6 +340,9 @@ func (s *Server) authenticateSignature(r *http.Request) (*store.Device, error) {
 	canonical := sigAuthCanonical(r.Method, r.URL.RequestURI(), h.accountID, h.deviceID, h.timestamp, h.nonce, bodyDigest)
 	if err := verifySigAuth(dev.AuthPublicKey, canonical, h.sig); err != nil {
 		return nil, err
+	}
+	if h.tsMs < signedSinceMs {
+		return nil, errSignedBeforeStart
 	}
 	// Key replay protection on the parsed identity + decoded nonce so encoding
 	// variants of the same values can't slip past the cache.

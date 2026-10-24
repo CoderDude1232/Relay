@@ -298,3 +298,40 @@ func TestSignatureAuth(t *testing.T) {
 		t.Fatalf("basic after auth key: got %d, want 401", got)
 	}
 }
+
+// A request signed before the relay started is refused with 425, not 401:
+// the in-memory replay cache can't vouch for it, and re-signing fixes it.
+func TestSignedBeforeStartRefused(t *testing.T) {
+	env := newTestEnv(t)
+	c := env.registerAs(uniqueUsername("restart"), "password123")
+	do := func(req *http.Request) int {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	captured := c.signedRequest("GET", "/v1/keys/count", randomNonce(t), time.Now().UnixMilli())
+
+	// "Restart": the process now starts after the captured request was signed.
+	saved := signedSinceMs
+	signedSinceMs = time.Now().Add(time.Second).UnixMilli()
+	t.Cleanup(func() { signedSinceMs = saved })
+	time.Sleep(1100 * time.Millisecond)
+
+	if got := do(captured); got != http.StatusTooEarly {
+		t.Fatalf("request signed before start: got %d, want 425", got)
+	}
+	// A fresh signature works.
+	if got := do(c.signedRequest("GET", "/v1/keys/count", randomNonce(t), time.Now().UnixMilli())); got != http.StatusOK {
+		t.Fatalf("fresh signature after start: got %d, want 200", got)
+	}
+	// A slow clock never counts toward the failed-signature lockout.
+	for range 60 {
+		do(c.signedRequest("GET", "/v1/keys/count", randomNonce(t), signedSinceMs-1000))
+	}
+	if got := do(c.signedRequest("GET", "/v1/keys/count", randomNonce(t), time.Now().UnixMilli())); got != http.StatusOK {
+		t.Fatalf("after many early signatures: got %d, want 200", got)
+	}
+}

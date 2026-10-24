@@ -135,6 +135,11 @@ The replay cache keys entries by salted hash (never raw ids), buckets them by
 expiry into 5-minute slots that are dropped whole, and lets one device hold at
 most 20 000 nonces per slot (~66 signed requests/s sustained); past that the
 device gets `429` until the slot expires.
+The replay cache lives in memory, so a valid signature whose timestamp is
+**before the relay process started** is refused with `425 Too Early` (never
+`401`, and not counted as a failed authentication): it might be a request
+captured before a restart. Clients re-sign and retry once; a client whose clock
+runs slow sees `425` only until its clock passes the start time.
 The server **always buffers and hashes the body itself** (bodies are capped at
 1 MiB, 2 MiB for `PUT /v1/history/{seq}`; an oversized body gets `413`, not
 `401`); an `X-Relay-Content-SHA256` header, if sent, must equal that hash. The
