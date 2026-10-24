@@ -68,6 +68,7 @@ nonisolated struct OpenChatIntent: AppIntent {
     static let title: LocalizedStringResource = "Open Chat"
     static let description = IntentDescription("Opens a chat in Relay.")
     static let openAppWhenRun = true
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @Parameter(title: "Chat") var chat: ChatEntity
 
@@ -81,6 +82,8 @@ nonisolated struct OpenChatIntent: AppIntent {
 nonisolated struct SendRelayMessageIntent: AppIntent {
     static let title: LocalizedStringResource = "Send Message"
     static let description = IntentDescription("Sends a message in a Relay chat without opening the app.")
+    /// Never from the Lock Screen: Siri there could otherwise message anyone.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @Parameter(title: "Chat") var chat: ChatEntity
     @Parameter(title: "Message", inputOptions: String.IntentInputOptions(multiline: true)) var text: String
@@ -116,6 +119,7 @@ nonisolated struct StartRelayCallIntent: AppIntent {
     static let title: LocalizedStringResource = "Start Call"
     static let description = IntentDescription("Starts a Relay voice or video call with a chat.")
     static let openAppWhenRun = true
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     @Parameter(title: "Chat") var chat: ChatEntity
     @Parameter(title: "Video", default: false) var video: Bool

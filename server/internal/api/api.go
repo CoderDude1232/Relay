@@ -1627,8 +1627,8 @@ func (s *Server) handleLinkDevice(w http.ResponseWriter, r *http.Request, dev *s
 		DeviceName string             `json:"deviceName"`
 		Auth       deviceMutationAuth `json:"auth"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.Password == "" {
-		httpError(w, http.StatusBadRequest, "password and device mutation signature required")
+	if err := decodeJSON(r, &req); err != nil || len(req.Password) < 8 || len(req.Password) > maxPasswordBytes {
+		httpError(w, http.StatusBadRequest, "password (8–1024 chars) and device mutation signature required")
 		return
 	}
 	if err := verifyDeviceMutation(dev, req.Auth, "link", 0, req.Password); err != nil {
@@ -1813,12 +1813,21 @@ func (s *Server) handleSetAPNSToken(w http.ResponseWriter, r *http.Request, dev 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// validFCMToken bounds an FCM registration token: Google documents no format,
+// but tokens are URL-safe base64 with ':' separators, a few hundred bytes. The
+// token is stored and later sent to FCM, so anything else is refused.
+var fcmTokenChars = regexp.MustCompile(`^[A-Za-z0-9_:\-]+$`)
+
+func validFCMToken(token string) bool {
+	return len(token) >= 32 && len(token) <= 4096 && fcmTokenChars.MatchString(token)
+}
+
 func (s *Server) handleSetFCMToken(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		Token string `json:"token"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.Token == "" {
-		httpError(w, http.StatusBadRequest, "token required")
+	if err := decodeJSON(r, &req); err != nil || !validFCMToken(req.Token) {
+		httpError(w, http.StatusBadRequest, "token must be 32–4096 URL-safe characters")
 		return
 	}
 	if err := s.store.SetFCMToken(dev.AccountID, dev.DeviceID, req.Token); err != nil {

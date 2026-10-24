@@ -3035,13 +3035,17 @@ final class MessagingService {
     func handleGroupUpdate(_ info: GroupUpdateInfo, authenticatedSender: String?) async {
         let existing = try? storage.messages.group(id: info.groupId)
 
-        // 1. The claimed `actor` must be the authenticated sender.
-        if let sender = authenticatedSender, !sender.isEmpty, !info.actor.isEmpty, info.actor != sender {
+        // 1. Only an authenticated sender changes a group, and a claimed
+        //    `actor` must be them. Without one the update is dropped rather
+        //    than trusting the actor named inside it.
+        guard let actor = authenticatedSender, !actor.isEmpty else {
+            log.warning("group update without an authenticated sender; dropping")
+            return
+        }
+        if !info.actor.isEmpty, info.actor != actor {
             log.warning("group update: actor != authenticated sender; dropping")
             return
         }
-        let actor = (authenticatedSender.flatMap { $0.isEmpty ? nil : $0 }) ?? info.actor
-        guard !actor.isEmpty else { return }
         // A sender whose safety number changed and hasn't been accepted can't
         // change the group: a relay posing as an admin would start here.
         guard actor == credentials.accountId || IdentityAcknowledgement.isSettled(peer: actor, storage: storage) else {
