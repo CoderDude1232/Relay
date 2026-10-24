@@ -57,9 +57,10 @@ func TestPasswordResetAndEmailChange(t *testing.T) {
 	uid, email := "u"+sfx, "r"+sfx+"@x.com"
 	name := "reset" + strings.ReplaceAll(sfx, "-", "")
 
-	// An account linked to Supabase user uid, with an account password.
+	// An account linked to Supabase user uid, without an account password, so
+	// no registration lock applies.
 	env.doJSON("POST", "/v1/accounts", "", "", map[string]string{
-		"username": name, "password": "device-pw-1", "accountPassword": "old-account-pw",
+		"username": name, "password": "device-pw-1",
 		"supabaseAccessToken": uid + "|" + email + "|0",
 	}, http.StatusCreated, nil)
 
@@ -74,6 +75,21 @@ func TestPasswordResetAndEmailChange(t *testing.T) {
 	env.doJSON("POST", "/v1/accounts/password-reset", "", "", body(fmt.Sprintf("%s|%s|%d", uid, email, stale)), http.StatusForbidden, nil)
 	// A fresh recovery session for an email with no account: 404.
 	env.doJSON("POST", "/v1/accounts/password-reset", "", "", body(fmt.Sprintf("nobody|n%s@x.com|%d", sfx, now)), http.StatusNotFound, nil)
+
+	// Registration lock: an account with an account password, used this week,
+	// can't be reset from the inbox alone.
+	lockedUID, lockedEmail := "l"+sfx, "l"+sfx+"@x.com"
+	env.doJSON("POST", "/v1/accounts", "", "", map[string]string{
+		"username": "locked" + strings.ReplaceAll(sfx, "-", ""), "password": "device-pw-1", "accountPassword": "old-account-pw",
+		"supabaseAccessToken": lockedUID + "|" + lockedEmail + "|0",
+	}, http.StatusCreated, nil)
+	var lockedErr struct {
+		Error string `json:"error"`
+	}
+	env.doJSON("POST", "/v1/accounts/password-reset", "", "", body(fmt.Sprintf("%s|%s|%d", lockedUID, lockedEmail, now)), http.StatusLocked, &lockedErr)
+	if !strings.Contains(lockedErr.Error, "7 days") {
+		t.Fatalf("locked reset message = %q", lockedErr.Error)
+	}
 
 	// A fresh recovery session resets it and provisions a new device.
 	var reset struct {

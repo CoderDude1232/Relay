@@ -465,6 +465,7 @@ func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerF
 				httpError(w, http.StatusUnauthorized, "signature authentication failed")
 				return
 			}
+			s.noteDeviceActive(dev)
 			next(w, r, dev)
 			return
 		}
@@ -1275,6 +1276,9 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrStrongerSignInRequired):
 		httpError(w, http.StatusForbidden, "This account has a passkey or recovery key. Sign in with one of those instead.")
 		return
+	case errors.Is(err, store.ErrRegistrationLockActive):
+		httpError(w, http.StatusLocked, registrationLockResetMessage)
+		return
 	case err != nil:
 		internalError(w, err)
 		return
@@ -1286,6 +1290,32 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 		"mailboxId": dev.MailboxID,
 	})
 	s.retireReplacedDevices(dev)
+}
+
+const registrationLockResetMessage = "This account has an account password and was used in the last 7 days, " +
+	"so it can't be reset by email yet. Sign in with your account password, or try again once the account " +
+	"has gone 7 days without use."
+
+// deviceActiveDays remembers the last day each device was recorded active, so
+// the database is written at most once per device per day.
+var deviceActiveDays sync.Map // "account.device" -> unix day
+
+// noteDeviceActive records a signed request for the registration lock's
+// inactivity window. Best effort and off the request path.
+func (s *Server) noteDeviceActive(dev *store.Device) {
+	now := time.Now()
+	day := now.Unix() / 86400
+	key := dev.AccountID + "." + strconv.FormatUint(uint64(dev.DeviceID), 10)
+	if last, ok := deviceActiveDays.Load(key); ok && last.(int64) >= day {
+		return
+	}
+	deviceActiveDays.Store(key, day)
+	go func() {
+		if err := s.store.TouchDeviceActive(dev.AccountID, dev.DeviceID, now); err != nil {
+			deviceActiveDays.Delete(key)
+			slog.Warn("device activity: update failed", "err", privlog.Error(err))
+		}
+	}()
 }
 
 // handleUpdateEmail runs after the user confirmed a new email with Supabase.

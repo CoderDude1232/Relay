@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func mustExec(t *testing.T, s *Store, sql string, args ...any) {
@@ -213,6 +214,23 @@ func TestResetAccountPassword(t *testing.T) {
 	if _, err := s.ResetAccountPassword("nobody-"+uniqueName("x"), []byte("unknown"), LegacyPassword("new-account-pw"), "dpw"); !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("unknown account: err = %v", err)
 	}
+	// Registration lock: an account password plus a device used this week
+	// means the inbox alone can't reset it.
+	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("new-account-pw"), "device-pw-2"); !errors.Is(err, ErrRegistrationLockActive) {
+		t.Fatalf("reset of an active locked account: err = %v, want ErrRegistrationLockActive", err)
+	}
+	// Activity today keeps it locked.
+	if err := s.TouchDeviceActive(acct, 1, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("new-account-pw"), "device-pw-2"); !errors.Is(err, ErrRegistrationLockActive) {
+		t.Fatalf("reset after activity: err = %v, want ErrRegistrationLockActive", err)
+	}
+	// Once every device has gone unused past the window, the reset works.
+	stale := unixDay(time.Now().Add(-RegistrationLockInactivity - 48*time.Hour))
+	if _, err := s.db.Exec(context.Background(), `UPDATE devices SET last_active_day = $2 WHERE account_id = $1`, acct, stale); err != nil {
+		t.Fatal(err)
+	}
 	dev, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("new-account-pw"), "device-pw-2")
 	if err != nil {
 		t.Fatal(err)
@@ -226,6 +244,10 @@ func TestResetAccountPassword(t *testing.T) {
 	}
 	if _, _, err := s.RecoverAccount(token, LegacyPassword("new-account-pw")); err != nil {
 		t.Fatalf("new password rejected: %v", err)
+	}
+	// A new device is created active, so the lock holds again straight away.
+	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("another-pw-0"), "device-pw-9"); !errors.Is(err, ErrRegistrationLockActive) {
+		t.Fatalf("reset right after a reset: err = %v, want ErrRegistrationLockActive", err)
 	}
 	// With a recovery key, the email inbox alone can't reset the account.
 	if err := s.SetRecoveryKeyHash(acct, []byte(uniqueName("rk-hash-32-bytes-long-enough!!"))); err != nil {

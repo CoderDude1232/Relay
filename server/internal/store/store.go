@@ -44,6 +44,9 @@ var (
 	ErrIdentityInUse             = errors.New("store: email or social-login identity already linked to an account")
 	ErrPreKeyPoolFull            = errors.New("store: one-time prekey pool full")
 	ErrStrongerSignInRequired    = errors.New("store: account has a passkey or recovery key")
+	// ErrRegistrationLockActive: the account has an account password and was
+	// used recently, so an email reset can't take it over yet.
+	ErrRegistrationLockActive = errors.New("store: registration lock active")
 	ErrAccountPasswordRequired   = errors.New("store: account password required")
 	ErrAccountPasswordIncorrect  = errors.New("store: account password incorrect")
 	ErrAccountPasswordLocked     = errors.New("store: too many account password attempts")
@@ -371,6 +374,10 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_kind TEXT NOT NULL DEFAULT 'apns'`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_name TEXT`,
+		// The day (unix days) a device last made a signed request: coarse on
+		// purpose, it only decides whether the registration lock still holds.
+		// Existing devices start at today, so the lock applies from the start.
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_active_day BIGINT NOT NULL DEFAULT (floor(extract(epoch from now()) / 86400))::bigint`,
 		// Device names travel end-to-end encrypted between the account's own
 		// devices; the relay keeps none.
 		`UPDATE devices SET device_name = NULL WHERE device_name IS NOT NULL`,
@@ -1006,6 +1013,21 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 		// has a passkey or a recovery key; those are how it signs in instead.
 		return AddedDevice{}, ErrStrongerSignInRequired
 	}
+	// Registration lock: with an account password set, the inbox alone can't
+	// take over an account that's in use. Once no device has been active for
+	// RegistrationLockInactivity, a reset works again, so someone who lost
+	// every device and the password still gets back in.
+	var locked bool
+	if err = tx.QueryRow(ctx, `
+		SELECT COALESCE(length(a.account_password_hash), 0) > 0
+		   AND EXISTS (SELECT 1 FROM devices d WHERE d.account_id = a.id AND d.last_active_day >= $2)
+		  FROM accounts a WHERE a.id = $1`,
+		dev.AccountID, unixDay(time.Now().Add(-RegistrationLockInactivity))).Scan(&locked); err != nil {
+		return AddedDevice{}, err
+	}
+	if locked {
+		return AddedDevice{}, ErrRegistrationLockActive
+	}
 	if _, err = tx.Exec(ctx,
 		`UPDATE accounts SET account_password_hash = $1,
 		        supabase_user_id = CASE WHEN supabase_user_id IS NULL OR supabase_user_id = '' THEN $2 ELSE supabase_user_id END
@@ -1019,6 +1041,23 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 		return AddedDevice{}, err
 	}
 	return dev, tx.Commit(ctx)
+}
+
+// RegistrationLockInactivity is how long an account with an account password
+// must go unused before an email reset can replace its devices.
+const RegistrationLockInactivity = 7 * 24 * time.Hour
+
+func unixDay(t time.Time) int64 { return t.Unix() / 86400 }
+
+// TouchDeviceActive records that a device was used today. Callers write at
+// most once per device per day.
+func (s *Store) TouchDeviceActive(accountID string, deviceID uint32, now time.Time) error {
+	day := unixDay(now)
+	_, err := s.db.Exec(context.Background(),
+		`UPDATE devices SET last_active_day = $3
+		  WHERE account_id = $1 AND device_id = $2 AND last_active_day < $3`,
+		accountID, int64(deviceID), day)
+	return err
 }
 
 // SetAccountEmailToken records the keyed token of an account's newly verified
