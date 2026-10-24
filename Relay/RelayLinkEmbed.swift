@@ -131,6 +131,7 @@ struct RelayLinkCard: View {
 
     @Environment(AppModel.self) private var model
     @Environment(ChatAppearance.self) private var appearance
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var title: String {
         preview.flatMap { $0.title.isEmpty ? nil : $0.title } ?? link.fallbackTitle
@@ -147,19 +148,23 @@ struct RelayLinkCard: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack(spacing: 12) {
+            // Large text: the icon goes above, so the words get the width.
+            let layout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                : AnyLayout(HStackLayout(spacing: 12))
+            layout {
                 icon
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.headline)
-                        .lineLimit(2)
+                        .lineLimit(3)
                         .multilineTextAlignment(.leading)
                     Label(link.kindLabel, systemImage: "lock.fill")
                         .labelStyle(KindLabelStyle())
                         .font(.caption)
                         .opacity(0.7)
                 }
-                Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             if !isOwnContactLink {
                 Button(action: open) {
@@ -177,7 +182,7 @@ struct RelayLinkCard: View {
             }
         }
         .padding(standalone ? 0 : 11)
-        .frame(width: 240)
+        .frame(width: dynamicTypeSize.isAccessibilitySize ? 290 : 240)
         .background(standalone ? AnyShapeStyle(.clear)
                         : isOutgoing ? AnyShapeStyle(.white.opacity(0.14)) : AnyShapeStyle(.fill.tertiary),
                     in: .rect(cornerRadius: 14))

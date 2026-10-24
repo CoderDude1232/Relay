@@ -25,6 +25,9 @@ struct CallView: View {
     // Controls auto-hide after 4 seconds during active video calls.
     @State private var controlsVisible = true
     @State private var controlsHideTask: Task<Void, Never>?
+    @State private var audioRoute = CallAudioRoute()
+    /// Pull-down distance while swiping the call away.
+    @State private var dismissDrag: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -88,11 +91,34 @@ struct CallView: View {
             .animation(.easeInOut(duration: 0.3), value: controlsVisible)
         }
         .simultaneousGesture(TapGesture().onEnded { revealControls() })
+        // Swipe down to minimize, like closing a sheet.
+        .offset(y: dismissDrag)
+        .scaleEffect(1 - min(dismissDrag, 300) / 3000, anchor: .top)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 24)
+                .onChanged { value in
+                    guard onMinimize != nil, value.translation.height > 0,
+                          abs(value.translation.height) > abs(value.translation.width) else { return }
+                    dismissDrag = value.translation.height
+                }
+                .onEnded { value in
+                    guard onMinimize != nil else { return }
+                    if value.translation.height > 140 || value.predictedEndTranslation.height > 320 {
+                        onMinimize?()
+                        dismissDrag = 0
+                    } else {
+                        withAnimation(.spring(duration: 0.3)) { dismissDrag = 0 }
+                    }
+                }
+        )
         .task {
+            var tick = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 if case .active(_, let start) = callManager.state {
                     elapsed = Int(Date().timeIntervalSince(start))
+                    tick += 1
+                    if tick % 3 == 0 { await callManager.refreshCallQuality() }
                 }
             }
         }
@@ -205,9 +231,37 @@ struct CallView: View {
                 }
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.65))
+                qualityIndicator
+            }
+            if callManager.callQuality == .poor, !callManager.isReconnecting {
+                Text("Poor connection")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.75), in: .capsule)
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.3), value: callManager.callQuality)
         .accessibilityElement(children: .combine)
+    }
+
+    /// Signal bars for the connection, once the call is up.
+    @ViewBuilder
+    private var qualityIndicator: some View {
+        if case .active = callManager.state, callManager.callQuality != .unknown {
+            let (value, color, label): (Double, Color, String) = switch callManager.callQuality {
+            case .good: (1, .white.opacity(0.75), "Good connection")
+            case .fair: (0.66, .yellow, "Fair connection")
+            case .poor: (0.33, .orange, "Poor connection")
+            case .unknown: (0, .clear, "")
+            }
+            Image(systemName: "cellularbars", variableValue: value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(color)
+                .accessibilityLabel(label)
+        }
     }
 
     private var videoHeader: some View {
@@ -236,6 +290,7 @@ struct CallView: View {
                             .accessibilityLabel("Reconnecting")
                     }
                     Text(statusLabel)
+                    qualityIndicator
                 }
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.75))
@@ -413,13 +468,29 @@ struct CallView: View {
     private var activeControls: some View {
         HStack(spacing: 0) {
             Spacer()
-            audioRoundButton(
-                icon: callManager.isSpeaker ? "speaker.wave.3.fill" : "speaker.wave.2.fill",
-                label: "Speaker",
-                background: callManager.isSpeaker ? Color.white.opacity(0.35) : Color.white.opacity(0.18),
-                foreground: .white,
-                isOn: callManager.isSpeaker
-            ) { callManager.toggleSpeaker() }
+            if audioRoute.hasExternalRoute {
+                // AirPods, Bluetooth or headphones: the system route menu.
+                audioRoundButton(
+                    icon: audioRoute.icon,
+                    label: audioRoute.name,
+                    background: Color.white.opacity(0.18),
+                    foreground: .white,
+                    accessibilityName: "Audio output, \(audioRoute.name)"
+                ) {}
+                .overlay(alignment: .top) {
+                    RoutePickerButton()
+                        .frame(width: 72, height: 72)
+                        .accessibilityHidden(true)
+                }
+            } else {
+                audioRoundButton(
+                    icon: callManager.isSpeaker ? "speaker.wave.3.fill" : "speaker.wave.2.fill",
+                    label: "Speaker",
+                    background: callManager.isSpeaker ? Color.white.opacity(0.35) : Color.white.opacity(0.18),
+                    foreground: .white,
+                    isOn: callManager.isSpeaker
+                ) { callManager.toggleSpeaker() }
+            }
             Spacer()
             audioRoundButton(
                 icon: callManager.isMuted ? "mic.slash.fill" : "mic.fill",
@@ -486,11 +557,60 @@ struct CallView: View {
 
 }
 
+/// The current audio output and whether there's anything besides the phone
+/// itself (AirPods, Bluetooth, headphones, CarPlay) to choose from.
+@Observable
+final class CallAudioRoute {
+    private(set) var hasExternalRoute = false
+    private(set) var name = "Audio"
+    private(set) var icon = "speaker.wave.2.fill"
+    @ObservationIgnored private var observer: NSObjectProtocol?
+
+    init() {
+        update()
+        observer = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.update() }
+        }
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    private func update() {
+        let session = AVAudioSession.sharedInstance()
+        let external: Set<AVAudioSession.Port> = [
+            .bluetoothHFP, .bluetoothA2DP, .bluetoothLE, .headphones, .headsetMic, .carAudio, .usbAudio,
+        ]
+        let inputs = session.availableInputs?.map(\.portType) ?? []
+        let output = session.currentRoute.outputs.first
+        hasExternalRoute = inputs.contains(where: external.contains)
+            || session.currentRoute.outputs.contains { external.contains($0.portType) }
+        switch output?.portType {
+        case .bluetoothHFP?, .bluetoothA2DP?, .bluetoothLE?:
+            let product = output?.portName ?? "Bluetooth"
+            name = product.localizedCaseInsensitiveContains("airpods") ? "AirPods" : "Bluetooth"
+            icon = name == "AirPods" ? "airpods" : "headphones"
+        case .headphones?, .headsetMic?:
+            name = "Headphones"; icon = "headphones"
+        case .carAudio?:
+            name = "CarPlay"; icon = "car.fill"
+        case .builtInSpeaker?:
+            name = "Speaker"; icon = "speaker.wave.3.fill"
+        default:
+            name = "iPhone"; icon = "iphone"
+        }
+    }
+}
+
+/// The system's audio route menu, invisible over our own button.
 private struct RoutePickerButton: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView(frame: .zero)
-        view.activeTintColor = .white
-        view.tintColor = .white
+        view.activeTintColor = .clear
+        view.tintColor = .clear
         view.prioritizesVideoDevices = false
         view.backgroundColor = .clear
         return view

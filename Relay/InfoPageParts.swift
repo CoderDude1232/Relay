@@ -73,12 +73,16 @@ struct InfoQuickAction: View {
                     .glassCompat(in: .rect(cornerRadius: 18))
                 Text(label)
                     .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .foregroundStyle(.primary)
             .opacity(isDisabled ? 0.4 : 1)
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
+        // Four fixed-width buttons share a row; past this the words break.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
     }
 }
 
@@ -90,6 +94,7 @@ struct SharedMediaRow: View {
 
     @State private var photos: [StoredAttachment] = []
     @State private var total = 0
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var locked: Bool {
         service.conversations.first { $0.id == conversationId }?.mediaRequiresBiometric ?? true
@@ -100,18 +105,24 @@ struct SharedMediaRow: View {
             MediaGalleryView(service: service, conversationId: conversationId)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 14) {
+                // Large text: the icon goes above, so the title gets the width.
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                    : AnyLayout(HStackLayout(spacing: 14))
+                layout {
                     SettingsIcon(systemName: "photo.stack.fill", color: .teal)
                     Text("Media, Links & Files").foregroundStyle(.primary)
-                    Spacer(minLength: 0)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
                     if total > 0 {
-                        Text("\(total)").foregroundStyle(.secondary)
-                    }
-                    if locked && total > 0 {
-                        Image(systemName: "lock.fill")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .accessibilityLabel("Locked")
+                        HStack(spacing: 6) {
+                            Text("\(total)")
+                            if locked {
+                                Image(systemName: "lock.fill")
+                                    .font(.caption)
+                                    .accessibilityLabel("Locked")
+                            }
+                        }
+                        .foregroundStyle(.secondary)
                     }
                 }
                 if !locked && !photos.isEmpty {

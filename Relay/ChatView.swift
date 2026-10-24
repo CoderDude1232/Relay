@@ -17,6 +17,7 @@ import RelayKit
 import SecureStorage
 import AudioToolbox
 import SwiftUI
+import TipKit
 import UIKit
 import UniformTypeIdentifiers
 
@@ -41,6 +42,8 @@ struct ChatView: View {
     /// The chat's read marker when it was opened. Opening marks it read, so
     /// the live marker would move the "New Messages" line straight away.
     @State private var openedReadAt: Int64?
+    /// Mentions of me that have been on screen (or jumped to) this visit.
+    @State private var seenMentionIds: Set<String> = []
     /// Unread when opened; shown on the scroll-down button until the bottom.
     @State private var unreadAtOpen = 0
     /// This chat's own theme if it has one, otherwise the app's.
@@ -144,6 +147,9 @@ struct ChatView: View {
     @State private var inChatQuery = ""
     @State private var inChatMatches: [MessageStore.SearchResult] = []
     @State private var inChatMatchIndex = 0
+    @State private var showingDateJump = false
+    @State private var dateJumpTarget = Date()
+    @State private var dateJumpEarliest = Date()
     @State private var composerFocused = false
     @State private var composerContext = ComposerContext()
     @State private var showFormattingBar = false
@@ -248,6 +254,7 @@ struct ChatView: View {
                                 )
                                 .padding(.top, (position == .first || position == .single) ? 6 : 1)
                                 .id(message.id)
+                                .onAppear { if unseenMentionIds.contains(message.id) { seenMentionIds.insert(message.id) } }
                                 .transition(Self.arrival(outgoing: message.isOutgoing))
                             }
                         }
@@ -636,6 +643,18 @@ struct ChatView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Button {
+                            dateJumpTarget = Date()
+                            dateJumpEarliest = (try? service.allMessages(in: conversationId))?.first.map {
+                                Date(timeIntervalSince1970: Double($0.timestamp) / 1000)
+                            } ?? Date()
+                            showingDateJump = true
+                        } label: {
+                            Image(systemName: "calendar")
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Jump to date")
+                        }
+                        .buttonStyle(.plain)
+                        Button {
                             inChatSearchActive = false
                             inChatQuery = ""
                             inChatMatches = []
@@ -653,6 +672,7 @@ struct ChatView: View {
                     .padding(.top, 6)
                     .padding(.bottom, 4)
                     .onChange(of: inChatQuery) { _, _ in runInChatSearch() }
+                    .sheet(isPresented: $showingDateJump) { dateJumpSheet }
                 }
                 if let pinnedMessage {
                     PinnedMessageBanner(message: pinnedMessage) {
@@ -670,6 +690,37 @@ struct ChatView: View {
         .environment(\.relayIsMessageRequest, isRequest)
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
+                if !isRequest, initialScrollDone, service.activeMessages.count >= 3,
+                   !recorder.isRecording, editingMessage == nil {
+                    TipView(RelayTips.chat.currentTip)
+                        // A hint shouldn't cover the chat at the largest sizes.
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 6)
+                }
+                if !unseenMentionIds.isEmpty {
+                    HStack {
+                        Spacer()
+                        Button(action: jumpToNextMention) {
+                            ZStack(alignment: .topTrailing) {
+                                Image(systemName: "at")
+                                    .font(.callout.weight(.bold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(width: 34, height: 34)
+                                    .glassCompat(in: .circle)
+                                CountBadge(count: unseenMentionIds.count)
+                                    .offset(x: 6, y: -6)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(unseenMentionIds.count == 1 ? "1 mention" : "\(unseenMentionIds.count) mentions")
+                        .accessibilityHint("Shows the next message that mentions you")
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .padding(.trailing, 16)
+                    }
+                    .padding(.bottom, 6)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 if !isAtBottom {
                     HStack {
                         Spacer()
@@ -690,6 +741,8 @@ struct ChatView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        // The circle is a fixed size; keep the glyph inside it.
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                         .padding(.trailing, 16)
                     }
                     .padding(.bottom, 6)
@@ -906,6 +959,19 @@ struct ChatView: View {
                 showingVerification = true
             }
             service.clearBlockedSafetyWarning()
+        }
+        .task(id: service.activeMessages.count) {
+            if service.activeMessages.contains(where: { $0.editedAt != nil }) {
+                EditedHistoryTip.chatHasEdits = true
+            }
+        }
+        // Recording a voice message shows as typing to the other side.
+        .onChange(of: Int(recorder.elapsed)) { _, _ in
+            guard recorder.isRecording, !recorder.isReviewing else { return }
+            updateTypingState(for: "recording")
+        }
+        .onChange(of: recorder.isRecording && !recorder.isReviewing) { _, recording in
+            if recording { updateTypingState(for: "recording") } else { updateTypingState(for: draft) }
         }
         .onChange(of: draft) { _, newValue in
             updateDraftLinkPreview()
@@ -1149,6 +1215,49 @@ struct ChatView: View {
         scrollToMatch()
     }
 
+    /// A calendar from the first message to today; Go shows that day.
+    private var dateJumpSheet: some View {
+        NavigationStack {
+            DatePicker("Date", selection: $dateJumpTarget,
+                       in: Calendar.current.startOfDay(for: dateJumpEarliest)...Date(),
+                       displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .padding(.horizontal)
+                .navigationTitle("Jump to Date")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showingDateJump = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Go") {
+                            showingDateJump = false
+                            jumpToDate(dateJumpTarget)
+                        }
+                    }
+                }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    /// Shows the first message sent on or after the day, loading older
+    /// pages until it's there.
+    private func jumpToDate(_ date: Date) {
+        let start = Int64(Calendar.current.startOfDay(for: date).timeIntervalSince1970 * 1000)
+        let all = (try? service.allMessages(in: conversationId)) ?? []
+        guard let target = all.first(where: { $0.timestamp >= start && !$0.isDeleted }) ?? all.last else { return }
+        func attempt(_ left: Int) {
+            if service.activeMessages.contains(where: { $0.id == target.id }) {
+                withAnimation(.snappy) { scrollViewProxy?.scrollTo(target.id, anchor: .top) }
+                flashMessage(target.id)
+            } else if left > 0, service.hasEarlierMessages {
+                service.loadEarlierMessages()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { attempt(left - 1) }
+            }
+        }
+        attempt(40)
+    }
+
     private func stepInChatMatch(by delta: Int) {
         guard !inChatMatches.isEmpty else { return }
         inChatMatchIndex = (inChatMatchIndex + delta + inChatMatches.count) % inChatMatches.count
@@ -1166,6 +1275,16 @@ struct ChatView: View {
             service.loadEarlierMessages()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 scrollToMatch(attemptsLeft: attemptsLeft - 1)
+            }
+        }
+    }
+
+    /// Briefly highlights a message the chat just scrolled to.
+    private func flashMessage(_ id: String) {
+        withAnimation(.easeOut(duration: 0.2)) { flashedMessageId = id }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            withAnimation(.easeOut(duration: 0.4)) {
+                if flashedMessageId == id { flashedMessageId = nil }
             }
         }
     }
@@ -1206,6 +1325,7 @@ struct ChatView: View {
     private func beginReply(_ message: StoredMessage) {
         replyingTo = message
         composerFocused = true
+        SwipeToReplyTip().invalidate(reason: .actionPerformed)
     }
 
     // MARK: - Selection actions
@@ -2096,6 +2216,7 @@ struct ChatView: View {
     }
 
     private func startRecording() {
+        HoldToRecordTip().invalidate(reason: .actionPerformed)
         Task {
             if await recorder.start() == false { recordDenied = true }
         }
@@ -2210,6 +2331,26 @@ struct ChatView: View {
 
     /// Throttled typing broadcast: `.started` at most every few seconds while
     /// the field is non-empty, `.stopped` as soon as it empties.
+    /// Unread messages that mention me and haven't been on screen yet,
+    /// oldest first.
+    private var unseenMentionIds: [String] {
+        guard let username = service.username, let readAt = openedReadAt else { return [] }
+        return service.activeMessages.compactMap { message in
+            guard !message.isOutgoing, !message.isDeleted, message.timestamp > readAt,
+                  !seenMentionIds.contains(message.id),
+                  Mentions.contains(message.body, username: username) else { return nil }
+            return message.id
+        }
+    }
+
+    private func jumpToNextMention() {
+        guard let next = unseenMentionIds.first, let proxy = scrollViewProxy else { return }
+        seenMentionIds.insert(next)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        withAnimation(.snappy) { proxy.scrollTo(next, anchor: .center) }
+        flashMessage(next)
+    }
+
     private func updateTypingState(for text: String) {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if lastTypingSentAt != nil {
@@ -2567,12 +2708,43 @@ private struct MessageRow: View {
     /// row resizes when they appear.
     @State private var editVersions: [String]?
     @State private var spoilersRevealed = false
+    /// Result of Make Sticker, shown as an alert.
+    @State private var stickerResult: String?
+
+    /// Lifts the photo's subject into a sticker in My Stickers. Photos
+    /// flagged as sensitive are left alone.
+    private func makeSticker(from photo: StoredAttachment) {
+        Task {
+            // Same gate as viewing the photo when this chat locks its media.
+            if service.conversations.first(where: { $0.id == conversationId })?.mediaRequiresBiometric ?? true {
+                guard await BiometricGate.authenticate(reason: "Make a sticker from this photo.") else { return }
+            }
+            var data = service.attachmentPlaintext(photo)
+            if data == nil {
+                await service.downloadAttachment(photo, in: conversationId)
+                data = service.attachmentPlaintext(photo)
+            }
+            guard let data else { stickerResult = "This photo isn't available."; return }
+            if SensitiveContent.isEnabled, await SensitiveContent.isSensitive(imageData: data, cacheKey: photo.id) {
+                stickerResult = "This photo can't be made into a sticker."
+                return
+            }
+            guard let png = await StickerRenderer.subjectPNG(from: data) else {
+                stickerResult = "Couldn't find a subject to cut out of this photo."
+                return
+            }
+            MyStickerStore.shared.add(png)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            stickerResult = "Added to My Stickers."
+        }
+    }
 
     private func revealSpoilers() {
         withAnimation(.easeOut(duration: 0.25)) { spoilersRevealed = true }
     }
 
     private func toggleEditHistory() {
+        EditedHistoryTip().invalidate(reason: .actionPerformed)
         withAnimation(.snappy) {
             editVersions = editVersions == nil ? service.editHistory(of: message.id).map(\.body) : nil
         }
@@ -2607,6 +2779,11 @@ private struct MessageRow: View {
         VStack(alignment: .leading, spacing: 6) {
             content
                 .onChange(of: message.editedAt) { editVersions = nil }
+                .alert(stickerResult ?? "", isPresented: Binding(
+                    get: { stickerResult != nil }, set: { if !$0 { stickerResult = nil } }
+                )) {
+                    Button("OK", role: .cancel) {}
+                }
                 .accessibilityElement(children: isPlainText && !isSelectionMode ? .combine : .contain)
                 // The long-press menu isn't reachable with VoiceOver; every action
                 // and reaction is offered in the actions rotor instead.
@@ -2715,6 +2892,7 @@ private struct MessageRow: View {
                         service.toggleReaction(emoji, on: message)
                     },
                     onDoubleTap: {
+                        DoubleTapReactTip().invalidate(reason: .actionPerformed)
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                         service.toggleReaction("❤️", on: message)
                     },
@@ -2768,6 +2946,10 @@ private struct MessageRow: View {
             service.pinMessage(message.id, pinned: !message.isPinned, in: conversationId)
             onUpdatePin()
         })
+        if !isViewOnce, !message.isDeleted, message.body != MessagingService.stickerMarker,
+           let photo = message.attachments.first(where: \.isImage) {
+            items.append(.init(label: "Make Sticker", icon: "face.dashed") { makeSticker(from: photo) })
+        }
         items.append(.init(label: "Info", icon: "info.circle") { onInfo() })
         items.append(.init(label: "Select", icon: "checkmark.circle") { onBeginSelection() })
         if service.canUnsend(message) {

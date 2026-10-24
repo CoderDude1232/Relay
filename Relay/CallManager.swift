@@ -73,6 +73,11 @@ enum CallState: Equatable {
     case ended
 }
 
+/// How the 1:1 call's connection is doing, from WebRTC's stats.
+enum CallQuality: Equatable {
+    case unknown, good, fair, poor
+}
+
 struct CallDiagnostics: Equatable {
     var iceConnectionState = "Idle"
     var iceGatheringState = "Idle"
@@ -96,6 +101,9 @@ final class CallManager: NSObject {
     private(set) var localVideoTrack: RTCVideoTrack?
     private(set) var remoteVideoTrack: RTCVideoTrack?
     private(set) var diagnostics = CallDiagnostics()
+    private(set) var callQuality: CallQuality = .unknown
+    /// Audio packet counters at the last quality check, for the loss rate.
+    private var lastAudioPackets: (received: Double, lost: Double)?
 
     var currentCallKind: CallKind { storedCallKind }
 
@@ -1338,6 +1346,46 @@ final class CallManager: NSObject {
 
     private func resetDiagnostics() {
         diagnostics = CallDiagnostics()
+        callQuality = .unknown
+        lastAudioPackets = nil
+    }
+
+    /// Reads round-trip time and audio packet loss since the last check.
+    /// The call screen calls this every few seconds.
+    func refreshCallQuality() async {
+        guard case .active = state, let peerConnection else { return }
+        let report: RTCStatisticsReport = await withCheckedContinuation { continuation in
+            peerConnection.statistics { continuation.resume(returning: $0) }
+        }
+        var rtt: Double?
+        var received = 0.0, lost = 0.0
+        for stat in report.statistics.values {
+            if stat.type == "candidate-pair",
+               (stat.values["nominated"] as? NSNumber)?.boolValue == true,
+               let value = (stat.values["currentRoundTripTime"] as? NSNumber)?.doubleValue {
+                rtt = value
+            } else if stat.type == "inbound-rtp", (stat.values["kind"] as? String) == "audio" {
+                received += (stat.values["packetsReceived"] as? NSNumber)?.doubleValue ?? 0
+                lost += (stat.values["packetsLost"] as? NSNumber)?.doubleValue ?? 0
+            }
+        }
+        var lossRate = 0.0
+        if let last = lastAudioPackets {
+            let newReceived = received - last.received, newLost = lost - last.lost
+            if newReceived + newLost > 0 { lossRate = max(0, newLost) / (newReceived + newLost) }
+        }
+        lastAudioPackets = (received, lost)
+        let quality: CallQuality
+        if rtt == nil && lastAudioPackets == nil {
+            quality = .unknown
+        } else if (rtt ?? 0) > 0.6 || lossRate > 0.08 {
+            quality = .poor
+        } else if (rtt ?? 0) > 0.3 || lossRate > 0.03 {
+            quality = .fair
+        } else {
+            quality = .good
+        }
+        if quality != callQuality { callQuality = quality }
     }
 
     private func updateDiagnostics(_ mutate: (inout CallDiagnostics) -> Void) {

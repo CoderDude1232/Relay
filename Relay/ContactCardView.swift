@@ -16,6 +16,7 @@ struct ContactCardView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(CallManager.self) private var callManager
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var nickname = ""
     @State private var editingNickname = false
@@ -147,12 +148,7 @@ struct ContactCardView: View {
                     NavigationLink {
                         DisappearingSheet(service: service, conversationId: conversationId)
                     } label: {
-                        HStack(spacing: 14) {
-                            SettingsIcon(systemName: "timer", color: .orange)
-                            Text("Disappearing Messages").foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                            Text(disappearingLabel).foregroundStyle(.secondary)
-                        }
+                        valueRow(icon: "timer", color: .orange, title: "Disappearing Messages", value: disappearingLabel)
                     }
 
                     contactRow(icon: "pencil", color: .gray,
@@ -353,14 +349,27 @@ struct ContactCardView: View {
         icon: String, color: Color, title: String, value: String, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: 14) {
-                SettingsIcon(systemName: icon, color: color)
+            valueRow(icon: icon, color: color, title: title, value: value)
+        }
+        .tint(.primary)
+    }
+
+    /// Icon, title and value; at the largest text sizes the value goes under
+    /// the title so words don't break.
+    private func valueRow(icon: String, color: Color, title: String, value: String) -> some View {
+        HStack(spacing: 14) {
+            SettingsIcon(systemName: icon, color: color)
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).foregroundStyle(.primary)
+                    Text(value).foregroundStyle(.secondary)
+                }
+            } else {
                 Text(title).foregroundStyle(.primary)
                 Spacer(minLength: 0)
                 Text(value).foregroundStyle(.secondary)
             }
         }
-        .tint(.primary)
     }
 
     private func saveAndDismiss() {

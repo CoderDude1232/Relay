@@ -208,7 +208,8 @@ struct MediaGalleryView: View {
     }
 
     private func empty(_ title: String, _ icon: String, _ text: String) -> some View {
-        ContentUnavailableView(title, systemImage: icon, description: Text(text))
+        RelayEmptyState(systemImage: icon, title: title, message: text)
+            .frame(maxHeight: .infinity)
     }
 
     private static func date(_ timestamp: Int64) -> String {

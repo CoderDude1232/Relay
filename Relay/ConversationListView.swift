@@ -9,6 +9,7 @@ import RelayCore
 import RelayKit
 import SecureStorage
 import SwiftUI
+import TipKit
 import UIKit
 
 struct ConversationListView: View {
@@ -487,6 +488,7 @@ struct ConversationListView: View {
     }
 
     private func swipeFeedback() {
+        ChatListGesturesTip().invalidate(reason: .actionPerformed)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
@@ -716,6 +718,14 @@ struct ConversationListView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
 
+            if !isEditing, visibleConversations.count >= 2 {
+                TipView(ChatListGesturesTip())
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .selectionDisabled()
+            }
+
             if let filter = focus.filter, filter.hidesOtherChats, !isEditing {
                 focusRow(filter)
             }
@@ -782,14 +792,38 @@ struct ConversationListView: View {
                 .accessibilityElement(children: .combine)
             }
 
-            if visibleConversations.isEmpty && service.hasLoadedConversations {
-                ContentUnavailableView(
-                    "No Conversations",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text(activeLabel != nil ? "No chats match this filter." : "Start a conversation using the compose button.")
-                )
+            if visibleConversations.isEmpty && !service.hasLoadedConversations {
+                // Loading: stand-ins instead of an empty list.
+                ForEach(0..<6, id: \.self) { _ in
+                    ChatRowSkeleton()
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .selectionDisabled()
+                }
+            } else if visibleConversations.isEmpty {
+                Group {
+                    switch activeLabel {
+                    case "Unread"?:
+                        RelayEmptyState(systemImage: "checkmark.circle", title: "All Caught Up",
+                                        message: "You've read everything.",
+                                        actionTitle: "Show All Chats") { activeLabel = nil }
+                    case "Groups"?:
+                        RelayEmptyState(systemImage: "person.3", title: "No Groups",
+                                        message: "Groups you start or join show up here.",
+                                        actionTitle: "New Group") { showingNewGroup = true }
+                    case let folder?:
+                        RelayEmptyState(systemImage: "folder", title: "\(folder) Is Empty",
+                                        message: "Touch and hold a chat and choose Move to Folder to add it here.",
+                                        actionTitle: "Show All Chats") { activeLabel = nil }
+                    case nil:
+                        RelayEmptyState(systemImage: "bubble.left.and.bubble.right", title: "No Chats Yet",
+                                        message: "Start a conversation with someone on Relay.",
+                                        actionTitle: "New Chat") { showingNewChatSheet = true }
+                    }
+                }
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
+                .selectionDisabled()
             }
 
             // Pinned chats get their own group at the top.
@@ -950,7 +984,15 @@ struct ConversationListView: View {
                 }
             }
             if !showChats && !showMessages {
-                ContentUnavailableView.search(text: searchText)
+                RelayEmptyState(
+                    systemImage: "magnifyingglass",
+                    title: "No Results",
+                    message: searchScope == .all
+                        ? "Nothing matches “\(searchText.trimmingCharacters(in: .whitespaces))”. Try a name, a word from a message or part of a link."
+                        : "Nothing in \(searchScope.rawValue) matches. Try searching All."
+                )
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
         }
         .listStyle(.plain)

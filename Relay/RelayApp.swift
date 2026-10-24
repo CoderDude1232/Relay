@@ -296,6 +296,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         Self.current = self
+        RelayTips.configure()
         // Drains Siri-queued messages when the socket is closed. Must be
         // registered before launch finishes.
         BGTaskScheduler.shared.register(
