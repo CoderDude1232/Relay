@@ -84,15 +84,20 @@ class NotificationService: UNNotificationServiceExtension {
         contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
         switch outcome {
-        case .show(_, _, let conversationId, _, _) where !conversationId.isEmpty
+        case .show(_, _, let conversationId, _, _, _) where !conversationId.isEmpty
             && PanicHiddenChats.load().contains(conversationId):
             // Hidden by Panic Mode: nothing on the lock screen, no Siri donation.
             contentHandler(UNMutableNotificationContent())
-        case .show(let title, let body, let conversationId, let senderAccount, let messageId):
+        case .show(let title, let body, let conversationId, let senderAccount, let messageId, let missedCall):
             // Sender, preview, and the conversation id for tap-to-navigate.
             content.title = title
             content.body = body
-            content.categoryIdentifier = "RELAY_MESSAGE"
+            content.categoryIdentifier = missedCall ? "RELAY_MISSED_CALL" : "RELAY_MESSAGE"
+            // Stacked notifications read "3 more messages from <name>", only
+            // when the name may be shown at all.
+            if !conversationId.isEmpty, title != "Relay", title != "New Message" {
+                content.summaryArgument = title
+            }
             if !conversationId.isEmpty {
                 var info = content.userInfo
                 info["conversationId"] = conversationId
@@ -208,7 +213,8 @@ class NotificationService: UNNotificationServiceExtension {
     static let messageIdKey = "relayMessageId"
 
     private enum DecryptOutcome {
-        case show(title: String, body: String, conversationId: String, senderAccount: String, messageId: String = "")
+        case show(title: String, body: String, conversationId: String, senderAccount: String, messageId: String = "",
+                  missedCall: Bool = false)
         case suppress // decrypted, but nothing to show
     }
 
@@ -400,8 +406,10 @@ class NotificationService: UNNotificationServiceExtension {
                 if PanicHiddenChats.load().contains(chatId) { return .suppress }
                 let showName = Self.previewLevel(defaults: UserDefaults(suiteName: appGroupId)) != "none"
                 let name = showName ? (callerDisplayName(for: callerAccount, in: storage) ?? "Relay") : "Relay"
+                // The chat id (local only) lets Call Back and Message act on it;
+                // with previews off entirely, nothing ties the banner to a chat.
                 return .show(title: name, body: "Missed call",
-                             conversationId: "", senderAccount: "")
+                             conversationId: showName ? chatId : "", senderAccount: "", missedCall: true)
             }
             return .suppress
         }

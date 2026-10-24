@@ -1288,16 +1288,29 @@ public final class MessageStore: @unchecked Sendable {
         status: MessageStatus
     ) throws {
         guard status == .delivered || status == .read else { return }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let isRead: Int64 = status == .read ? 1 : 0
         for timestamp in timestamps {
+            // A read receipt also means delivered; the first time of each is kept.
             try db.run(
                 """
-                UPDATE messages SET status = ?
+                UPDATE messages SET status = CASE WHEN status = 'read' AND ? = 'delivered' THEN status ELSE ? END,
+                    delivered_at = COALESCE(delivered_at, ?),
+                    read_at = CASE WHEN ? = 1 THEN COALESCE(read_at, ?) ELSE read_at END
                 WHERE conversation_id = ? AND timestamp = ? AND is_outgoing = 1
-                  AND NOT (status = 'read' AND ? = 'delivered')
                 """,
-                [.text(status.rawValue), .text(conversationId), .integer(timestamp), .text(status.rawValue)]
+                [.text(status.rawValue), .text(status.rawValue), .integer(now), .integer(isRead), .integer(now),
+                 .text(conversationId), .integer(timestamp)]
             )
         }
+    }
+
+    /// When an outgoing message was delivered and read (ms), if known.
+    public func receiptTimes(messageId: String) throws -> (deliveredAt: Int64?, readAt: Int64?) {
+        guard let row = try db.query(
+            "SELECT delivered_at, read_at FROM messages WHERE id = ?", [.text(messageId)]
+        ).first else { return (nil, nil) }
+        return (row[0].int64, row[1].int64)
     }
 
     // MARK: - Group receipts
@@ -1311,17 +1324,48 @@ public final class MessageStore: @unchecked Sendable {
         status: MessageStatus
     ) throws {
         guard status == .delivered || status == .read else { return }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let readAt: SQLValue = status == .read ? .integer(now) : .null
         for timestamp in timestamps {
             try db.run(
                 """
-                INSERT INTO message_receipts (conversation_id, message_timestamp, member_account, status)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(conversation_id, message_timestamp, member_account) DO UPDATE SET status = excluded.status
-                    WHERE NOT (message_receipts.status = 'read' AND excluded.status = 'delivered')
+                INSERT INTO message_receipts (conversation_id, message_timestamp, member_account, status, delivered_at, read_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(conversation_id, message_timestamp, member_account) DO UPDATE SET
+                    status = CASE WHEN message_receipts.status = 'read' AND excluded.status = 'delivered'
+                                  THEN message_receipts.status ELSE excluded.status END,
+                    delivered_at = COALESCE(message_receipts.delivered_at, excluded.delivered_at),
+                    read_at = COALESCE(message_receipts.read_at, excluded.read_at)
                 """,
-                [.text(conversationId), .integer(timestamp), .text(member), .text(status.rawValue)]
+                [.text(conversationId), .integer(timestamp), .text(member), .text(status.rawValue),
+                 .integer(now), readAt]
             )
         }
+    }
+
+    /// One member's receipt for a group message we sent.
+    public struct GroupReceipt: Sendable {
+        public let status: MessageStatus
+        public let deliveredAt: Int64?
+        public let readAt: Int64?
+    }
+
+    /// Member to receipt (status and times) for one group message.
+    public func groupReceiptDetails(conversationId: String, messageTimestamp: Int64) throws -> [String: GroupReceipt] {
+        let rows = try db.query(
+            """
+            SELECT member_account, status, delivered_at, read_at FROM message_receipts
+            WHERE conversation_id = ? AND message_timestamp = ?
+            """,
+            [.text(conversationId), .integer(messageTimestamp)]
+        )
+        var result: [String: GroupReceipt] = [:]
+        for row in rows {
+            if let member = row[0].string, let status = MessageStatus(rawValue: row[1].string ?? "") {
+                result[member] = GroupReceipt(status: status, deliveredAt: row[2].int64, readAt: row[3].int64)
+            }
+        }
+        return result
     }
 
     /// Member to status for one group message.

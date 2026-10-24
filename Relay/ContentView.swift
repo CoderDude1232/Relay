@@ -758,6 +758,19 @@ struct MainTabView: View {
         .animation(.spring(duration: 0.3), value: callManager.outgoingLinkJoin)
         // Links that arrived while the app lock was up run once it's unlocked.
         .onChange(of: appLocked) { _, locked in if !locked { handlePendingLinks() } }
+        .sheet(isPresented: Binding(
+            get: { model.showWhatsNew && !appLocked }, set: { if !$0 { model.showWhatsNew = false } }
+        )) {
+            WhatsNewSheet()
+        }
+        .sheet(isPresented: Binding(
+            get: { model.showNotificationPrimer && !appLocked && !model.showWhatsNew },
+            set: { if !$0 { model.showNotificationPrimer = false } }
+        )) {
+            NotificationPrimerSheet {
+                NotificationPermission.shared.turnOn(using: AppDelegate.current)
+            }
+        }
         // Links from a cold start or onboarding were set before this view
         // existed, so onChange never saw them.
         .onAppear { handlePendingLinks() }

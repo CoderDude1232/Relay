@@ -75,6 +75,9 @@ final class AppModel {
     var pendingScanQR = false
     /// relay://compose (New Message control or shortcut): open the new-chat sheet.
     var pendingCompose = false
+    /// What's New after an update; the notification explanation after sign-in.
+    var showWhatsNew = false
+    var showNotificationPrimer = false
     /// A proxy link that was opened, waiting for the user to confirm it.
     var pendingProxy: RelayProxy.Address?
     /// The latest check of the proxy in use; nil when there's no proxy.

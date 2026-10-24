@@ -335,4 +335,31 @@ struct MessageStoreTests {
         try store.applyReceipt(conversationId: conversation, timestamps: [1000], status: .delivered)
         #expect(try store.messages(in: conversation)[0].status == .read)
     }
+
+    @Test func receiptTimesAreRecordedOnce() throws {
+        let storage = try SecureStore(path: tempDBPath(), key: .random(), credentials: TestCredentials())
+        let store = storage.messages
+        let conversation = try store.conversation(withPeer: "bob-account")
+        try store.insertMessage(id: "m1", conversationId: conversation, isOutgoing: true,
+                                body: "x", timestamp: 1000, status: .sent)
+        #expect(try store.receiptTimes(messageId: "m1") == (nil, nil))
+
+        try store.applyReceipt(conversationId: conversation, timestamps: [1000], status: .delivered)
+        let delivered = try store.receiptTimes(messageId: "m1")
+        #expect(delivered.deliveredAt != nil && delivered.readAt == nil)
+
+        try store.applyReceipt(conversationId: conversation, timestamps: [1000], status: .read)
+        let read = try store.receiptTimes(messageId: "m1")
+        #expect(read.deliveredAt == delivered.deliveredAt && read.readAt != nil)
+
+        // Group: per member, read implies delivered, first times kept.
+        try store.recordGroupReceipt(conversationId: conversation, member: "carol", timestamps: [1000], status: .read)
+        try store.recordGroupReceipt(conversationId: conversation, member: "dave", timestamps: [1000], status: .delivered)
+        let first = try store.groupReceiptDetails(conversationId: conversation, messageTimestamp: 1000)
+        #expect(first["carol"]?.status == .read && first["carol"]?.readAt != nil && first["carol"]?.deliveredAt != nil)
+        #expect(first["dave"]?.status == .delivered && first["dave"]?.readAt == nil)
+        try store.recordGroupReceipt(conversationId: conversation, member: "carol", timestamps: [1000], status: .delivered)
+        let again = try store.groupReceiptDetails(conversationId: conversation, messageTimestamp: 1000)
+        #expect(again["carol"]?.status == .read && again["carol"]?.readAt == first["carol"]?.readAt)
+    }
 }

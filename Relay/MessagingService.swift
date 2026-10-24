@@ -143,6 +143,12 @@ final class MessagingService {
     private(set) var activeMessagesRevision = 0
     /// True while the message history backup is being restored after sign-in.
     var isRestoringHistory = false
+    /// Message history backup in progress (0...1), or nil when idle.
+    var historyBackupProgress: Double?
+    /// Why the last backup attempt failed, until one succeeds.
+    var historyBackupError: String?
+    /// Bumped when a backup finishes, so Settings re-reads its date and size.
+    var historyBackupRevision = 0
     /// Bumped whenever a scam check stores a result, so request banners and
     /// list labels refresh (see ScamCheck.swift).
     var scamFlagsRevision = 0
@@ -4603,17 +4609,37 @@ final class MessagingService {
     }
 
     /// For the info sheet, sorted read-first.
-    func groupReadReceipts(for message: StoredMessage, in conversationId: String) -> [(name: String, status: String)] {
+    /// One group member's state for a message we sent, for message info.
+    struct MemberReceipt: Identifiable {
+        let account: String
+        let name: String
+        let avatar: Data?
+        let status: MessageStatus?   // nil: not delivered yet
+        let at: Date?                // when read, or else when delivered
+        var id: String { account }
+    }
+
+    func groupReceipts(for message: StoredMessage, in conversationId: String) -> [MemberReceipt] {
         guard let group = group(for: conversationId) else { return [] }
-        let recipients = group.members.filter { $0 != credentials.accountId }
-        let receipts = (try? storage.messages.groupReceipts(
+        let receipts = (try? storage.messages.groupReceiptDetails(
             conversationId: conversationId, messageTimestamp: message.timestamp)) ?? [:]
-        func rank(_ s: MessageStatus?) -> Int { s == .read ? 0 : (s == .delivered ? 1 : 2) }
-        func label(_ s: MessageStatus?) -> String { s == .read ? "Read" : (s == .delivered ? "Delivered" : "Sent") }
-        return recipients
-            .map { (account: $0, status: receipts[$0]) }
-            .sorted { (rank($0.status), displayName(forAccount: $0.account)) < (rank($1.status), displayName(forAccount: $1.account)) }
-            .map { (name: displayName(forAccount: $0.account), status: label($0.status)) }
+        return group.members.filter { $0 != credentials.accountId }.map { account in
+            let receipt = receipts[account]
+            let ms = receipt?.readAt ?? receipt?.deliveredAt
+            return MemberReceipt(
+                account: account, name: displayName(forAccount: account),
+                avatar: peerAvatarData(forAccount: account), status: receipt?.status,
+                at: ms.map { Date(timeIntervalSince1970: Double($0) / 1000) }
+            )
+        }
+        .sorted { ($0.at ?? .distantFuture, $0.name) < ($1.at ?? .distantFuture, $1.name) }
+    }
+
+    /// When a 1:1 message we sent was delivered and read.
+    func receiptTimes(for message: StoredMessage) -> (delivered: Date?, read: Date?) {
+        guard let times = try? storage.messages.receiptTimes(messageId: message.id) else { return (nil, nil) }
+        func date(_ ms: Int64?) -> Date? { ms.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
+        return (date(times.deliveredAt), date(times.readAt))
     }
 
     // MARK: - Safety-number verification

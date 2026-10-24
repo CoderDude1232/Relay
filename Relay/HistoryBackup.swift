@@ -37,6 +37,8 @@ extension MessagingService {
     private static let historyRestoredKV = "history:restoreDone"
     private static let historyLastUploadKV = "history:lastUploadAt"
     private static let historyDigestKV = "history:lastDigest"
+    private static let historyLastSizeKV = "history:lastSize"
+    private static let historyLastMessagesKV = "history:lastMessages"
     /// How often an unchanged-or-changed history is considered for upload.
     private static let historyUploadInterval: TimeInterval = 6 * 3600
     /// Data per segment, leaving room for the nonce and tag under the relay's 2 MiB cap.
@@ -86,6 +88,27 @@ extension MessagingService {
         return snapshot
     }
 
+    /// When the backup was last confirmed up to date, if ever.
+    var lastHistoryBackupDate: Date? {
+        _ = historyBackupRevision
+        return historyKV(Self.historyLastUploadKV)
+            .flatMap { Double(String(decoding: $0, as: UTF8.self)) }
+            .map { Date(timeIntervalSince1970: $0) }
+    }
+
+    /// Encrypted size and message count of the last backup made here.
+    var lastHistoryBackupSummary: (bytes: Int, messages: Int)? {
+        _ = historyBackupRevision
+        guard let bytes = historyKV(Self.historyLastSizeKV).flatMap({ Int(String(decoding: $0, as: UTF8.self)) }) else { return nil }
+        let messages = historyKV(Self.historyLastMessagesKV).flatMap { Int(String(decoding: $0, as: UTF8.self)) } ?? 0
+        return (bytes, messages)
+    }
+
+    /// Whether this device can back up at all (and has finished its restore).
+    var canBackUpHistory: Bool {
+        Self.isHistoryBackupEnabled && !isDemoAccount && keepsChatListWithAccount && historyBackupKey != nil
+    }
+
     // MARK: Upload
 
     /// Uploads a new snapshot if history backup is on, the last one is more
@@ -113,6 +136,13 @@ extension MessagingService {
             compressed.subdata(in: $0..<min($0 + Self.historyChunkBytes, compressed.count))
         }
         guard (1...999).contains(chunks.count) else { return }
+        guard historyBackupProgress == nil else { return } // one at a time
+        historyBackupProgress = 0
+        defer {
+            historyBackupProgress = nil
+            historyBackupRevision += 1
+        }
+        let steps = Double(chunks.count + 1)
         do {
             let existing = try await apiClient.historySegments()
             // Seconds since 1970, so two devices backing up at once don't
@@ -123,6 +153,7 @@ extension MessagingService {
                 let sealed = try AES.GCM.seal(chunk, using: key, authenticating: Self.historyAD(generation, part))
                 guard let combined = sealed.combined else { return }
                 try await apiClient.putHistorySegment(generation * 1000 + Int64(index + 1), combined)
+                historyBackupProgress = Double(index + 1) / steps
             }
             let manifest = HistoryManifest(generation: generation, count: chunks.count, digest: digest,
                                            createdAt: Int64(now * 1000))
@@ -136,9 +167,31 @@ extension MessagingService {
             }
             setHistoryKV(Self.historyDigestKV, digest)
             setHistoryKV(Self.historyLastUploadKV, Data(String(now).utf8))
+            setHistoryKV(Self.historyLastSizeKV, Data(String(compressed.count).utf8))
+            let messageCount = snapshot.conversations.reduce(0) { $0 + $1.messages.count }
+            setHistoryKV(Self.historyLastMessagesKV, Data(String(messageCount).utf8))
+            historyBackupError = nil
         } catch {
             historyLog.warning("history backup upload failed: \(PrivacyRedactor.error(error))")
+            historyBackupError = Self.backupErrorMessage(error)
         }
+    }
+
+    private static func backupErrorMessage(_ error: Error) -> String {
+        if let api = error as? RelayAPIError, case .rateLimited = api {
+            return "Too many backups in a short time. It'll try again later."
+        }
+        if let api = error as? RelayAPIError, case .http(let status, _) = api {
+            switch status {
+            case 507: return "Your backup is over the storage limit. Older messages may need to be deleted."
+            case 429: return "Too many backups in a short time. It'll try again later."
+            default: break
+            }
+        }
+        if (error as? URLError) != nil {
+            return "Couldn't reach Relay. It'll try again when you're back online."
+        }
+        return "The last backup didn't finish. It'll try again later."
     }
 
     // MARK: Restore
@@ -213,12 +266,19 @@ extension MessagingService {
             }
             refreshConversations()
             setHistoryKV(Self.historyRestoredKV, Data([1]))
-            postRelayNotice("Your message history was restored from your encrypted backup.")
+            let messageCount = snapshot.conversations.reduce(0) { $0 + $1.messages.count }
+            let chatCount = snapshot.conversations.filter { !$0.messages.isEmpty }.count
+            let when = Date(timeIntervalSince1970: Double(manifest.createdAt) / 1000)
+                .formatted(date: .abbreviated, time: .shortened)
+            postRelayNotice(messageCount == 0
+                ? "Your encrypted backup from \(when) had no messages to restore."
+                : "Restored \(messageCount) \(messageCount == 1 ? "message" : "messages") in \(chatCount) \(chatCount == 1 ? "chat" : "chats") from your encrypted backup of \(when). Photos and files aren't part of the backup.")
         } catch is CryptoKitError {
             // Encrypted under a key this account no longer uses (say, the
             // password was reset and the old chat list couldn't be opened):
             // it can't be restored, so the next backup may replace it.
             setHistoryKV(Self.historyRestoredKV, Data([1]))
+            postRelayNotice("Your earlier message backup couldn't be opened: it was locked with sign-in details that have since changed. New messages will be backed up from now on.")
         } catch {
             historyLog.warning("history restore failed: \(PrivacyRedactor.error(error))")
         }

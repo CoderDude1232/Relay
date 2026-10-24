@@ -11,6 +11,7 @@ import SecureStorage
 import SwiftUI
 import TipKit
 import UIKit
+import UniformTypeIdentifiers
 
 struct ConversationListView: View {
     let service: MessagingService
@@ -28,6 +29,10 @@ struct ConversationListView: View {
     @State private var showingQRScanner = false
     @State private var panicMode = PanicModeManager.shared
     @State private var focus = FocusFilterState.shared
+    @State private var notifications = NotificationPermission.shared
+    /// The chat a drag is hovering over, and a drop waiting for confirmation.
+    @State private var dropTargetId: String?
+    @State private var pendingDrop: PendingDrop?
     @State private var showingPanicPIN = false
     @State private var panicPINInput = ""
     @State private var mutingConversationId: String?
@@ -318,6 +323,35 @@ struct ConversationListView: View {
                 showingNewChatSheet = true
             }
         }
+        .confirmationDialog(
+            pendingDrop.map { "Send to \($0.chatName)?" } ?? "",
+            isPresented: Binding(get: { pendingDrop != nil }, set: { if !$0 { pendingDrop = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDrop
+        ) { drop in
+            if drop.sensitive && SensitiveContent.isRestricted {
+                Button("OK", role: .cancel) { pendingDrop = nil }
+            } else {
+                Button(drop.sensitive ? "Send Anyway" : "Send") {
+                    sendDrop(drop)
+                    pendingDrop = nil
+                }
+                Button("Cancel", role: .cancel) { pendingDrop = nil }
+            }
+        } message: { drop in
+            switch drop.item {
+            case .text(let text):
+                Text(String(text.prefix(200)))
+            case .photo:
+                if drop.sensitive && SensitiveContent.isRestricted {
+                    Text("This photo may show private body parts, so it can't be sent.")
+                } else if drop.sensitive {
+                    Text("This photo may contain nudity. Only send it if you're sure they want it.")
+                } else {
+                    Text("A photo will be sent.")
+                }
+            }
+        }
         .onChange(of: model.pendingCompose) { _, requested in
             guard requested else { return }
             model.pendingCompose = false
@@ -462,6 +496,98 @@ struct ConversationListView: View {
         .accessibilityLabel(label)
     }
 
+    struct PendingDrop: Identifiable {
+        enum Item {
+            case text(String)
+            case photo(MessagingService.PendingAttachment)
+        }
+        let id = UUID()
+        let conversationId: String
+        let chatName: String
+        let item: Item
+        let sensitive: Bool
+    }
+
+    /// Loads the first photo, link or text from a drop and asks before sending.
+    private func receiveDrop(_ providers: [NSItemProvider], on conversation: Conversation) -> Bool {
+        guard !conversation.isRequest, let provider = providers.first else { return false }
+        let name = searchChatTitle(conversation.id)
+        let id = conversation.id
+        if provider.canLoadObject(ofClass: UIImage.self) {
+            _ = provider.loadObject(ofClass: UIImage.self) { object, _ in
+                guard let image = object as? UIImage, let data = image.jpegData(compressionQuality: 0.85) else { return }
+                let size = (Int(image.size.width * image.scale), Int(image.size.height * image.scale))
+                Task { @MainActor in
+                    let sensitive = SensitiveContent.isEnabled
+                        ? await SensitiveContent.isSensitive(image: image) : false
+                    let photo = MessagingService.PendingAttachment(
+                        data: data, contentType: "image/jpeg", filename: nil, width: size.0, height: size.1)
+                    pendingDrop = PendingDrop(conversationId: id, chatName: name, item: .photo(photo), sensitive: sensitive)
+                }
+            }
+            return true
+        }
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in
+                    pendingDrop = PendingDrop(conversationId: id, chatName: name, item: .text(url.absoluteString), sensitive: false)
+                }
+            }
+            return true
+        }
+        if provider.canLoadObject(ofClass: NSString.self) {
+            _ = provider.loadObject(ofClass: NSString.self) { text, _ in
+                guard let text = text as? String,
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                Task { @MainActor in
+                    pendingDrop = PendingDrop(conversationId: id, chatName: name, item: .text(String(text.prefix(8000))), sensitive: false)
+                }
+            }
+            return true
+        }
+        return false
+    }
+
+    private func sendDrop(_ drop: PendingDrop) {
+        Task {
+            switch drop.item {
+            case .text(let text):
+                await service.sendMessage(text, in: drop.conversationId)
+            case .photo(let photo):
+                await service.sendMessage("", in: drop.conversationId, attachments: [photo])
+            }
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    /// Notifications are off (or were never allowed): a way back to them.
+    private var notificationsOffRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bell.slash.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Notifications are off").font(.subheadline.weight(.semibold))
+                Text("You won't know when messages or calls arrive.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button("Turn On") { notifications.turnOn(using: AppDelegate.current) }
+                .font(.subheadline.weight(.semibold))
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.12), in: .rect(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "Turn On Notifications") { notifications.turnOn(using: AppDelegate.current) }
+        .selectionDisabled()
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
     /// Shown while a Focus filter limits the list.
     private func focusRow(_ filter: FocusChatFilter) -> some View {
         HStack(spacing: 10) {
@@ -591,6 +717,13 @@ struct ConversationListView: View {
         }
         .listRowSeparator(.hidden)
         .listRowBackground(rowBackground(for: conversation))
+        // Drop a photo or text from another chat or app onto a chat to send it.
+        .onDrop(of: [.image, .plainText, .url], isTargeted: Binding(
+            get: { dropTargetId == conversation.id },
+            set: { dropTargetId = $0 ? conversation.id : (dropTargetId == conversation.id ? nil : dropTargetId) }
+        )) { providers in
+            receiveDrop(providers, on: conversation)
+        }
         .contextMenu {
             Button {
                 if conversation.unreadCount > 0 {
@@ -669,7 +802,15 @@ struct ConversationListView: View {
     /// Beside the open chat (iPad), its row stays highlighted.
     @ViewBuilder
     private func rowBackground(for conversation: Conversation) -> some View {
-        if horizontalSizeClass == .regular, !isEditing, conversation.id == selectedConversationId {
+        if dropTargetId == conversation.id {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.accentColor.opacity(0.18))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                }
+                .padding(.horizontal, 8)
+        } else if horizontalSizeClass == .regular, !isEditing, conversation.id == selectedConversationId {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.primary.opacity(0.1))
                 .padding(.horizontal, 8)
@@ -728,6 +869,10 @@ struct ConversationListView: View {
 
             if let filter = focus.filter, filter.hidesOtherChats, !isEditing {
                 focusRow(filter)
+            }
+
+            if notifications.isOff, !notifications.deferredThisSession, !isEditing, !isSearching {
+                notificationsOffRow
             }
 
             if service.isRestoringHistory {

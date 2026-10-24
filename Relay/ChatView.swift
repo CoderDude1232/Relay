@@ -85,6 +85,39 @@ struct ChatView: View {
     @State private var showingVerification = false
     @State private var showingContactCard = false
     @State private var showingGroupInfo = false
+
+    /// Info pages go in a column beside the chat when there's room for both
+    /// (an iPad in landscape); otherwise they're sheets.
+    private var infoAsColumn: Bool { horizontalSizeClass == .regular && chatWidth >= 800 }
+    /// The chat's width before an info column opened (it shrinks once one does).
+    @State private var chatWidth: CGFloat = 0
+
+    private var groupInfoPage: some View {
+        GroupInfoView(
+            service: service,
+            conversationId: conversationId,
+            ownAccountId: service.credentials.accountId,
+            onActivateSearch: {
+                showingGroupInfo = false
+                inChatSearchActive = true
+            }
+        )
+    }
+
+    private var contactCardPage: some View {
+        ContactCardView(service: service, conversationId: conversationId, onActivateSearch: {
+            showingContactCard = false
+            contactCardClosed()
+            inChatSearchActive = true
+        })
+    }
+
+    /// Settings changed on the contact page apply to the chat.
+    private func contactCardClosed() {
+        refreshVerification()
+        chatAIEnabled = UserDefaults.standard.bool(forKey: "chat.ai.\(conversationId)")
+        chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
+    }
     @State private var showingChatSettings = false
     @State private var verification: MessagingService.PeerVerification?
     /// In a group: members whose safety number changed, which blocks sends.
@@ -833,27 +866,36 @@ struct ChatView: View {
         .sheet(isPresented: $showingChangedGroupMembers, onDismiss: refreshVerification) {
             NavigationStack { GroupSafetyNumbersView(service: service, conversationId: conversationId) }
         }
-        .sheet(isPresented: $showingGroupInfo) {
-            GroupInfoView(
-                service: service,
-                conversationId: conversationId,
-                ownAccountId: service.credentials.accountId,
-                onActivateSearch: {
-                    showingGroupInfo = false
-                    inChatSearchActive = true
+        // iPhone (and narrow iPad windows): info pages are sheets. Wide iPad
+        // windows show them as a column beside the chat instead.
+        .sheet(isPresented: Binding(
+            get: { showingGroupInfo && !infoAsColumn }, set: { showingGroupInfo = $0 }
+        )) {
+            groupInfoPage
+        }
+        .sheet(isPresented: Binding(
+            get: { showingContactCard && !infoAsColumn }, set: { showingContactCard = $0 }
+        ), onDismiss: contactCardClosed) {
+            contactCardPage
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            if !(showingContactCard || showingGroupInfo) { chatWidth = width }
+        }
+        // Only attached in wide windows: on iPhone an inspector becomes a
+        // sheet and gets in the way of the chat's push transition.
+        .modifier(InfoColumn(enabled: infoAsColumn, isPresented: Binding(
+            get: { showingGroupInfo || showingContactCard },
+            set: { shown in
+                guard !shown else { return }
+                showingGroupInfo = false
+                if showingContactCard {
+                    showingContactCard = false
+                    contactCardClosed()
                 }
-            )
-        }
-        .sheet(isPresented: $showingContactCard, onDismiss: {
-            refreshVerification()
-            chatAIEnabled = UserDefaults.standard.bool(forKey: "chat.ai.\(conversationId)")
-            chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
-        }) {
-            ContactCardView(service: service, conversationId: conversationId, onActivateSearch: {
-                showingContactCard = false
-                inChatSearchActive = true
-            })
-        }
+            }
+        )) {
+            if isGroup { groupInfoPage } else { contactCardPage }
+        })
         .sheet(isPresented: $showingChatSettings, onDismiss: {
             chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
         }) {
@@ -4610,6 +4652,23 @@ private struct ForwardMessageSheet: View {
     }
 }
 
+/// The contact or group page as a column beside the chat (wide windows).
+private struct InfoColumn<Page: View>: ViewModifier {
+    let enabled: Bool
+    @Binding var isPresented: Bool
+    @ViewBuilder let page: () -> Page
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.inspector(isPresented: $isPresented) {
+                page().inspectorColumnWidth(min: 320, ideal: 370, max: 440)
+            }
+        } else {
+            content
+        }
+    }
+}
+
 private struct MessageInfoView: View {
     let message: StoredMessage
     let isOwnAuthor: Bool
@@ -4618,44 +4677,92 @@ private struct MessageInfoView: View {
     var conversationId: String? = nil
     var isGroup: Bool = false
 
-    private var groupReceipts: [(name: String, status: String)] {
+    private var members: [MessagingService.MemberReceipt] {
         guard isGroup, message.isOutgoing, let service, let conversationId else { return [] }
-        return service.groupReadReceipts(for: message, in: conversationId)
+        return service.groupReceipts(for: message, in: conversationId)
     }
 
     var body: some View {
         List {
-            LabeledContent("From", value: isOwnAuthor ? "You" : peerName)
-            LabeledContent("Sent", value: fullTimestamp)
-            if message.isOutgoing, !isGroup {
-                LabeledContent("Status", value: statusLabel)
+            Section {
+                LabeledContent("From", value: isOwnAuthor ? "You" : peerName)
+                LabeledContent(message.isOutgoing ? "Sent" : "Received", value: Self.full(sentDate))
             }
-            if !groupReceipts.isEmpty {
-                Section("Read by \(groupReceipts.filter { $0.status == "Read" }.count) of \(groupReceipts.count)") {
-                    ForEach(groupReceipts, id: \.name) { receipt in
-                        LabeledContent(receipt.name, value: receipt.status)
+            if message.isOutgoing && !isGroup, let service {
+                let times = service.receiptTimes(for: message)
+                Section("Status") {
+                    timeRow("Delivered", systemImage: "checkmark.circle", date: times.delivered
+                            ?? (message.status == .delivered || message.status == .read ? sentDate : nil),
+                            known: times.delivered != nil)
+                    timeRow("Read", systemImage: "checkmark.circle.fill", date: times.read
+                            ?? (message.status == .read ? sentDate : nil),
+                            known: times.read != nil)
+                }
+            }
+            if !members.isEmpty {
+                let read = members.filter { $0.status == .read }
+                let delivered = members.filter { $0.status == .delivered }
+                let pending = members.filter { $0.status == nil || $0.status == .sent }
+                if !read.isEmpty {
+                    Section("Read by \(read.count) of \(members.count)") {
+                        ForEach(read) { memberRow($0) }
+                    }
+                }
+                if !delivered.isEmpty {
+                    Section("Delivered to") {
+                        ForEach(delivered) { memberRow($0) }
+                    }
+                }
+                if !pending.isEmpty {
+                    Section("Not Delivered Yet") {
+                        ForEach(pending) { memberRow($0) }
                     }
                 }
             }
         }
-        .navigationTitle("Info")
+        .navigationTitle("Message Info")
         .navigationBarTitleDisplayMode(.inline)
+        .presentationDetents([.medium, .large])
     }
 
-    private var fullTimestamp: String {
-        Date(timeIntervalSince1970: Double(message.timestamp) / 1000)
-            .formatted(date: .abbreviated, time: .standard)
-    }
+    private var sentDate: Date { Date(timeIntervalSince1970: Double(message.timestamp) / 1000) }
 
-    private var statusLabel: String {
-        switch message.status {
-        case .sending: "Sending…"
-        case .sent: "Sent"
-        case .delivered: "Delivered"
-        case .read: "Read"
-        case .failed: "Failed"
-        case .received: "Received"
+    /// `known` is false for messages read before times were recorded: the
+    /// state shows, the time doesn't.
+    private func timeRow(_ title: String, systemImage: String, date: Date?, known: Bool) -> some View {
+        HStack {
+            Label(title, systemImage: systemImage)
+                .foregroundStyle(date == nil ? .secondary : .primary)
+            Spacer()
+            Text(date == nil ? "Not yet" : (known ? Self.short(date!) : "Yes"))
+                .foregroundStyle(.secondary)
         }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func memberRow(_ member: MessagingService.MemberReceipt) -> some View {
+        HStack(spacing: 12) {
+            AvatarView(name: member.name, size: 34, imageData: member.avatar)
+                .accessibilityHidden(true)
+            Text(member.name)
+            Spacer()
+            if let at = member.at {
+                Text(Self.short(at)).foregroundStyle(.secondary).font(.subheadline)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private static func full(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// "4:12 PM" today, "Yesterday 4:12 PM", else the date.
+    private static func short(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return date.formatted(date: .omitted, time: .shortened) }
+        if cal.isDateInYesterday(date) { return "Yesterday " + date.formatted(date: .omitted, time: .shortened) }
+        return date.formatted(.dateTime.day().month(.abbreviated).hour().minute())
     }
 }
 

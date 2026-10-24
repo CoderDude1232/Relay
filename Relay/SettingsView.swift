@@ -686,6 +686,9 @@ private struct DataStorageSettingsView: View {
                                           historyBackup = enabled
                                           Task { await service.setHistoryBackupEnabled(enabled) }
                                       }))
+                    if historyBackup {
+                        HistoryBackupStatusRow(service: service)
+                    }
                 } else {
                     HStack(spacing: 14) {
                         SettingsIcon(systemName: "clock.arrow.circlepath", color: .accentColor)
@@ -723,6 +726,52 @@ private struct DataStorageSettingsView: View {
         .modifier(ThemedPageBackground())
         .navigationTitle("Data & Storage")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Last backup, progress while one runs, the last error, and Back Up Now.
+private struct HistoryBackupStatusRow: View {
+    let service: MessagingService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let progress = service.historyBackupProgress {
+                Text("Backing up…").font(.subheadline)
+                ProgressView(value: progress)
+                    .accessibilityLabel("Backup progress")
+            } else {
+                Text(lastBackupText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if let error = service.historyBackupError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                Button("Back Up Now") {
+                    Task { await service.backUpHistoryIfDue(force: true) }
+                }
+                .font(.subheadline.weight(.semibold))
+                .disabled(!service.canBackUpHistory || service.connectionState != .connected)
+            }
+        }
+        .padding(.vertical, 4)
+        .animation(.easeInOut(duration: 0.2), value: service.historyBackupProgress == nil)
+    }
+
+    private var lastBackupText: String {
+        guard let date = service.lastHistoryBackupDate else { return "Not backed up yet on this device." }
+        let when: String
+        if Calendar.current.isDateInToday(date) {
+            when = "Today, " + date.formatted(date: .omitted, time: .shortened)
+        } else if Calendar.current.isDateInYesterday(date) {
+            when = "Yesterday, " + date.formatted(date: .omitted, time: .shortened)
+        } else {
+            when = date.formatted(date: .abbreviated, time: .shortened)
+        }
+        guard let summary = service.lastHistoryBackupSummary else { return "Last backup: \(when)" }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file)
+        return "Last backup: \(when) · \(summary.messages) messages, \(size)"
     }
 }
 
@@ -1179,6 +1228,7 @@ private struct EditProfileSheet: View {
     @State private var avatarData: Data?
     @State private var avatarChanged = false
     @State private var profilePhoto: PhotosPickerItem?
+    @State private var photoToCrop: CropImageItem?
     @State private var loadingPhoto = false
     @State private var showingChangeUsername = false
 
@@ -1310,6 +1360,16 @@ private struct EditProfileSheet: View {
                 }
             }
             .onChange(of: profilePhoto) { _, item in loadPhoto(item) }
+            .fullScreenCover(item: $photoToCrop) { item in
+                AvatarCropView(image: item.image) {
+                    photoToCrop = nil
+                    profilePhoto = nil
+                } onChoose: { cropped in
+                    if let jpeg = cropped.avatarJPEG() { setAvatar(jpeg) }
+                    photoToCrop = nil
+                    profilePhoto = nil
+                }
+            }
             .navigationDestination(isPresented: $showingChangeUsername) {
                 ChangeUsernameSheet(currentUsername: service.username ?? "")
             }
@@ -1341,9 +1401,8 @@ private struct EditProfileSheet: View {
         Task {
             defer { loadingPhoto = false }
             guard let data = try? await item.loadTransferable(type: Data.self),
-                  let image = UIImage(data: data),
-                  let downscaled = image.avatarJPEG() else { return }
-            setAvatar(downscaled)
+                  let image = SafeImage.image(from: data, maxPixelSize: 3000) else { return }
+            photoToCrop = CropImageItem(image: image)
         }
     }
 }

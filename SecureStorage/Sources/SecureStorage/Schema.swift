@@ -423,5 +423,14 @@ enum Schema {
                 """)
             try db.run("PRAGMA user_version = 26;")
         }
+        try step(db, to: 27) {
+            // When each receipt arrived (ms), for message info: per member in
+            // groups, on the message itself in 1:1 chats.
+            try db.run("ALTER TABLE message_receipts ADD COLUMN delivered_at INTEGER;")
+            try db.run("ALTER TABLE message_receipts ADD COLUMN read_at INTEGER;")
+            try db.run("ALTER TABLE messages ADD COLUMN delivered_at INTEGER;")
+            try db.run("ALTER TABLE messages ADD COLUMN read_at INTEGER;")
+            try db.run("PRAGMA user_version = 27;")
+        }
     }
 }

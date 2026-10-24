@@ -1419,6 +1419,12 @@ final class CallManager: NSObject {
         content.title = NotificationPreviewSetting.current.showsSenderName ? callerName : "Relay"
         content.body = "Missed call"
         content.sound = .default
+        content.categoryIdentifier = "RELAY_MISSED_CALL"
+        if let peer = storedCallPeer, !peer.isEmpty, NotificationPreviewSetting.current.showsSenderName {
+            // Local only: lets Call Back and Message find the chat.
+            content.userInfo = ["callPeer": peer]
+            content.threadIdentifier = "missed-\(peer)"
+        }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }

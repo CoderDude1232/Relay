@@ -48,17 +48,31 @@ struct RelayApp: App {
                     await model.boot()
                     if model.isReady {
                         wireCallManager()
-                        // Only ask for notification permission once there is an
-                        // account, never over the Welcome screen. For existing
-                        // users this just re-registers for remote notifications.
-                        appDelegate.requestPushAuthorization()
+                        // An account from before this launch: What's New once
+                        // per update. Notifications re-register when already
+                        // allowed; if never decided, the chat list offers them.
+                        WhatsNew.noteExistingUser()
+                        if WhatsNew.shouldShow { model.showWhatsNew = true }
+                        let settings = await UNUserNotificationCenter.current().notificationSettings()
+                        if settings.authorizationStatus != .notDetermined {
+                            appDelegate.requestPushAuthorization()
+                        }
                     }
                 }
                 .onChange(of: model.isReady) { _, isReady in
                     if isReady {
                         wireCallManager()
-                        // First time through: right after registration/sign-in.
-                        appDelegate.requestPushAuthorization()
+                        // Right after registration/sign-in: nothing is "new" yet,
+                        // and notifications are explained before the system asks.
+                        WhatsNew.markSeen()
+                        Task {
+                            let settings = await UNUserNotificationCenter.current().notificationSettings()
+                            if settings.authorizationStatus == .notDetermined {
+                                model.showNotificationPrimer = true
+                            } else {
+                                appDelegate.requestPushAuthorization()
+                            }
+                        }
                     }
                 }
                 .onOpenURL { url in
@@ -168,6 +182,7 @@ struct RelayApp: App {
                     case .active:
                         PanicModeManager.shared.applyControlLockIfRequested()
                         FocusFilterState.shared.reload()
+                        NotificationPermission.shared.refresh()
                         model.enterForeground()
                     default:
                         break
@@ -334,9 +349,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             identifier: "RELAY_MESSAGE",
             actions: [replyAction, markReadAction],
             intentIdentifiers: [NSStringFromClass(INSendMessageIntent.self)],
+            hiddenPreviewsBodyPlaceholder: "Message",
+            categorySummaryFormat: "%u more messages from %@",
             options: [.allowInCarPlay]
         )
-        UNUserNotificationCenter.current().setNotificationCategories([msgCategory])
+        let callBackAction = UNNotificationAction(
+            identifier: "RELAY_CALL_BACK",
+            title: "Call Back",
+            options: [.foreground, .authenticationRequired]
+        )
+        let missedReplyAction = UNTextInputNotificationAction(
+            identifier: "RELAY_QUICK_REPLY",
+            title: "Message",
+            options: [.authenticationRequired],
+            textInputButtonTitle: "Send",
+            textInputPlaceholder: "Message"
+        )
+        let missedCallCategory = UNNotificationCategory(
+            identifier: "RELAY_MISSED_CALL",
+            actions: [callBackAction, missedReplyAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([msgCategory, missedCallCategory])
         return true
     }
 
@@ -345,8 +380,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let conversationId = response.notification.request.content.userInfo["conversationId"] as? String ?? ""
+        var conversationId = response.notification.request.content.userInfo["conversationId"] as? String ?? ""
+        // Missed-call banners the app posts itself name the caller instead.
+        if conversationId.isEmpty, let peer = response.notification.request.content.userInfo["callPeer"] as? String,
+           let model, case .ready(let service) = model.phase,
+           let conv = service.conversations.first(where: { $0.peerAccount == peer && !$0.isGroup }) {
+            conversationId = conv.id
+        }
         switch response.actionIdentifier {
+        case "RELAY_CALL_BACK":
+            guard !conversationId.isEmpty else { break }
+            let id = conversationId
+            Task { @MainActor in
+                for _ in 0..<40 {
+                    if let model = self.model, case .ready = model.phase { break }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                guard let model = self.model, case .ready(let service) = model.phase,
+                      let conv = service.conversations.first(where: { $0.id == id }), !conv.isGroup
+                else { return }
+                model.pendingNotificationConversationId = id
+                await self.callManager.startCall(peerAccount: conv.peerAccount,
+                                                 peerName: service.displayName(forAccount: conv.peerAccount))
+            }
         case "RELAY_QUICK_REPLY":
             // Also used by Apple Watch and CarPlay. If iOS just launched the app
             // in the background for this, wait briefly for startup and send now

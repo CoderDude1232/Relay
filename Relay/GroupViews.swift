@@ -660,6 +660,7 @@ private struct GroupAvatarPickerSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var selectedItem: PhotosPickerItem?
+    @State private var photoToCrop: CropImageItem?
     @State private var working = false
     @State private var uploadError: String?
 
@@ -682,19 +683,22 @@ private struct GroupAvatarPickerSheet: View {
             }
             .onChange(of: selectedItem) { _, item in
                 guard let item else { return }
-                working = true
-                uploadError = nil
                 Task {
-                    do {
-                        guard let data = try? await item.loadTransferable(type: Data.self) else {
-                            throw URLError(.cannotDecodeContentData)
-                        }
-                        try await service.setGroupAvatar(data, groupId: groupId)
-                        dismiss()
-                    } catch {
-                        uploadError = error.localizedDescription
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                       let image = SafeImage.image(from: data, maxPixelSize: 3000) {
+                        photoToCrop = CropImageItem(image: image)
+                    } else {
+                        uploadError = "Couldn't open that photo."
                     }
-                    working = false
+                }
+            }
+            .fullScreenCover(item: $photoToCrop) { item in
+                AvatarCropView(image: item.image) {
+                    photoToCrop = nil
+                    selectedItem = nil
+                } onChoose: { cropped in
+                    photoToCrop = nil
+                    upload(cropped)
                 }
             }
             .overlay { if working { ProgressView() } }
@@ -706,6 +710,21 @@ private struct GroupAvatarPickerSheet: View {
             } message: {
                 Text(uploadError ?? "")
             }
+        }
+    }
+
+    private func upload(_ image: UIImage) {
+        guard let jpeg = image.jpegData(compressionQuality: 0.85) else { return }
+        working = true
+        uploadError = nil
+        Task {
+            do {
+                try await service.setGroupAvatar(jpeg, groupId: groupId)
+                dismiss()
+            } catch {
+                uploadError = error.localizedDescription
+            }
+            working = false
         }
     }
 }
