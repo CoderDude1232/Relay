@@ -273,7 +273,7 @@ struct OnboardingView: View {
 
 // MARK: - Animated background
 
-private struct BackgroundGradient: View {
+struct BackgroundGradient: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase = false
 

@@ -371,6 +371,8 @@ private struct AccountSettingsView: View {
     @State private var methods: SignInMethods?
     @State private var showingRemoveEmail = false
     @State private var showingAddPasskeyFirst = false
+    @State private var showingPhoneNumber = false
+    @State private var phoneNumberAdded = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) != nil
 
     private var username: String { service.username ?? "" }
     private var addLink: String { "relaymsg.app/add/\(username)" }
@@ -498,14 +500,22 @@ private struct AccountSettingsView: View {
                 }
 
                 Section {
-                    NavigationLink(destination: PhoneNumberView(service: service)) {
+                    Button { showingPhoneNumber = true } label: {
                         HStack(spacing: 14) {
                             SettingsIcon(systemName: "phone.fill", color: .green)
-                            Text("Phone Number")
+                            Text("Phone Number").foregroundStyle(Color.primary)
                             Spacer(minLength: 0)
-                            Text(UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) != nil ? "Added" : "Optional")
-                                .foregroundStyle(.secondary)
+                            Text(phoneNumberAdded ? "Added" : "Optional")
+                                .foregroundStyle(Color.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Color(.tertiaryLabel))
                         }
+                    }
+                    .fullScreenCover(isPresented: $showingPhoneNumber, onDismiss: {
+                        phoneNumberAdded = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) != nil
+                    }) {
+                        PhoneNumberView(service: service, context: .settings) { showingPhoneNumber = false }
                     }
                 } footer: {
                     Text("Lets people who already have your number find you. Never shown to anyone, and not used to sign in.")

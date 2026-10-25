@@ -37,8 +37,15 @@ struct ContentView: View {
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()
                     }
-                    .task(id: model.shouldOfferPasskey) {
-                        guard model.shouldOfferPasskey else { return }
+                    // After the recovery key a passkey sign-up shows first.
+                    .fullScreenCover(isPresented: Binding(
+                        get: { model.showPhoneOnboarding && !isLocked && model.newRecoveryKey == nil && !model.removedFromAccount },
+                        set: { if !$0 { model.showPhoneOnboarding = false } }
+                    )) {
+                        PhoneNumberView(service: service, context: .onboarding) { model.showPhoneOnboarding = false }
+                    }
+                    .task(id: model.shouldOfferPasskey && !model.showPhoneOnboarding) {
+                        guard model.shouldOfferPasskey, !model.showPhoneOnboarding else { return }
                         try? await Task.sleep(for: .seconds(3))
                         showingPasskeyOffer = model.shouldOfferPasskey
                     }
@@ -764,7 +771,7 @@ struct MainTabView: View {
             WhatsNewSheet()
         }
         .sheet(isPresented: Binding(
-            get: { model.showNotificationPrimer && !appLocked && !model.showWhatsNew },
+            get: { model.showNotificationPrimer && !appLocked && !model.showWhatsNew && !model.showPhoneOnboarding },
             set: { if !$0 { model.showNotificationPrimer = false } }
         )) {
             NotificationPrimerSheet {

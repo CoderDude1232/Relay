@@ -78,6 +78,8 @@ final class AppModel {
     /// What's New after an update; the notification explanation after sign-in.
     var showWhatsNew = false
     var showNotificationPrimer = false
+    /// The optional phone-number step, once, right after a new account.
+    var showPhoneOnboarding = false
     /// A proxy link that was opened, waiting for the user to confirm it.
     var pendingProxy: RelayProxy.Address?
     /// The latest check of the proxy in use; nil when there's no proxy.
@@ -508,6 +510,7 @@ final class AppModel {
             }
             if created {
                 service.noteAccountCreated(username: resolvedUsername)
+                showPhoneOnboarding = true
             } else {
                 service.noteSignedIn(username: resolvedUsername)
             }
@@ -606,6 +609,7 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountCreated(username: signedUp.username)
+        showPhoneOnboarding = true
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
@@ -824,6 +828,7 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountCreated(username: username)
+        showPhoneOnboarding = true
         if let accountPassword, !accountPassword.isEmpty {
             UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
             Task { await service.setAccountStorageKey(password: accountPassword) }
