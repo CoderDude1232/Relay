@@ -64,12 +64,13 @@ func TestPhoneVerificationFlow(t *testing.T) {
 	const number = "+61400000001"
 
 	var status struct {
-		HasPhone     bool `json:"hasPhone"`
-		Discoverable bool `json:"discoverable"`
-		Available    bool `json:"available"`
+		HasPhone        bool     `json:"hasPhone"`
+		Discoverable    bool     `json:"discoverable"`
+		Available       bool     `json:"available"`
+		AllowedPrefixes []string `json:"allowedPrefixes"`
 	}
 	env.doJSON("GET", "/v1/accounts/me/phone", alice.authUser(), alice.password, nil, http.StatusOK, &status)
-	if status.HasPhone || !status.Available {
+	if status.HasPhone || !status.Available || len(status.AllowedPrefixes) != 1 || status.AllowedPrefixes[0] != "+61" {
 		t.Fatalf("initial status = %+v", status)
 	}
 

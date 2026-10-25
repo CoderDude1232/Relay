@@ -23,6 +23,7 @@ struct PhoneNumberView: View {
 
     @State private var step: Step = .loading
     @State private var country = PhoneNumbers.defaultCountry
+    @State private var countries = PhoneNumbers.countries
     @State private var number = ""
     @State private var code = ""
     @State private var discoverable = true
@@ -234,26 +235,20 @@ struct PhoneNumberView: View {
                    "Optional. Friends who have your number in their contacts can find you on Relay.")
 
             VStack(spacing: 0) {
-                Menu {
-                    Picker("Country", selection: $country) {
-                        ForEach(PhoneNumbers.countries) { c in
-                            Text("\(c.flag) \(c.name) (+\(c.callingCode))").tag(c)
+                if countries.count > 1 {
+                    Menu {
+                        Picker("Country", selection: $country) {
+                            ForEach(countries) { c in
+                                Text("\(c.flag) \(c.name) (+\(c.callingCode))").tag(c)
+                            }
                         }
+                    } label: {
+                        countryRow(showsChevron: true)
                     }
-                } label: {
-                    HStack(spacing: 12) {
-                        Text(country.flag).font(.title3).frame(width: 24)
-                        Text(country.name).foregroundStyle(.white)
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 16)
-                    .contentShape(.rect)
+                    .accessibilityLabel("Country, \(country.name)")
+                } else {
+                    countryRow(showsChevron: false)
                 }
-                .accessibilityLabel("Country, \(country.name)")
 
                 Divider().background(.white.opacity(0.12))
 
@@ -354,6 +349,22 @@ struct PhoneNumberView: View {
         }
     }
 
+    private func countryRow(showsChevron: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text(country.flag).font(.title3).frame(width: 24)
+            Text(country.name).foregroundStyle(.white)
+            Spacer()
+            if showsChevron {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .contentShape(.rect)
+    }
+
     private func codeBox(at index: Int) -> some View {
         let digits = Array(codeDigits)
         let isCurrent = index == digits.count && focused == .code
@@ -401,6 +412,15 @@ struct PhoneNumberView: View {
         do {
             let status = try await service.phoneStatus()
             discoverable = status.hasPhone ? status.discoverable : true
+            if let prefixes = status.allowedPrefixes {
+                let allowed = PhoneNumbers.countries.filter { c in
+                    prefixes.contains { ("+" + c.callingCode).hasPrefix($0) }
+                }
+                if !allowed.isEmpty {
+                    countries = allowed
+                    if !allowed.contains(country) { country = allowed[0] }
+                }
+            }
             step = !status.available && !status.hasPhone ? .unavailable : (status.hasPhone ? .added : .enterNumber)
         } catch {
             errorMessage = FriendlyError.message(for: error)

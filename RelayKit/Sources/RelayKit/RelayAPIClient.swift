@@ -332,6 +332,8 @@ public struct RelayAPIClient: Sendable {
         public let discoverable: Bool
         /// False until the relay is set up to text codes.
         public let available: Bool
+        /// Calling codes the relay accepts ("+61"); nil from older relays.
+        public let allowedPrefixes: [String]?
     }
 
     /// `GET /v1/accounts/me/phone`.

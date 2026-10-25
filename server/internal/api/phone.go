@@ -104,15 +104,21 @@ func (s *Server) phoneUnavailable(w http.ResponseWriter, accountID string) bool 
 	return s.refuseIfDemo(w, accountID)
 }
 
-// GET /v1/accounts/me/phone → {hasPhone, discoverable, available}.
+// GET /v1/accounts/me/phone → {hasPhone, discoverable, available, allowedPrefixes}.
 func (s *Server) handleGetPhone(w http.ResponseWriter, _ *http.Request, dev *store.Device) {
 	has, discoverable, err := s.store.AccountPhone(dev.AccountID)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
+	// The app offers only these countries.
+	prefixes := []string{}
+	if s.phone != nil {
+		prefixes = s.phone.allowedPrefixes
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hasPhone": has, "discoverable": discoverable, "available": s.phone != nil && s.oprf != nil,
+		"allowedPrefixes": prefixes,
 	})
 }
 
