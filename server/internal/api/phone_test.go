@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -13,9 +14,13 @@ import (
 type stubSMS struct {
 	sent map[string]bool
 	code string
+	fail bool // refuse every send, as Twilio does for an unverified account
 }
 
 func (s *stubSMS) Start(_ context.Context, phone string) error {
+	if s.fail {
+		return errors.New("twilio verify start: HTTP 403")
+	}
 	s.sent[phone] = true
 	return nil
 }
@@ -115,6 +120,32 @@ func TestPhoneVerificationFlow(t *testing.T) {
 	}
 	// No number: discoverability has nothing to change.
 	env.doJSON("PUT", "/v1/accounts/me/phone/discoverability", bob.authUser(), bob.password, map[string]bool{"discoverable": true}, http.StatusNotFound, nil)
+}
+
+// Sends the provider refused didn't text anyone, so they don't use up the
+// account's or the number's daily allowance.
+func TestPhoneStartFailureDoesNotCount(t *testing.T) {
+	env := newTestEnv(t)
+	key, err := oprf.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.api.SetOPRF(key); err != nil {
+		t.Fatal(err)
+	}
+	sms := &stubSMS{sent: map[string]bool{}, code: "123456", fail: true}
+	env.api.SetPhoneVerification(sms, []string{"+61"}, 10)
+	alice := env.registerAs(uniqueUsername("phonef"), "password123")
+	start := func(want int) {
+		t.Helper()
+		env.doJSON("POST", "/v1/accounts/me/phone/start", alice.authUser(), alice.password,
+			map[string]string{"phone": "+61400000002"}, want, nil)
+	}
+	for range 4 {
+		start(http.StatusBadGateway)
+	}
+	sms.fail = false
+	start(http.StatusNoContent)
 }
 
 func timeNowForTest() time.Time { return time.Now() }

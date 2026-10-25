@@ -2821,6 +2821,17 @@ func (l *slidingWindowLimiter) allow(key string) bool {
 	return true
 }
 
+// refund gives back the most recent slot taken for key, for an attempt that
+// turned out to cost nothing.
+func (l *slidingWindowLimiter) refund(key string) {
+	key = limitkey.Hash(key)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n := len(l.windows[key]); n > 0 {
+		l.windows[key] = l.windows[key][:n-1]
+	}
+}
+
 // PruneStaleLimiterKeys removes limiter entries with no activity within their
 // window. Call it periodically so one-off keys don't accumulate.
 func (s *Server) PruneStaleLimiterKeys() {

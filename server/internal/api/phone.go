@@ -150,7 +150,11 @@ func (s *Server) handleStartPhone(w http.ResponseWriter, r *http.Request, dev *s
 		return
 	}
 	if err := s.phone.verifier.Start(r.Context(), req.Phone); err != nil {
+		// Nothing was texted, so the attempt doesn't count. The per-address
+		// limit stays, which still bounds probing.
 		s.phone.refundDailySlot()
+		phoneStartAccountLimiter.refund(dev.AccountID)
+		phoneStartNumberLimiter.refund(numberKey)
 		var invalid *invalidPhoneError
 		if errors.As(err, &invalid) {
 			httpError(w, http.StatusBadRequest, "that phone number can't receive codes")
