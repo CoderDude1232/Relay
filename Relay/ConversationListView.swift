@@ -1318,7 +1318,7 @@ private struct NewChatSheet: View {
                             }
                         } footer: {
                             if !service.isDemoAccount && !discoveryStarted {
-                                Text("Find Contacts checks which of your contacts use Relay. Their addresses are blinded on your iPhone first.")
+                                Text("Find Contacts checks which of your contacts use Relay. Their emails and phone numbers are blinded on your iPhone first.")
                             }
                         }
 

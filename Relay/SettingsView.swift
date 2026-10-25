@@ -496,6 +496,20 @@ private struct AccountSettingsView: View {
                     if let discoverabilityError { Text(discoverabilityError) }
                 }
                 }
+
+                Section {
+                    NavigationLink(destination: PhoneNumberView(service: service)) {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "phone.fill", color: .green)
+                            Text("Phone Number")
+                            Spacer(minLength: 0)
+                            Text(UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) != nil ? "Added" : "Optional")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } footer: {
+                    Text("Lets people who already have your number find you. Never shown to anyone, and not used to sign in.")
+                }
             }
 
             Section {

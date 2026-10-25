@@ -325,6 +325,43 @@ public struct RelayAPIClient: Sendable {
             "PUT", "v1/accounts/me/discoverability", body: Body(email: discoverable))
     }
 
+    // MARK: Optional phone number (discovery only)
+
+    public struct PhoneStatus: Decodable, Sendable {
+        public let hasPhone: Bool
+        public let discoverable: Bool
+        /// False until the relay is set up to text codes.
+        public let available: Bool
+    }
+
+    /// `GET /v1/accounts/me/phone`.
+    public func phoneStatus() async throws -> PhoneStatus {
+        try await request("GET", "v1/accounts/me/phone", body: nil as String?)
+    }
+
+    /// Texts a code to `phone` (E.164, e.g. +61412345678).
+    public func startPhoneVerification(_ phone: String) async throws {
+        struct Body: Encodable { let phone: String }
+        try await requestExpectingNoContent("POST", "v1/accounts/me/phone/start", body: Body(phone: phone))
+    }
+
+    /// Checks the texted code; on success the number is the account's.
+    public func verifyPhone(_ phone: String, code: String, discoverable: Bool) async throws {
+        struct Body: Encodable { let phone: String; let code: String; let discoverable: Bool }
+        try await requestExpectingNoContent(
+            "POST", "v1/accounts/me/phone/verify", body: Body(phone: phone, code: code, discoverable: discoverable))
+    }
+
+    public func setPhoneDiscoverable(_ discoverable: Bool) async throws {
+        struct Body: Encodable { let discoverable: Bool }
+        try await requestExpectingNoContent(
+            "PUT", "v1/accounts/me/phone/discoverability", body: Body(discoverable: discoverable))
+    }
+
+    public func removePhone() async throws {
+        _ = try await send(makeRequest("DELETE", "v1/accounts/me/phone"), authenticated: true)
+    }
+
     /// Whether `name` is free (case-insensitive). Unauthenticated, rate-limited
     /// per IP, and returns only a boolean. Throws `.http(400, ...)` for an
     /// invalid username.

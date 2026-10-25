@@ -23,6 +23,8 @@ extension MessagingService {
         case "account_password_set": what = "Your account password was changed"
         case "email_removed": what = "The email address was removed from your account"
         case "email_changed": what = "Your account's email address was changed"
+        case "phone_added": what = "A phone number was added to your account"
+        case "phone_removed": what = "The phone number was removed from your account"
         default: what = "How your account signs in was changed"
         }
         let when = Date(timeIntervalSince1970: TimeInterval(timeMs) / 1000)

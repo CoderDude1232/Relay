@@ -52,6 +52,36 @@ extension MessagingService {
         UserDefaults.standard.set(on, forKey: Self.emailDiscoverableKey)
     }
 
+    // MARK: - Phone number (optional, discovery only)
+
+    /// The number this device added, kept on the device only so it can be
+    /// shown back; the relay holds just its keyed token.
+    static let phoneNumberKey = "relay.phoneNumber"
+
+    func phoneStatus() async throws -> RelayAPIClient.PhoneStatus {
+        let status = try await apiClient.phoneStatus()
+        if !status.hasPhone { UserDefaults.standard.removeObject(forKey: Self.phoneNumberKey) }
+        return status
+    }
+
+    func startPhoneVerification(_ phone: String) async throws {
+        try await apiClient.startPhoneVerification(phone)
+    }
+
+    func verifyPhone(_ phone: String, code: String, discoverable: Bool) async throws {
+        try await apiClient.verifyPhone(phone, code: code, discoverable: discoverable)
+        UserDefaults.standard.set(phone, forKey: Self.phoneNumberKey)
+    }
+
+    func setPhoneDiscoverable(_ on: Bool) async throws {
+        try await apiClient.setPhoneDiscoverable(on)
+    }
+
+    func removePhone() async throws {
+        try await apiClient.removePhone()
+        UserDefaults.standard.removeObject(forKey: Self.phoneNumberKey)
+    }
+
     // MARK: - Report
 
     /// Max recent messages from the peer forwarded with a report (opt-in only).

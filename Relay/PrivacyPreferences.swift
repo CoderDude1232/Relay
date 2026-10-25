@@ -51,7 +51,8 @@ nonisolated enum PrivacyPreferences {
     /// Ask the keyboard not to learn what you type. On by default.
     static let incognitoKeyboardKey = "privacy.incognitoKeyboard"
     /// The user explicitly agreed to contact discovery (address-book matching).
-    static let contactDiscoveryConsentKey = "relay.contactDiscoveryConsent"
+    // v2: consent now covers phone numbers as well as emails, so it is asked again.
+    static let contactDiscoveryConsentKey = "relay.contactDiscoveryConsent.v2"
 
     private static var defaults: UserDefaults { .standard }
 
@@ -83,7 +84,7 @@ nonisolated enum PrivacyPreferences {
 /// Contact discovery (address-book matching) never runs on its own: only when
 /// the user taps "Find contacts on Relay" after reading this explanation.
 nonisolated enum ContactDiscoveryConsent {
-    static let explanation = "Relay will read the email addresses in your contacts and check which of them belong to Relay accounts. The addresses are blinded on your device before the check, and your address book is never stored on Relay's servers. This only happens when you tap Find Contacts."
+    static let explanation = "Relay will read the email addresses and phone numbers in your contacts and check which of them belong to Relay accounts. They're blinded on your device before the check, and your address book is never stored on Relay's servers. This only happens when you tap Find Contacts."
 
     static var isGranted: Bool { PrivacyPreferences.contactDiscoveryConsented }
 

@@ -97,6 +97,9 @@ Data Linked to You:
   email; stored as a keyed hash, used for sign-in and account recovery) →
   App Functionality.
 - **Identifiers → User ID** (account ID and username) → App Functionality.
+- **Contact Info → Phone Number** (only if the user adds one; verified by an
+  SMS code sent through Twilio, then stored only as a keyed hash, used so
+  people who have the number can find the account) → App Functionality.
 
 Data Not Collected: message content, contacts (lookups are blinded on the
 device), location (shared end-to-end encrypted, never readable by Relay),

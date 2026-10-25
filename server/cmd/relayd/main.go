@@ -174,6 +174,11 @@ func main() {
 	demoCodeFile := flag.String("demo-code-file", "", "path to a file holding the App Review sign-in code (enables POST /v1/accounts/demo-signin)")
 	supabaseURL := flag.String("supabase-url", "", "Supabase project URL (enables social-login account recovery via POST /v1/accounts/oauth)")
 	supabaseAnonKey := flag.String("supabase-anon-key", "", "Supabase anon API key (sent as the apikey header when verifying user tokens)")
+	twilioAccountSID := flag.String("twilio-account-sid", "", "Twilio account SID (with -twilio-auth-token-file and -twilio-verify-service-sid, enables optional phone numbers)")
+	twilioAuthTokenFile := flag.String("twilio-auth-token-file", "", "path to a file holding the Twilio auth token")
+	twilioVerifySID := flag.String("twilio-verify-service-sid", "", "Twilio Verify service SID used to text phone-number codes")
+	phonePrefixes := flag.String("phone-allowed-prefixes", "+61", "comma-separated calling codes phone numbers may have, e.g. +61,+64")
+	phoneDailyCap := flag.Int("phone-daily-cap", 30, "most phone-number codes texted per day, across all accounts")
 	supabaseServiceKeyFile := flag.String("supabase-service-key-file", "", "path to a file holding the Supabase service-role key (enables deleting the Supabase auth user on account deletion)")
 	sealedKey := flag.String("sealed-sender-trust-key", "", "path to the sealed-sender trust-root private key (hex, 32 bytes); generated if absent, enables GET /v1/certificate/delivery")
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
@@ -246,6 +251,23 @@ func main() {
 		}
 		apiServer.SetDemoCode(string(code))
 		slog.Info("review-code demo sign-in enabled")
+	}
+	if *twilioAccountSID != "" && *twilioAuthTokenFile != "" && *twilioVerifySID != "" {
+		token, err := os.ReadFile(*twilioAuthTokenFile)
+		if err != nil {
+			slog.Error("read twilio auth token", "err", err)
+			os.Exit(1)
+		}
+		var prefixes []string
+		for _, p := range strings.Split(*phonePrefixes, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				prefixes = append(prefixes, p)
+			}
+		}
+		apiServer.SetPhoneVerification(
+			api.NewTwilioVerify(*twilioAccountSID, strings.TrimSpace(string(token)), *twilioVerifySID),
+			prefixes, *phoneDailyCap)
+		slog.Info("optional phone numbers enabled", "prefixes", prefixes, "dailyCap", *phoneDailyCap)
 	}
 	if *cfTURNKeyID != "" {
 		token, err := os.ReadFile(*cfTURNTokenFile)

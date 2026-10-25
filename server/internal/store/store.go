@@ -428,6 +428,11 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// Email discovery is opt-in: a verified email gets a directory entry
 		// only once the owner enables it.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
+		// Optional phone number, for discovery only: stored as its OPRF token
+		// (never the number), verified by SMS (store/phone.go).
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS phone_token BYTEA`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_phone_token ON accounts (phone_token) WHERE phone_token IS NOT NULL`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS phone_discoverable BOOLEAN NOT NULL DEFAULT FALSE`,
 		// Review/test accounts, isolated from everyone else (store/demo.go).
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_demo BOOLEAN NOT NULL DEFAULT FALSE`,
 		// One-time Kyber prekeys; the last-resort key stays in kyber_prekeys.
@@ -2743,6 +2748,7 @@ func (s *Store) AccessKey(accountID string) ([]byte, error) {
 const (
 	DirectoryKindUsername int16 = 0
 	DirectoryKindEmail    int16 = 1
+	DirectoryKindPhone    int16 = 2
 )
 
 // DirectoryEntry is one row of the blinded directory: an OPRF token, its
@@ -2774,13 +2780,17 @@ type AccountDirInfo struct {
 	// EmailDiscoverable is the owner's opt-in for an email directory entry.
 	EmailDiscoverable bool
 	AccessKey         []byte
+	// PhoneToken is the verified phone number's OPRF token, if any;
+	// PhoneDiscoverable whether it gets a directory entry.
+	PhoneToken        []byte
+	PhoneDiscoverable bool
 }
 
 // AllAccountsForDirectory returns every account's directory material for the
 // startup rebuild.
 func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	rows, err := s.db.Query(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token, email_discoverable, access_key FROM accounts ORDER BY created_at, id`)
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable, access_key, phone_token, phone_discoverable FROM accounts ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2788,7 +2798,7 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 	var out []AccountDirInfo
 	for rows.Next() {
 		var a AccountDirInfo
-		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable, &a.AccessKey); err != nil {
+		if err := rows.Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable, &a.AccessKey, &a.PhoneToken, &a.PhoneDiscoverable); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -2800,9 +2810,9 @@ func (s *Store) AllAccountsForDirectory() ([]AccountDirInfo, error) {
 func (s *Store) AccountForDirectory(accountID string) (AccountDirInfo, error) {
 	var a AccountDirInfo
 	err := s.db.QueryRow(context.Background(),
-		`SELECT id, COALESCE(username, ''), email_token, email_discoverable, access_key FROM accounts WHERE id = $1`,
+		`SELECT id, COALESCE(username, ''), email_token, email_discoverable, access_key, phone_token, phone_discoverable FROM accounts WHERE id = $1`,
 		accountID,
-	).Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable, &a.AccessKey)
+	).Scan(&a.AccountID, &a.Username, &a.EmailToken, &a.EmailDiscoverable, &a.AccessKey, &a.PhoneToken, &a.PhoneDiscoverable)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrAccountNotFound
 	}

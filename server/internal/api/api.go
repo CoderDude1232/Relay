@@ -41,6 +41,9 @@ import (
 )
 
 type Server struct {
+	// phone sends and checks SMS codes for optional phone numbers; nil when
+	// not configured (phone numbers are then unavailable).
+	phone        *phoneVerification
 	store        *store.Store
 	hub          *hub.Hub
 	blobs        *blob.Store
@@ -303,6 +306,10 @@ func (s *Server) directoryEntries(a store.AccountDirInfo) []store.DirectoryEntry
 	if len(a.EmailToken) > 0 && a.EmailDiscoverable {
 		add(a.EmailToken, store.DirectoryKindEmail)
 	}
+	// Phone discovery is the owner's choice when they add a number.
+	if len(a.PhoneToken) > 0 && a.PhoneDiscoverable {
+		add(a.PhoneToken, store.DirectoryKindPhone)
+	}
 	return entries
 }
 
@@ -383,6 +390,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/accounts/password-reset", s.handlePasswordReset) // unauthenticated; proof = fresh Supabase recovery session
 	mux.HandleFunc("PUT /v1/accounts/me/email", s.auth(s.handleUpdateEmail))
 	mux.HandleFunc("PUT /v1/accounts/me/discoverability", s.auth(s.handleSetDiscoverability))
+	mux.HandleFunc("GET /v1/accounts/me/phone", s.auth(s.handleGetPhone))
+	mux.HandleFunc("POST /v1/accounts/me/phone/start", s.auth(s.handleStartPhone))
+	mux.HandleFunc("POST /v1/accounts/me/phone/verify", s.auth(s.handleVerifyPhone))
+	mux.HandleFunc("PUT /v1/accounts/me/phone/discoverability", s.auth(s.handleSetPhoneDiscoverability))
+	mux.HandleFunc("DELETE /v1/accounts/me/phone", s.auth(s.handleDeletePhone))
 	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.handleSetAccountPassword))
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
 	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))

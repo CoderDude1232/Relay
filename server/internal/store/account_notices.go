@@ -14,6 +14,8 @@ const (
 	NoticeAccountPasswordSet  = "account_password_set"
 	NoticeEmailRemoved        = "email_removed"
 	NoticeEmailChanged        = "email_changed"
+	NoticePhoneAdded          = "phone_added"
+	NoticePhoneRemoved        = "phone_removed"
 	accountNoticeRetentionDay = 30
 )
 

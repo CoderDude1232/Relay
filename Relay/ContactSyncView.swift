@@ -2,7 +2,8 @@
 //  ContactSyncView.swift
 //  Relay
 //
-//  Matches address book emails against Relay accounts with blinded discovery.
+//  Matches address book emails and phone numbers against Relay accounts with
+//  blinded discovery.
 //  Runs only when the user taps "Find contacts on Relay", after a one-time
 //  consent prompt.
 //
@@ -16,11 +17,13 @@ import UIKit
 struct ContactSyncView: View {
     let service: MessagingService
 
-    private struct AddressEntry: Sendable { let name: String; let email: String; let avatar: Data? }
+    /// `identifier` is an email (lowercased) or an E.164 phone number.
+    private struct AddressEntry: Sendable { let name: String; let identifier: String; let avatar: Data? }
 
     private nonisolated static func readAddressBook() -> [AddressEntry] {
-        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
-                    CNContactEmailAddressesKey, CNContactThumbnailImageDataKey] as [CNKeyDescriptor]
+        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactEmailAddressesKey,
+                    CNContactPhoneNumbersKey, CNContactThumbnailImageDataKey] as [CNKeyDescriptor]
+        let country = PhoneNumbers.defaultCountry
         let request = CNContactFetchRequest(keysToFetch: keys)
         var entries: [AddressEntry] = []
         try? CNContactStore().enumerateContacts(with: request) { contact, _ in
@@ -28,7 +31,14 @@ struct ContactSyncView: View {
             for address in contact.emailAddresses {
                 let email = (address.value as String).lowercased()
                 entries.append(AddressEntry(name: name.isEmpty ? email : name,
-                                            email: email,
+                                            identifier: email,
+                                            avatar: contact.thumbnailImageData))
+            }
+            // Numbers without a country code are read as the phone's own country.
+            for phone in contact.phoneNumbers {
+                guard let e164 = PhoneNumbers.e164(phone.value.stringValue, country: country) else { continue }
+                entries.append(AddressEntry(name: name.isEmpty ? PhoneNumbers.display(e164) : name,
+                                            identifier: e164,
                                             avatar: contact.thumbnailImageData))
             }
         }
@@ -205,19 +215,19 @@ struct ContactSyncView: View {
         // Enumeration is synchronous and slow, so do it off the main thread.
         let entries = await Task.detached(priority: .userInitiated) { Self.readAddressBook() }.value
 
-        // Deduplicate emails (keep first contact name seen for a given email).
+        // Deduplicate (keep the first contact name seen for an email or number).
         var seen = Set<String>()
-        let deduped = entries.filter { seen.insert($0.email).inserted }
+        let deduped = entries.filter { seen.insert($0.identifier).inserted }
 
-        // One blinded pass: the relay never sees plaintext emails, and contacts
+        // One blinded pass: the relay never sees plaintext emails or numbers, and contacts
         // who aren't on Relay reveal nothing.
         let existingAccountIds = Set(service.conversations.map { $0.peerAccount })
         var found: [ContactMatch] = []
-        let entryByEmail = Dictionary(deduped.map { ($0.email, $0) }, uniquingKeysWith: { a, _ in a })
+        let entryByEmail = Dictionary(deduped.map { ($0.identifier, $0) }, uniquingKeysWith: { a, _ in a })
 
         let discovered: [(email: String, accountId: String, username: String)]
         do {
-            discovered = try await service.discoverContacts(emails: deduped.map { $0.email })
+            discovered = try await service.discoverContacts(emails: deduped.map { $0.identifier })
         } catch {
             // A 503 or network failure is not an empty result; offer a retry.
             matches = []
