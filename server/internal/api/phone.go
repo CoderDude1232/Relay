@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -155,6 +156,7 @@ func (s *Server) handleStartPhone(w http.ResponseWriter, r *http.Request, dev *s
 			httpError(w, http.StatusBadRequest, "that phone number can't receive codes")
 			return
 		}
+		slog.Warn("phone: twilio start failed", "err", err)
 		httpError(w, http.StatusBadGateway, "couldn't send the code; try again later")
 		return
 	}
@@ -183,6 +185,7 @@ func (s *Server) handleVerifyPhone(w http.ResponseWriter, r *http.Request, dev *
 	}
 	ok, err := s.phone.verifier.Check(r.Context(), req.Phone, req.Code)
 	if err != nil {
+		slog.Warn("phone: twilio check failed", "err", err)
 		httpError(w, http.StatusBadGateway, "couldn't check the code; try again")
 		return
 	}
@@ -251,6 +254,19 @@ func NewTwilioVerify(accountSID, authToken, serviceSID string) *TwilioVerify {
 		client: &http.Client{Timeout: 15 * time.Second}}
 }
 
+// twilioErrorSummary keeps Twilio's error code and docs link from a failed
+// response; the message is dropped because it can echo the phone number.
+func twilioErrorSummary(body []byte) string {
+	var e struct {
+		Code     int    `json:"code"`
+		MoreInfo string `json:"more_info"`
+	}
+	if json.Unmarshal(body, &e) != nil || e.Code == 0 {
+		return "unrecognised response"
+	}
+	return fmt.Sprintf("code %d (%s)", e.Code, e.MoreInfo)
+}
+
 type invalidPhoneError struct{ message string }
 
 func (e *invalidPhoneError) Error() string { return e.message }
@@ -282,7 +298,7 @@ func (t *TwilioVerify) Start(ctx context.Context, phone string) error {
 		return &invalidPhoneError{message: "twilio rejected the number"}
 	}
 	if status/100 != 2 {
-		return fmt.Errorf("twilio verify start: HTTP %d: %.200s", status, body)
+		return fmt.Errorf("twilio verify start: HTTP %d: %s", status, twilioErrorSummary(body))
 	}
 	return nil
 }
@@ -296,7 +312,7 @@ func (t *TwilioVerify) Check(ctx context.Context, phone, code string) (bool, err
 		return false, nil // expired, already used or never started
 	}
 	if status/100 != 2 {
-		return false, fmt.Errorf("twilio verify check: HTTP %d: %.200s", status, body)
+		return false, fmt.Errorf("twilio verify check: HTTP %d: %s", status, twilioErrorSummary(body))
 	}
 	var out struct {
 		Status string `json:"status"`

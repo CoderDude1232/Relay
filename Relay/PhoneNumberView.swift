@@ -204,7 +204,7 @@ struct PhoneNumberView: View {
     }
 
     private var footnote: some View {
-        Text("Never shown to anyone and not used to sign in. Relay keeps only a scrambled form that can't be turned back into your number.")
+        Text("Never shown to anyone. Not used to sign in.")
             .font(.footnote)
             .foregroundStyle(.white.opacity(0.45))
             .multilineTextAlignment(.center)
@@ -228,7 +228,7 @@ struct PhoneNumberView: View {
     private var enterNumberStep: some View {
         VStack(spacing: 16) {
             header(savedNumber == nil ? "Phone number" : "New number",
-                   "Optional. Lets friends who have your number find you on Relay.")
+                   "Optional. Friends with your number can find you.")
 
             card {
                 if countries.count > 1 {
@@ -275,11 +275,6 @@ struct PhoneNumberView: View {
             primaryButton("Send code", enabled: typedNumber != nil) { sendCode() }
 
             footnote
-
-            if context == .onboarding {
-                textButton("Not now", color: .white.opacity(0.55), action: onDone)
-                    .frame(minHeight: 44)
-            }
         }
         .onAppear { if context == .settings { focused = .number } }
     }
@@ -318,9 +313,7 @@ struct PhoneNumberView: View {
     private var addedStep: some View {
         VStack(spacing: 16) {
             header(context == .onboarding ? "You're all set" : "Phone number",
-                   context == .onboarding
-                       ? "Friends who have your number can now find you on Relay."
-                       : "Lets friends who have your number find you on Relay.")
+                   "Friends with your number can find you.")
 
             card {
                 row("phone") {
@@ -337,8 +330,6 @@ struct PhoneNumberView: View {
             error
 
             primaryButton(context == .onboarding ? "Continue" : "Done", action: onDone)
-
-            footnote
 
             if context == .settings {
                 HStack(spacing: 24) {
