@@ -2,10 +2,10 @@
 //  PhoneNumberView.swift
 //  Relay
 //
-//  The optional phone number, in the onboarding style: offered once right
-//  after a new account, and opened from Profile → Account → Phone Number.
-//  A number lets people who already have it find you. It's verified once by
-//  text, never shown to anyone, and isn't a way to sign in.
+//  The optional phone number, laid out like the onboarding screens: offered
+//  once right after a new account, and opened from Profile → Account →
+//  Phone Number. A number lets people who already have it find you. It's
+//  verified once by text, never shown to anyone, and isn't a way to sign in.
 //
 
 import RelayKit
@@ -30,15 +30,14 @@ struct PhoneNumberView: View {
     @State private var pendingNumber: String?
     @State private var working = false
     @State private var errorMessage: String?
+    @State private var resendNote: String?
     @State private var confirmingRemove = false
-    @State private var resendAvailableAt = Date.distantPast
     @FocusState private var focused: Field?
 
     private enum Field: Hashable { case number, code }
 
     private static let codeLength = 6
     private static let ink = Color(red: 0.06, green: 0.02, blue: 0.22)
-    private static let magenta = Color(red: 0.965, green: 0.231, blue: 1.0)
 
     private var savedNumber: String? { UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) }
     private var typedNumber: String? { PhoneNumbers.e164(number, country: country) }
@@ -47,13 +46,13 @@ struct PhoneNumberView: View {
     var body: some View {
         ZStack {
             BackgroundGradient()
-            VStack(spacing: 0) {
-                topBar
-                ScrollView {
+            ScrollView {
+                VStack(spacing: 16) {
+                    topBar
                     Group {
                         switch step {
                         case .loading:
-                            ProgressView().tint(.white).padding(.top, 160)
+                            ProgressView().tint(.white).padding(.top, 120)
                         case .unavailable: unavailableStep
                         case .enterNumber: enterNumberStep
                         case .enterCode: enterCodeStep
@@ -65,13 +64,20 @@ struct PhoneNumberView: View {
                         removal: .opacity
                     ))
                 }
-                .scrollDismissesKeyboard(.interactively)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 40)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
         .animation(.spring(duration: 0.4), value: step)
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
         .task { await load() }
+        .onChange(of: code) { _, new in
+            let digits = String(new.filter(\.isNumber).prefix(Self.codeLength))
+            if digits != new { code = digits; return }
+            if digits.count == Self.codeLength { verify() }
+        }
         .confirmationDialog("Remove your phone number?", isPresented: $confirmingRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
                 run {
@@ -85,13 +91,14 @@ struct PhoneNumberView: View {
         }
     }
 
-    // MARK: Chrome
+    // MARK: Pieces (the same look as OnboardingView's screens)
 
     private var topBar: some View {
         HStack {
             if step == .enterCode {
                 circleButton("chevron.left", label: "Back") {
                     errorMessage = nil
+                    resendNote = nil
                     step = .enterNumber
                 }
             } else if context == .settings {
@@ -100,15 +107,13 @@ struct PhoneNumberView: View {
             Spacer()
             if context == .onboarding, step != .added {
                 Button("Skip", action: onDone)
-                    .font(.headline)
-                    .foregroundStyle(.white.opacity(0.75))
-                    .frame(height: 40)
-                    .padding(.horizontal, 6)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(minHeight: 40)
                     .disabled(working)
             }
         }
-        .frame(height: 40)
-        .padding(.horizontal, 24)
+        .frame(minHeight: 40)
         .padding(.top, 16)
     }
 
@@ -124,14 +129,8 @@ struct PhoneNumberView: View {
         .disabled(working)
     }
 
-    private func header(_ systemName: String, _ title: String, _ subtitle: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: systemName)
-                .font(.system(size: 52, weight: .light))
-                .foregroundStyle(.white.opacity(0.9))
-                .symbolRenderingMode(.hierarchical)
-                .padding(.bottom, 8)
-                .accessibilityHidden(true)
+    private func header(_ title: String, _ subtitle: String) -> some View {
+        VStack(spacing: 6) {
             Text(title)
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .foregroundStyle(.white)
@@ -141,10 +140,28 @@ struct PhoneNumberView: View {
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
         }
-        .padding(.horizontal, 32)
         .padding(.top, 24)
-        .padding(.bottom, 36)
+        .padding(.bottom, 12)
     }
+
+    private func row<Content: View>(_ icon: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 24)
+            content()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+    }
+
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0, content: content)
+            .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+    }
+
+    private var divider: some View { Divider().background(.white.opacity(0.12)) }
 
     private func primaryButton(_ title: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -157,252 +174,183 @@ struct PhoneNumberView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
-            .background(enabled ? Color.white : Color.white.opacity(0.3),
+            .background(enabled && !working ? Color.white : Color.white.opacity(0.3),
                         in: .rect(cornerRadius: 16, style: .continuous))
         }
         .disabled(!enabled || working)
-        .padding(.horizontal, 28)
     }
 
-    private func secondaryButton(_ title: String, color: Color = .white.opacity(0.75), action: @escaping () -> Void) -> some View {
+    private func textButton(_ title: String, color: Color = .white.opacity(0.8), action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(color)
-            .padding(.vertical, 8)
             .disabled(working)
     }
 
-    private var discoverableCard: some View {
-        Toggle(isOn: Binding(
-            get: { discoverable },
-            set: { on in
-                guard step == .added else { discoverable = on; return }
-                let previous = discoverable
-                discoverable = on
-                run(onError: { discoverable = previous }) { try await service.setPhoneDiscoverable(on) }
-            }
-        )) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Let people find me by number")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white)
-                Text("Only people who already have it.")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.5))
-            }
+    private var discoverableRow: some View {
+        row("magnifyingglass") {
+            Toggle("Find me by number", isOn: Binding(
+                get: { discoverable },
+                set: { on in
+                    guard step == .added else { discoverable = on; return }
+                    let previous = discoverable
+                    discoverable = on
+                    run(onError: { discoverable = previous }) { try await service.setPhoneDiscoverable(on) }
+                }
+            ))
+            .foregroundStyle(.white)
+            .tint(.accentColor)
         }
-        .tint(Self.magenta)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 16, style: .continuous))
-        .padding(.horizontal, 28)
     }
 
-    private var privacyNote: some View {
-        Label {
-            Text("Never shown to anyone and not used to sign in. Relay keeps only a scrambled form that can't be turned back into your number.")
-        } icon: {
-            Image(systemName: "lock.fill")
-        }
-        .font(.caption)
-        .foregroundStyle(.white.opacity(0.5))
-        .padding(.horizontal, 32)
+    private var footnote: some View {
+        Text("Never shown to anyone and not used to sign in. Relay keeps only a scrambled form that can't be turned back into your number.")
+            .font(.footnote)
+            .foregroundStyle(.white.opacity(0.45))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 16)
     }
 
     @ViewBuilder
     private var error: some View {
-        if let errorMessage {
-            InlineErrorBanner(errorMessage)
-                .padding(.horizontal, 28)
-                .padding(.top, 12)
-        }
+        if let errorMessage { InlineErrorBanner(errorMessage) }
     }
 
     // MARK: Steps
 
     private var unavailableStep: some View {
-        VStack(spacing: 0) {
-            header("phone.badge.waveform", "Coming soon",
-                   "Adding a phone number isn't available yet. You can add one later in Settings → Account.")
+        VStack(spacing: 16) {
+            header("Phone number", "Adding a phone number isn't available yet. You can add one later in Settings → Account.")
             primaryButton(context == .onboarding ? "Continue" : "Done", action: onDone)
         }
     }
 
     private var enterNumberStep: some View {
-        VStack(spacing: 0) {
-            header("phone.circle",
-                   savedNumber == nil ? "Add your phone number" : "Change your number",
-                   "Optional. Friends who have your number in their contacts can find you on Relay.")
+        VStack(spacing: 16) {
+            header(savedNumber == nil ? "Phone number" : "New number",
+                   "Optional. Lets friends who have your number find you on Relay.")
 
-            VStack(spacing: 0) {
+            card {
                 if countries.count > 1 {
-                    Menu {
-                        Picker("Country", selection: $country) {
-                            ForEach(countries) { c in
-                                Text("\(c.flag) \(c.name) (+\(c.callingCode))").tag(c)
+                    row("globe") {
+                        Menu {
+                            Picker("Country", selection: $country) {
+                                ForEach(countries) { c in
+                                    Text("\(c.flag) \(c.name) (+\(c.callingCode))").tag(c)
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Text("\(country.flag) \(country.name)").foregroundStyle(.white)
+                                Spacer()
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.white.opacity(0.5))
                             }
                         }
-                    } label: {
-                        countryRow(showsChevron: true)
+                        .accessibilityLabel("Country, \(country.name)")
                     }
-                    .accessibilityLabel("Country, \(country.name)")
-                } else {
-                    countryRow(showsChevron: false)
+                    divider
                 }
-
-                Divider().background(.white.opacity(0.12))
-
-                HStack(spacing: 12) {
-                    Text("+\(country.callingCode)")
-                        .font(.body.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(minWidth: 24, alignment: .leading)
+                row("phone") {
+                    Text("\(countries.count > 1 ? "" : country.flag + " ")+\(country.callingCode)")
+                        .foregroundStyle(.white.opacity(0.6))
+                        .monospacedDigit()
                     TextField("Phone number", text: $number)
                         .focused($focused, equals: .number)
                         .keyboardType(.phonePad)
                         .textContentType(.telephoneNumber)
-                        .font(.body.monospacedDigit())
+                        .monospacedDigit()
                         .foregroundStyle(.white)
                         .tint(.white)
-                    if typedNumber != nil {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            .transition(.scale.combined(with: .opacity))
-                    }
                 }
-                .animation(.spring(duration: 0.25), value: typedNumber != nil)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
+                .contentShape(.rect)
+                .onTapGesture { focused = .number }
+                divider
+                discoverableRow
             }
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 16, style: .continuous))
-            .padding(.horizontal, 28)
 
-            discoverableCard.padding(.top, 12)
-            privacyNote.padding(.top, 14)
             error
 
-            primaryButton("Send Code", enabled: typedNumber != nil) { sendCode() }
-                .padding(.top, 28)
-            Text("We'll text you a 6-digit code. Standard message rates may apply.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.4))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
-                .padding(.top, 12)
+            primaryButton("Send code", enabled: typedNumber != nil) { sendCode() }
+
+            footnote
+
             if context == .onboarding {
-                secondaryButton("Not now", action: onDone).padding(.top, 8)
+                textButton("Not now", color: .white.opacity(0.55), action: onDone)
+                    .frame(minHeight: 44)
             }
-            Spacer(minLength: 40)
         }
-        .onAppear { if context == .settings || savedNumber != nil { focused = .number } }
+        .onAppear { if context == .settings { focused = .number } }
     }
 
     private var enterCodeStep: some View {
-        VStack(spacing: 0) {
-            header("message.badge", "Enter the code",
-                   "Sent to \(PhoneNumbers.display(pendingNumber ?? ""))")
+        VStack(spacing: 16) {
+            header("Check your messages", "Enter the code we texted to \(PhoneNumbers.display(pendingNumber ?? "")).")
 
-            ZStack {
-                // The real field sits under the boxes so paste and SMS
-                // autofill work; tapping anywhere focuses it.
-                TextField("", text: $code)
-                    .focused($focused, equals: .code)
-                    .keyboardType(.numberPad)
-                    .textContentType(.oneTimeCode)
-                    .foregroundStyle(.clear)
-                    .tint(.clear)
-                    .accessibilityLabel("Verification code")
-                    .onChange(of: code) { _, new in
-                        let digits = String(new.filter(\.isNumber).prefix(Self.codeLength))
-                        if digits != new { code = digits; return }
-                        if digits.count == Self.codeLength { verify() }
-                    }
-                HStack(spacing: 8) {
-                    ForEach(0..<Self.codeLength, id: \.self) { i in
-                        codeBox(at: i)
-                    }
+            card {
+                row("number") {
+                    TextField("Code", text: $code)
+                        .focused($focused, equals: .code)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                        .foregroundStyle(.white)
+                        .tint(.white)
                 }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+                .contentShape(.rect)
+                .onTapGesture { focused = .code }
             }
-            .contentShape(.rect)
-            .onTapGesture { focused = .code }
-            .padding(.horizontal, 28)
             .onAppear { focused = .code }
 
             error
 
-            primaryButton("Verify", enabled: codeDigits.count == Self.codeLength) { verify() }
-                .padding(.top, 28)
+            primaryButton("Continue", enabled: codeDigits.count == Self.codeLength) { verify() }
 
-            TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                let wait = Int(resendAvailableAt.timeIntervalSince(timeline.date).rounded(.up))
-                secondaryButton(wait > 0 ? "Resend code in \(wait)s" : "Resend code") { sendCode() }
-                    .disabled(wait > 0 || working)
-                    .opacity(wait > 0 ? 0.5 : 1)
-            }
-            .padding(.top, 12)
-            secondaryButton("Use a different number") {
-                errorMessage = nil
-                step = .enterNumber
-            }
-            Spacer(minLength: 40)
-        }
-    }
-
-    private func countryRow(showsChevron: Bool) -> some View {
-        HStack(spacing: 12) {
-            Text(country.flag).font(.title3).frame(width: 24)
-            Text(country.name).foregroundStyle(.white)
-            Spacer()
-            if showsChevron {
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.5))
+            textButton("Resend code") { sendCode(resending: true) }
+            if let resendNote {
+                Text(resendNote)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.6))
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 16)
-        .contentShape(.rect)
-    }
-
-    private func codeBox(at index: Int) -> some View {
-        let digits = Array(codeDigits)
-        let isCurrent = index == digits.count && focused == .code
-        return Text(index < digits.count ? String(digits[index]) : "")
-            .font(.system(.title, design: .rounded, weight: .semibold).monospacedDigit())
-            .foregroundStyle(.white)
-            .frame(maxWidth: 52)
-            .frame(height: 60)
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(isCurrent ? Color.white.opacity(0.8) : Color.white.opacity(0.12),
-                                  lineWidth: isCurrent ? 1.5 : 1)
-            }
-            .animation(.easeOut(duration: 0.15), value: isCurrent)
     }
 
     private var addedStep: some View {
-        VStack(spacing: 0) {
-            header("checkmark.circle", context == .onboarding ? "You're all set" : "Phone number",
-                   savedNumber.map(PhoneNumbers.display) ?? "Your number is added.")
+        VStack(spacing: 16) {
+            header(context == .onboarding ? "You're all set" : "Phone number",
+                   context == .onboarding
+                       ? "Friends who have your number can now find you on Relay."
+                       : "Lets friends who have your number find you on Relay.")
 
-            discoverableCard
-            privacyNote.padding(.top, 14)
+            card {
+                row("phone") {
+                    Text(savedNumber.map(PhoneNumbers.display) ?? "Added")
+                        .foregroundStyle(.white)
+                        .monospacedDigit()
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+                divider
+                discoverableRow
+            }
+
             error
 
             primaryButton(context == .onboarding ? "Continue" : "Done", action: onDone)
-                .padding(.top, 28)
+
+            footnote
+
             if context == .settings {
-                secondaryButton("Change number") {
-                    number = ""
-                    errorMessage = nil
-                    step = .enterNumber
+                HStack(spacing: 24) {
+                    textButton("Change number") {
+                        number = ""
+                        errorMessage = nil
+                        step = .enterNumber
+                    }
+                    textButton("Remove", color: .red.opacity(0.9)) { confirmingRemove = true }
                 }
-                .padding(.top, 8)
-                secondaryButton("Remove phone number", color: .red.opacity(0.9)) { confirmingRemove = true }
+                .frame(minHeight: 44)
             }
-            Spacer(minLength: 40)
         }
     }
 
@@ -428,16 +376,17 @@ struct PhoneNumberView: View {
         }
     }
 
-    private func sendCode() {
-        guard let phone = step == .enterCode ? pendingNumber : typedNumber else { return }
+    private func sendCode(resending: Bool = false) {
+        guard let phone = resending ? pendingNumber : typedNumber else { return }
         focused = nil
+        resendNote = nil
         run {
             try await service.startPhoneVerification(phone)
             pendingNumber = phone
             code = ""
-            resendAvailableAt = .now.addingTimeInterval(30)
             step = .enterCode
             focused = .code
+            if resending { resendNote = "Sent. It can take a minute to arrive." }
         }
     }
 
