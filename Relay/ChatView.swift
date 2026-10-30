@@ -5338,9 +5338,8 @@ private struct RecordingLevels: View {
     }
 }
 
-/// Relay's own short sounds for messages sent and received while the chat is
-/// open. They follow the ring/silent switch and can be turned off in
-/// Settings → Chats.
+/// Short sounds for messages sent and received while the chat is open. They
+/// follow the ring/silent switch and can be turned off in Settings → Chats.
 enum InChatSounds {
     static let enabledKey = "relay.inChatSounds"
 
@@ -5350,17 +5349,9 @@ enum InChatSounds {
         UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
     }
 
-    private static var soundIds: [Kind: SystemSoundID] = [:]
-
     static func play(_ kind: Kind) {
         guard isEnabled else { return }
-        if soundIds[kind] == nil,
-           let url = Bundle.main.url(forResource: kind == .sent ? "relay-sent" : "relay-received", withExtension: "caf") {
-            var id: SystemSoundID = 0
-            if AudioServicesCreateSystemSoundID(url as CFURL, &id) == noErr { soundIds[kind] = id }
-        }
-        guard let id = soundIds[kind] else { return }
-        AudioServicesPlaySystemSound(id)
+        AudioServicesPlaySystemSound(kind == .sent ? 1004 : 1003)
     }
 }
 

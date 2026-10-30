@@ -93,9 +93,6 @@ class NotificationService: UNNotificationServiceExtension {
             content.title = title
             content.body = body
             content.categoryIdentifier = missedCall ? "RELAY_MISSED_CALL" : "RELAY_MESSAGE"
-            if !missedCall {
-                content.sound = UNNotificationSound(named: UNNotificationSoundName(MessageTone.fileName))
-            }
             // Stacked notifications read "3 more messages from <name>", only
             // when the name may be shown at all.
             if !conversationId.isEmpty, title != "Relay", title != "New Message" {

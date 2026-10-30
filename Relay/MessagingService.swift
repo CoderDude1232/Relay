@@ -4067,7 +4067,7 @@ final class MessagingService {
         content.title = "You were mentioned"
         content.body = textAllowed ? Spoilers.redact(body)
             : (preview.showsSenderName ? "by \(displayName(forAccount: senderAccount))" : "")
-        content.sound = UNNotificationSound(named: UNNotificationSoundName(MessageTone.fileName))
+        content.sound = .default
         let id = "mention-\(senderAccount)-\(Int64(Date().timeIntervalSince1970 * 1000))"
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: id, content: content, trigger: nil)
