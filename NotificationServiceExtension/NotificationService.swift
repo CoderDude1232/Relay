@@ -93,6 +93,9 @@ class NotificationService: UNNotificationServiceExtension {
             content.title = title
             content.body = body
             content.categoryIdentifier = missedCall ? "RELAY_MISSED_CALL" : "RELAY_MESSAGE"
+            if !missedCall {
+                content.sound = UNNotificationSound(named: UNNotificationSoundName(MessageTone.fileName))
+            }
             // Stacked notifications read "3 more messages from <name>", only
             // when the name may be shown at all.
             if !conversationId.isEmpty, title != "Relay", title != "New Message" {
@@ -234,29 +237,34 @@ class NotificationService: UNNotificationServiceExtension {
             let engine = try? storage.makeCryptoEngine(accountId: account.accountId, deviceId: account.deviceId)
         else { return nil }
 
-        let processor = EnvelopeProcessor(
-            storage: storage,
-            engine: engine,
-            ownAccountId: account.accountId,
-            sealedSenderTrustRoot: RelaySealedSender.trustRoot,
-            processLock: .envelopeProcessing(appGroupId: appGroupId, timeout: Self.lockTimeout)
-        )
         // Blocked senders are still decrypted to keep the ratchet in sync; the
         // processor drops them before storing, as in the app.
         let blocked = RelayStore.blockedAccounts(in: storage)
         // The ratchet advances and the app can't decrypt this again, so the
         // control payloads for the app are saved in the same transaction.
-        let result: ProcessedEnvelope
-        do {
-            result = try processor.process(envelope, blockedAccounts: blocked, persist: {
-                self.persistForApp($0, envelopeId: envelope.id, in: storage)
-            })
-        } catch is CrossProcessLock.Timeout {
-            // The app has the lock; it will process the (still queued) envelope.
-            return Self.pendingMessageOutcome
-        } catch {
-            return .suppress
+        // When the app holds the lock, wait once more (see fetchAndDecrypt).
+        var result: ProcessedEnvelope?
+        for wait in [Self.lockTimeout, Self.appLockWait] {
+            let processor = EnvelopeProcessor(
+                storage: storage,
+                engine: engine,
+                ownAccountId: account.accountId,
+                sealedSenderTrustRoot: RelaySealedSender.trustRoot,
+                processLock: .envelopeProcessing(appGroupId: appGroupId, timeout: wait)
+            )
+            do {
+                result = try processor.process(envelope, blockedAccounts: blocked, persist: {
+                    self.persistForApp($0, envelopeId: envelope.id, in: storage)
+                })
+                break
+            } catch is CrossProcessLock.Timeout {
+                continue
+            } catch {
+                return .suppress
+            }
         }
+        // Still held: the app will process the (still queued) envelope.
+        guard let result else { return Self.pendingMessageOutcome }
         return outcome(for: result, storage: storage, appGroupId: appGroupId, account: account)
     }
 
@@ -275,6 +283,9 @@ class NotificationService: UNNotificationServiceExtension {
 
     /// How long to wait for the app's envelope lock before leaving the work to it.
     private static let lockTimeout: TimeInterval = 8
+    /// A second, longer wait when the app holds the lock. With the first
+    /// wait and the fetch, this stays inside the extension's ~30 s.
+    private static let appLockWait: TimeInterval = 14
 
     /// Shown when the app holds the lock: something arrived, but it's the app's
     /// to decrypt. Names nobody. Not shown while Panic Mode hides chats: it
@@ -313,34 +324,50 @@ class NotificationService: UNNotificationServiceExtension {
 
         // The trust root lets sealed-sender envelopes (empty sender) decrypt here;
         // ownAccountId resolves self-sync copies.
-        let processor = EnvelopeProcessor(
-            storage: storage,
-            engine: engine,
-            ownAccountId: account.accountId,
-            sealedSenderTrustRoot: RelaySealedSender.trustRoot,
-            processLock: .envelopeProcessing(appGroupId: appGroupId, timeout: Self.lockTimeout)
-        )
+        func makeProcessor(lockTimeout: TimeInterval) -> EnvelopeProcessor {
+            EnvelopeProcessor(
+                storage: storage,
+                engine: engine,
+                ownAccountId: account.accountId,
+                sealedSenderTrustRoot: RelaySealedSender.trustRoot,
+                processLock: .envelopeProcessing(appGroupId: appGroupId, timeout: lockTimeout)
+            )
+        }
+        var processor = makeProcessor(lockTimeout: Self.lockTimeout)
+        var waitedForApp = false
 
         // Blocked senders are still decrypted to keep the ratchet in sync; the
         // processor drops them before storing, as in the app.
         let blocked = RelayStore.blockedAccounts(in: storage)
 
         var latest: DecryptOutcome?
-        for envelope in envelopes {
+        envelopes: for envelope in envelopes {
             // The ratchet advances and the app can't decrypt this again, so the
             // control payloads for the app are saved in the same transaction.
-            let result: ProcessedEnvelope?
-            do {
-                result = try processor.process(envelope, blockedAccounts: blocked, persist: {
-                    self.persistForApp($0, envelopeId: envelope.id, in: storage)
-                })
-            } catch is CrossProcessLock.Timeout {
-                // The app is processing (or is suspended holding the lock).
-                // Leave this and the rest queued, unacked, for it.
-                if latest == nil { latest = Self.pendingMessageOutcome }
+            var result: ProcessedEnvelope?
+            while true {
+                do {
+                    result = try processor.process(envelope, blockedAccounts: blocked, persist: {
+                        self.persistForApp($0, envelopeId: envelope.id, in: storage)
+                    })
+                } catch is CrossProcessLock.Timeout {
+                    // The app is processing, usually because it was just
+                    // opened. Wait once more: it will have stored this
+                    // envelope, so it comes back as a duplicate and nothing
+                    // generic is shown over the app's own banner.
+                    if !waitedForApp {
+                        waitedForApp = true
+                        processor = makeProcessor(lockTimeout: Self.appLockWait)
+                        continue
+                    }
+                    // Still held (the app is suspended holding it): leave this
+                    // and the rest queued, unacked, for the app.
+                    if latest == nil { latest = Self.pendingMessageOutcome }
+                    break envelopes
+                } catch {
+                    result = nil
+                }
                 break
-            } catch {
-                result = nil
             }
             // Ack stored and poison messages alike, as the app does. Ephemeral
             // envelopes never queue.

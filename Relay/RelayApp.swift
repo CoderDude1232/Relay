@@ -314,6 +314,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) -> Bool {
         Self.current = self
         RelayTips.configure()
+        AppActivity.start()
+        MessageTone.install()
         // Drains Siri-queued messages when the socket is closed. Must be
         // registered before launch finishes.
         BGTaskScheduler.shared.register(
@@ -454,6 +456,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         if !conversationId.isEmpty,
            let model, case .ready(let service) = model.phase,
            service.activeConversationId == conversationId,
+           UIApplication.shared.applicationState == .active {
+            completionHandler([])
+            return
+        }
+        // The extension's "New message" stand-in while Relay is open: the app
+        // has the message and shows it itself.
+        if conversationId.isEmpty,
+           notification.request.content.body == "New message",
            UIApplication.shared.applicationState == .active {
             completionHandler([])
             return

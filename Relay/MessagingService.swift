@@ -132,6 +132,9 @@ final class MessagingService {
     }
     private(set) var callHistory: [StoredCall] = []
     private(set) var activeMessages: [StoredMessage] = []
+    /// Ids of the latest messages that arrived while Relay was open (see
+    /// `applyProcessed`'s `live`). The open chat sounds and taps only for these.
+    @ObservationIgnored private var liveMessageIds: [String] = []
     /// How many of the newest messages the open chat loads; grows with
     /// "Load Earlier Messages".
     private(set) var activeMessageLimit = MessagingService.messagePageSize
@@ -750,7 +753,8 @@ final class MessagingService {
             let result = try await Task.detached(priority: .userInitiated) {
                 try proc.process(envelope, blockedAccounts: blocked)
             }.value
-            await applyProcessed(result, outerSender: envelope.senderAccount)
+            await applyProcessed(result, outerSender: envelope.senderAccount,
+                                 live: AppActivity.isLive(serverTimestamp: envelope.serverTimestamp))
         } catch {
             log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
             handlePossiblePreKeyDesync(error)
@@ -771,7 +775,10 @@ final class MessagingService {
         }
     }
 
-    private func applyProcessed(_ result: ProcessedEnvelope, outerSender: String) async {
+    /// `live`: arrived while Relay was already open, rather than drained from
+    /// the queue on opening. Only live messages get the in-app banner, sound
+    /// and haptic; queued ones were already announced by their push.
+    private func applyProcessed(_ result: ProcessedEnvelope, outerSender: String, live: Bool = false) async {
         // A cached page could show an edited, unsent or expired message for a
         // moment; anything arriving for a chat drops its page.
         if let conversationId = result.conversationId, conversationId != activeConversationId {
@@ -797,7 +804,8 @@ final class MessagingService {
             }
             if result.outcome == .stored, let conversationId = result.conversationId {
                 clearPeerTyping(for: conversationId) // a real message ends typing
-                if let note = result.notification {
+                if let note = result.notification, live {
+                    if !note.messageId.isEmpty { noteLiveMessage(note.messageId) }
                     presentInAppBanner(conversationId: conversationId, senderAccount: note.senderAccount,
                                        text: Self.bannerText(note.body))
                 }
@@ -4059,7 +4067,7 @@ final class MessagingService {
         content.title = "You were mentioned"
         content.body = textAllowed ? Spoilers.redact(body)
             : (preview.showsSenderName ? "by \(displayName(forAccount: senderAccount))" : "")
-        content.sound = .default
+        content.sound = UNNotificationSound(named: UNNotificationSoundName(MessageTone.fileName))
         let id = "mention-\(senderAccount)-\(Int64(Date().timeIntervalSince1970 * 1000))"
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: id, content: content, trigger: nil)
@@ -5032,6 +5040,13 @@ final class MessagingService {
     /// Shows a banner for a message in another chat, following the same rules
     /// as notifications: nothing for the open chat, muted chats, requests or
     /// chats hidden by Panic Mode; no text where previews are off.
+    private func noteLiveMessage(_ id: String) {
+        liveMessageIds.append(id)
+        if liveMessageIds.count > 50 { liveMessageIds.removeFirst(liveMessageIds.count - 50) }
+    }
+
+    func isLiveMessage(_ id: String) -> Bool { liveMessageIds.contains(id) }
+
     func presentInAppBanner(conversationId: String, senderAccount: String?, text: String?, fallbackTitle: String? = nil) {
         guard UIApplication.shared.applicationState == .active,
               conversationId != activeConversationId,

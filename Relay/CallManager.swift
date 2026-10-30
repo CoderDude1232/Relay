@@ -1373,15 +1373,19 @@ final class CallManager: NSObject {
             }
         }
         var lossRate = 0.0
+        var stalled = false
         if let last = lastAudioPackets {
             let newReceived = received - last.received, newLost = lost - last.lost
             if newReceived + newLost > 0 { lossRate = max(0, newLost) / (newReceived + newLost) }
+            // Nothing arrived since the last check: packets that never come
+            // aren't counted as lost, so the loss rate alone reads as fine.
+            stalled = newReceived <= 0
         }
         lastAudioPackets = (received, lost)
         let quality: CallQuality
         if rtt == nil && lastAudioPackets == nil {
             quality = .unknown
-        } else if (rtt ?? 0) > 0.6 || lossRate > 0.08 {
+        } else if stalled || (rtt ?? 0) > 0.6 || lossRate > 0.08 {
             quality = .poor
         } else if (rtt ?? 0) > 0.3 || lossRate > 0.03 {
             quality = .fair

@@ -345,7 +345,9 @@ struct ChatView: View {
                 fetchSmartReplies(for: last)
                 if last.isOutgoing {
                     InChatSounds.play(.sent)
-                } else {
+                } else if service.isLiveMessage(last.id) {
+                    // Not for messages caught up on opening: their push already
+                    // sounded.
                     UIImpactFeedbackGenerator(style: .soft).impactOccurred()
                     InChatSounds.play(.received)
                 }
@@ -5336,8 +5338,9 @@ private struct RecordingLevels: View {
     }
 }
 
-/// Short sounds for messages sent and received while the chat is open. They
-/// follow the ring/silent switch and can be turned off in Settings → Chats.
+/// Relay's own short sounds for messages sent and received while the chat is
+/// open. They follow the ring/silent switch and can be turned off in
+/// Settings → Chats.
 enum InChatSounds {
     static let enabledKey = "relay.inChatSounds"
 
@@ -5347,9 +5350,17 @@ enum InChatSounds {
         UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
     }
 
+    private static var soundIds: [Kind: SystemSoundID] = [:]
+
     static func play(_ kind: Kind) {
         guard isEnabled else { return }
-        AudioServicesPlaySystemSound(kind == .sent ? 1004 : 1003)
+        if soundIds[kind] == nil,
+           let url = Bundle.main.url(forResource: kind == .sent ? "relay-sent" : "relay-received", withExtension: "caf") {
+            var id: SystemSoundID = 0
+            if AudioServicesCreateSystemSoundID(url as CFURL, &id) == noErr { soundIds[kind] = id }
+        }
+        guard let id = soundIds[kind] else { return }
+        AudioServicesPlaySystemSound(id)
     }
 }
 
