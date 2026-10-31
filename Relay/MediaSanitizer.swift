@@ -13,20 +13,25 @@ import UIKit
 import UniformTypeIdentifiers
 
 nonisolated enum MediaSanitizer {
+    /// Relay Supporters send photos at full resolution.
+    static let originalPixelSize = 16_384
+
     /// A photo as a metadata-free JPEG (GIFs keep their bytes so they still
-    /// animate). Nil if it isn't a usable image.
-    static func photo(_ data: Data) -> (data: Data, contentType: String, width: Int, height: Int)? {
+    /// animate). Nil if it isn't a usable image. `original` keeps the full
+    /// resolution and near-lossless quality (Relay Supporter).
+    static func photo(_ data: Data, original: Bool = false) -> (data: Data, contentType: String, width: Int, height: Int)? {
         if isGIF(data) {
             let size = SafeImage.pixelSize(of: data) ?? .zero
             return (data, "image/gif", Int(size.width), Int(size.height))
         }
-        guard let image = SafeImage.image(from: data, maxPixelSize: SafeImage.fullScreenPixelSize) else { return nil }
+        let maxPixelSize = original ? originalPixelSize : SafeImage.fullScreenPixelSize
+        guard let image = SafeImage.image(from: data, maxPixelSize: maxPixelSize) else { return nil }
         let width = Int(image.size.width * image.scale), height = Int(image.size.height * image.scale)
         // Keep transparency (a cut-out, a screenshot of a sticker) as PNG.
         if isPNG(data), hasAlpha(image), let png = image.pngData() {
             return (png, "image/png", width, height)
         }
-        guard let jpeg = image.jpegData(compressionQuality: 0.9) else { return nil }
+        guard let jpeg = image.jpegData(compressionQuality: original ? 0.97 : 0.9) else { return nil }
         return (jpeg, "image/jpeg", width, height)
     }
 

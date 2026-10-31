@@ -270,9 +270,12 @@ struct SupporterView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             VStack(alignment: .leading, spacing: 10) {
-                perk("paintpalette.fill", "Supporter wallpapers")
-                perk("heart.circle.fill", "A supporter heart on your profile")
-                perk("lock.fill", "Private: only your device knows you subscribe")
+                perk("doc.fill", "Send files up to 95 MB, not 25 MB")
+                perk("photo.fill", "Photos sent at full resolution")
+                perk("externaldrive.fill.badge.icloud", "Photos and files in your encrypted backup")
+                perk("laptopcomputer.and.iphone", "Link up to 10 devices, not 5")
+                perk("app.badge.fill", "App icons, wallpapers and a supporter heart")
+                perk("lock.fill", "Private: Relay can't link your payment to your account")
             }
             .padding(.top, 4)
         }

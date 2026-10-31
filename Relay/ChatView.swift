@@ -2163,7 +2163,7 @@ struct ChatView: View {
         // Re-encode instead of forwarding the original bytes: strips EXIF/GPS
         // metadata and turns HEIC into the JPEG the content type promises.
         // GIFs keep their bytes so they still animate.
-        guard let clean = MediaSanitizer.photo(data) else { return nil }
+        guard let clean = MediaSanitizer.photo(data, original: Supporter.shared.hasAccountPerks) else { return nil }
         return MessagingService.PendingAttachment(
             data: clean.data,
             contentType: clean.contentType,
@@ -2198,7 +2198,7 @@ struct ChatView: View {
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                     let isGIF = provider.hasItemConformingToTypeIdentifier(UTType.gif.identifier)
                     if let data = await Self.loadData(provider, type: .image),
-                       let clean = MediaSanitizer.photo(data) {
+                       let clean = MediaSanitizer.photo(data, original: Supporter.shared.hasAccountPerks) {
                         media.append(.init(data: clean.data, contentType: clean.contentType,
                                            filename: isGIF ? "image.gif" : nil,
                                            width: clean.width, height: clean.height))

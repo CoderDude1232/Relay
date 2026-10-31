@@ -13,9 +13,15 @@
 //  manifest, uploaded last, that marks the generation complete. Older
 //  generations are deleted once a newer one is complete.
 //
-//  Left out: attachments, disappearing and view-once
-//  messages, chats hidden by Panic Mode, message requests, live locations
-//  and the local Relay notices chat.
+//  Photos and files go in too while the account has Relay Supporter perks:
+//  each attachment's cached ciphertext is uploaded once, sealed again under
+//  the history key, as segments attachmentSeqBase + index × 1024 + 1…parts.
+//  The snapshot carries each one's index and key; a restored attachment gets
+//  the local id "hist-<index>-<parts>" and downloads from the backup when
+//  it's opened. Attachments no snapshot refers to are deleted.
+//
+//  Left out: disappearing and view-once messages, chats hidden by Panic Mode,
+//  message requests, live locations and the local Relay notices chat.
 //
 
 import CryptoKit
@@ -43,6 +49,29 @@ extension MessagingService {
     private static let historyUploadInterval: TimeInterval = 6 * 3600
     /// Data per segment, leaving room for the nonce and tag under the relay's 2 MiB cap.
     private static let historyChunkBytes = 1_900_000
+    /// Attachment segments start here, far above any snapshot generation's.
+    static let historyAttachmentSeqBase: Int64 = 1 << 50
+    private static let historyAttachmentMaxParts = 1023
+    private static let historyAttachmentKVPrefix = "history:att:"
+
+    static func historyAttachmentId(index: Int64, parts: Int) -> String { "hist-\(index)-\(parts)" }
+
+    static func parseHistoryAttachmentId(_ id: String) -> (index: Int64, parts: Int)? {
+        let fields = id.split(separator: "-")
+        guard fields.count == 3, fields[0] == "hist", let index = Int64(fields[1]), let parts = Int(fields[2]),
+              index >= 0, (1...historyAttachmentMaxParts).contains(parts) else { return nil }
+        return (index, parts)
+    }
+
+    private static func historyAttachmentSeq(_ index: Int64, part: Int) -> Int64 {
+        historyAttachmentSeqBase + index * 1024 + Int64(part)
+    }
+
+    private static func historyAttachmentAD(_ index: Int64, _ part: Int, _ parts: Int) -> Data {
+        Data("relay-history-att-v1|\(index)|\(part)/\(parts)".utf8)
+    }
+
+    private static func isSnapshotSegment(_ seq: Int64) -> Bool { seq < historyAttachmentSeqBase }
 
     private struct HistoryManifest: Codable {
         let generation: Int64
@@ -64,14 +93,22 @@ extension MessagingService {
         Data("relay-history-v1|\(generation)|\(part)".utf8)
     }
 
-    /// What goes into the backup: the local snapshot minus requests,
-    /// empty (attachment-only) messages, live locations and the notices chat.
-    private func historySnapshot() -> BackupSnapshot {
+    /// What goes into the backup: the local snapshot minus requests, live
+    /// locations and the notices chat, with each message's backed-up
+    /// attachments (messages with neither text nor those are left out).
+    /// `keepingEmpty` keeps messages without text (to list whose
+    /// attachments may be backed up).
+    private func historySnapshot(
+        attachments: [String: [BackupSnapshot.Attachment]] = [:], keepingEmpty: Bool = false
+    ) -> BackupSnapshot {
         var snapshot = exportBackupSnapshot()
         snapshot.conversations = snapshot.conversations.compactMap { conv in
             guard conv.accepted != false, conv.peerAccount != Self.relayOfficialAccount else { return nil }
-            let messages = conv.messages.filter {
-                !$0.body.isEmpty && !$0.body.hasPrefix(locationPrefix)
+            let messages: [BackupSnapshot.Message] = conv.messages.compactMap { message in
+                guard !message.body.hasPrefix(locationPrefix) else { return nil }
+                var m = message
+                m.attachments = attachments[m.id]
+                return m.body.isEmpty && m.attachments == nil && !keepingEmpty ? nil : m
             }
             guard !messages.isEmpty || conv.groupId != nil else { return nil }
             var kept = BackupSnapshot.Conversation(
@@ -123,20 +160,34 @@ extension MessagingService {
         let last = historyKV(Self.historyLastUploadKV).flatMap { Double(String(decoding: $0, as: UTF8.self)) } ?? 0
         guard force || now - last >= Self.historyUploadInterval else { return }
 
-        let snapshot = historySnapshot()
+        guard historyBackupProgress == nil else { return } // one at a time
+        let existing: [RelayAPIClient.HistorySegment]
+        do {
+            existing = try await apiClient.historySegments()
+        } catch {
+            historyBackupError = Self.backupErrorMessage(error)
+            return
+        }
+        let withAttachments = Supporter.shared.hasAccountPerks
+        var attachments: [String: [BackupSnapshot.Attachment]] = [:]
+        if withAttachments {
+            let eligible = Set(historySnapshot(keepingEmpty: true).conversations.flatMap { $0.messages.map(\.id) })
+            attachments = await backUpAttachments(existing: existing, eligible: eligible, key: key)
+        }
+        let snapshot = historySnapshot(attachments: attachments)
         guard let json = try? JSONEncoder().encode(snapshot),
               let compressed = try? (json as NSData).compressed(using: .lzfse) as Data
         else { return }
         let digest = Data(SHA256.hash(data: compressed))
         if !force, historyKV(Self.historyDigestKV) == digest {
             setHistoryKV(Self.historyLastUploadKV, Data(String(now).utf8))
+            if !withAttachments { await deleteUnusedAttachmentSegments(existing, keeping: []) }
             return
         }
         let chunks = stride(from: 0, to: compressed.count, by: Self.historyChunkBytes).map {
             compressed.subdata(in: $0..<min($0 + Self.historyChunkBytes, compressed.count))
         }
         guard (1...999).contains(chunks.count) else { return }
-        guard historyBackupProgress == nil else { return } // one at a time
         historyBackupProgress = 0
         defer {
             historyBackupProgress = nil
@@ -144,10 +195,10 @@ extension MessagingService {
         }
         let steps = Double(chunks.count + 1)
         do {
-            let existing = try await apiClient.historySegments()
             // Seconds since 1970, so two devices backing up at once don't
             // write into the same generation; the newest complete one wins.
-            let generation = max((existing.map { $0.seq / 1000 }.max() ?? 0) + 1, Int64(now))
+            let generation = max((existing.filter { Self.isSnapshotSegment($0.seq) }.map { $0.seq / 1000 }.max() ?? 0) + 1,
+                                 Int64(now))
             for (index, chunk) in chunks.enumerated() {
                 let part = "\(index + 1)/\(chunks.count)"
                 let sealed = try AES.GCM.seal(chunk, using: key, authenticating: Self.historyAD(generation, part))
@@ -162,9 +213,11 @@ extension MessagingService {
             guard let manifestData = sealedManifest.combined else { return }
             // The manifest goes last: a generation without one is incomplete.
             try await apiClient.putHistorySegment(generation * 1000, manifestData)
-            for segment in existing where segment.seq / 1000 < generation {
+            for segment in existing where Self.isSnapshotSegment(segment.seq) && segment.seq / 1000 < generation {
                 try? await apiClient.deleteHistorySegment(segment.seq)
             }
+            let referenced = Set(attachments.values.flatMap { $0.map(\.index) })
+            await deleteUnusedAttachmentSegments(existing, keeping: referenced)
             setHistoryKV(Self.historyDigestKV, digest)
             setHistoryKV(Self.historyLastUploadKV, Data(String(now).utf8))
             setHistoryKV(Self.historyLastSizeKV, Data(String(compressed.count).utf8))
@@ -209,7 +262,7 @@ extension MessagingService {
         } catch {
             return // try again next connection
         }
-        let complete = Set(segments.filter { $0.seq % 1000 == 0 }.map { $0.seq / 1000 })
+        let complete = Set(segments.filter { Self.isSnapshotSegment($0.seq) && $0.seq % 1000 == 0 }.map { $0.seq / 1000 })
         guard let generation = complete.max() else {
             setHistoryKV(Self.historyRestoredKV, Data([1]))
             return
@@ -268,11 +321,12 @@ extension MessagingService {
             setHistoryKV(Self.historyRestoredKV, Data([1]))
             let messageCount = snapshot.conversations.reduce(0) { $0 + $1.messages.count }
             let chatCount = snapshot.conversations.filter { !$0.messages.isEmpty }.count
+            let hasAttachments = snapshot.conversations.contains { $0.messages.contains { $0.attachments?.isEmpty == false } }
             let when = Date(timeIntervalSince1970: Double(manifest.createdAt) / 1000)
                 .formatted(date: .abbreviated, time: .shortened)
             postRelayNotice(messageCount == 0
                 ? "Your encrypted backup from \(when) had no messages to restore."
-                : "Restored \(messageCount) \(messageCount == 1 ? "message" : "messages") in \(chatCount) \(chatCount == 1 ? "chat" : "chats") from your encrypted backup of \(when). Photos and files aren't part of the backup.")
+                : "Restored \(messageCount) \(messageCount == 1 ? "message" : "messages") in \(chatCount) \(chatCount == 1 ? "chat" : "chats") from your encrypted backup of \(when). \(hasAttachments ? "Photos and files download as you open them." : "Photos and files aren't part of the backup.")")
         } catch is CryptoKitError {
             // Encrypted under a key this account no longer uses (say, the
             // password was reset and the old chat list couldn't be opened):
@@ -282,6 +336,95 @@ extension MessagingService {
         } catch {
             historyLog.warning("history restore failed: \(PrivacyRedactor.error(error))")
         }
+    }
+
+    // MARK: Attachments (Relay Supporter)
+
+    /// Uploads attachments not yet in the backup and returns every backed-up
+    /// one by message id. Stops adding new ones when the quota is full.
+    private func backUpAttachments(
+        existing: [RelayAPIClient.HistorySegment], eligible: Set<String>, key: SymmetricKey
+    ) async -> [String: [BackupSnapshot.Attachment]] {
+        let present = Set(existing.map(\.seq))
+        var nextIndex = (existing.filter { !Self.isSnapshotSegment($0.seq) }
+            .map { ($0.seq - Self.historyAttachmentSeqBase) / 1024 }.max() ?? -1) + 1
+        let rows = (try? storage.database.query(
+            """
+            SELECT a.id, a.message_id, a.key, a.digest, a.content_type, a.size, a.filename, a.width, a.height
+            FROM attachments a JOIN messages m ON a.message_id = m.id
+            ORDER BY m.timestamp, a.ordinal
+            """)) ?? []
+        var out: [String: [BackupSnapshot.Attachment]] = [:]
+        var full = false
+        for row in rows {
+            guard row.count >= 9, let id = row[0].string, let messageId = row[1].string,
+                  let attKey = row[2].data, let digest = row[3].data, let contentType = row[4].string,
+                  eligible.contains(messageId)
+            else { continue }
+            // Already there: restored from the backup, or uploaded before
+            // (and its first segment is still on the relay).
+            var placed = Self.parseHistoryAttachmentId(id)
+            if placed == nil, let saved = historyKV(Self.historyAttachmentKVPrefix + id),
+               let parsed = Self.parseHistoryAttachmentId(String(decoding: saved, as: UTF8.self)) {
+                placed = parsed
+            }
+            if let p = placed, !present.contains(Self.historyAttachmentSeq(p.index, part: 1)) { placed = nil }
+            if placed == nil, !full, let data = try? attachmentStore.read(id) {
+                do {
+                    placed = try await uploadHistoryAttachment(data, index: nextIndex, key: key)
+                    nextIndex += 1
+                    if let p = placed {
+                        setHistoryKV(Self.historyAttachmentKVPrefix + id,
+                                     Data(Self.historyAttachmentId(index: p.index, parts: p.parts).utf8))
+                    }
+                } catch {
+                    full = true // over quota or offline: the text still goes up
+                    historyLog.warning("attachment backup stopped: \(PrivacyRedactor.error(error))")
+                }
+            }
+            guard let p = placed else { continue }
+            out[messageId, default: []].append(BackupSnapshot.Attachment(
+                index: p.index, parts: p.parts, key: attKey, digest: digest, contentType: contentType,
+                size: row[5].int64 ?? 0, filename: row[6].string,
+                width: Int(row[7].int64 ?? 0), height: Int(row[8].int64 ?? 0)))
+        }
+        return out
+    }
+
+    private func uploadHistoryAttachment(_ data: Data, index: Int64, key: SymmetricKey) async throws -> (index: Int64, parts: Int)? {
+        let parts = (data.count + Self.historyChunkBytes - 1) / Self.historyChunkBytes
+        guard (1...Self.historyAttachmentMaxParts).contains(parts) else { return nil }
+        for part in 1...parts {
+            let start = (part - 1) * Self.historyChunkBytes
+            let chunk = data.subdata(in: start..<min(start + Self.historyChunkBytes, data.count))
+            let sealed = try AES.GCM.seal(chunk, using: key, authenticating: Self.historyAttachmentAD(index, part, parts))
+            guard let combined = sealed.combined else { return nil }
+            try await apiClient.putHistorySegment(Self.historyAttachmentSeq(index, part: part), combined)
+        }
+        return (index, parts)
+    }
+
+    /// Deletes attachment segments no snapshot refers to.
+    private func deleteUnusedAttachmentSegments(_ existing: [RelayAPIClient.HistorySegment], keeping: Set<Int64>) async {
+        for segment in existing where !Self.isSnapshotSegment(segment.seq) {
+            let index = (segment.seq - Self.historyAttachmentSeqBase) / 1024
+            if !keeping.contains(index) { try? await apiClient.deleteHistorySegment(segment.seq) }
+        }
+        if keeping.isEmpty {
+            try? storage.database.run("DELETE FROM kv WHERE key LIKE ?", [.text(Self.historyAttachmentKVPrefix + "%")])
+        }
+    }
+
+    /// A backed-up attachment's ciphertext, as it was cached on the old device.
+    func historyAttachment(index: Int64, parts: Int, digest: Data) async throws -> Data {
+        guard let key = historyBackupKey else { throw RelayAPIError.malformedResponse }
+        var data = Data()
+        for part in 1...parts {
+            let box = try AES.GCM.SealedBox(combined: try await apiClient.historySegment(Self.historyAttachmentSeq(index, part: part)))
+            data.append(try AES.GCM.open(box, using: key, authenticating: Self.historyAttachmentAD(index, part, parts)))
+        }
+        guard Data(SHA256.hash(data: data)) == digest else { throw RelayAPIError.malformedResponse }
+        return data
     }
 
     /// Turning the backup off deletes what the relay holds.

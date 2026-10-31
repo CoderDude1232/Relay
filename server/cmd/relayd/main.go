@@ -186,6 +186,7 @@ func main() {
 	passkeyRPID := flag.String("passkey-rp-id", api.DefaultPasskeyRPID, "WebAuthn relying party ID for passkey sign-in")
 	passkeyOrigins := flag.String("passkey-origins", api.DefaultPasskeyOrigin, "comma-separated origins accepted in passkey clientDataJSON")
 	supporterKey := flag.String("supporter-key", "", "path to the Relay Supporter credential master secret (hex, 32 bytes); generated if absent, enables /v1/supporter/*")
+	supporterAttachment := flag.Int64("max-supporter-attachment", 95<<20+1024, "max attachment blob size in bytes for Relay Supporter accounts (Cloudflare caps one request at 100 MB)")
 	supporterSandbox := flag.Bool("supporter-allow-sandbox", false, "accept App Store sandbox (TestFlight) purchases for Relay Supporter; their credentials last an hour")
 	historyDir := flag.String("history-dir", "/var/lib/relay/history", "directory for encrypted chat-history backup segments")
 	historyMinFree := flag.Int64("history-min-free", 2<<30, "free bytes to keep on the -history-dir filesystem; below it new segments go to -history-remote-url")
@@ -359,6 +360,7 @@ func main() {
 			os.Exit(1)
 		}
 		apiServer.SetSupporter(issuer, verifier)
+		apiServer.SetSupporterAttachmentMax(*supporterAttachment)
 		slog.Info("relay supporter enabled", "sandbox", *supporterSandbox)
 	}
 	if *oprfKey != "" {

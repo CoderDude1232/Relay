@@ -71,6 +71,8 @@ type Server struct {
 	// under this key.
 	oprf      *oprf.Key
 	supporter *supporterConfig
+	// attachSupporterMax: supporters' attachment size limit (0 = the default).
+	attachSupporterMax int64
 
 	// Per-account attachment budgets: count/day at allocation, bytes/day at
 	// upload.
@@ -2012,11 +2014,16 @@ func (s *Server) handleCreateAttachment(w http.ResponseWriter, r *http.Request, 
 		httpError(w, http.StatusTooManyRequests, "daily attachment quota exceeded; try again later")
 		return
 	}
+	maxBytes := s.blobs.MaxSize()
+	if s.attachSupporterMax > maxBytes && s.IsSupporter(dev.AccountID) {
+		maxBytes = s.attachSupporterMax
+		s.attachQuota.setMax(id, maxBytes)
+	}
 	if err := s.blobs.Reserve(id); err != nil {
 		internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "maxBytes": maxBytes})
 }
 
 // countingReader counts bytes read through it.
@@ -2055,7 +2062,11 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	if !known {
 		owner = unknownAttachmentOwner
 	}
-	reserved := attachmentUploadReservation(r)
+	maxBytes := s.blobs.MaxSize()
+	if m := s.attachQuota.maxFor(id); m > maxBytes {
+		maxBytes = m
+	}
+	reserved := min(attachmentUploadReservation(r), maxBytes+1)
 	if !s.attachInFlight.reserve(reserved, s.blobs.Usage(), s.attachDiskCap) {
 		httpError(w, http.StatusInsufficientStorage, "attachment storage is full; try again later")
 		return
@@ -2076,7 +2087,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	body := &countingReader{r: r.Body}
-	err := s.blobs.Put(id, body)
+	err := s.blobs.PutMax(id, body, maxBytes)
 	if err == nil {
 		stored = body.n
 	}

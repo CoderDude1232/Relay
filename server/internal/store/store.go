@@ -62,8 +62,12 @@ const MaxOneTimePreKeysPerDevice = 2000
 const MaxOneTimeKyberPreKeysPerDevice = 200
 
 // maxDevicesPerAccount caps the devices an account may have at once, bounding
-// the damage from a linking compromise.
-const maxDevicesPerAccount = 5
+// the damage from a linking compromise. Relay Supporter accounts get
+// MaxSupporterDevices (devices beyond 5 stay if the subscription lapses).
+const (
+	maxDevicesPerAccount = 5
+	MaxSupporterDevices  = 10
+)
 
 const maxGroupMembers = 256
 
@@ -1315,14 +1319,20 @@ func allocateDeviceID(ctx context.Context, tx pgx.Tx, accountID string) (uint32,
 	return uint32(next), nil
 }
 
-// checkDeviceCap returns ErrDeviceLimit when the account already has
-// maxDevicesPerAccount devices. Call with the account row locked.
+// checkDeviceCap returns ErrDeviceLimit when the account already has its
+// device limit. Call with the account row locked.
 func checkDeviceCap(ctx context.Context, tx pgx.Tx, accountID string) error {
 	var count int
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM devices WHERE account_id = $1`, accountID).Scan(&count); err != nil {
+	var supporterUntil int64
+	if err := tx.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM devices WHERE account_id = $1),
+		COALESCE((SELECT supporter_until FROM accounts WHERE id = $1), 0)`, accountID).Scan(&count, &supporterUntil); err != nil {
 		return err
 	}
-	if count >= maxDevicesPerAccount {
+	limit := maxDevicesPerAccount
+	if supporterUntil > time.Now().UnixMilli() {
+		limit = MaxSupporterDevices
+	}
+	if count >= limit {
 		return ErrDeviceLimit
 	}
 	return nil

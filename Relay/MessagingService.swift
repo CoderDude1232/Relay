@@ -39,7 +39,10 @@ enum MessagingError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .attachmentTooLarge: return "Attachment exceeds the 25 MB size limit."
+        case .attachmentTooLarge:
+            return Supporter.shared.hasAccountPerks
+                ? "Attachments can be up to 95 MB."
+                : "Attachments can be up to 25 MB. Relay Supporters can send up to 95 MB."
         case .recipientCannotReceivePrivately:
             return "This contact's app can't receive sealed messages, so it wasn't sent. Ask them to update Relay."
         }
@@ -181,7 +184,7 @@ final class MessagingService {
     private let processor: EnvelopeProcessor
     private let api: RelayAPIClient
     private let maintainer = PreKeyMaintainer()
-    private let attachmentStore = AttachmentBlobStore(appGroupId: AppModel.appGroupId)
+    let attachmentStore = AttachmentBlobStore(appGroupId: AppModel.appGroupId)
     private let allocator: KVPreKeyIdAllocator
     private var socket: RelayWebSocket?
     private var connectionTask: Task<Void, Never>?
@@ -1208,8 +1211,9 @@ final class MessagingService {
     private static let localAttachmentPrefix = "local-"
 
     private func sealLocally(_ pending: [PendingAttachment]) throws -> [StoredAttachment] {
-        // The server caps ciphertext at 26 MB.
-        let maxPlaintextBytes = 25 * 1024 * 1024
+        // The relay's caps (ciphertext adds 28 bytes): 25 MiB, or 95 MiB for
+        // Relay Supporters.
+        let maxPlaintextBytes = (Supporter.shared.hasAccountPerks ? 95 : 25) * 1024 * 1024
         return try pending.map { item in
             guard item.data.count <= maxPlaintextBytes else { throw MessagingError.attachmentTooLarge }
             let sealed = try AttachmentCipher.seal(item.data)
@@ -2447,6 +2451,21 @@ final class MessagingService {
             let replyTimestamp: Int64?
             let replyAuthor: String?
             let replyText: String?
+            /// Photos and files in the history backup (Relay Supporter).
+            var attachments: [Attachment]? = nil
+        }
+        /// An attachment's cached ciphertext, stored in the history backup as
+        /// segments `index` (see HistoryBackup.swift).
+        struct Attachment: Codable {
+            let index: Int64
+            let parts: Int
+            let key: Data
+            let digest: Data
+            let contentType: String
+            let size: Int64
+            let filename: String?
+            let width: Int
+            let height: Int
         }
         struct Conversation: Codable {
             let peerAccount: String
@@ -2545,11 +2564,18 @@ final class MessagingService {
                 let replyTo = m.replyTimestamp.map {
                     QuotedMessage(targetTimestamp: $0, author: m.replyAuthor ?? "", text: m.replyText ?? "")
                 }
+                // Backed-up attachments download from the backup when opened.
+                let attachments = (m.attachments ?? []).map { a in
+                    StoredAttachment(
+                        id: Self.historyAttachmentId(index: a.index, parts: a.parts), key: a.key, digest: a.digest,
+                        contentType: a.contentType, size: a.size, filename: a.filename,
+                        width: a.width, height: a.height, isDownloaded: false)
+                }
                 _ = try? storage.messages.insertMessage(
                     id: m.id, conversationId: convId, isOutgoing: m.isOutgoing,
                     body: m.body, timestamp: m.timestamp,
                     status: MessageStatus(rawValue: m.status) ?? .received,
-                    replyTo: replyTo, senderAccount: m.senderAccount
+                    replyTo: replyTo, attachments: attachments, senderAccount: m.senderAccount
                 )
             }
             // After the inserts: restored messages predate the timer and must
@@ -3477,7 +3503,11 @@ final class MessagingService {
         let wifiOnly = UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload")
         if wifiOnly && !isOnWifi { return }
         do {
-            let ciphertext = try await api.downloadAttachment(id: attachment.id)
+            let ciphertext = if let backup = Self.parseHistoryAttachmentId(attachment.id) {
+                try await historyAttachment(index: backup.index, parts: backup.parts, digest: attachment.digest)
+            } else {
+                try await api.downloadAttachment(id: attachment.id)
+            }
             try attachmentStore.write(ciphertext, for: attachment.id)
             try storage.messages.markAttachmentDownloaded(id: attachment.id)
             refreshActiveMessages(ifShowing: conversationId)
@@ -5239,7 +5269,7 @@ final class MessagingService {
             await sendMessage(caption.isEmpty ? text : caption + "\n" + text, in: conversationId)
         } else if let imageData = share.imageData {
             // Shared photos carry the original file's EXIF/GPS; re-encode.
-            guard let clean = MediaSanitizer.photo(imageData) else {
+            guard let clean = MediaSanitizer.photo(imageData, original: Supporter.shared.hasAccountPerks) else {
                 postRelayNotice("Couldn't send the shared photo.")
                 return conversationId
             }

@@ -47,6 +47,15 @@ func (s *Server) supporterUnavailable(w http.ResponseWriter) bool {
 	return false
 }
 
+// SetSupporterAttachmentMax lets supporter accounts upload attachments up
+// to n bytes (the default is the blob store's limit).
+func (s *Server) SetSupporterAttachmentMax(n int64) {
+	s.attachSupporterMax = n
+	if limit := n + 1<<20; limit > attachmentMaxRequestBodySize {
+		attachmentMaxRequestBodySize = limit
+	}
+}
+
 // IsSupporter reports whether the account has supporter perks now.
 func (s *Server) IsSupporter(accountID string) bool {
 	if s.supporter == nil {

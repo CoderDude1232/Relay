@@ -966,9 +966,10 @@ public struct RelayAPIClient: Sendable {
         return created.id
     }
 
-    /// Largest attachment ciphertext accepted: the relay's 25 MiB upload cap plus
-    /// overhead, so a misbehaving relay can't make us buffer an unbounded download.
-    public static let maxAttachmentDownloadBytes = 26 << 20
+    /// Largest attachment ciphertext accepted: the relay's 95 MiB Relay
+    /// Supporter upload cap plus overhead, so a misbehaving relay can't make us
+    /// buffer an unbounded download.
+    public static let maxAttachmentDownloadBytes = 96 << 20
 
     public func downloadAttachment(id: String) async throws -> Data {
         var request = makeRequest("GET", "v1/attachments/\(id)")

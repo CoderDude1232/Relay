@@ -73,7 +73,13 @@ func (s *Store) path(id string) (string, bool) {
 }
 
 // Put streams the ciphertext to disk, rejecting anything over maxSize.
-func (s *Store) Put(id string, r io.Reader) error {
+func (s *Store) Put(id string, r io.Reader) error { return s.PutMax(id, r, s.maxSize) }
+
+// MaxSize is the default limit Put enforces.
+func (s *Store) MaxSize() int64 { return s.maxSize }
+
+// PutMax is Put with its own size limit (e.g. a Relay Supporter's).
+func (s *Store) PutMax(id string, r io.Reader, maxSize int64) error {
 	p, ok := s.path(id)
 	if !ok {
 		return ErrNotFound
@@ -84,12 +90,12 @@ func (s *Store) Put(id string, r io.Reader) error {
 	}
 	defer os.Remove(tmp.Name())
 
-	n, err := io.Copy(tmp, io.LimitReader(r, s.maxSize+1))
+	n, err := io.Copy(tmp, io.LimitReader(r, maxSize+1))
 	if err != nil {
 		tmp.Close()
 		return err
 	}
-	if n > s.maxSize {
+	if n > maxSize {
 		tmp.Close()
 		return ErrTooLarge
 	}

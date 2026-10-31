@@ -135,9 +135,9 @@ func TestConcurrentUploadsCannotExceedBudget(t *testing.T) {
 	}
 }
 
-// A body without Content-Length reserves the full request limit.
+// A body without Content-Length reserves the most the upload may store.
 func TestChunkedUploadReservesRequestLimit(t *testing.T) {
-	s := newAttachmentTestServer(t, 1<<20, attachmentMaxRequestBodySize-1, 0)
+	s := newAttachmentTestServer(t, 1<<20, 1<<20, 0)
 	if got := putAttachment(s, allocID(t, s, "acct"), bytes.NewReader(make([]byte, 10)), -1); got != http.StatusTooManyRequests {
 		t.Fatalf("chunked upload with less than the request limit left: got %d, want 429", got)
 	}

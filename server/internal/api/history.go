@@ -58,6 +58,12 @@ func (s *Server) handleListHistory(w http.ResponseWriter, _ *http.Request, dev *
 		internalError(w, err)
 		return
 	}
+	supporterUntil, err := s.store.SupporterUntil(dev.AccountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
+	maxBytes, _ := store.HistoryLimits(supporterUntil)
 	type entry struct {
 		Seq  int64 `json:"seq"`
 		Size int   `json:"size"`
@@ -67,7 +73,7 @@ func (s *Server) handleListHistory(w http.ResponseWriter, _ *http.Request, dev *
 		out[i] = entry{Seq: h.Seq, Size: h.Size}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"segments": out, "usedBytes": used, "maxBytes": store.MaxHistoryBytes,
+		"segments": out, "usedBytes": used, "maxBytes": maxBytes,
 	})
 }
 

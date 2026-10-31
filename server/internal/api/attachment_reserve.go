@@ -8,9 +8,10 @@ import (
 // attachmentUploadReservation is how many bytes an upload reserves from the
 // owner's byte budget and the disk watermark before it starts: the declared
 // Content-Length (the server never reads past it) or, for a chunked body, the
-// request body limit. Unused bytes are refunded when the upload ends.
+// request body limit; the caller caps it at the upload's size limit. Unused
+// bytes are refunded when the upload ends.
 func attachmentUploadReservation(r *http.Request) int64 {
-	n := int64(attachmentMaxRequestBodySize)
+	n := attachmentMaxRequestBodySize
 	if r.ContentLength >= 0 && r.ContentLength < n {
 		n = r.ContentLength
 	}

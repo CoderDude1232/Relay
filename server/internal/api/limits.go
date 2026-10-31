@@ -294,6 +294,7 @@ type attachmentQuota struct {
 type attachmentOwner struct {
 	key string // limitkey.Hash of the account id
 	at  time.Time
+	max int64 // size limit for this upload; 0 = the default
 }
 
 // attachmentOwnerTTL bounds how long an allocation is remembered (uploads are
@@ -319,6 +320,23 @@ func (q *attachmentQuota) allocate(accountID, id string) bool {
 	q.owners[id] = attachmentOwner{key: owner, at: time.Now()}
 	q.mu.Unlock()
 	return true
+}
+
+// setMax records a larger size limit for an allocated id (Relay Supporter).
+func (q *attachmentQuota) setMax(id string, max int64) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if o, ok := q.owners[id]; ok {
+		o.max = max
+		q.owners[id] = o
+	}
+}
+
+// maxFor is the size limit recorded for id (0 = the default).
+func (q *attachmentQuota) maxFor(id string) int64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.owners[id].max
 }
 
 // ownerKey returns the budget key for an upload to id: its recorded allocator,

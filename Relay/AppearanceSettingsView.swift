@@ -43,6 +43,9 @@ struct AppearanceSettingsView: View {
                 themesSection
                 wallpaperSection
                 bubbleSection
+                if chatId == nil, supporter.isOffered || UIApplication.shared.alternateIconName != nil {
+                    AppIconSection(locked: !supporter.isActive) { showingSupporter = true }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 20)
@@ -297,6 +300,83 @@ struct AppearanceSettingsView: View {
                   UIImage(data: data) != nil else { return }
             edit { $0.setPhoto(data) }
         }
+    }
+}
+
+// MARK: - App icon
+
+/// Alternate app icons (the .icon files next to RelayIcon.icon), for
+/// supporters. A lapsed supporter keeps the icon they chose.
+private struct AppIconSection: View {
+    let locked: Bool
+    let showSupporter: () -> Void
+
+    private static let icons: [(name: String?, title: String, preview: String)] = [
+        (nil, "Relay", "IconPreviewDefault"),
+        ("RelayIconOcean", "Ocean", "IconPreviewOcean"),
+        ("RelayIconMint", "Mint", "IconPreviewMint"),
+        ("RelayIconEmber", "Ember", "IconPreviewEmber"),
+        ("RelayIconGraphite", "Graphite", "IconPreviewGraphite"),
+        ("RelayIconSunset", "Sunset", "IconPreviewSunset"),
+        ("RelayIconTerminal", "Terminal", "IconPreviewTerminal"),
+    ]
+
+    @State private var current = UIApplication.shared.alternateIconName
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("App Icon")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    ForEach(Self.icons, id: \.title) { icon in
+                        iconButton(icon)
+                    }
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func iconButton(_ icon: (name: String?, title: String, preview: String)) -> some View {
+        let selected = current == icon.name
+        let needsSupport = locked && icon.name != nil && !selected
+        return Button {
+            if needsSupport { showSupporter(); return }
+            guard !selected else { return }
+            UIApplication.shared.setAlternateIconName(icon.name) { error in
+                if error == nil { Task { @MainActor in current = icon.name } }
+            }
+        } label: {
+            VStack(spacing: 6) {
+                Image(icon.preview)
+                    .resizable()
+                    .frame(width: 62, height: 62)
+                    .padding(3)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 18)
+                            .strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2.5)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if icon.name != nil && locked {
+                            Image(systemName: "heart.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 18, height: 18)
+                                .background(.pink.gradient, in: .circle)
+                        }
+                    }
+                Text(icon.title)
+                    .font(.caption2)
+                    .foregroundStyle(selected ? Color.primary : .secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(icon.name != nil && locked ? "\(icon.title) app icon, for supporters" : "\(icon.title) app icon")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

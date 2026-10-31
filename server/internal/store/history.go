@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -19,7 +20,18 @@ const (
 	// MaxHistorySegments caps an account's segment count, so the byte quota
 	// can't be spent as millions of one-byte rows.
 	MaxHistorySegments = 512
+	// Relay Supporter accounts also back up photos and files.
+	SupporterHistoryBytes    = 2 << 30
+	SupporterHistorySegments = 8192
 )
+
+// HistoryLimits is an account's quota: larger while it has supporter perks.
+func HistoryLimits(supporterUntil int64) (maxBytes, maxSegments int64) {
+	if supporterUntil > time.Now().UnixMilli() {
+		return SupporterHistoryBytes, SupporterHistorySegments
+	}
+	return MaxHistoryBytes, MaxHistorySegments
+}
 
 // ErrHistoryQuota: the write would take the account over MaxHistoryBytes or
 // MaxHistorySegments.
@@ -77,13 +89,16 @@ type querier interface {
 }
 
 func checkHistoryQuota(ctx context.Context, q querier, accountID string, seq int64, size int) error {
-	var used, count int64
+	var used, count, supporterUntil int64
 	if err := q.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size), 0), COUNT(*) FROM history_segments WHERE account_id = $1 AND seq <> $2`,
-		accountID, seq).Scan(&used, &count); err != nil {
+		`SELECT COALESCE(SUM(size), 0), COUNT(*),
+			COALESCE((SELECT supporter_until FROM accounts WHERE id = $1), 0)
+		FROM history_segments WHERE account_id = $1 AND seq <> $2`,
+		accountID, seq).Scan(&used, &count, &supporterUntil); err != nil {
 		return err
 	}
-	if used+int64(size) > MaxHistoryBytes || count+1 > MaxHistorySegments {
+	maxBytes, maxSegments := HistoryLimits(supporterUntil)
+	if used+int64(size) > maxBytes || count+1 > maxSegments {
 		return ErrHistoryQuota
 	}
 	return nil

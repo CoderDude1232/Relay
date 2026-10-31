@@ -9,10 +9,11 @@ import (
 	"github.com/relayapp/relay-server/internal/history"
 )
 
-const (
-	defaultMaxRequestBodySize    = 1 << 20
-	attachmentMaxRequestBodySize = 26 << 20
-)
+const defaultMaxRequestBodySize = 1 << 20
+
+// attachmentMaxRequestBodySize caps an attachment upload body: the default
+// 25 MiB blob plus overhead, raised by SetSupporterAttachmentMax.
+var attachmentMaxRequestBodySize int64 = 26 << 20
 
 var visitorIPHeaders = []string{
 	"CF-Connecting-IP",

@@ -728,7 +728,7 @@ private struct DataStorageSettingsView: View {
                     EmptyView()
                 } else if service.keepsChatListWithAccount {
                     SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Back Up Message History",
-                                      info: "Keeps an encrypted copy of your messages (text only, no photos or files) with your account, so they come back when you sign in on a new phone. Only your account password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy.",
+                                      info: "Keeps an encrypted copy of your messages (and, for Relay Supporters, photos and files) with your account, so they come back when you sign in on a new phone. Only your account password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy.",
                                       isOn: Binding(get: { historyBackup }, set: { enabled in
                                           historyBackup = enabled
                                           Task { await service.setHistoryBackupEnabled(enabled) }

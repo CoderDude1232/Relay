@@ -45,6 +45,7 @@ func TestSupporterIssueAndRedeem(t *testing.T) {
 	master := make([]byte, 32)
 	rand.Read(master)
 	env.api.SetSupporter(supporter.NewIssuer(master), verifier)
+	env.api.SetSupporterAttachmentMax(50 << 20)
 
 	alice := env.register("sup-a", "password-a")
 	var status struct {
@@ -113,6 +114,15 @@ func TestSupporterIssueAndRedeem(t *testing.T) {
 		t.Fatalf("redeemed until %d, want %d", redeemed.SupporterUntil, monthEnd.UnixMilli())
 	}
 
+	// Supporters may upload bigger attachments; others keep the default.
+	var alloc struct {
+		MaxBytes int64 `json:"maxBytes"`
+	}
+	env.doJSON("POST", "/v1/attachments", alice.authUser(), "", nil, http.StatusCreated, &alloc)
+	if alloc.MaxBytes != 50<<20 {
+		t.Fatalf("supporter attachment max %d", alloc.MaxBytes)
+	}
+
 	// Spent: not again, not on another account.
 	bob := env.register("sup-b", "password-b")
 	env.doJSON("POST", "/v1/supporter/redeem", bob.authUser(), "", map[string]any{
@@ -120,6 +130,10 @@ func TestSupporterIssueAndRedeem(t *testing.T) {
 	}, http.StatusConflict, nil)
 	if env.api.IsSupporter(bob.accountID) {
 		t.Fatal("bob became a supporter")
+	}
+	env.doJSON("POST", "/v1/attachments", bob.authUser(), "", nil, http.StatusCreated, &alloc)
+	if alloc.MaxBytes != 25<<20 {
+		t.Fatalf("default attachment max %d", alloc.MaxBytes)
 	}
 
 	// The transaction allows one reissue (a reinstall), then no more.
