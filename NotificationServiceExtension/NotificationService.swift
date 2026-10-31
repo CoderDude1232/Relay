@@ -63,9 +63,9 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         // Two modes:
-        //  - Contentless wake (default): no "e" in the payload. Fetch the queued
+        //  - Contentless wake: no "e" in the payload. Fetch the queued
         //    envelopes from the relay and decrypt them.
-        //  - Ciphertext in push (opt-in): "e" carries the encrypted envelope.
+        //  - Ciphertext in push (the app's default): "e" carries the encrypted envelope.
         //    Decrypt it directly.
         Task { [weak self] in
             let outcome: DecryptOutcome?

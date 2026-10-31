@@ -912,7 +912,7 @@ struct PrivacySettingsView: View {
                 }
 
                 SettingsToggleRow(systemName: "bolt.fill", title: "Faster Alerts",
-                                  info: "On: the encrypted message is delivered inside the push notification for instant alerts. Off (more private): the push is just a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it.",
+                                  info: "On (the default): the encrypted message is delivered inside the push notification, so alerts show instantly and reliably. Apple's push servers carry only ciphertext they can't read, never who sent it. Off: the push is just a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it.",
                                   isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
             }
 

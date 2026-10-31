@@ -487,8 +487,9 @@ the newest message always gets a wake.
 FCM answers `404`/`UNREGISTERED`), the stored token (APNs, VoIP or FCM) is
 cleared; the device must re-register it.
 
-**Opt-in ciphertext-in-push** (`PUT /v1/devices/me/push-content
-{includeContent:true}`) embeds the base64 `Envelope` under key `"e"` for a
+**Ciphertext-in-push** (`PUT /v1/devices/me/push-content
+{includeContent:true}`; off per device until set, and the iOS app sets it on
+by default at every launch unless the user turned Faster Alerts off) embeds the base64 `Envelope` under key `"e"` for a
 faster wake without a fetch — identical on both providers. Only **sealed**
 envelopes (no `sender_account`/`sender_device`) are ever embedded, so the push
 provider never learns who sent what; an envelope from the authenticated send

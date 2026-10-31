@@ -489,6 +489,11 @@ final class MessagingService {
         connectionTask = Task { await runConnectionLoop() }
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
         Task { [weak self] in await self?.publishDeviceLabel(force: false) }
+        // The relay's per-device default is off; tell it this device's choice.
+        Task { [weak self] in
+            guard let self else { return }
+            try? await self.api.setPushIncludeContent(self.pushIncludeContent)
+        }
         startPathMonitor()
         // Housekeeping once per start: dedup claims, orphaned files, and
         // App Group files written before they were sealed.
@@ -4270,11 +4275,11 @@ final class MessagingService {
         set { }
     }
 
-    /// Opt-in ciphertext-in-push. Off by default, so pushes are a content-free
-    /// wake and APNs carries no message data. When on, the relay embeds the
-    /// encrypted envelope to skip a fetch. Mirrored to the server per device.
+    /// Ciphertext-in-push. On by default: the relay embeds the encrypted
+    /// envelope so the notification shows without a fetch. Off, pushes are a
+    /// content-free wake. Mirrored to the server per device.
     var pushIncludeContent: Bool {
-        get { UserDefaults.standard.bool(forKey: "relay.pushIncludeContent") }
+        get { UserDefaults.standard.object(forKey: "relay.pushIncludeContent") as? Bool ?? true }
         set {
             UserDefaults.standard.set(newValue, forKey: "relay.pushIncludeContent")
             Task { try? await self.api.setPushIncludeContent(newValue) }

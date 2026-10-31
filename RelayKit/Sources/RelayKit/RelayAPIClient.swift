@@ -655,7 +655,7 @@ public struct RelayAPIClient: Sendable {
     }
 
     /// Whether APNs pushes carry the encrypted envelope (`true`) or are a
-    /// contentless wake (`false`, the default).
+    /// contentless wake (`false`, the relay's default; the app turns it on).
     public func setPushIncludeContent(_ include: Bool) async throws {
         try await requestExpectingNoContent("PUT", "v1/devices/me/push-content", body: ["includeContent": include])
     }
