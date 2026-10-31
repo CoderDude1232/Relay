@@ -13,6 +13,8 @@ struct AppearanceSettingsView: View {
 
     @Environment(ChatAppearance.self) private var environmentAppearance
     @State private var wallpaperPhoto: PhotosPickerItem?
+    @State private var showingSupporter = false
+    private var supporter = Supporter.shared
 
     /// The app's theme (the environment may hold a chat's).
     private var app: ChatAppearance {
@@ -52,6 +54,7 @@ struct AppearanceSettingsView: View {
         .navigationTitle(chatId == nil ? "Appearance" : "Chat Appearance")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: wallpaperPhoto) { _, item in loadPhoto(item) }
+        .sheet(isPresented: $showingSupporter) { SupporterView() }
     }
 
     // MARK: - This chat
@@ -135,7 +138,9 @@ struct AppearanceSettingsView: View {
             sectionHeader("Wallpaper")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
-                    ForEach(WallpaperStyle.allCases.filter { $0 != .photo }) { style in
+                    ForEach(WallpaperStyle.allCases.filter { style in
+                        style != .photo && (!style.isSupporterOnly || supporter.isOffered || appearance.wallpaper == style)
+                    }) { style in
                         wallpaperSwatch(for: style)
                     }
                     photoWallpaperSwatch
@@ -147,8 +152,9 @@ struct AppearanceSettingsView: View {
     }
 
     private func wallpaperSwatch(for style: WallpaperStyle) -> some View {
-        Button {
-            edit { $0.wallpaper = style }
+        let locked = style.isSupporterOnly && !supporter.isActive && appearance.wallpaper != style
+        return Button {
+            if locked { showingSupporter = true } else { edit { $0.wallpaper = style } }
         } label: {
             VStack(spacing: 6) {
                 swatchBackground(style)
@@ -161,6 +167,16 @@ struct AppearanceSettingsView: View {
                                 lineWidth: 3
                             )
                     }
+                    .overlay(alignment: .topTrailing) {
+                        if style.isSupporterOnly {
+                            Image(systemName: "heart.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 20, height: 20)
+                                .background(.pink.gradient, in: .circle)
+                                .padding(6)
+                        }
+                    }
                     .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
                 Text(style.title)
                     .font(.caption2)
@@ -168,6 +184,7 @@ struct AppearanceSettingsView: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(style.isSupporterOnly ? "\(style.title), supporter wallpaper" : style.title)
     }
 
     @ViewBuilder

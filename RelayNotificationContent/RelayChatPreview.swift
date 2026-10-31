@@ -117,6 +117,9 @@ struct ChatPreviewTheme {
         case "twilight": ["4B2E83", "9D50BB"]
         case "rose":     ["C94B8F", "F6A5C0"]
         case "graphite": ["1C1C1E", "3A3A3C"]
+        case "aurora":   ["0D1431", "1B0F2B"]
+        case "dusk":     ["25111F", "2B1810"]
+        case "midnight": ["0A101F", "121B31"]
         default: nil
         }
         if let s = wallpaperStops, let top = Color(relayHex: s[0]), let bottom = Color(relayHex: s[1]) {

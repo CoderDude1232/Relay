@@ -11,7 +11,7 @@ import SwiftUI
 import UIKit
 
 enum WallpaperStyle: String, CaseIterable, Identifiable {
-    case none, sunset, ocean, forest, twilight, rose, graphite, photo
+    case none, sunset, ocean, forest, twilight, rose, graphite, aurora, dusk, midnight, photo
 
     var id: String { rawValue }
 
@@ -24,7 +24,18 @@ enum WallpaperStyle: String, CaseIterable, Identifiable {
         case .twilight: "Lavender"
         case .rose: "Rose"
         case .graphite: "Graphite"
+        case .aurora: "Aurora"
+        case .dusk: "Dusk"
+        case .midnight: "Midnight"
         case .photo: "Photo"
+        }
+    }
+
+    /// Relay Supporter wallpapers. A lapsed subscription keeps the one in use.
+    var isSupporterOnly: Bool {
+        switch self {
+        case .aurora, .dusk, .midnight: true
+        default: false
         }
     }
 
@@ -39,6 +50,9 @@ enum WallpaperStyle: String, CaseIterable, Identifiable {
         case .sunset:   (["FDF0E8", "F9E0D2"], ["1F130D", "2B1A11"])
         case .rose:     (["FCEBF1", "F6D8E3"], ["1F0D14", "2C131E"])
         case .graphite: (["EFEFF2", "DEDEE3"], ["121214", "1D1D21"])
+        case .aurora:   (["E2F6F1", "E4E9FB", "F1E4FA"], ["06181A", "0D1431", "1B0F2B"])
+        case .dusk:     (["ECE7FB", "FAE5EE", "FDEEE3"], ["130F27", "25111F", "2B1810"])
+        case .midnight: (["E9EDF6", "DAE0EF", "CED6E9"], ["05070D", "0A101F", "121B31"])
         case .none, .photo: nil
         }
     }

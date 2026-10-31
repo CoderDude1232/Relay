@@ -315,6 +315,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         Self.current = self
         RelayTips.configure()
         AppActivity.start()
+        Supporter.shared.start()
         // Drains Siri-queued messages when the socket is closed. Must be
         // registered before launch finishes.
         BGTaskScheduler.shared.register(

@@ -23,6 +23,7 @@ struct SettingsView: View {
     @State private var showingPanicSettings = false
     @State private var versionTapCount = 0
     @State private var showingInvite = false
+    @State private var showingSupporter = false
     @State private var showingQR = false
     @State private var settingsQuery = ""
     /// The page open beside the list on iPad, so its row stays highlighted.
@@ -48,10 +49,18 @@ struct SettingsView: View {
                                     .offset(x: 2, y: 2)
                             }
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(displayName)
-                                    .font(.title3.bold())
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
+                                HStack(spacing: 6) {
+                                    Text(displayName)
+                                        .font(.title3.bold())
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    if Supporter.shared.isActive {
+                                        Image(systemName: "heart.fill")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.pink)
+                                            .accessibilityLabel("Relay Supporter")
+                                    }
+                                }
                                 if let username = service.username {
                                     Text("@\(username)")
                                         .font(.subheadline)
@@ -135,6 +144,20 @@ struct SettingsView: View {
                 // MARK: Support
                 // Privacy Policy, Terms and Acknowledgements live under Privacy.
                 Section {
+                    if Supporter.shared.isOffered {
+                    Button { showingSupporter = true } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "heart.fill", color: .pink)
+                            Text("Support Relay").foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                            if Supporter.shared.isActive {
+                                Text("Supporter").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .tint(.primary)
+                    .sheet(isPresented: $showingSupporter) { SupporterView() }
+                    }
                     Link(destination: LegalLinks.feedbackMail) {
                         SettingsExternalRow(systemName: "envelope.fill", title: "Send Feedback")
                     }
