@@ -5377,6 +5377,9 @@ final class MessagingService {
                 // Self stay visible.
                 guard case .success(let convs) = result else { return [] }
                 self.conversations = convs
+                // A chat read here, from a notification action, on the watch
+                // or on another device has nothing left to announce.
+                self.removeDeliveredNotifications(forConversations: Set(convs.filter { $0.unreadCount == 0 }.map(\.id)))
                 self.updateShareConversationList()
                 self.scheduleAccountStorageUploadIfChanged()
                 self.scheduleSiriPreviewWrite()
