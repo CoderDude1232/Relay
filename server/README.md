@@ -758,3 +758,58 @@ allow-list, 3 sends a day per account and per number, 5 per source address and
 the daily cap. On the Twilio side, enable **Fraud Guard** on the Verify service,
 limit **SMS geo permissions** to the same countries, and set a usage alert or
 spending limit on the account.
+
+## Relay Supporter (anonymous subscription credentials)
+
+Relay Supporter is an optional App Store subscription (one group, product ids
+`app.relaymsg.supporter.monthly1`–`3`). The relay grants its perks without
+learning which account paid: the app trades the App Store's signed transaction
+for **anonymous credentials** on an unauthenticated route, then redeems one per
+period on its account. Off unless `-supporter-key` is set.
+
+Construction (`internal/supporter`, client `Relay/SupporterCredential.swift`):
+the Privacy Pass VOPRF (RFC 9497/9578 shape) over ristretto255 with Relay's own
+domain tags.
+
+- **Periods**: `m2026-11` = a UTC calendar month; `h2026-11-01T13` = a UTC hour,
+  for sandbox (TestFlight) purchases, which renew every few minutes. A
+  credential grants supporter status until its period ends.
+- **Keys**: per period, `k_p = FromUniformBytes(HMAC-SHA512(master,
+  "Relay-Supporter-v1-key:" ‖ period))`, public `Y_p = k_p·G`. The 32-byte
+  master secret is the `-supporter-key` file (hex, generated if absent, `0600`).
+  Losing it only invalidates unredeemed credentials.
+- **Element**: `T = H(period, nonce) = FromUniformBytes(SHA-512(
+  "Relay-Supporter-v1-h2g" ‖ period ‖ 0x00 ‖ nonce))`, nonce 32 random bytes.
+- **Issue**: the app sends `B = r·T`; the relay returns `E = k_p·B` and a DLEQ
+  proof `c ‖ s` (32-byte scalars): `A1 = r'·G`, `A2 = r'·B`, `c =
+  FromUniformBytes(SHA-512("Relay-Supporter-v1-dleq" ‖ Y ‖ B ‖ E ‖ A1 ‖ A2))`,
+  `s = r' − c·k_p`. The app checks it against `Y_p` from `/v1/supporter/keys`
+  (recompute `A1 = s·G + c·Y`, `A2 = s·B + c·E`), so the relay can't single it
+  out with a private key, then unblinds `N = r⁻¹·E`.
+- **Redeem**: the app presents `(period, nonce, N)`; the relay checks
+  `N = k_p·T`, records `HMAC(master, period ‖ nonce)` as spent until the period
+  ends and sets `accounts.supporter_until = max(current, period end)`.
+
+The App Store transaction is the JWS from StoreKit 2
+(`VerificationResult.jwsRepresentation`): ES256, `x5c` chain verified to the
+embedded **Apple Root CA - G3** (SHA-256
+`63343ABF…653E9179`) as of `signedDate`, with Apple's marker extensions
+(leaf `1.2.840.113635.100.6.11.1`, intermediate `…6.2.1`). It must be for
+bundle `-apns-topic`, one of the product ids, type `Auto-Renewable
+Subscription`, unrevoked and unexpired, environment `Production` (or `Sandbox`
+with `-supporter-allow-sandbox`). The relay stores only `HMAC(master,
+transactionId)` with an issue count (`supporter_issuance`, deleted at expiry).
+
+| Endpoint | Auth | |
+|---|---|---|
+| `GET /v1/supporter/keys` | none | → `{keys: {period: base64 Y_p}}` for this and next month and hour. The same for everyone. |
+| `POST /v1/supporter/issue` | none | `{transaction, requests: [{period, blinded}]}` (1–2) → `{credentials: [{period, evaluated, proof}]}`. Periods must be ones the purchase covers (from now to its expiry, at most 2). `403` transaction refused; `409` already issued twice for this transaction (one reissue covers a reinstall); `400` bad period or element; `429` over 20 an hour per address; `503` not configured. |
+| `POST /v1/supporter/redeem` | sig | `{period, nonce, credential}` → `{supporterUntil}` (unix ms). `422` not the current period; `403` invalid; `409` already redeemed (on any account); `429` over 20 an hour per account; `403` demo account. |
+| `GET /v1/accounts/me/supporter` | sig | → `{available, supporterUntil}`. |
+
+What the relay can and can't learn: it sees a transaction at issuance and an
+account at redemption, but the credential shown at redemption was never seen
+at issuance, so the two can't be matched cryptographically. Timing and source
+address can still correlate them, so the app redeems after a random delay.
+Refunds can't be revoked early (status lasts at most to the end of the
+period). Flags: `-supporter-key`, `-supporter-allow-sandbox`.

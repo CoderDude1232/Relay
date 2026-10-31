@@ -364,6 +364,59 @@ public struct RelayAPIClient: Sendable {
         _ = try await send(makeRequest("DELETE", "v1/accounts/me/phone"), authenticated: true)
     }
 
+    // MARK: Relay Supporter (anonymous credentials; see server README)
+
+    public struct SupporterStatus: Decodable, Sendable {
+        public let available: Bool
+        /// Unix ms; 0 = never a supporter.
+        public let supporterUntil: Int64
+    }
+
+    public struct SupporterCredentialRequest: Encodable, Sendable {
+        public let period: String
+        public let blinded: Data
+        public init(period: String, blinded: Data) { self.period = period; self.blinded = blinded }
+    }
+
+    public struct IssuedSupporterCredential: Decodable, Sendable {
+        public let period: String
+        public let evaluated: Data
+        public let proof: Data
+    }
+
+    /// `GET /v1/supporter/keys`: each period's public key. Unauthenticated.
+    public func supporterKeys() async throws -> [String: Data] {
+        struct Response: Decodable { let keys: [String: Data] }
+        let r: Response = try await request("GET", "v1/supporter/keys", body: nil as String?, authenticated: false)
+        return r.keys
+    }
+
+    /// Trades an App Store transaction for blinded credentials.
+    /// Unauthenticated, so the relay can't tie the purchase to this account.
+    public func issueSupporterCredentials(
+        transaction: String, requests: [SupporterCredentialRequest]
+    ) async throws -> [IssuedSupporterCredential] {
+        struct Body: Encodable { let transaction: String; let requests: [SupporterCredentialRequest] }
+        struct Response: Decodable { let credentials: [IssuedSupporterCredential] }
+        let r: Response = try await request(
+            "POST", "v1/supporter/issue", body: Body(transaction: transaction, requests: requests),
+            authenticated: false)
+        return r.credentials
+    }
+
+    /// Redeems one credential on this account; returns supporterUntil (unix ms).
+    public func redeemSupporterCredential(period: String, nonce: Data, credential: Data) async throws -> Int64 {
+        struct Body: Encodable { let period: String; let nonce: Data; let credential: Data }
+        struct Response: Decodable { let supporterUntil: Int64 }
+        let r: Response = try await request(
+            "POST", "v1/supporter/redeem", body: Body(period: period, nonce: nonce, credential: credential))
+        return r.supporterUntil
+    }
+
+    public func supporterStatus() async throws -> SupporterStatus {
+        try await request("GET", "v1/accounts/me/supporter", body: nil as String?)
+    }
+
     /// Whether `name` is free (case-insensitive). Unauthenticated, rate-limited
     /// per IP, and returns only a boolean. Throws `.http(400, ...)` for an
     /// invalid username.

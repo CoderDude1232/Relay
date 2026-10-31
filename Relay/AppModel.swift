@@ -41,7 +41,9 @@ final class AppModel {
     /// re-link nudge.
     static let identityProvisionedKey = "relay.identityProvisioned"
 
-    private(set) var phase: Phase = .loading
+    private(set) var phase: Phase = .loading {
+        didSet { if case .ready(let service) = phase { Supporter.shared.attach(service) } }
+    }
     /// Show the one-time "create a passkey" prompt after a non-passkey sign-in.
     var shouldOfferPasskey = false
     /// The relay says this device was removed from the account (signed in
@@ -282,6 +284,7 @@ final class AppModel {
         if case .ready(let service) = phase {
             service.start()  // no-op if the socket is already running
             service.markActiveConversationReadOnForeground()
+            Task { await Supporter.shared.sync() }
             Task { await service.ensureNoteToSelf() }
             Task {
                 if let convId = await service.processPendingShare() {
@@ -1297,6 +1300,7 @@ final class AppModel {
         ShareBridge.clearAll()
         TempMediaFiles.sweep()
         PanicModeManager.shared.wipe()
+        Supporter.shared.resetAccount()
         let center = UNUserNotificationCenter.current()
         center.removeAllDeliveredNotifications()
         center.removeAllPendingNotificationRequests()

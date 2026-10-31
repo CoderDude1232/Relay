@@ -69,7 +69,8 @@ type Server struct {
 
 	// oprf, when set, enables blinded discovery; the directory index is built
 	// under this key.
-	oprf *oprf.Key
+	oprf      *oprf.Key
+	supporter *supporterConfig
 
 	// Per-account attachment budgets: count/day at allocation, bytes/day at
 	// upload.
@@ -420,6 +421,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability
 	mux.HandleFunc("POST /v1/group-invites", s.auth(s.handleCreateEncryptedGroupInvite))
 	mux.HandleFunc("POST /v1/group-invites/claim", s.handleClaimEncryptedGroupInvite) // unauthenticated: token is the capability
+	mux.HandleFunc("GET /v1/supporter/keys", s.handleSupporterKeys)                   // unauthenticated: the same for everyone
+	mux.HandleFunc("POST /v1/supporter/issue", s.handleSupporterIssue)                // unauthenticated by design (unlinkable to the account)
+	mux.HandleFunc("POST /v1/supporter/redeem", s.auth(s.handleSupporterRedeem))
+	mux.HandleFunc("GET /v1/accounts/me/supporter", s.auth(s.handleGetSupporter))
 	mux.HandleFunc("GET /v1/ws", s.auth(s.handleWebSocket))
 	return stripVisitorIPHeaders(requestDeadlines(limitRequestBody(mux)))
 }

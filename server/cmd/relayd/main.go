@@ -30,6 +30,7 @@ import (
 	"github.com/relayapp/relay-server/internal/sealedsender"
 	"github.com/relayapp/relay-server/internal/siwa"
 	"github.com/relayapp/relay-server/internal/store"
+	"github.com/relayapp/relay-server/internal/supporter"
 )
 
 // runBlobGC periodically reaps attachment blobs older than ttl.
@@ -184,6 +185,8 @@ func main() {
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
 	passkeyRPID := flag.String("passkey-rp-id", api.DefaultPasskeyRPID, "WebAuthn relying party ID for passkey sign-in")
 	passkeyOrigins := flag.String("passkey-origins", api.DefaultPasskeyOrigin, "comma-separated origins accepted in passkey clientDataJSON")
+	supporterKey := flag.String("supporter-key", "", "path to the Relay Supporter credential master secret (hex, 32 bytes); generated if absent, enables /v1/supporter/*")
+	supporterSandbox := flag.Bool("supporter-allow-sandbox", false, "accept App Store sandbox (TestFlight) purchases for Relay Supporter; their credentials last an hour")
 	historyDir := flag.String("history-dir", "/var/lib/relay/history", "directory for encrypted chat-history backup segments")
 	historyMinFree := flag.Int64("history-min-free", 2<<30, "free bytes to keep on the -history-dir filesystem; below it new segments go to -history-remote-url")
 	historyRemoteURL := flag.String("history-remote-url", "", "historyd base URL for segments when local disk is low (e.g. https://turn.example:9479)")
@@ -343,6 +346,20 @@ func main() {
 		// The client must embed this trust-root public key to validate certs.
 		slog.Info("sealed sender enabled",
 			"trustRootPublicBase64", base64.StdEncoding.EncodeToString(trustRoot.Public))
+	}
+	if *supporterKey != "" {
+		issuer, err := supporter.LoadOrCreateIssuer(*supporterKey)
+		if err != nil {
+			slog.Error("failed to load supporter key", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		verifier, err := supporter.NewAppStoreVerifier(*apnsTopic, supporter.ProductIDs, *supporterSandbox)
+		if err != nil {
+			slog.Error("failed to init App Store verification", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		apiServer.SetSupporter(issuer, verifier)
+		slog.Info("relay supporter enabled", "sandbox", *supporterSandbox)
 	}
 	if *oprfKey != "" {
 		key, err := oprf.LoadOrCreateKey(*oprfKey)

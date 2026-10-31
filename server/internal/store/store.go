@@ -46,10 +46,10 @@ var (
 	ErrStrongerSignInRequired    = errors.New("store: account has a passkey or recovery key")
 	// ErrRegistrationLockActive: the account has an account password and was
 	// used recently, so an email reset can't take it over yet.
-	ErrRegistrationLockActive = errors.New("store: registration lock active")
-	ErrAccountPasswordRequired   = errors.New("store: account password required")
-	ErrAccountPasswordIncorrect  = errors.New("store: account password incorrect")
-	ErrAccountPasswordLocked     = errors.New("store: too many account password attempts")
+	ErrRegistrationLockActive   = errors.New("store: registration lock active")
+	ErrAccountPasswordRequired  = errors.New("store: account password required")
+	ErrAccountPasswordIncorrect = errors.New("store: account password incorrect")
+	ErrAccountPasswordLocked    = errors.New("store: too many account password attempts")
 )
 
 // MaxOneTimePreKeysPerDevice caps the one-time prekeys stored for one device.
@@ -506,6 +506,18 @@ CREATE TABLE IF NOT EXISTS group_invites (
     location   TEXT NOT NULL,
     created_at BIGINT NOT NULL,
     PRIMARY KEY (account_id, seq)
+)`,
+		// Relay Supporter (store/supporter.go): until when the account has
+		// supporter perks (unix ms), and the anonymous-credential books.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS supporter_until BIGINT NOT NULL DEFAULT 0`,
+		`CREATE TABLE IF NOT EXISTS supporter_issuance (
+    tx_tag     BYTEA PRIMARY KEY,
+    count      INT NOT NULL,
+    expires_at BIGINT NOT NULL
+)`,
+		`CREATE TABLE IF NOT EXISTS supporter_spent (
+    nonce_tag  BYTEA PRIMARY KEY,
+    expires_at BIGINT NOT NULL
 )`,
 	} {
 		if err := s.migrationExec(ctx, stmt); err != nil {
@@ -2569,6 +2581,7 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 //   - reports: older than 180 days
 //   - nuke_commands: older than an hour (delivered or stale; see nukeRetentionMillis)
 //   - released_usernames: once the 7-day reuse cooldown has ended
+//   - supporter_issuance, supporter_spent: once the transaction or period ends
 func (s *Store) PurgeExpired() error {
 	ctx := context.Background()
 	now := time.Now().UnixMilli()
@@ -2584,6 +2597,8 @@ func (s *Store) PurgeExpired() error {
 		{`DELETE FROM reports WHERE created_at < $1`, now - reportTTLMillis},
 		{`DELETE FROM nuke_commands WHERE created_at < $1`, now - nukeRetentionMillis},
 		{`DELETE FROM released_usernames WHERE released_at < $1`, now - UsernameReuseCooldown.Milliseconds()},
+		{`DELETE FROM supporter_issuance WHERE expires_at < $1`, now},
+		{`DELETE FROM supporter_spent WHERE expires_at < $1`, now},
 	} {
 		if _, err := s.db.Exec(ctx, q.sql, q.arg); err != nil {
 			return err
