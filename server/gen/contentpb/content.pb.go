@@ -1966,10 +1966,15 @@ func (x *TypingMessage) GetTimestamp() int64 {
 // devices for the Linked Devices list. The relay never sees model or
 // location. Recipients accept it only from their own account.
 type DeviceInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Model         string                 `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`                           // marketing name, e.g. "iPhone 17 Pro"
-	Region        string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`                         // coarse place, e.g. "Queensland, Australia"; empty if unknown
-	UpdatedAt     int64                  `protobuf:"varint,3,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // sender clock (ms); newest wins
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Model     string                 `protobuf:"bytes,1,opt,name=model,proto3" json:"model,omitempty"`                           // marketing name, e.g. "iPhone 17 Pro"
+	Region    string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`                         // coarse place, e.g. "Queensland, Australia"; empty if unknown
+	UpdatedAt int64                  `protobuf:"varint,3,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // sender clock (ms); newest wins
+	// Account-wide "show device regions" choice, carried along so every device
+	// follows the last change. show_regions_at is when it was made (sender
+	// clock, ms); 0 = not set by this sender, newest wins.
+	ShowRegions   bool  `protobuf:"varint,4,opt,name=show_regions,json=showRegions,proto3" json:"show_regions,omitempty"`
+	ShowRegionsAt int64 `protobuf:"varint,5,opt,name=show_regions_at,json=showRegionsAt,proto3" json:"show_regions_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2021,6 +2026,20 @@ func (x *DeviceInfo) GetRegion() string {
 func (x *DeviceInfo) GetUpdatedAt() int64 {
 	if x != nil {
 		return x.UpdatedAt
+	}
+	return 0
+}
+
+func (x *DeviceInfo) GetShowRegions() bool {
+	if x != nil {
+		return x.ShowRegions
+	}
+	return false
+}
+
+func (x *DeviceInfo) GetShowRegionsAt() int64 {
+	if x != nil {
+		return x.ShowRegionsAt
 	}
 	return 0
 }
@@ -2198,13 +2217,15 @@ const file_content_proto_rawDesc = "" +
 	"\x06Action\x12\x16\n" +
 	"\x12ACTION_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eACTION_STARTED\x10\x01\x12\x12\n" +
-	"\x0eACTION_STOPPED\x10\x02\"Y\n" +
+	"\x0eACTION_STOPPED\x10\x02\"\xa4\x01\n" +
 	"\n" +
 	"DeviceInfo\x12\x14\n" +
 	"\x05model\x18\x01 \x01(\tR\x05model\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x03 \x01(\x03R\tupdatedAtB0Z.github.com/relayapp/relay-server/gen/contentpbb\x06proto3"
+	"updated_at\x18\x03 \x01(\x03R\tupdatedAt\x12!\n" +
+	"\fshow_regions\x18\x04 \x01(\bR\vshowRegions\x12&\n" +
+	"\x0fshow_regions_at\x18\x05 \x01(\x03R\rshowRegionsAtB0Z.github.com/relayapp/relay-server/gen/contentpbb\x06proto3"
 
 var (
 	file_content_proto_rawDescOnce sync.Once

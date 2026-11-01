@@ -77,9 +77,8 @@ enum DeviceModel {
     ]
 }
 
-/// Resolves "State, Country" from an approximate location. Never prompts on
-/// its own; `requestAccess()` is called from Linked Devices, where the user
-/// sees why.
+/// Resolves "State, Country" from an approximate location. Asks for
+/// permission only once the account's "show device regions" is on.
 @MainActor
 final class DeviceRegion: NSObject, CLLocationManagerDelegate {
     static let shared = DeviceRegion()
@@ -103,34 +102,15 @@ final class DeviceRegion: NSObject, CLLocationManagerDelegate {
 
     var canAsk: Bool { manager.authorizationStatus == .notDetermined }
 
-    private static let enabledKey = "relay.deviceRegion.enabled"
-
-    /// The user's explicit opt-in (from Linked Devices). Location permission
-    /// granted for live-location sharing alone never enables this.
-    var isEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: Self.enabledKey) }
-        set { UserDefaults.standard.set(newValue, forKey: Self.enabledKey) }
+    /// Asks for location permission if it hasn't been decided. The answer
+    /// posts `.deviceRegionAuthorizationChanged`.
+    func requestAccessIfNeeded() {
+        if canAsk { manager.requestWhenInUseAuthorization() }
     }
 
-    /// Opts in, asking for location permission if it hasn't been decided.
-    func enable() {
-        isEnabled = true
-        if canAsk {
-            manager.requestWhenInUseAuthorization()
-        } else {
-            NotificationCenter.default.post(name: .deviceRegionAuthorizationChanged, object: nil)
-        }
-    }
-
-    func disable() {
-        isEnabled = false
-        NotificationCenter.default.post(name: .deviceRegionAuthorizationChanged, object: nil)
-    }
-
-    /// "Queensland, Australia", or "" when not opted in, without permission,
-    /// or on failure.
+    /// "Queensland, Australia", or "" without permission or on failure.
     func currentRegion() async -> String {
-        guard isEnabled, isAuthorized else { return "" }
+        guard isAuthorized else { return "" }
         guard let location = await oneLocation(),
               let placemark = try? await CLGeocoder().reverseGeocodeLocation(location).first
         else { return "" }

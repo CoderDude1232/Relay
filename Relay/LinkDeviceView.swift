@@ -386,7 +386,7 @@ struct LinkedDevicesView: View {
     @State private var showingLinkSheet = false
     @State private var errorMessage: String?
     @State private var pendingUnlink: RelayKit.LinkedDevice?
-    @State private var regionEnabled = DeviceRegion.shared.isEnabled
+    @State private var regionsShown = false
     @State private var relinkNudgeDismissed = UserDefaults.standard.bool(forKey: Self.relinkNudgeDismissedKey)
 
     private static let relinkNudgeDismissedKey = "relay.relinkNudgeDismissed"
@@ -459,16 +459,19 @@ struct LinkedDevicesView: View {
 
                 Section {
                     Toggle(isOn: Binding(
-                        get: { regionEnabled },
+                        get: { regionsShown },
                         set: { on in
-                            regionEnabled = on
-                            on ? DeviceRegion.shared.enable() : DeviceRegion.shared.disable()
+                            regionsShown = on
+                            Task {
+                                await service.setShowsDeviceRegions(on)
+                                await refresh()
+                            }
                         }
                     )) {
-                        Label("Show This Device's Region", systemImage: "location")
+                        Label("Show Device Regions", systemImage: "location")
                     }
                 } footer: {
-                    Text("Adds an approximate region like \"Queensland, Australia\" to this device's name on your other devices. Uses approximate location only, turned into a region name by Apple; it never reaches Relay's servers.")
+                    Text("Adds an approximate region like \"Queensland, Australia\" to each device's name here. Applies to all your devices; each asks for approximate location once. The region is worked out by Apple and never reaches Relay's servers.")
                 }
 
                 Section {
@@ -494,11 +497,14 @@ struct LinkedDevicesView: View {
         .toolbar {
             EditButton()
         }
-        .task { await refresh() }
+        .task {
+            regionsShown = service.regionSetting.on
+            await refresh()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .deviceRegionAuthorizationChanged)) { _ in
-            regionEnabled = DeviceRegion.shared.isEnabled
+            // MessagingService republishes this device's label; show it.
             Task {
-                await service.publishDeviceLabel(force: true)
+                try? await Task.sleep(for: .seconds(2))
                 await refresh()
             }
         }

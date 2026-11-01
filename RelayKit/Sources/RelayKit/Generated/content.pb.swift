@@ -1020,6 +1020,13 @@ public nonisolated struct Relay_Content_DeviceInfo: Sendable {
   /// sender clock (ms); newest wins
   public var updatedAt: Int64 = 0
 
+  /// Account-wide "show device regions" choice, carried along so every device
+  /// follows the last change. show_regions_at is when it was made (sender
+  /// clock, ms); 0 = not set by this sender, newest wins.
+  public var showRegions: Bool = false
+
+  public var showRegionsAt: Int64 = 0
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -2311,7 +2318,7 @@ nonisolated extension Relay_Content_TypingMessage.Action: SwiftProtobuf._ProtoNa
 
 nonisolated extension Relay_Content_DeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeviceInfo"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}region\0\u{3}updated_at\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}model\0\u{1}region\0\u{3}updated_at\0\u{3}show_regions\0\u{3}show_regions_at\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2322,6 +2329,8 @@ nonisolated extension Relay_Content_DeviceInfo: SwiftProtobuf.Message, SwiftProt
       case 1: try { try decoder.decodeSingularStringField(value: &self.model) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.region) }()
       case 3: try { try decoder.decodeSingularInt64Field(value: &self.updatedAt) }()
+      case 4: try { try decoder.decodeSingularBoolField(value: &self.showRegions) }()
+      case 5: try { try decoder.decodeSingularInt64Field(value: &self.showRegionsAt) }()
       default: break
       }
     }
@@ -2337,6 +2346,12 @@ nonisolated extension Relay_Content_DeviceInfo: SwiftProtobuf.Message, SwiftProt
     if self.updatedAt != 0 {
       try visitor.visitSingularInt64Field(value: self.updatedAt, fieldNumber: 3)
     }
+    if self.showRegions != false {
+      try visitor.visitSingularBoolField(value: self.showRegions, fieldNumber: 4)
+    }
+    if self.showRegionsAt != 0 {
+      try visitor.visitSingularInt64Field(value: self.showRegionsAt, fieldNumber: 5)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -2344,6 +2359,8 @@ nonisolated extension Relay_Content_DeviceInfo: SwiftProtobuf.Message, SwiftProt
     if lhs.model != rhs.model {return false}
     if lhs.region != rhs.region {return false}
     if lhs.updatedAt != rhs.updatedAt {return false}
+    if lhs.showRegions != rhs.showRegions {return false}
+    if lhs.showRegionsAt != rhs.showRegionsAt {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

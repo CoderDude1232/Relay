@@ -276,6 +276,8 @@ public struct ProcessedEnvelope: Sendable {
     /// The message whose notification is stale. Notifications that don't
     /// say which message they announce are removed with the whole chat's.
     public var removedMessageId: String?
+    /// One of our own devices sent its name.
+    public var updatedOwnDeviceLabel = false
 
     public init(
         outcome: Outcome,
@@ -1067,7 +1069,9 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
             }
             recordDeviceLabel(info, forDevice: sender.deviceId)
-            return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount)
+            var result = ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount)
+            result.updatedOwnDeviceLabel = true
+            return result
 
         case .none:
             return ProcessedEnvelope(outcome: .ignored, peerAccount: attestedAccount)
@@ -1108,6 +1112,28 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             region: String(info.region.prefix(96)),
             updatedAt: info.updatedAt)
         guard let data = try? JSONEncoder().encode(label) else { return }
+        try? storage.database.run(
+            "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(data)])
+        recordRegionSetting(info)
+    }
+
+    /// The app's `RegionSetting` (kv `devinfo-regions`): the account-wide
+    /// "show device regions" choice, newest wins.
+    private struct StoredRegionSetting: Codable {
+        let on: Bool
+        let at: Int64
+    }
+
+    private func recordRegionSetting(_ info: Relay_Content_DeviceInfo) {
+        guard info.showRegionsAt > 0 else { return }
+        let key = "devinfo-regions"
+        if let existing = (try? storage.database.query("SELECT value FROM kv WHERE key = ?", [.text(key)]))?
+            .first?.first?.data,
+           let old = try? JSONDecoder().decode(StoredRegionSetting.self, from: existing),
+           old.at >= info.showRegionsAt {
+            return
+        }
+        guard let data = try? JSONEncoder().encode(StoredRegionSetting(on: info.showRegions, at: info.showRegionsAt)) else { return }
         try? storage.database.run(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(data)])
     }

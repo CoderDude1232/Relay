@@ -122,6 +122,7 @@ final class MessagingService {
     @ObservationIgnored var accountStorageUploadTask: Task<Void, Never>?
     @ObservationIgnored var lastChatListFingerprint: String?
     @ObservationIgnored private var siriPreviewTask: Task<Void, Never>?
+    @ObservationIgnored private var regionAuthorizationObserver: NSObjectProtocol?
 
     /// Refreshes the Siri UI snapshot a moment after the chat list settles.
     func scheduleSiriPreviewWrite() {
@@ -491,7 +492,18 @@ final class MessagingService {
         loadDirectoryDecoySeed()
         connectionTask = Task { await runConnectionLoop() }
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
-        Task { [weak self] in await self?.publishDeviceLabel(force: false) }
+        Task { [weak self] in
+            await self?.publishDeviceLabel(force: false)
+            // Labels the notification extension stored while the app was closed.
+            await self?.handleOwnDeviceLabels()
+        }
+        if regionAuthorizationObserver == nil {
+        regionAuthorizationObserver = NotificationCenter.default.addObserver(
+            forName: .deviceRegionAuthorizationChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.publishDeviceLabel(force: true) }
+        }
+        }
         // The relay's per-device default is off; tell it this device's choice.
         Task { [weak self] in
             guard let self else { return }
@@ -872,6 +884,9 @@ final class MessagingService {
             if let upd = result.screenSecurityUpdate {
                 try? storage.messages.setConversationPeerScreenSecurity(upd.conversationId, enabled: upd.enabled)
                 refreshConversations()
+            }
+            if result.updatedOwnDeviceLabel {
+                Task { await self.handleOwnDeviceLabels() }
             }
         } catch {
             log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
@@ -2720,11 +2735,11 @@ final class MessagingService {
            previous.model == DeviceModel.current {
             return
         }
-        let regionEnabled = DeviceRegion.shared.isEnabled
-        let region = await DeviceRegion.shared.currentRegion()
+        let setting = regionSetting
+        let region = setting.on ? await DeviceRegion.shared.currentRegion() : ""
         var label = DeviceLabel(model: DeviceModel.current, region: region, updatedAt: now)
-        // Keep the last known region unless the user turned regions off.
-        if label.region.isEmpty, regionEnabled, let previous { label.region = previous.region }
+        // Keep the last known region unless regions were turned off.
+        if label.region.isEmpty, setting.on, let previous { label.region = previous.region }
         let unchanged = previous.map { $0.model == label.model && $0.region == label.region } ?? false
         let fresh = previous.map { now - $0.updatedAt < 86_400_000 } ?? false
         if unchanged && fresh && !force { return }
@@ -2737,7 +2752,91 @@ final class MessagingService {
         content.deviceInfo.model = label.model
         content.deviceInfo.region = label.region
         content.deviceInfo.updatedAt = label.updatedAt
+        content.deviceInfo.showRegions = setting.on
+        content.deviceInfo.showRegionsAt = setting.at
         await sendSyncToOwnDevices(content: content, peer: "", timestamp: now)
+    }
+
+    /// The account-wide "show device regions" choice, shared with our other
+    /// devices inside the label (kv `devinfo-regions`, written by
+    /// EnvelopeProcessor too). Newest change wins.
+    struct RegionSetting: Codable {
+        var on: Bool
+        var at: Int64
+    }
+
+    private static let regionSettingKV = "devinfo-regions"
+    private static let legacyRegionEnabledKey = "relay.deviceRegion.enabled"
+
+    var regionSetting: RegionSetting {
+        guard let data = (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(Self.regionSettingKV)]
+        ))?.first?.first?.data,
+              let setting = try? JSONDecoder().decode(RegionSetting.self, from: data)
+        else { return RegionSetting(on: false, at: 0) }
+        return setting
+    }
+
+    private func storeRegionSetting(_ setting: RegionSetting) {
+        guard let data = try? JSONEncoder().encode(setting) else { return }
+        try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                                  [.text(Self.regionSettingKV), .blob(data)])
+    }
+
+    /// Turns regions on or off on every device of this account.
+    func setShowsDeviceRegions(_ on: Bool) async {
+        storeRegionSetting(RegionSetting(on: on, at: Int64(Date().timeIntervalSince1970 * 1000)))
+        if on { DeviceRegion.shared.requestAccessIfNeeded() }
+        await publishDeviceLabel(force: true)
+    }
+
+    /// Brings this device's label in line with the account's region choice,
+    /// which another device may have changed.
+    private func followRegionSetting() async {
+        // Builds before the setting was account-wide kept it per device.
+        if UserDefaults.standard.object(forKey: Self.legacyRegionEnabledKey) != nil {
+            if regionSetting.at == 0, UserDefaults.standard.bool(forKey: Self.legacyRegionEnabledKey) {
+                storeRegionSetting(RegionSetting(on: true, at: Int64(Date().timeIntervalSince1970 * 1000)))
+                UserDefaults.standard.removeObject(forKey: Self.legacyRegionEnabledKey)
+                await publishDeviceLabel(force: true)
+                return
+            }
+            UserDefaults.standard.removeObject(forKey: Self.legacyRegionEnabledKey)
+        }
+        let on = regionSetting.on
+        let shown = !myDeviceLabel.region.isEmpty
+        if on, !shown {
+            // The prompt only shows while the app is open; otherwise the next launch asks.
+            if UIApplication.shared.applicationState == .active { DeviceRegion.shared.requestAccessIfNeeded() }
+            if DeviceRegion.shared.isAuthorized { await publishDeviceLabel(force: true) }
+        } else if !on, shown {
+            await publishDeviceLabel(force: true)
+        }
+    }
+
+    /// After our own devices' labels arrive: follow their region choice and
+    /// introduce ourselves to any we haven't yet.
+    func handleOwnDeviceLabels() async {
+        await followRegionSetting()
+        await introduceToLabelledDevices()
+    }
+
+    /// Sends our label to own devices we've heard from but never sent it to.
+    /// A device's own label arriving shows it can now receive; ours, sent the
+    /// moment it was linked, usually reached it before it could.
+    private func introduceToLabelledDevices() async {
+        let rows = (try? storage.database.query("SELECT key FROM kv WHERE key LIKE 'devinfo:%'", [])) ?? []
+        let labelled = Set(rows.compactMap { $0.first?.string.flatMap { UInt32($0.dropFirst("devinfo:".count)) } })
+            .subtracting([credentials.deviceId])
+        let introducedKey = "devinfo-introduced"
+        let stored = (try? storage.database.query("SELECT value FROM kv WHERE key = ?", [.text(introducedKey)]))?
+            .first?.first?.data.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let introduced = Set(stored.split(separator: ",").compactMap { UInt32($0) })
+        guard !labelled.isSubset(of: introduced) else { return }
+        await publishDeviceLabel(force: true)
+        let updated = labelled.union(introduced).sorted().map(String.init).joined(separator: ",")
+        try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                                  [.text(introducedKey), .blob(Data(updated.utf8))])
     }
 
     func removeLinkedDevice(deviceId: UInt32) async throws {

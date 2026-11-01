@@ -405,6 +405,7 @@ struct TwoStepView: View {
     @State private var working = false
     @State private var errorMessage: String?
     @State private var showingRecoveryKey = false
+    @State private var pinHasLetters = false
     @FocusState private var focused: Bool
 
     private var method: TwoStepRequired.Method? { needed.challenge.method }
@@ -455,18 +456,32 @@ struct TwoStepView: View {
                     }
                 case .pin:
                     OnboardingRow(icon: "lock") {
-                        SecureField("PIN", text: $answer)
+                        SecureField(pinHasLetters ? "Password" : "PIN", text: $answer)
                             .focused($focused)
+                            .keyboardType(pinHasLetters ? .default : .numberPad)
                             .textContentType(.password)
                             .foregroundStyle(.white)
                             .tint(.white)
                             .onSubmit { submit(.pin(answer)) }
+                            // A new keyboard type only shows on refocus.
+                            .id(pinHasLetters)
                     }
                     .onboardingCard()
                     errorBanner
                     OnboardingPrimaryButton(title: "Continue", enabled: !answer.isEmpty, working: working) {
                         submit(.pin(answer))
                     }
+                    // Accounts from before PINs set an account password, which can
+                    // have letters.
+                    Button(pinHasLetters ? "Use a number PIN" : "My PIN has letters") {
+                        pinHasLetters.toggle()
+                        answer = ""
+                        Task { focused = true }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(minHeight: 44)
+                    .disabled(working)
                 case .passkey:
                     errorBanner
                     OnboardingPrimaryButton(title: "Use Passkey", working: working) { submit(.passkey) }
