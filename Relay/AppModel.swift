@@ -1226,6 +1226,8 @@ final class AppModel {
 
     func signOut(removeFromServer: Bool = true, remoteWipe: Bool = false) {
         VoicePlaybackCenter.shared.stop()
+        // An emergency wipe also takes the backup key out of iCloud Keychain.
+        if remoteWipe { ICloudBackupKey.deleteAll() }
         removedFromAccount = false
         guard removeFromServer, case .ready(let service) = phase else {
             finishSignOut()

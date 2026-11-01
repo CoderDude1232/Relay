@@ -149,6 +149,9 @@ final class MessagingService {
     private(set) var activeMessagesRevision = 0
     /// True while the message history backup is being restored after sign-in.
     var isRestoringHistory = false
+    /// The account has a backup this device can't open yet (no matching
+    /// iCloud Keychain key): it needs a passkey, the recovery key or the PIN.
+    var backupNeedsUnlock = false
     /// Message history backup in progress (0...1), or nil when idle.
     var historyBackupProgress: Double?
     /// Why the last backup attempt failed, until one succeeds.
@@ -634,6 +637,7 @@ final class MessagingService {
                     Task {
                         await self.upgradeRecoveryKeyHashIfNeeded()
                         await self.noteAccountPasswordNeedsUpdateIfNeeded()
+                        await self.ensureICloudBackupUnlock()
                         await self.restoreHistoryIfNeeded()
                         await self.backUpHistoryIfDue()
                     }

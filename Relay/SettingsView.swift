@@ -614,6 +614,7 @@ private struct AccountSettingsView: View {
         }
         .navigationDestination(isPresented: $showingDeleteAccount) {
             DeleteAccountSheet(service: service) {
+                ICloudBackupKey.deleteAll()
                 model.signOut(removeFromServer: false) // the account is already gone
             }
         }

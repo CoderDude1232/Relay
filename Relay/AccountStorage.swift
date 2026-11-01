@@ -5,8 +5,10 @@
 //  Keeps the chat and group list (not message history) with the account as a
 //  padded, opaque blob on the relay. The list is encrypted under a random
 //  content key, and that key is stored in slots: one wrapped by an Argon2id key
-//  from the account password, and one per passkey wrapped by a key from the
-//  passkey's PRF output. Either can unlock the list on a new device.
+//  from the account password (the PIN), one per passkey wrapped by a key from
+//  the passkey's PRF output, one by the recovery key, and one per Apple ID by
+//  a key in iCloud Keychain (ICloudBackupKey). Any of them unlocks the list,
+//  and the message history, on a new device.
 //
 
 import Clibsodium
@@ -24,15 +26,29 @@ enum AccountStorageCrypto {
         case password = 1
         case passkey = 2
         case recoveryKey = 3
+        case iCloudKeychain = 4
     }
 
     /// A copy of the content key, wrapped for one way of unlocking.
     struct Slot: Equatable {
-        let kind: SlotKind
-        /// Empty for the password slot; the credential id for a passkey slot.
+        /// Kept as the byte, so slots of a kind this build doesn't know (from a
+        /// newer one) survive its uploads.
+        let rawKind: UInt8
+        /// Empty for the password and recovery-key slots; the credential id
+        /// for a passkey slot; ICloudBackupKey.slotId for an iCloud slot.
         let id: Data
         /// AES-GCM(content key), nonce | ciphertext | tag.
         let wrapped: Data
+
+        var kind: SlotKind? { SlotKind(rawValue: rawKind) }
+
+        init(kind: SlotKind, id: Data, wrapped: Data) {
+            self.init(rawKind: kind.rawValue, id: id, wrapped: wrapped)
+        }
+
+        init(rawKind: UInt8, id: Data, wrapped: Data) {
+            self.rawKind = rawKind; self.id = id; self.wrapped = wrapped
+        }
     }
 
     /// Salt for the passkey PRF, the same for every account.
@@ -66,12 +82,12 @@ enum AccountStorageCrypto {
         SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
     }
 
-    private static func slotAD(_ kind: SlotKind, _ id: Data) -> Data {
-        Data("RAS2-slot".utf8) + [kind.rawValue] + id
+    private static func slotAD(_ kind: UInt8, _ id: Data) -> Data {
+        Data("RAS2-slot".utf8) + [kind] + id
     }
 
     nonisolated static func makeSlot(kind: SlotKind, id: Data = Data(), contentKey: Data, slotKey: Data) -> Slot? {
-        guard let box = try? AES.GCM.seal(contentKey, using: SymmetricKey(data: slotKey), authenticating: slotAD(kind, id)),
+        guard let box = try? AES.GCM.seal(contentKey, using: SymmetricKey(data: slotKey), authenticating: slotAD(kind.rawValue, id)),
               let combined = box.combined
         else { return nil }
         return Slot(kind: kind, id: id, wrapped: combined)
@@ -79,7 +95,7 @@ enum AccountStorageCrypto {
 
     nonisolated static func unwrap(_ slot: Slot, slotKey: Data) -> Data? {
         guard let box = try? AES.GCM.SealedBox(combined: slot.wrapped),
-              let key = try? AES.GCM.open(box, using: SymmetricKey(data: slotKey), authenticating: slotAD(slot.kind, slot.id)),
+              let key = try? AES.GCM.open(box, using: SymmetricKey(data: slotKey), authenticating: slotAD(slot.rawKind, slot.id)),
               key.count == 32
         else { return nil }
         return key
@@ -89,7 +105,7 @@ enum AccountStorageCrypto {
     nonisolated static func encodeSlots(_ slots: [Slot]) -> Data {
         var out = Data([UInt8(slots.count)])
         for slot in slots {
-            out.append(slot.kind.rawValue)
+            out.append(slot.rawKind)
             out.append(UInt8(slot.id.count)); out.append(slot.id)
             out.append(UInt8(slot.wrapped.count)); out.append(slot.wrapped)
         }
@@ -108,11 +124,11 @@ enum AccountStorageCrypto {
             return Array(bytes[i..<(i + n)])
         }
         for _ in 0..<count {
-            guard let kindByte = take(1)?.first, let kind = SlotKind(rawValue: kindByte),
+            guard let kind = take(1)?.first,
                   let idLen = take(1)?.first, let id = take(Int(idLen)),
                   let wrappedLen = take(1)?.first, let wrapped = take(Int(wrappedLen))
             else { return nil }
-            slots.append(Slot(kind: kind, id: Data(id), wrapped: Data(wrapped)))
+            slots.append(Slot(rawKind: kind, id: Data(id), wrapped: Data(wrapped)))
         }
         return (slots, i)
     }
@@ -203,9 +219,11 @@ extension MessagingService {
     /// Re-bases on the server's version without reading the blob.
     func accountStorageVersionReset(to version: Int64) { accountStorageVersion = version }
 
-    /// Whether this device can keep the chat list with the account (it can
-    /// unlock it with the account password or a passkey).
-    var keepsChatListWithAccount: Bool { contentKey != nil || passwordKey != nil }
+    /// Whether this device can keep the chat list with the account (it has
+    /// the content key, or the PIN or iCloud Keychain key that unwraps it).
+    var keepsChatListWithAccount: Bool {
+        contentKey != nil || passwordKey != nil || ICloudBackupKey.load(accountId: credentials.accountId) != nil
+    }
 
     /// Key for the message-history backup, derived from the chat list's content
     /// key so the same sign-in methods (password, passkey, recovery key) unlock
@@ -312,6 +330,12 @@ extension MessagingService {
         if key == nil, let passwordKey, let slot = serverSlots.first(where: { $0.kind == .password }) {
             key = AccountStorageCrypto.unwrap(slot, slotKey: passwordKey)
         }
+        if key == nil, let iCloudKey = ICloudBackupKey.load(accountId: credentials.accountId) {
+            let id = ICloudBackupKey.slotId(for: iCloudKey)
+            if let slot = serverSlots.first(where: { $0.kind == .iCloudKeychain && $0.id == id }) {
+                key = AccountStorageCrypto.unwrap(slot, slotKey: ICloudBackupKey.slotKey(for: iCloudKey))
+            }
+        }
         guard let key, let plaintext = AccountStorageCrypto.open(blob, contentKey: key) else { return nil }
         setKV(Self.contentKeyKV, key)
         slots = serverSlots
@@ -322,6 +346,24 @@ extension MessagingService {
     func restoreAccountStorage(passkeyCredentialId: Data, prfOutput: Data) async {
         await restoreAccountStorage(kind: .passkey, id: passkeyCredentialId,
                                     slotKey: AccountStorageCrypto.passkeySlotKey(prfOutput: prfOutput))
+    }
+
+    /// Unlocks a backup this device couldn't open, with the PIN (the account
+    /// password). False if the PIN doesn't open it.
+    @discardableResult
+    func unlockBackup(pin: String) async -> Bool {
+        let account = credentials.accountId
+        guard let key = await Task.detached(priority: .userInitiated, operation: {
+            AccountStorageCrypto.deriveKey(password: pin, accountId: account)
+        }).value,
+            let stored = try? await apiClient.accountStorage(),
+            let serverSlots = AccountStorageCrypto.slots(in: stored.blob),
+            let slot = serverSlots.first(where: { $0.kind == .password }),
+            AccountStorageCrypto.unwrap(slot, slotKey: key) != nil
+        else { return false }
+        setKV(Self.passwordKeyKV, key)
+        await restoreAccountStorage(kind: .password, id: Data(), slotKey: key)
+        return true
     }
 
     /// Unlocks the chat list with the recovery key after a recovery-key sign-in.
@@ -341,7 +383,59 @@ extension MessagingService {
         setKV(Self.contentKeyKV, key)
         slots = serverSlots
         importStored(plaintext)
+        backupNeedsUnlock = false
+        // This Apple ID unlocks it from now on.
+        await ensureICloudBackupUnlock()
     }
+
+    // MARK: iCloud Keychain
+
+    /// Makes sure this Apple ID can unlock the account's backups: opens them
+    /// with its iCloud Keychain key if it already has a slot, else adds one.
+    /// The first backup of an account (nothing stored yet) starts here too.
+    /// A stored backup this device can't open is never replaced: it waits,
+    /// with `backupNeedsUnlock` set, for a passkey, the recovery key or the PIN.
+    func ensureICloudBackupUnlock() async {
+        guard !isDemoAccount else { return }
+        let accountId = credentials.accountId
+        // Already done on this device: nothing to fetch.
+        if contentKey != nil, let iCloudKey = ICloudBackupKey.load(accountId: accountId),
+           kvData(Self.iCloudSlotKV) == ICloudBackupKey.slotId(for: iCloudKey) {
+            return
+        }
+        let stored: (blob: Data, version: Int64)?
+        do {
+            stored = try await apiClient.accountStorage()
+        } catch {
+            return // try again next connection
+        }
+        if let stored {
+            accountStorageVersion = stored.version
+            guard let plaintext = openStored(stored.blob) else {
+                backupNeedsUnlock = true
+                return
+            }
+            importStored(plaintext)
+        }
+        backupNeedsUnlock = false
+        guard let iCloudKey = ICloudBackupKey.loadOrCreate(accountId: accountId) else { return }
+        let id = ICloudBackupKey.slotId(for: iCloudKey)
+        let hasSlot = { self.slots.contains(where: { $0.kind == .iCloudKeychain && $0.id == id }) }
+        // Twice: a conflicting upload merges in the other device's slots,
+        // which can drop this one.
+        for _ in 0..<2 where stored == nil || !hasSlot() {
+            let content = ensureContentKey()
+            guard let slot = AccountStorageCrypto.makeSlot(kind: .iCloudKeychain, id: id, contentKey: content,
+                                                           slotKey: ICloudBackupKey.slotKey(for: iCloudKey)) else { return }
+            slots = slots.filter { !($0.kind == .iCloudKeychain && $0.id == id) } + [slot]
+            guard await uploadAccountStorageReportingSuccess() else { return }
+            if hasSlot() { break }
+        }
+        guard hasSlot() else { return }
+        setKV(Self.iCloudSlotKV, id)
+    }
+
+    private static let iCloudSlotKV = "me:iCloudSlotId"
 
     // MARK: Recovery key
 
@@ -459,20 +553,28 @@ extension MessagingService {
     /// device wrote first) it merges in that device's list and slots, and
     /// retries once.
     func uploadAccountStorage() async {
-        guard keepsChatListWithAccount, !isDemoAccount else { return }
+        await uploadAccountStorageReportingSuccess()
+    }
+
+    @discardableResult
+    private func uploadAccountStorageReportingSuccess() async -> Bool {
+        // A stored backup this device can't open isn't replaced (see
+        // ensureICloudBackupUnlock).
+        guard keepsChatListWithAccount, !isDemoAccount, !backupNeedsUnlock else { return false }
         for _ in 0..<2 {
             let key = ensureContentKey()
             guard let stored = storedPlaintext(),
-                  let blob = try? AccountStorageCrypto.seal(stored.data, contentKey: key, slots: slots) else { return }
+                  let blob = try? AccountStorageCrypto.seal(stored.data, contentKey: key, slots: slots) else { return false }
             do {
                 accountStorageVersion = try await apiClient.putAccountStorage(blob, baseVersion: accountStorageVersion)
                 if stored.writtenAt > storageSeenAt { storageSeenAt = stored.writtenAt }
-                return
+                return true
             } catch RelayAPIError.http(status: 409, _) {
                 await restoreAccountStorage()
             } catch {
-                return
+                return false
             }
         }
+        return false
     }
 }
