@@ -21,22 +21,38 @@ extension MessagingService {
         try await apiClient.deleteAccount(appleAuthorizationCode: appleAuthorizationCode)
     }
 
-    /// Sets or changes the account password (email recovery, and the lock on
-    /// new-device sign-ins).
-    func setAccountPassword(_ password: String) async throws {
-        // The password lets a new device take over the account, so whoever
-        // sets it must be the phone's owner, not just someone holding it unlocked.
-        guard await BiometricGate.authenticate(reason: "Confirm it's you to change your account password.", requirePasscode: true) else {
-            throw OwnerConfirmationError()
-        }
-        try await apiClient.setAccountPassword(AccountPasswordKey.proof(for: password))
+    /// Sets or changes the PIN (the account password on the relay) and makes
+    /// it the second step. It also unlocks the backup on a new device.
+    func setPIN(_ pin: String) async throws {
+        try await confirmOwner("Confirm it's you to set your PIN.")
+        try await apiClient.setAccountPassword(AccountPasswordKey.proof(for: pin))
         UserDefaults.standard.set(true, forKey: Self.hasAccountPasswordKey)
+        try await apiClient.setTwoStep(.pin)
         // Pick up the latest list and passkey slots, then rewrap the password slot.
         await restoreAccountStorage()
-        await setAccountStorageKey(password: password)
+        await setAccountStorageKey(password: pin)
         if let stored = try? await apiClient.accountStorage() { accountStorageVersionReset(to: stored.version) }
         await uploadAccountStorage()
-        postRelayNotice("Your account password was changed. Signing in on a new device now requires it.")
+        postRelayNotice("Your PIN was set. Signing in on a new device with an email or phone code now asks for it.")
+    }
+
+    /// Two-step changes decide who can take over the account, so whoever makes
+    /// them must be the phone's owner, not just someone holding it unlocked.
+    func confirmOwner(_ reason: String) async throws {
+        guard await BiometricGate.authenticate(reason: reason, requirePasscode: true) else {
+            throw OwnerConfirmationError()
+        }
+    }
+
+    /// Passkey or off; the authenticator and PIN have their own setup.
+    func setTwoStep(_ method: TwoStepRequired.Method?) async throws {
+        try await confirmOwner(method == nil ? "Confirm it's you to turn off two-step verification." : "Confirm it's you to change two-step verification.")
+        try await apiClient.setTwoStep(method)
+    }
+
+    func confirmAuthenticator(code: String) async throws {
+        try await apiClient.confirmAuthenticator(code: code)
+        postRelayNotice("Two-step verification now uses your authenticator app. Signing in on a new device with an email or phone code asks for a code from it.")
     }
 
     struct OwnerConfirmationError: LocalizedError {
@@ -52,7 +68,7 @@ extension MessagingService {
         UserDefaults.standard.set(on, forKey: Self.emailDiscoverableKey)
     }
 
-    // MARK: - Phone number (optional, discovery only)
+    // MARK: - Phone number
 
     /// The number this device added, kept on the device only so it can be
     /// shown back; the relay holds just its keyed token.

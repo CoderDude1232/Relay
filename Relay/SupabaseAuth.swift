@@ -46,47 +46,6 @@ actor SupabaseAuth {
 
     // MARK: - Public API
 
-    enum SignUpResult {
-        /// Email confirmation is off: signed in straight away.
-        case signedIn(SupabaseSession)
-        /// Supabase emailed a code (6–10 digits); verify it with `verifySignUpCode`.
-        case confirmationRequired
-    }
-
-    /// A random password for the Supabase user. Relay signs in to Supabase only
-    /// with emailed codes, Apple or Google, so this is never used or shown.
-    nonisolated static func unusablePassword() -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return Data(bytes).base64EncodedString()
-    }
-
-    func signUp(email: String, password: String) async throws -> SignUpResult {
-        let data = try await send(path: "/auth/v1/signup", body: ["email": email, "password": password])
-        // With "Confirm email" on, Supabase returns the user without a session.
-        guard let raw = try? JSONDecoder().decode(SupabaseRawSession.self, from: data) else {
-            // For an already registered address Supabase sends no email and
-            // returns a user with no identities, so no code will arrive.
-            if let pending = try? JSONDecoder().decode(SupabasePendingUser.self, from: data),
-               let identities = pending.identities ?? pending.user?.identities,
-               identities.isEmpty {
-                throw SupabaseError.emailAlreadyRegistered
-            }
-            return .confirmationRequired
-        }
-        return .signedIn(store(raw))
-    }
-
-    /// Exchanges the code from the confirmation email for a session.
-    func verifySignUpCode(email: String, code: String) async throws -> SupabaseSession {
-        try await post(path: "/auth/v1/verify", body: ["type": "signup", "email": email, "token": code])
-    }
-
-    /// Sends the confirmation email again.
-    func resendSignUpCode(email: String) async throws {
-        _ = try await send(path: "/auth/v1/resend", body: ["type": "signup", "email": email])
-    }
-
     // MARK: One-time code sign-in (passwordless)
 
     /// Emails a one-time sign-in code. New addresses get an account created
@@ -99,27 +58,6 @@ actor SupabaseAuth {
     /// Exchanges a one-time sign-in code for a session.
     func verifySignInCode(email: String, code: String) async throws -> SupabaseSession {
         try await post(path: "/auth/v1/verify", body: ["type": "email", "email": email, "token": code])
-    }
-
-    // MARK: Password reset ("forgot password")
-
-    /// Emails a password-recovery code to `email`. Supabase answers the same
-    /// whether or not the address is registered.
-    func requestPasswordReset(email: String) async throws {
-        _ = try await send(path: "/auth/v1/recover", body: ["email": email])
-    }
-
-    /// Exchanges the recovery code for a session. The relay accepts only a
-    /// session created this way (and recently) for a password reset.
-    func verifyRecoveryCode(email: String, code: String) async throws -> SupabaseSession {
-        try await post(path: "/auth/v1/verify", body: ["type": "recovery", "email": email, "token": code])
-    }
-
-    /// Sets the Supabase password for the signed-in user (kept in step with
-    /// the Relay account password after a reset).
-    func updatePassword(_ password: String) async throws {
-        let token = try await validAccessToken()
-        _ = try await send(path: "/auth/v1/user", body: ["password": password], method: "PUT", bearer: token)
     }
 
     // MARK: Email change
@@ -294,14 +232,6 @@ private struct SupabaseRawSession: Decodable, Sendable {
     let user: SupabaseUser
 }
 private struct SupabaseUser: Decodable, Sendable { let id: String; let email: String? }
-/// Sign-up response when confirmation is required: the user object, either at
-/// the top level or under `user` depending on the Supabase version.
-private struct SupabasePendingUser: Decodable, Sendable {
-    struct Inner: Decodable, Sendable { let identities: [Identity]? }
-    struct Identity: Decodable, Sendable {}
-    let identities: [Identity]?
-    let user: Inner?
-}
 private struct SupabaseErrorBody: Decodable, Sendable {
     let message: String?
     let msg: String?
@@ -314,7 +244,6 @@ private struct SupabaseErrorBody: Decodable, Sendable {
 enum SupabaseError: LocalizedError {
     case badConfig
     case server(String)
-    case emailAlreadyRegistered
     case noSession
 
     var isNoSession: Bool {
@@ -326,8 +255,6 @@ enum SupabaseError: LocalizedError {
         case .badConfig: "Supabase is not configured. Update SupabaseConfig in SupabaseAuth.swift."
         case .noSession:
             "This device isn't signed in with your email account. Make this change from the device you signed up on."
-        case .emailAlreadyRegistered:
-            "This email already has a Relay account. Go back and tap Sign in to use it on this device."
         case .server(let m): m
         }
     }

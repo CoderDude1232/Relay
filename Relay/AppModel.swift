@@ -481,6 +481,8 @@ final class AppModel {
             throw NeedsUsernameError()
         case .accountPasswordRequired(let incorrect):
             throw AccountPasswordRequiredError(incorrect: incorrect)
+        case .twoStepRequired(let challenge):
+            throw TwoStepNeededError(challenge: challenge, email: email, supabaseUserId: supabaseUserId)
         case .signedIn(let credentials, let resolvedUsername, let created):
             let service: MessagingService
             do {
@@ -514,6 +516,7 @@ final class AppModel {
             if created {
                 service.noteAccountCreated(username: resolvedUsername)
                 showPhoneOnboarding = true
+                offerRecoveryKey(service)
             } else {
                 service.noteSignedIn(username: resolvedUsername)
             }
@@ -621,7 +624,7 @@ final class AppModel {
             if let prf = created.prfOutput {
                 await service.addPasskeySlot(credentialId: created.credentialId, prfOutput: prf)
             }
-            if let key = try? await service.createRecoveryKey() { newRecoveryKey = key }
+            await showNewRecoveryKey(service)
         }
     }
 
@@ -656,6 +659,182 @@ final class AppModel {
         Task { try? await service.publishInitialKeys() }
     }
 
+    // MARK: Two-step verification
+
+    /// A code sign-in needs its second step; onboarding asks for it and calls
+    /// `completeTwoStep`.
+    struct TwoStepNeededError: LocalizedError {
+        let challenge: TwoStepRequired
+        var email: String?
+        var supabaseUserId: String?
+        /// The number, for a phone sign-in.
+        var phone: String?
+        var errorDescription: String? { "Finish signing in with your second step." }
+    }
+
+    enum TwoStepInput { case code(String), pin(String), passkey }
+
+    struct TwoStepFailedError: LocalizedError {
+        /// The ticket ran out; the sign-in has to start again.
+        let expired: Bool
+        var errorDescription: String? {
+            expired ? "This sign-in has expired. Start again." : "That isn't right. Check it and try again."
+        }
+    }
+
+    /// Answers the second step. Signing in replaces the account's devices; a
+    /// PIN or passkey also unlocks the backup.
+    func completeTwoStep(_ needed: TwoStepNeededError, with input: TwoStepInput) async throws {
+        let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
+        let password = Self.generateRandomPassword()
+        let ticket = needed.challenge.ticket
+        var passkeyUnlock: (credentialId: Data, prf: Data)?
+        let signedIn: (credentials: RelayCredentials, username: String)
+        do {
+            switch input {
+            case .code(let code):
+                signedIn = try await api.completeTwoStep(ticket: ticket, answer: .code(code), devicePassword: password)
+            case .pin(let pin):
+                signedIn = try await AccountPasswordKey.checking(pin) { proof in
+                    try await api.completeTwoStep(ticket: ticket, answer: .pin(proof), devicePassword: password)
+                }
+            case .passkey:
+                let options = try await api.twoStepPasskeyOptions(ticket: ticket)
+                let assertion = try await passkeys.assert(challenge: options.challenge)
+                guard options.credentialIds.contains(assertion.credentialId) else {
+                    throw PasskeyError.failed("That passkey belongs to a different account.")
+                }
+                if let prf = assertion.prfOutput { passkeyUnlock = (assertion.credentialId, prf) }
+                signedIn = try await api.completeTwoStep(ticket: ticket, answer: .passkey(
+                    credentialId: assertion.credentialId, clientDataJSON: assertion.clientDataJSON,
+                    authenticatorData: assertion.authenticatorData, signature: assertion.signature,
+                    userHandle: assertion.userHandle
+                ), devicePassword: password)
+            }
+        } catch RelayAPIError.http(401, let message) {
+            throw TwoStepFailedError(expired: message.contains("expired"))
+        } catch RelayAPIError.http(409, _) {
+            throw PasskeyError.failed("This account has reached its device limit. Unlink a device first.")
+        }
+        let service = try await startSignedIn(signedIn, password: password, email: needed.email, supabaseUserId: needed.supabaseUserId)
+        if let phone = needed.phone { UserDefaults.standard.set(phone, forKey: MessagingService.phoneNumberKey) }
+        service.noteSignedIn(username: signedIn.username)
+        switch input {
+        case .pin(let pin):
+            UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
+            Task {
+                await service.setAccountStorageKey(password: pin)
+                await service.restoreAccountStorage()
+            }
+        case .passkey:
+            if let passkeyUnlock {
+                Task { await service.restoreAccountStorage(passkeyCredentialId: passkeyUnlock.credentialId, prfOutput: passkeyUnlock.prf) }
+            }
+        case .code:
+            break
+        }
+        offerPasskeyIfNeeded(service)
+    }
+
+    // MARK: Phone sign-in
+
+    enum PhoneSignInResult {
+        case signedIn
+        /// No account has the number: pick a username and call `signUpWithPhone`.
+        case newAccount(signupTicket: String)
+    }
+
+    struct PhoneCodeError: LocalizedError {
+        var errorDescription: String? { "That code is wrong or has expired. Check the latest text, or send a new code." }
+    }
+
+    /// Texts a sign-in code to `phone` (E.164).
+    func requestPhoneCode(_ phone: String) async throws {
+        let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
+        try await AppAttest.requestPhoneCode(phone, api: api)
+    }
+
+    /// Checks the texted code. Throws `TwoStepNeededError` if the account wants
+    /// its second step.
+    func signInWithPhone(_ phone: String, code: String) async throws -> PhoneSignInResult {
+        let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
+        let password = Self.generateRandomPassword()
+        let outcome: PhoneSignInOutcome
+        do {
+            outcome = try await api.signInWithPhone(phone: phone, code: code, devicePassword: password)
+        } catch RelayAPIError.http(401, _) {
+            throw PhoneCodeError()
+        } catch RelayAPIError.http(409, _) {
+            throw PasskeyError.failed("This account has reached its device limit. Unlink a device first.")
+        }
+        switch outcome {
+        case .signedIn(let credentials, let username):
+            let service = try await startSignedIn((credentials, username), password: password, email: nil, supabaseUserId: nil)
+            UserDefaults.standard.set(phone, forKey: MessagingService.phoneNumberKey)
+            service.noteSignedIn(username: username)
+            offerPasskeyIfNeeded(service)
+            return .signedIn
+        case .twoStepRequired(let challenge):
+            throw TwoStepNeededError(challenge: challenge, phone: phone)
+        case .noAccount(let ticket):
+            return .newAccount(signupTicket: ticket)
+        }
+    }
+
+    /// Creates an account for a verified number.
+    func signUpWithPhone(_ phone: String, signupTicket: String, username: String, displayName: String, discoverable: Bool) async throws {
+        let api = RelayAPIClient(baseURL: RelayConfig.serverURL, credentials: nil, session: session)
+        let password = Self.generateRandomPassword()
+        let signedUp: (credentials: RelayCredentials, username: String)
+        do {
+            signedUp = try await api.signUpWithPhone(
+                signupTicket: signupTicket, username: username, devicePassword: password, discoverable: discoverable
+            )
+        } catch RelayAPIError.http(409, _) {
+            throw UsernameTakenError(name: username)
+        } catch RelayAPIError.http(401, _) {
+            throw TwoStepFailedError(expired: true)
+        }
+        let service = try await startSignedIn(signedUp, password: password, email: nil, supabaseUserId: nil, displayName: displayName)
+        UserDefaults.standard.set(phone, forKey: MessagingService.phoneNumberKey)
+        service.noteAccountCreated(username: signedUp.username)
+        offerRecoveryKey(service)
+        offerPasskeyIfNeeded(service)
+    }
+
+    /// Saves new device credentials and starts the service.
+    private func startSignedIn(
+        _ signedIn: (credentials: RelayCredentials, username: String), password: String,
+        email: String?, supabaseUserId: String?, displayName: String = ""
+    ) async throws -> MessagingService {
+        let serverURL = RelayConfig.serverURL
+        let service = try await makeService(credentials: signedIn.credentials, serverURL: serverURL, username: signedIn.username)
+        if !displayName.isEmpty { service.setMyDisplayName(displayName) }
+        let saved = SavedAccount(
+            accountId: signedIn.credentials.accountId, deviceId: signedIn.credentials.deviceId,
+            password: password, serverURL: serverURL, username: signedIn.username,
+            email: email, supabaseUserId: supabaseUserId
+        )
+        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
+        service.start()
+        phase = .ready(service)
+        uploadPushTokenIfReady()
+        publishDeviceAuthorizationKeyIfReady()
+        publishAccessKeyIfReady()
+        Task { try? await service.publishInitialKeys() }
+        return service
+    }
+
+    /// Every new account gets a recovery key, shown once: the way back in if
+    /// the phone, email and passkeys are all gone.
+    private func offerRecoveryKey(_ service: MessagingService) {
+        Task { await showNewRecoveryKey(service) }
+    }
+
+    private func showNewRecoveryKey(_ service: MessagingService) async {
+        if let key = try? await service.createRecoveryKey() { newRecoveryKey = key }
+    }
+
     /// Confirms it's the account owner with Face ID and one of the account's
     /// passkeys. Throws if there's no passkey or it's cancelled.
     func confirmWithPasskey() async throws {
@@ -668,6 +847,18 @@ final class AppModel {
         guard ids.contains(assertion.credentialId) else {
             throw PasskeyError.failed("That passkey belongs to a different account.")
         }
+    }
+
+    /// Opens a backup this device couldn't, with a passkey's PRF output.
+    func unlockBackupWithPasskey() async throws {
+        guard case .ready(let service) = phase else { return }
+        var challenge = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, challenge.count, &challenge)
+        let assertion = try await passkeys.assert(challenge: Data(challenge))
+        guard let prf = assertion.prfOutput else {
+            throw PasskeyError.failed("This passkey can't unlock backups. Use your recovery key or PIN.")
+        }
+        await service.restoreAccountStorage(passkeyCredentialId: assertion.credentialId, prfOutput: prf)
     }
 
     /// Removes the email from the account after a passkey check on the relay.
@@ -846,66 +1037,6 @@ final class AppModel {
         }
     }
 
-    /// Verifies email + account recovery password with the relay, then
-    /// provisions a new device.
-    func recoverAccount(serverURL: URL, email: String, accountPassword: String) async throws {
-        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
-        let (credentials, username): (RelayCredentials, String)
-        do {
-            (credentials, username) = try await AccountPasswordKey.checking(accountPassword) { proof in
-                try await api.recoverAccount(email: email, accountPassword: proof)
-            }
-        } catch RelayAPIError.http(status: 404, _) {
-            struct RecoverError: LocalizedError {
-                var errorDescription: String? { "No account found with that email address." }
-            }
-            throw RecoverError()
-        } catch RelayAPIError.http(status: 422, _) {
-            struct RecoverError: LocalizedError {
-                var errorDescription: String? { "This account was created with Apple or Google sign-in and does not have a recovery password. Use device linking instead." }
-            }
-            throw RecoverError()
-        } catch RelayAPIError.http(status: 401, _) {
-            struct RecoverError: LocalizedError {
-                var errorDescription: String? { "Incorrect recovery password." }
-            }
-            throw RecoverError()
-        } catch {
-            throw SetupError(step: "Account recovery", underlying: error)
-        }
-
-        let service: MessagingService
-        do {
-            service = try await makeService(credentials: credentials, serverURL: serverURL, username: username)
-        } catch {
-            throw SetupError(step: "Open local storage", underlying: error)
-        }
-
-        let saved = SavedAccount(
-            accountId: credentials.accountId,
-            deviceId: credentials.deviceId,
-            password: credentials.password,
-            serverURL: serverURL,
-            username: username,
-            email: email,
-            supabaseUserId: nil
-        )
-        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
-        service.start()
-        phase = .ready(service)
-        service.noteAccountRecovered(username: username)
-        UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
-        uploadPushTokenIfReady()
-        publishDeviceAuthorizationKeyIfReady()
-        publishAccessKeyIfReady()
-        Task { try? await service.publishInitialKeys() }
-        // Bring back the chat list kept with the account (no messages).
-        Task {
-            await service.setAccountStorageKey(password: accountPassword)
-            await service.restoreAccountStorage()
-        }
-    }
-
     /// App Review: signs in to a demo account with the review code.
     func demoSignIn(serverURL: URL, code: String) async throws {
         let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
@@ -940,78 +1071,6 @@ final class AppModel {
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
         Task { try? await service.publishInitialKeys() }
-    }
-
-    /// Verifies the emailed recovery code with Supabase, sets the new account
-    /// password on the relay and signs this device in. As with any fresh sign-in,
-    /// the account's other devices are signed out.
-    func resetPassword(serverURL: URL, email: String, code: String, newPassword: String) async throws {
-        struct ResetError: LocalizedError {
-            let message: String
-            var errorDescription: String? { message }
-        }
-        let supabase: SupabaseSession
-        do {
-            supabase = try await SupabaseAuth.shared.verifyRecoveryCode(email: email, code: code)
-        } catch {
-            throw ResetError(message: "That code is wrong or has expired. Check the latest email, or request a new code.")
-        }
-
-        let api = RelayAPIClient(baseURL: serverURL, credentials: nil, session: session)
-        let (credentials, username): (RelayCredentials, String)
-        do {
-            (credentials, username) = try await api.resetPassword(
-                supabaseAccessToken: supabase.accessToken,
-                newAccountPassword: try await AccountPasswordKey.proof(for: newPassword),
-                devicePassword: Self.generateRandomPassword()
-            )
-        } catch RelayAPIError.http(status: 404, _) {
-            throw ResetError(message: "No Relay account uses that email address.")
-        } catch RelayAPIError.http(status: 403, let message) where message.contains("fresh") || message.isEmpty {
-            throw ResetError(message: "That code has expired. Request a new one and try again.")
-        } catch RelayAPIError.http(status: 403, let message) {
-            // A passkey or recovery key protects the account, or it's a demo account.
-            throw ResetError(message: message)
-        } catch RelayAPIError.http(status: 401, _) {
-            throw ResetError(message: "Couldn't verify your email. Request a new code and try again.")
-        } catch RelayAPIError.http(status: 429, _) {
-            throw ResetError(message: "Too many attempts. Wait a while and try again.")
-        } catch {
-            throw SetupError(step: "Password reset", underlying: error)
-        }
-        // The account password is never given to Supabase (see SupabaseAuth.unusablePassword).
-
-        let service: MessagingService
-        do {
-            service = try await makeService(credentials: credentials, serverURL: serverURL, username: username)
-        } catch {
-            throw SetupError(step: "Open local storage", underlying: error)
-        }
-
-        let saved = SavedAccount(
-            accountId: credentials.accountId,
-            deviceId: credentials.deviceId,
-            password: credentials.password,
-            serverURL: serverURL,
-            username: username,
-            email: email,
-            supabaseUserId: supabase.userId
-        )
-        try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
-        service.start()
-        phase = .ready(service)
-        service.noteAccountRecovered(username: username)
-        UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)
-        uploadPushTokenIfReady()
-        publishDeviceAuthorizationKeyIfReady()
-        publishAccessKeyIfReady()
-        Task { try? await service.publishInitialKeys() }
-        // The chat list kept under the old password can't be opened any more; keep
-        // a new one under this password.
-        Task {
-            await service.setAccountStorageKey(password: newPassword)
-            await service.restoreAccountStorage()
-        }
     }
 
     /// The email address this account signed up or recovered with, if known.

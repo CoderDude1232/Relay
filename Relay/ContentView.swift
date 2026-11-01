@@ -23,6 +23,9 @@ struct ContentView: View {
 
     @AppStorage("relay.screenLockEnabled") private var screenLockEnabled = false
     @AppStorage("relay.screenLockTimeout") private var screenLockTimeout = 60
+    @State private var showingBackupUnlock = false
+    /// "Not Now" holds for the rest of this launch.
+    @State private var backupUnlockDismissed = false
 
     var body: some View {
         ZStack {
@@ -62,6 +65,16 @@ struct ContentView: View {
                         }
                     } message: {
                         Text("A passkey signs you in with Face ID on a new iPhone, and brings your chat list back — no password or email code needed.")
+                    }
+                    // Not straight away: a sign-in with a passkey or PIN is still
+                    // unlocking it in the background.
+                    .task(id: service.backupNeedsUnlock) {
+                        guard service.backupNeedsUnlock, !backupUnlockDismissed else { return }
+                        try? await Task.sleep(for: .seconds(5))
+                        showingBackupUnlock = service.backupNeedsUnlock && model.newRecoveryKey == nil
+                    }
+                    .sheet(isPresented: $showingBackupUnlock, onDismiss: { backupUnlockDismissed = true }) {
+                        BackupUnlockSheet(service: service)
                     }
                     .sheet(isPresented: Binding(
                         get: { model.newRecoveryKey != nil }, set: { if !$0 { model.newRecoveryKey = nil } }

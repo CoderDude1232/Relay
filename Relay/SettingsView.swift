@@ -380,27 +380,31 @@ private struct AccountSettingsView: View {
     let service: MessagingService
     @Environment(AppModel.self) private var model
     @State private var accountEmail: String?
-    @State private var showingEmailSheet = false
     @State private var showingQR = false
     @State private var linkCopied = false
-    @State private var showingPasswordSheet = false
-    @State private var emailDiscoverable = UserDefaults.standard.bool(forKey: MessagingService.emailDiscoverableKey)
-    @State private var discoverabilityError: String?
     @State private var showingDeleteAccount = false
     @State private var confirmingNuke = false
     @State private var nukeInProgress = false
     @State private var nukeSucceeded = false
     @State private var nukeError: String?
     @State private var methods: SignInMethods?
-    @State private var showingRemoveEmail = false
-    @State private var showingAddPasskeyFirst = false
     @State private var showingPhoneNumber = false
-    @State private var phoneNumberAdded = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) != nil
+    @State private var phoneNumber = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey)
 
     private var username: String { service.username ?? "" }
     private var addLink: String { "relaymsg.app/add/\(username)" }
-    /// Assume an email until the relay says otherwise.
-    private var hasEmail: Bool { methods?.email ?? true }
+    /// Until the relay answers, go by the email this device signed in with.
+    private var hasEmail: Bool { methods?.email ?? (accountEmail != nil) }
+
+    static func twoStepLabel(_ method: TwoStepRequired.Method?) -> String {
+        switch method {
+        case nil: "Off"
+        case .authenticator: "Authenticator"
+        case .passkey: "Passkey"
+        case .pin: "PIN"
+        case .recovery: "Recovery Key"
+        }
+    }
 
     var body: some View {
         List {
@@ -426,26 +430,6 @@ private struct AccountSettingsView: View {
                             Text("@\(username)").foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
-                    if hasEmail {
-                        Button { showingEmailSheet = true } label: {
-                            HStack(spacing: 14) {
-                                SettingsIcon(systemName: "envelope.fill", color: .accentColor)
-                                Text("Email").foregroundStyle(.primary)
-                                Spacer(minLength: 0)
-                                Text(accountEmail ?? "Change")
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                        }
-                    } else {
-                        HStack(spacing: 14) {
-                            SettingsIcon(systemName: "envelope.fill", color: .accentColor)
-                            Text("Email")
-                            Spacer(minLength: 0)
-                            Text("None").foregroundStyle(.secondary)
-                        }
-                    }
                 }
             } footer: {
                 if service.isDemoAccount {
@@ -456,92 +440,74 @@ private struct AccountSettingsView: View {
 
             if !service.isDemoAccount {
                 Section {
-                    Button { showingPasswordSheet = true } label: {
-                        HStack(spacing: 14) {
-                            SettingsIcon(systemName: "key.fill", color: .orange)
-                            Text("Account Password").foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                            if methods?.accountPasswordNeedsUpdate == true {
-                                Text("Update").foregroundStyle(.orange)
-                            } else {
-                                Text(UserDefaults.standard.bool(forKey: MessagingService.hasAccountPasswordKey) ? "Change" : "Set")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .tint(.primary)
-                    NavigationLink(destination: PasskeysView(service: service)) {
-                        SettingsNavRow(systemName: "person.badge.key.fill", color: .green, title: "Passkeys")
-                    }
-                    NavigationLink(destination: RecoveryKeyView(service: service, methods: methods)) {
-                        SettingsNavRow(systemName: "key.horizontal.fill", color: .blue, title: "Recovery Key")
-                    }
-                    if hasEmail {
-                        Button {
-                            if (methods?.passkeys ?? 0) > 0 { showingRemoveEmail = true } else { showingAddPasskeyFirst = true }
-                        } label: {
-                            HStack(spacing: 14) {
-                                SettingsIcon(systemName: "envelope.badge.shield.half.filled.fill", color: .gray)
-                                Text("Remove Email").foregroundStyle(.primary)
-                            }
-                        }
-                        .tint(.primary)
-                    }
-                } header: {
-                    Text("Sign-In")
-                } footer: {
-                    Text(hasEmail
-                         ? "Signing in on a new device needs your account password, a passkey or your recovery key."
-                         : "No email is linked. Sign in with a passkey or your recovery key.")
-                }
-
-                if hasEmail {
-                Section {
-                    Toggle(isOn: Binding(
-                        get: { emailDiscoverable },
-                        set: { on in
-                            let previous = emailDiscoverable
-                            emailDiscoverable = on
-                            Task {
-                                do {
-                                    try await service.setEmailDiscoverable(on)
-                                } catch {
-                                    emailDiscoverable = previous
-                                    discoverabilityError = FriendlyError.message(for: error)
-                                }
-                            }
-                        }
-                    )) {
-                        HStack(spacing: 14) {
-                            SettingsIcon(systemName: "magnifyingglass", color: .blue)
-                            Text("Find Me by Email")
-                        }
-                    }
-                } footer: {
-                    if let discoverabilityError { Text(discoverabilityError) }
-                }
-                }
-
-                Section {
                     Button { showingPhoneNumber = true } label: {
                         HStack(spacing: 14) {
                             SettingsIcon(systemName: "phone.fill", color: .green)
                             Text("Phone Number").foregroundStyle(Color.primary)
                             Spacer(minLength: 0)
-                            Text(phoneNumberAdded ? "Added" : "Optional")
+                            Text(phoneNumber.map { PhoneNumbers.display($0) } ?? (methods?.phone == true ? "Added" : "Add"))
                                 .foregroundStyle(Color.secondary)
+                                .lineLimit(1)
                             Image(systemName: "chevron.right")
                                 .font(.footnote.weight(.semibold))
                                 .foregroundStyle(Color(.tertiaryLabel))
                         }
                     }
                     .fullScreenCover(isPresented: $showingPhoneNumber, onDismiss: {
-                        phoneNumberAdded = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) != nil
+                        phoneNumber = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey)
+                        Task { methods = try? await service.apiClient.signInMethods() }
                     }) {
                         PhoneNumberView(service: service, context: .settings) { showingPhoneNumber = false }
                     }
+                    if hasEmail {
+                        NavigationLink(destination: ChangeEmailSheet(canRemove: (methods?.passkeys ?? 0) > 0) {
+                            accountEmail = nil
+                            Task { methods = try? await service.apiClient.signInMethods() }
+                        }) {
+                            HStack(spacing: 14) {
+                                SettingsIcon(systemName: "envelope.fill", color: .accentColor)
+                                Text("Email")
+                                Spacer(minLength: 0)
+                                Text(accountEmail ?? "Change")
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                        }
+                    }
+                    NavigationLink(destination: PasskeysView(service: service)) {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "person.badge.key.fill", color: .green)
+                            Text("Passkeys")
+                            Spacer(minLength: 0)
+                            if let count = methods?.passkeys, count > 0 {
+                                Text("\(count)").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Sign-In")
                 } footer: {
-                    Text("Lets people who already have your number find you. Never shown to anyone, and not used to sign in.")
+                    Text("Sign in on a new device with any of these. A passkey is the strongest: it can't be phished or intercepted.")
+                }
+                .tint(.primary)
+
+                Section {
+                    NavigationLink(destination: TwoStepSettingsView(service: service)) {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "lock.shield.fill", color: .indigo)
+                            Text("Two-Step Verification")
+                            Spacer(minLength: 0)
+                            Text(Self.twoStepLabel(methods?.twoStepMethod)).foregroundStyle(.secondary)
+                        }
+                    }
+                    NavigationLink(destination: RecoveryKeyView(service: service, methods: methods)) {
+                        SettingsNavRow(systemName: "key.horizontal.fill", color: .blue, title: "Recovery Key")
+                    }
+                } header: {
+                    Text("Security")
+                } footer: {
+                    Text("Two-step verification asks for one more thing when someone signs in with an email or phone code. Your recovery key signs you in when nothing else can, so keep it somewhere safe.")
                 }
             }
 
@@ -580,31 +546,10 @@ private struct AccountSettingsView: View {
         .modifier(ThemedPageBackground())
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(isPresented: $showingPasswordSheet) {
-            AccountPasswordSheet(service: service, needsUpdate: methods?.accountPasswordNeedsUpdate == true)
-        }
-        .onChange(of: showingPasswordSheet) { _, showing in
-            if !showing { Task { methods = try? await service.apiClient.signInMethods() } }
-        }
-        .navigationDestination(isPresented: $showingEmailSheet) {
-            ChangeEmailSheet()
-        }
-        .onChange(of: showingEmailSheet) { _, showing in
-            if !showing { accountEmail = model.accountEmail }
-        }
-        .onAppear { accountEmail = model.accountEmail }
-        .task { methods = try? await service.apiClient.signInMethods() }
-        .navigationDestination(isPresented: $showingRemoveEmail) {
-            RemoveEmailSheet {
-                accountEmail = nil
-                emailDiscoverable = false
-                Task { methods = try? await service.apiClient.signInMethods() }
-            }
-        }
-        .alert("Add a Passkey First", isPresented: $showingAddPasskeyFirst) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Without an email, a passkey is how you sign in. Create one in Passkeys, save your recovery key, then remove your email.")
+        .onAppear {
+            accountEmail = model.accountEmail
+            // Back from a sub-page (two-step, passkeys, email): show what changed.
+            Task { methods = try? await service.apiClient.signInMethods() }
         }
         .sheet(isPresented: $showingQR) {
             MyQRCodeView(username: username, displayName: service.myDisplayName,
@@ -838,9 +783,48 @@ struct PrivacySettingsView: View {
     @AppStorage(PrivacyPreferences.spotlightIndexingKey) private var spotlightIndexing = false
     @AppStorage(PrivacyPreferences.shareSuggestionsKey) private var shareSuggestions = false
     @AppStorage(ScamCheck.enabledKey) private var scamWarnings = true
+    @State private var methods: SignInMethods?
+    @State private var emailDiscoverable = UserDefaults.standard.bool(forKey: MessagingService.emailDiscoverableKey)
+    @State private var phoneDiscoverable: Bool?
+    @State private var discoverabilityError: String?
 
     var body: some View {
         List {
+            if !service.isDemoAccount {
+                Section {
+                    LabeledContent {
+                        Text("Always")
+                    } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "at", color: .accentColor)
+                            Text("Username")
+                        }
+                    }
+                    if methods?.email == true {
+                        discoverabilityToggle("Email", icon: "envelope.fill", isOn: emailDiscoverable) { on in
+                            emailDiscoverable = on
+                            try await service.setEmailDiscoverable(on)
+                        } revert: { emailDiscoverable = $0 }
+                    }
+                    if let phoneDiscoverable {
+                        discoverabilityToggle("Phone Number", icon: "phone.fill", isOn: phoneDiscoverable) { on in
+                            self.phoneDiscoverable = on
+                            try await service.setPhoneDiscoverable(on)
+                        } revert: { self.phoneDiscoverable = $0 }
+                    }
+                } header: {
+                    Text("Find Me By")
+                } footer: {
+                    Text(discoverabilityError ?? "Who can start a chat with you: anyone with your username, and, if you turn them on, anyone who already has your email or number. Relay checks these without learning who's looking.")
+                        .foregroundStyle(discoverabilityError == nil ? Color.secondary : Color.red)
+                }
+                .task {
+                    methods = try? await service.apiClient.signInMethods()
+                    if methods?.phone == true, let status = try? await service.phoneStatus() {
+                        phoneDiscoverable = status.discoverable
+                    }
+                }
+            }
             Section {
                 NavigationLink(destination: ProxySettingsView()) {
                     HStack(spacing: 14) {
@@ -978,6 +962,26 @@ struct PrivacySettingsView: View {
         .modifier(ThemedPageBackground())
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func discoverabilityToggle(
+        _ title: String, icon: String, isOn: Bool,
+        set: @escaping (Bool) async throws -> Void, revert: @escaping (Bool) -> Void
+    ) -> some View {
+        Toggle(isOn: Binding(get: { isOn }, set: { on in
+            discoverabilityError = nil
+            Task {
+                do { try await set(on) } catch {
+                    revert(!on)
+                    discoverabilityError = FriendlyError.message(for: error)
+                }
+            }
+        })) {
+            HStack(spacing: 14) {
+                SettingsIcon(systemName: icon, color: .accentColor)
+                Text(title)
+            }
+        }
     }
 }
 
@@ -2062,8 +2066,13 @@ private struct DeleteAccountSheet: View {
 /// Supabase emails a code to the new address, then the relay re-keys its
 /// email lookup (recovery and find-by-email).
 private struct ChangeEmailSheet: View {
+    /// Removing the email needs a passkey to confirm with.
+    let canRemove: Bool
+    let onRemoved: () -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @State private var showingRemove = false
+    @State private var showingAddPasskeyFirst = false
     @State private var newEmail = ""
     @State private var codeSent = false
     @State private var code = ""
@@ -2083,7 +2092,7 @@ private struct ChangeEmailSheet: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     } footer: {
-                        footer("We'll send a code to the new address. Your email is used to recover your account and, if you turn it on, to let people find you.")
+                        footer("To change it, enter a new address and we'll send it a code. Your email signs you in and, if you turn it on in Privacy, lets people find you.")
                     }
                 } else {
                     Section {
@@ -2103,9 +2112,18 @@ private struct ChangeEmailSheet: View {
                         Button("Send a new code") { sendCode() }.disabled(working)
                     }
                 }
+                if !codeSent {
+                    Section {
+                        Button("Remove Email", role: .destructive) {
+                            if canRemove { showingRemove = true } else { showingAddPasskeyFirst = true }
+                        }
+                    } footer: {
+                        Text("Signing in with your email, Apple or Google stops working. Your phone number, passkeys and recovery key still do.")
+                    }
+                }
             }
             .modifier(ThemedPageBackground())
-            .navigationTitle("Change Email")
+            .navigationTitle("Email")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -2119,6 +2137,17 @@ private struct ChangeEmailSheet: View {
                 }
             }
             .navigationBarBackButtonHidden(working)
+            .navigationDestination(isPresented: $showingRemove) {
+                RemoveEmailSheet {
+                    onRemoved()
+                    dismiss()
+                }
+            }
+            .alert("Add a Passkey First", isPresented: $showingAddPasskeyFirst) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Removing your email is confirmed with a passkey. Create one in Passkeys, then come back.")
+            }
         }
     }
 
@@ -2152,63 +2181,6 @@ private struct ChangeEmailSheet: View {
                 errorMessage = FriendlyError.message(for: error)
             }
             working = false
-        }
-    }
-}
-
-private struct AccountPasswordSheet: View {
-    let service: MessagingService
-    var needsUpdate = false
-    @Environment(\.dismiss) private var dismiss
-    @State private var password = ""
-    @State private var confirm = ""
-    @State private var saving = false
-    @State private var errorMessage: String?
-
-    private var valid: Bool { password.count >= 8 && password == confirm }
-
-    var body: some View {
-        Group {
-            Form {
-                Section {
-                    SecureField("New password", text: $password)
-                        .textContentType(.newPassword)
-                    SecureField("Confirm password", text: $confirm)
-                        .textContentType(.newPassword)
-                } footer: {
-                    Text(errorMessage ?? (needsUpdate
-                        ? "Enter your account password again, or choose a new one. Relay now stores it differently, and until you do it can't be used to sign in on a new device."
-                        : "At least 8 characters. You'll need it to recover your account by email and to sign in on a new device."))
-                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
-                }
-            }
-            .modifier(ThemedPageBackground())
-            .navigationTitle("Account Password")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    if saving {
-                        ProgressView()
-                    } else {
-                        Button("Save") { save() }.bold().disabled(!valid)
-                    }
-                }
-            }
-            .navigationBarBackButtonHidden(saving)
-        }
-    }
-
-    private func save() {
-        saving = true
-        errorMessage = nil
-        Task {
-            do {
-                try await service.setAccountPassword(password)
-                dismiss()
-            } catch {
-                errorMessage = FriendlyError.message(for: error)
-            }
-            saving = false
         }
     }
 }

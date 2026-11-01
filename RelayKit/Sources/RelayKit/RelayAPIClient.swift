@@ -88,6 +88,30 @@ public enum OAuthProvisionOutcome: Sendable {
     /// new device since that replaces the account's devices. `incorrect` is true
     /// if one was given and didn't match.
     case accountPasswordRequired(incorrect: Bool)
+    /// The account needs a second step; finish with `completeTwoStep`.
+    case twoStepRequired(TwoStepRequired)
+}
+
+/// A `423` from a code sign-in: the account wants its second step. The ticket
+/// lasts 10 minutes.
+public struct TwoStepRequired: Error, Decodable, Sendable, Equatable {
+    public enum Method: String, Sendable {
+        case authenticator = "totp", passkey, pin, recovery
+    }
+    public let ticket: String
+    public let rawMethod: String
+    /// Whether the account has a recovery key, which always works instead.
+    public let recoveryKey: Bool
+
+    public var method: Method? { Method(rawValue: rawMethod) }
+
+    enum CodingKeys: String, CodingKey { case ticket, rawMethod = "method", recoveryKey }
+
+    public init(ticket: String, method: Method, recoveryKey: Bool) {
+        self.ticket = ticket
+        self.rawMethod = method.rawValue
+        self.recoveryKey = recoveryKey
+    }
 }
 
 public struct RelayAPIClient: Sendable {
@@ -304,6 +328,8 @@ public struct RelayAPIClient: Sendable {
             return .signedIn(credentials: creds, username: response.username, created: response.created)
         } catch RelayAPIError.http(let status, _) where status == 404 {
             return .usernameRequired
+        } catch let twoStep as TwoStepRequired {
+            return .twoStepRequired(twoStep)
         } catch RelayAPIError.http(423, let message) {
             return .accountPasswordRequired(incorrect: message.contains("incorrect"))
         }
@@ -1060,12 +1086,18 @@ public struct RelayAPIClient: Sendable {
         }
     }
 
-    private func perform(_ request: URLRequest, on session: URLSession) async throws -> (Data, Int) {
-        let (data, response) = try await session.data(for: request)
+    /// `answered`: a response already fetched, to check without sending again.
+    private func perform(_ request: URLRequest, on session: URLSession,
+                         answered: (Data, URLResponse)? = nil) async throws -> (Data, Int) {
+        let (data, response) = if let answered { answered } else { try await session.data(for: request) }
         guard let http = response as? HTTPURLResponse else { throw RelayAPIError.malformedResponse }
         guard (200..<300).contains(http.statusCode) else {
             struct ErrorBody: Decodable { let error: String }
             let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error ?? ""
+            if http.statusCode == 423 {
+                struct LockedBody: Decodable { let twoStep: TwoStepRequired }
+                if let locked = try? JSONDecoder().decode(LockedBody.self, from: data) { throw locked.twoStep }
+            }
             if http.statusCode == 429 {
                 let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
                 throw RelayAPIError.rateLimited(message: message, retryAfter: retryAfter)
@@ -1199,8 +1231,14 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
     /// The account password was stored by an older build and can't be used
     /// to sign in until it's entered again on a signed-in device.
     public let accountPasswordNeedsUpdate: Bool
+    /// A verified phone number, which signs in by text code.
+    public let phone: Bool
+    /// The two-step method: "" (off), "totp", "passkey", "pin" or "recovery".
+    public let twoStep: String
 
-    enum CodingKeys: String, CodingKey { case email, passkeys, accountPassword, recoveryKey, accountPasswordNeedsUpdate }
+    public var twoStepMethod: TwoStepRequired.Method? { TwoStepRequired.Method(rawValue: twoStep) }
+
+    enum CodingKeys: String, CodingKey { case email, passkeys, accountPassword, recoveryKey, accountPasswordNeedsUpdate, phone, twoStep }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1209,6 +1247,8 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
         accountPassword = try c.decode(Bool.self, forKey: .accountPassword)
         recoveryKey = try c.decode(Bool.self, forKey: .recoveryKey)
         accountPasswordNeedsUpdate = try c.decodeIfPresent(Bool.self, forKey: .accountPasswordNeedsUpdate) ?? false
+        phone = try c.decodeIfPresent(Bool.self, forKey: .phone) ?? false
+        twoStep = try c.decodeIfPresent(String.self, forKey: .twoStep) ?? ""
     }
 }
 
@@ -1294,6 +1334,139 @@ extension RelayAPIClient {
             "authKey": authKey, "password": devicePassword,
         ], authenticated: false)
         return (RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword), r.username)
+    }
+}
+
+// MARK: - Two-step verification and phone sign-in
+
+/// What a phone sign-in came back with.
+public enum PhoneSignInOutcome: Sendable {
+    case signedIn(credentials: RelayCredentials, username: String)
+    case twoStepRequired(TwoStepRequired)
+    /// No account has the number; `signupTicket` creates one (15 minutes).
+    case noAccount(signupTicket: String)
+}
+
+/// The answer to a two-step ticket.
+public enum TwoStepAnswer: Sendable {
+    case code(String)
+    case pin(AccountPasswordProof)
+    case passkey(credentialId: Data, clientDataJSON: Data, authenticatorData: Data, signature: Data, userHandle: Data)
+}
+
+extension RelayAPIClient {
+    private struct SignedInResponse: Decodable { let accountId: String; let deviceId: UInt32; let username: String }
+
+    /// A single-use App Attest challenge (5 minutes).
+    public func appAttestChallenge() async throws -> String {
+        struct Response: Decodable { let challenge: String }
+        let r: Response = try await request("POST", "v1/app-attest/challenge", body: [String: String](), authenticated: false)
+        return r.challenge
+    }
+
+    /// Registers an attested App Attest key. 403 if Apple's chain doesn't verify.
+    public func registerAppAttestKey(keyId: Data, attestation: Data, challenge: String) async throws {
+        var request = makeRequest("POST", "v1/app-attest/keys")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode([
+            "keyId": keyId.base64URLEncoded, "attestation": attestation.base64URLEncoded, "challenge": challenge,
+        ])
+        _ = try await send(request, authenticated: false)
+    }
+
+    /// Texts a sign-in code to `phone`, vouched for by an App Attest assertion
+    /// (nil only against a development relay that skips App Attest).
+    /// 412: the relay doesn't know the key (attest it again).
+    public func startPhoneSignIn(phone: String, attest: (keyId: Data, assertion: Data, challenge: String)?) async throws {
+        var request = makeRequest("POST", "v1/phone/start")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode([
+            "phone": phone, "keyId": attest?.keyId.base64URLEncoded ?? "",
+            "assertion": attest?.assertion.base64URLEncoded ?? "", "challenge": attest?.challenge ?? "",
+        ])
+        _ = try await send(request, authenticated: false)
+    }
+
+    /// Checks a texted code. Signing in replaces the account's devices.
+    public func signInWithPhone(phone: String, code: String, devicePassword: String) async throws -> PhoneSignInOutcome {
+        struct NoAccount: Decodable { let signupTicket: String }
+        var request = makeRequest("POST", "v1/phone/signin")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(nil, forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(["phone": phone, "code": code, "password": devicePassword])
+        // A 404 carries the signup ticket, which `perform` would drop.
+        let (data, response) = try await anonymousSession.data(for: request)
+        if (response as? HTTPURLResponse)?.statusCode == 404,
+           let noAccount = try? JSONDecoder().decode(NoAccount.self, from: data) {
+            return .noAccount(signupTicket: noAccount.signupTicket)
+        }
+        do {
+            let (data, _) = try await perform(request, on: anonymousSession, answered: (data, response))
+            let r = try JSONDecoder().decode(SignedInResponse.self, from: data)
+            return .signedIn(credentials: RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword),
+                             username: r.username)
+        } catch let twoStep as TwoStepRequired {
+            return .twoStepRequired(twoStep)
+        }
+    }
+
+    /// Creates an account for a number `signInWithPhone` found no account for.
+    /// 409: the username is taken (the ticket still works).
+    public func signUpWithPhone(signupTicket: String, username: String, devicePassword: String, discoverable: Bool) async throws -> (credentials: RelayCredentials, username: String) {
+        struct Body: Encodable { let signupTicket: String; let username: String; let password: String; let discoverable: Bool }
+        let r: SignedInResponse = try await request("POST", "v1/phone/signup", body: Body(
+            signupTicket: signupTicket, username: username, password: devicePassword, discoverable: discoverable
+        ), authenticated: false)
+        return (RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword), r.username)
+    }
+
+    /// The challenge for a passkey second step.
+    public func twoStepPasskeyOptions(ticket: String) async throws -> (challenge: Data, credentialIds: [Data]) {
+        struct Response: Decodable { let challenge: String; let credentialIds: [String] }
+        let r: Response = try await request("POST", "v1/accounts/two-step/passkey-options", body: ["ticket": ticket], authenticated: false)
+        guard let challenge = Data(base64URL: r.challenge) else { throw RelayAPIError.malformedResponse }
+        return (challenge, r.credentialIds.compactMap { Data(base64URL: $0) })
+    }
+
+    /// Finishes a sign-in with its second step, replacing the account's devices.
+    /// 401: wrong answer or expired ticket.
+    public func completeTwoStep(ticket: String, answer: TwoStepAnswer, devicePassword: String) async throws -> (credentials: RelayCredentials, username: String) {
+        var body: [String: String] = ["ticket": ticket, "password": devicePassword]
+        switch answer {
+        case .code(let code):
+            body["code"] = code
+        case .pin(let proof):
+            proof.addFields(to: &body)
+        case .passkey(let credentialId, let clientDataJSON, let authenticatorData, let signature, let userHandle):
+            body["credentialId"] = credentialId.base64URLEncoded
+            body["clientDataJSON"] = clientDataJSON.base64URLEncoded
+            body["authenticatorData"] = authenticatorData.base64URLEncoded
+            body["signature"] = signature.base64URLEncoded
+            body["userHandle"] = userHandle.base64URLEncoded
+        }
+        let r: SignedInResponse = try await request("POST", "v1/accounts/two-step", body: body, authenticated: false)
+        return (RelayCredentials(accountId: r.accountId, deviceId: r.deviceId, password: devicePassword), r.username)
+    }
+
+    /// Starts adding an authenticator app: its secret (base32) and otpauth URI.
+    public func setUpAuthenticator() async throws -> (secret: String, uri: String) {
+        struct Response: Decodable { let secret: String; let uri: String }
+        let r: Response = try await request("POST", "v1/accounts/me/totp/setup", body: [String: String]())
+        return (r.secret, r.uri)
+    }
+
+    /// Confirms the authenticator with a code from it; it's then the two-step method.
+    public func confirmAuthenticator(code: String) async throws {
+        try await requestExpectingNoContent("POST", "v1/accounts/me/totp/confirm", body: ["code": code])
+    }
+
+    /// Sets the two-step method (nil turns it off). 409: the account lacks what it needs.
+    public func setTwoStep(_ method: TwoStepRequired.Method?) async throws {
+        try await requestExpectingNoContent("PUT", "v1/accounts/me/two-step", body: ["method": method?.rawValue ?? ""])
+    }
+
+    public func deleteAccountPassword() async throws {
+        _ = try await send(makeRequest("DELETE", "v1/accounts/me/account-password"), authenticated: true)
     }
 }
 

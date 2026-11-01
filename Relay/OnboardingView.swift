@@ -23,20 +23,35 @@ struct OnboardingView: View {
 
     @Environment(AppModel.self) private var model
 
-    enum Step { case welcome, auth, setup, recovery, emailCode, passkeyIntro, passkeySetup }
+    enum Step { case welcome, signIn, emailCode, phone, phoneSetup, setup, passkeyIntro, passkeySetup, twoStep }
 
     @State private var step: Step = .welcome
     @State private var supabaseSession: SupabaseSession?
-    // Registration lock: account password prompt for new-device sign-ins.
+    /// Accounts on a relay from before two-step verification answer a
+    /// registration lock with a plain account-password prompt.
     @State private var showingLockPrompt = false
     @State private var lockPassword = ""
     @State private var lockPasswordIncorrect = false
-    @State private var supabasePassword = ""  // for account recovery setup
+    @State private var twoStep: AppModel.TwoStepNeededError?
+    @State private var phoneSignup: (phone: String, ticket: String)?
     @State private var displayName = ""
     @State private var username = ""
     @State private var registrationError: String?
     @State private var showingLinkScanner = false
     @State private var isAutoRestoring = false
+
+    private static let forward = AnyTransition.asymmetric(
+        insertion: .move(edge: .trailing).combined(with: .opacity),
+        removal: .move(edge: .leading).combined(with: .opacity)
+    )
+    private static let toForm = AnyTransition.asymmetric(
+        insertion: .move(edge: .trailing).combined(with: .opacity),
+        removal: .opacity
+    )
+
+    private func go(_ next: Step) {
+        withAnimation(.spring(duration: 0.5)) { step = next }
+    }
 
     var body: some View {
         ZStack {
@@ -49,12 +64,10 @@ struct OnboardingView: View {
             switch step {
             case .welcome:
                 WelcomeView(
-                    onSignUp: {
-                        withAnimation(.spring(duration: 0.5)) { step = .auth }
-                    },
-                    onSignIn: {
-                        withAnimation(.spring(duration: 0.5)) { step = .recovery }
-                    },
+                    onPhone: { go(.phone) },
+                    onEmail: { go(.emailCode) },
+                    onUsernameOnly: { go(.passkeyIntro) },
+                    onSignIn: { go(.signIn) },
                     onOAuthSession: { session, name in
                         handleOAuth(session: session, suggestedName: name)
                     },
@@ -66,32 +79,41 @@ struct OnboardingView: View {
                     insertion: .opacity,
                     removal: .move(edge: .leading).combined(with: .opacity)
                 ))
-            case .auth:
-                AuthView(onComplete: { session, password in
-                    supabaseSession = session
-                    supabasePassword = password
-                    withAnimation(.spring(duration: 0.5)) { step = .setup }
-                }, onBack: {
-                    withAnimation(.spring(duration: 0.5)) { step = .welcome }
-                }, onUseCode: {
-                    withAnimation(.spring(duration: 0.5)) { step = .emailCode }
-                }, onUsePasskey: {
-                    withAnimation(.spring(duration: 0.5)) { step = .passkeyIntro }
-                })
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
+            case .signIn:
+                SignInOptionsView(onPhone: { go(.phone) }, onEmail: { go(.emailCode) }, onBack: { go(.welcome) })
+                    .transition(Self.forward)
+            case .phone:
+                PhoneSignInView(onNewAccount: { phone, ticket in
+                    phoneSignup = (phone, ticket)
+                    go(.phoneSetup)
+                }, onTwoStep: { needed in
+                    twoStep = needed
+                    go(.twoStep)
+                }, onBack: { go(.welcome) })
+                .transition(Self.forward)
+            case .phoneSetup:
+                SetupView(
+                    displayName: $displayName,
+                    username: $username,
+                    checkAvailability: { u in await model.checkUsername(u) },
+                    onComplete: {
+                        guard let phoneSignup else { return }
+                        try await model.signUpWithPhone(
+                            phoneSignup.phone, signupTicket: phoneSignup.ticket,
+                            username: username.trimmingCharacters(in: .whitespaces),
+                            displayName: displayName.trimmingCharacters(in: .whitespaces),
+                            discoverable: false
+                        )
+                    },
+                    onBack: {
+                        phoneSignup = nil
+                        go(.phone)
+                    }
+                )
+                .transition(Self.toForm)
             case .passkeyIntro:
-                PasskeySignupIntroView(onContinue: {
-                    withAnimation(.spring(duration: 0.5)) { step = .passkeySetup }
-                }, onBack: {
-                    withAnimation(.spring(duration: 0.5)) { step = .auth }
-                })
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
+                PasskeySignupIntroView(onContinue: { go(.passkeySetup) }, onBack: { go(.welcome) })
+                    .transition(Self.forward)
             case .passkeySetup:
                 SetupView(
                     displayName: $displayName,
@@ -100,24 +122,14 @@ struct OnboardingView: View {
                     onComplete: {
                         try await model.signUpWithPasskey(username: username, displayName: displayName)
                     },
-                    onBack: {
-                        withAnimation(.spring(duration: 0.5)) { step = .passkeyIntro }
-                    }
+                    onBack: { go(.passkeyIntro) }
                 )
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .opacity
-                ))
+                .transition(Self.toForm)
             case .emailCode:
                 EmailCodeView(onSession: { session in
                     handleOAuth(session: session)
-                }, onBack: {
-                    withAnimation(.spring(duration: 0.5)) { step = .welcome }
-                })
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
+                }, onBack: { go(.welcome) })
+                .transition(Self.forward)
             case .setup:
                 SetupView(
                     displayName: $displayName,
@@ -125,32 +137,25 @@ struct OnboardingView: View {
                     checkAvailability: { u in await model.checkUsername(u) },
                     onComplete: {
                         guard let session = supabaseSession else { return }
-                        try await finish(session: session, password: supabasePassword)
+                        try await finish(session: session)
                     },
                     onBack: {
                         // Forget the half-finished sign-up so the user can pick another sign-in
                         // method.
                         supabaseSession = nil
-                        supabasePassword = ""
-                        withAnimation(.spring(duration: 0.5)) { step = .welcome }
+                        go(.welcome)
                     }
                 )
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .opacity
-                ))
-            case .recovery:
-                RecoveryView(onComplete: {
-                    // recoverAccount sets phase = .ready, which dismisses onboarding.
-                }, onBack: {
-                    withAnimation(.spring(duration: 0.5)) { step = .welcome }
-                }, onUseCode: {
-                    withAnimation(.spring(duration: 0.5)) { step = .emailCode }
-                })
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing).combined(with: .opacity),
-                    removal: .move(edge: .leading).combined(with: .opacity)
-                ))
+                .transition(Self.toForm)
+            case .twoStep:
+                if let twoStep {
+                    TwoStepView(needed: twoStep, onRestart: {
+                        self.twoStep = nil
+                        supabaseSession = nil
+                        go(.welcome)
+                    })
+                    .transition(Self.forward)
+                }
             }
             } // end else isAutoRestoring
         }
@@ -178,11 +183,15 @@ struct OnboardingView: View {
                     session = stored
                 }
                 supabaseSession = session
-                try await finish(session: session, password: "")
+                try await finish(session: session)
             } catch is AppModel.NeedsUsernameError {
                 // Valid session but no relay account yet: pick a username.
                 isAutoRestoring = false
-                withAnimation(.spring(duration: 0.5)) { step = .setup }
+                go(.setup)
+            } catch let needed as AppModel.TwoStepNeededError {
+                isAutoRestoring = false
+                twoStep = needed
+                go(.twoStep)
             } catch {
                 registrationError = FriendlyError.message(for: error)
                 isAutoRestoring = false
@@ -223,9 +232,10 @@ struct OnboardingView: View {
                 // recovered by the relay via their verified Supabase token, so no
                 // username is needed.
                 try await finish(session: session, password: accountPassword)
+            } catch let needed as AppModel.TwoStepNeededError {
+                twoStep = needed
+                go(.twoStep)
             } catch let lock as AppModel.AccountPasswordRequiredError {
-                // This sign-in would replace the account's devices, so the account
-                // password is required.
                 lockPasswordIncorrect = lock.incorrect
                 lockPassword = ""
                 showingLockPrompt = true
@@ -234,7 +244,7 @@ struct OnboardingView: View {
                 if displayName.isEmpty {
                     displayName = Self.suggestedDisplayName(provided: suggestedName, email: session.email)
                 }
-                withAnimation(.spring(duration: 0.5)) { step = .setup }
+                go(.setup)
             } catch {
                 registrationError = FriendlyError.message(for: error)
             }
@@ -337,7 +347,9 @@ private struct SignInButtonLabel<Icon: View>: View {
 }
 
 private struct WelcomeView: View {
-    let onSignUp: () -> Void
+    let onPhone: () -> Void
+    let onEmail: () -> Void
+    let onUsernameOnly: () -> Void
     let onSignIn: () -> Void
     /// The session, plus the person's name when the provider gave one (Apple
     /// shares it only on the first sign-in).
@@ -376,7 +388,7 @@ private struct WelcomeView: View {
                     ProgressView()
                         .tint(.white)
                         .frame(maxWidth: .infinity)
-                        .frame(height: Self.buttonHeight * 3 + 24)
+                        .frame(height: Self.buttonHeight * 4 + 36)
                 } else {
                     Button {
                         Task {
@@ -399,13 +411,26 @@ private struct WelcomeView: View {
                         }
                     }
 
-                    Button(action: onSignUp) {
+                    Button(action: onPhone) {
+                        SignInButtonLabel(title: "Continue with Phone", style: .outlined) {
+                            Image(systemName: "phone.fill")
+                                .resizable()
+                                .scaledToFit()
+                        }
+                    }
+
+                    Button(action: onEmail) {
                         SignInButtonLabel(title: "Continue with Email", style: .outlined) {
                             Image(systemName: "envelope.fill")
                                 .resizable()
                                 .scaledToFit()
                         }
                     }
+
+                    Button("Sign up with just a username", action: onUsernameOnly)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(minHeight: 36)
                 }
 
                 if let oauthError {
@@ -602,276 +627,14 @@ private final class OAuthWindowContext: NSObject, ASWebAuthenticationPresentatio
     }
 }
 
-// MARK: - Auth screen
+// MARK: - Shared field types
 
-private struct AuthView: View {
-    let onComplete: (SupabaseSession, String) async throws -> Void
-    let onBack: () -> Void
-    let onUseCode: () -> Void
-    let onUsePasskey: () -> Void
-
-    @State private var email = ""
-    @State private var password = ""
-    @State private var confirmPassword = ""
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    // Email confirmation: Supabase sent a code (6-10 digits) to `email`.
-    @State private var awaitingCode = false
-    @State private var code = ""
-    @State private var resendNote: String?
-    @FocusState private var focused: Field?
-
-    enum Field: Hashable { case email, password, confirm, code }
+enum AuthView {
+    enum Field: Hashable { case email, code }
 
     /// Supabase's email code length is a project setting (6-10 digits), so accept
     /// any of them.
     static let validCodeLength = 6...10
-
-    private var canSubmit: Bool {
-        guard !isLoading, !email.isEmpty, password.count >= 8 else { return false }
-        return password == confirmPassword
-    }
-
-    var body: some View {
-        if awaitingCode {
-            codeEntry
-        } else {
-            signUpForm
-        }
-    }
-
-    private var codeEntry: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                HStack {
-                    Button {
-                        awaitingCode = false
-                        code = ""
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.ultraThinMaterial, in: .circle)
-                    }
-                    .accessibilityLabel("Back")
-                    Spacer()
-                }
-                .padding(.top, 16)
-
-                VStack(spacing: 6) {
-                    Text("Check your email")
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("Enter the code we sent to \(email).")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.6))
-                        .multilineTextAlignment(.center)
-                }
-                .padding(.top, 24)
-                .padding(.bottom, 12)
-
-                AuthField(icon: "number", placeholder: "Verification code",
-                          text: $code, focused: $focused, field: .code,
-                          contentType: .oneTimeCode, keyboard: .numberPad)
-                    .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
-
-                if let errorMessage {
-                    InlineErrorBanner(errorMessage)
-                }
-
-                Button(action: verifyCode) {
-                    ZStack {
-                        if isLoading {
-                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
-                        } else {
-                            Text("Verify")
-                                .font(.headline)
-                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(
-                        Self.validCodeLength.contains(code.count) && !isLoading ? Color.white : Color.white.opacity(0.3),
-                        in: .rect(cornerRadius: 16, style: .continuous)
-                    )
-                }
-                .disabled(!Self.validCodeLength.contains(code.count) || isLoading)
-
-                Button("Resend code", action: resendCode)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .disabled(isLoading)
-                if let resendNote {
-                    Text(resendNote)
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-            }
-            .padding(.horizontal, 24)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .onAppear { focused = .code }
-        .onChange(of: code) { _, new in
-            let digits = String(new.filter(\.isNumber).prefix(Self.validCodeLength.upperBound))
-            if digits != new { code = digits }
-        }
-    }
-
-    private var signUpForm: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                HStack {
-                    Button(action: onBack) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.ultraThinMaterial, in: .circle)
-                    }
-                    .accessibilityLabel("Back")
-                    Spacer()
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-
-                VStack(spacing: 6) {
-                    Text("Create account")
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("Private messaging starts here.")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-                .padding(.top, 32)
-                .padding(.bottom, 36)
-
-                VStack(spacing: 0) {
-                    AuthField(icon: "envelope", placeholder: "Email address",
-                              text: $email, focused: $focused, field: .email,
-                              contentType: .emailAddress, keyboard: .emailAddress)
-                    Divider().background(.white.opacity(0.12))
-                    AuthField(icon: "lock", placeholder: "Password (min 8 chars)",
-                              text: $password, focused: $focused, field: .password,
-                              contentType: .newPassword, secure: true)
-                    Divider().background(.white.opacity(0.12))
-                    AuthField(icon: "lock.fill", placeholder: "Confirm password",
-                              text: $confirmPassword, focused: $focused, field: .confirm,
-                              contentType: .newPassword, secure: true)
-                }
-                .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
-                .padding(.horizontal, 24)
-
-                if !confirmPassword.isEmpty && password != confirmPassword {
-                    Label("Passwords don't match", systemImage: "exclamationmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(Color.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 28)
-                        .padding(.top, 8)
-                }
-
-                if let errorMessage {
-                    InlineErrorBanner(errorMessage)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 12)
-                }
-
-                Button(action: submit) {
-                    ZStack {
-                        if isLoading {
-                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
-                        } else {
-                            Text("Create account")
-                                .font(.headline)
-                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(
-                        canSubmit ? Color.white : Color.white.opacity(0.3),
-                        in: .rect(cornerRadius: 16, style: .continuous)
-                    )
-                }
-                .disabled(!canSubmit)
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
-
-                Menu {
-                    Button("Email Me a Code Instead", systemImage: "envelope", action: onUseCode)
-                    Button("Sign Up Without an Email", systemImage: "person.badge.key", action: onUsePasskey)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Other ways to sign up")
-                        Image(systemName: "chevron.down").font(.caption2.weight(.bold))
-                    }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .frame(minHeight: 44)
-                }
-                .padding(.top, 12)
-
-                LegalFooter()
-                    .padding(.horizontal, 40)
-                    .padding(.top, 16)
-
-                Spacer().frame(height: 40)
-            }
-        }
-        .scrollDismissesKeyboard(.interactively)
-    }
-
-    private func submit() {
-        errorMessage = nil
-        isLoading = true
-        focused = nil
-        Task {
-            do {
-                // Supabase gets a random password nobody knows: sign-in is by
-                // email code, and the account password must never reach Supabase
-                // (it would allow guessing there, outside the relay's lockout).
-                switch try await SupabaseAuth.shared.signUp(email: email, password: SupabaseAuth.unusablePassword()) {
-                case .signedIn(let session):
-                    try await onComplete(session, password)
-                case .confirmationRequired:
-                    code = ""
-                    resendNote = nil
-                    awaitingCode = true
-                }
-            } catch {
-                errorMessage = FriendlyError.message(for: error)
-            }
-            isLoading = false
-        }
-    }
-
-    private func verifyCode() {
-        errorMessage = nil
-        isLoading = true
-        Task {
-            do {
-                let session = try await SupabaseAuth.shared.verifySignUpCode(email: email, code: code)
-                try await onComplete(session, password)
-            } catch {
-                errorMessage = "That code didn't work. Check it, or tap Resend code."
-            }
-            isLoading = false
-        }
-    }
-
-    private func resendCode() {
-        errorMessage = nil
-        Task {
-            do {
-                try await SupabaseAuth.shared.resendSignUpCode(email: email)
-                resendNote = "Sent. It can take a minute to arrive — check your spam folder too."
-            } catch {
-                errorMessage = FriendlyError.message(for: error)
-            }
-        }
-    }
 }
 
 // MARK: - One-time code sign-in
@@ -1032,189 +795,9 @@ private struct EmailCodeView: View {
     }
 }
 
-// MARK: - Recovery (email + account password)
-
-private struct RecoveryView: View {
-    let onComplete: () -> Void
-    let onBack: () -> Void
-    let onUseCode: () -> Void
-
-    @Environment(AppModel.self) private var model
-
-    @State private var email = ""
-    @State private var password = ""
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var showingForgotPassword = false
-    @State private var showingReviewCode = false
-    @State private var showingRecoveryKey = false
-    @FocusState private var focused: RecoveryField?
-
-    enum RecoveryField: Hashable { case email, password }
-
-    private var canSubmit: Bool {
-        // Same 8-character minimum as sign-up.
-        !isLoading && !email.isEmpty && password.count >= 8
-    }
-
-    var body: some View {
-        content
-            .modifier(PasskeyAutoFill(enabled: true, errorMessage: $errorMessage))
-    }
-
-    private var content: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                HStack {
-                    Button(action: onBack) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.ultraThinMaterial, in: .circle)
-                    }
-                    .accessibilityLabel("Back")
-                    Spacer()
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
-
-                VStack(spacing: 6) {
-                    Text("Sign in")
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("Use the email and password you signed up with.")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.6))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                }
-                .padding(.top, 32)
-                .padding(.bottom, 36)
-
-                VStack(spacing: 0) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "envelope")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.5))
-                            .frame(width: 24)
-                        TextField("Email address", text: $email)
-                            .focused($focused, equals: .email)
-                            .textContentType(.username)
-                            .keyboardType(.emailAddress)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .foregroundStyle(.white)
-                            .tint(.white)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 16)
-
-                    Divider().background(.white.opacity(0.12))
-
-                    HStack(spacing: 12) {
-                        Image(systemName: "lock")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.5))
-                            .frame(width: 24)
-                        SecureField("Password", text: $password)
-                            .focused($focused, equals: .password)
-                            .textContentType(.password)
-                            .foregroundStyle(.white)
-                            .tint(.white)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 16)
-                }
-                .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
-                .padding(.horizontal, 24)
-
-                if let errorMessage {
-                    InlineErrorBanner(errorMessage)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 12)
-                }
-
-                Button(action: submit) {
-                    ZStack {
-                        if isLoading {
-                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
-                        } else {
-                            Text("Sign in")
-                                .font(.headline)
-                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(
-                        canSubmit ? Color.white : Color.white.opacity(0.3),
-                        in: .rect(cornerRadius: 16, style: .continuous)
-                    )
-                }
-                .disabled(!canSubmit)
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
-
-                Button("Forgot password?") { showingForgotPassword = true }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .padding(.top, 16)
-
-                // The rarer ways in, in one place rather than a row of links.
-                Menu {
-                    Button("Email Me a Code", systemImage: "envelope", action: onUseCode)
-                    Button("Use a Recovery Key", systemImage: "key") { showingRecoveryKey = true }
-                    Button("Review Code", systemImage: "checkmark.seal") { showingReviewCode = true }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Other ways to sign in")
-                        Image(systemName: "chevron.down").font(.caption2.weight(.bold))
-                    }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .frame(minHeight: 44)
-                }
-                .padding(.top, 4)
-
-                Spacer().frame(height: 40)
-            }
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .sheet(isPresented: $showingForgotPassword) {
-            ForgotPasswordSheet(initialEmail: email, onComplete: onComplete)
-        }
-        .sheet(isPresented: $showingReviewCode) {
-            ReviewCodeSheet(onComplete: onComplete)
-        }
-        .sheet(isPresented: $showingRecoveryKey) {
-            RecoveryKeySignInSheet()
-        }
-    }
-
-    private func submit() {
-        errorMessage = nil
-        isLoading = true
-        focused = nil
-        Task {
-            do {
-                try await model.recoverAccount(
-                    serverURL: RelayConfig.serverURL,
-                    email: email.lowercased().trimmingCharacters(in: .whitespaces),
-                    accountPassword: password
-                )
-                onComplete()
-            } catch {
-                errorMessage = FriendlyError.message(for: error)
-            }
-            isLoading = false
-        }
-    }
-}
-
 /// App Review: one short code signs in to an isolated demo account.
-private struct ReviewCodeSheet: View {
-    let onComplete: () -> Void
+struct ReviewCodeSheet: View {
+    var onComplete: () -> Void = {}
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var code = ""
@@ -1271,124 +854,6 @@ private struct ReviewCodeSheet: View {
     }
 }
 
-/// "Forgot password": emailed code plus new password. Resetting signs this
-/// device in and the account's other devices out.
-private struct ForgotPasswordSheet: View {
-    let initialEmail: String
-    let onComplete: () -> Void
-
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var email = ""
-    @State private var codeSent = false
-    @State private var code = ""
-    @State private var password = ""
-    @State private var confirm = ""
-    @State private var working = false
-    @State private var errorMessage: String?
-
-    private var normalizedEmail: String { email.lowercased().trimmingCharacters(in: .whitespaces) }
-    private var canSend: Bool { !working && normalizedEmail.contains("@") }
-    private var canReset: Bool {
-        !working && AuthView.validCodeLength.contains(code.count)
-            && password.count >= 8 && password == confirm
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                if !codeSent {
-                    Section {
-                        TextField("Email address", text: $email)
-                            .textContentType(.emailAddress)
-                            .keyboardType(.emailAddress)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    } footer: {
-                        footer("We'll email you a code to reset your account password.")
-                    }
-                } else {
-                    Section {
-                        TextField("Code", text: $code)
-                            .textContentType(.oneTimeCode)
-                            .keyboardType(.numberPad)
-                            .onChange(of: code) { _, new in
-                                let digits = String(new.filter(\.isNumber).prefix(AuthView.validCodeLength.upperBound))
-                                if digits != new { code = digits }
-                            }
-                    } header: {
-                        Text("Code sent to \(normalizedEmail)")
-                    }
-                    Section {
-                        SecureField("New password", text: $password)
-                            .textContentType(.newPassword)
-                        SecureField("Confirm password", text: $confirm)
-                            .textContentType(.newPassword)
-                    } footer: {
-                        footer("At least 8 characters. Resetting signs you in here and signs out your other devices. Your message history on those devices stays there.")
-                    }
-                    Section {
-                        Button("Send a new code") { sendCode() }.disabled(working)
-                    }
-                }
-            }
-            .navigationTitle("Reset Password")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }.disabled(working)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if working {
-                        ProgressView()
-                    } else if codeSent {
-                        Button("Reset") { reset() }.bold().disabled(!canReset)
-                    } else {
-                        Button("Send Code") { sendCode() }.bold().disabled(!canSend)
-                    }
-                }
-            }
-            .interactiveDismissDisabled(working)
-            .onAppear { if email.isEmpty { email = initialEmail } }
-        }
-    }
-
-    private func footer(_ text: String) -> some View {
-        Text(errorMessage ?? text)
-            .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
-    }
-
-    private func sendCode() {
-        working = true
-        errorMessage = nil
-        Task {
-            do {
-                try await SupabaseAuth.shared.requestPasswordReset(email: normalizedEmail)
-                codeSent = true
-            } catch {
-                errorMessage = FriendlyError.message(for: error)
-            }
-            working = false
-        }
-    }
-
-    private func reset() {
-        working = true
-        errorMessage = nil
-        Task {
-            do {
-                try await model.resetPassword(serverURL: RelayConfig.serverURL, email: normalizedEmail,
-                                              code: code, newPassword: password)
-                dismiss()
-                onComplete()
-            } catch {
-                errorMessage = FriendlyError.message(for: error)
-            }
-            working = false
-        }
-    }
-}
-
 private struct AuthField: View {
     let icon: String
     let placeholder: String
@@ -1398,7 +863,6 @@ private struct AuthField: View {
     var contentType: UITextContentType = .emailAddress
     var keyboard: UIKeyboardType = .default
     var capitalization: TextInputAutocapitalization = .never
-    var secure = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1407,20 +871,14 @@ private struct AuthField: View {
                 .foregroundStyle(.white.opacity(0.5))
                 .frame(width: 24)
 
-            Group {
-                if secure {
-                    SecureField(placeholder, text: $text)
-                } else {
-                    TextField(placeholder, text: $text)
-                        .keyboardType(keyboard)
-                        .textInputAutocapitalization(capitalization)
-                        .autocorrectionDisabled()
-                }
-            }
-            .textContentType(contentType)
-            .focused(focused, equals: field)
-            .foregroundStyle(.white)
-            .tint(.white)
+            TextField(placeholder, text: $text)
+                .keyboardType(keyboard)
+                .textInputAutocapitalization(capitalization)
+                .autocorrectionDisabled()
+                .textContentType(contentType)
+                .focused(focused, equals: field)
+                .foregroundStyle(.white)
+                .tint(.white)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)

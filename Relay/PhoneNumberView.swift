@@ -2,10 +2,10 @@
 //  PhoneNumberView.swift
 //  Relay
 //
-//  The optional phone number, laid out like the onboarding screens: offered
-//  once right after a new account, and opened from Profile → Account →
-//  Phone Number. A number lets people who already have it find you. It's
-//  verified once by text, never shown to anyone, and isn't a way to sign in.
+//  The phone number, laid out like the onboarding screens: offered once right
+//  after a new account, and opened from Settings → Account → Phone Number.
+//  It signs in by texted code and, if the user turns it on, lets people who
+//  already have it find them. Verified by text and never shown to anyone.
 //
 
 import RelayKit
@@ -204,7 +204,7 @@ struct PhoneNumberView: View {
     }
 
     private var footnote: some View {
-        Text("Never shown to anyone. Not used to sign in.")
+        Text("Never shown to anyone.")
             .font(.footnote)
             .foregroundStyle(.white.opacity(0.45))
             .multilineTextAlignment(.center)
@@ -228,7 +228,7 @@ struct PhoneNumberView: View {
     private var enterNumberStep: some View {
         VStack(spacing: 16) {
             header(savedNumber == nil ? "Phone number" : "New number",
-                   "Optional. Friends with your number can find you.")
+                   "Optional. Sign in with a texted code, and let friends with your number find you.")
 
             card {
                 if countries.count > 1 {
@@ -313,7 +313,7 @@ struct PhoneNumberView: View {
     private var addedStep: some View {
         VStack(spacing: 16) {
             header(context == .onboarding ? "You're all set" : "Phone number",
-                   "Friends with your number can find you.")
+                   "You can sign in with a code texted to it.")
 
             card {
                 row("phone") {

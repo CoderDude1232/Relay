@@ -263,13 +263,16 @@ struct RecoveryKeyView: View {
                         }
                     }
                     if !hasPasskey && email == nil {
-                        Text("Add a passkey to view your recovery key.")
-                            .foregroundStyle(.secondary)
+                        // No passkey or email to confirm with (a phone-only account):
+                        // the phone's owner confirms with Face ID or the passcode.
+                        Button { Task { await revealWithDeviceOwner() } } label: {
+                            Label("Show with Face ID", systemImage: "faceid")
+                        }
                     }
                 } footer: {
                     Text(errorMessage ?? (hasKey
-                        ? "Your recovery key signs you in without your password, an email code or a passkey, and brings back your chat list. Confirm it's you to see it."
-                        : "A recovery key signs you in without your password, an email code or a passkey, and brings back your chat list. Confirm it's you to create one."))
+                        ? "Your recovery key signs you in when you can't get a code or use a passkey, and brings back your chat list. Confirm it's you to see it."
+                        : "A recovery key signs you in when you can't get a code or use a passkey, and brings back your chat list. Confirm it's you to create one."))
                         .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
             }
@@ -287,6 +290,16 @@ struct RecoveryKeyView: View {
             Button("Create New Key", role: .destructive) { Task { await create() } }
         } message: {
             Text("Your old key will stop working straight away.")
+        }
+    }
+
+    private func revealWithDeviceOwner() async {
+        errorMessage = nil
+        do {
+            try await service.confirmOwner("Confirm it's you to see your recovery key.")
+            await reveal()
+        } catch {
+            errorMessage = FriendlyError.message(for: error)
         }
     }
 
@@ -456,6 +469,89 @@ struct RemoveEmailSheet: View {
         } catch PasskeyError.canceled {
         } catch {
             errorMessage = FriendlyError.message(for: error)
+        }
+    }
+}
+
+// MARK: - Unlock a backup this device can't open
+
+/// The account has a backup but nothing on this device opens it (no iCloud
+/// Keychain key for it, say on a new Apple ID). Uploads wait rather than
+/// replace it, until it's unlocked with a passkey, the recovery key or the PIN.
+struct BackupUnlockSheet: View {
+    let service: MessagingService
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var recoveryKey = ""
+    @State private var pin = ""
+    @State private var working = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Button { unlock { try await model.unlockBackupWithPasskey() } } label: {
+                        Label("Use Passkey", systemImage: "person.badge.key.fill")
+                    }
+                } footer: {
+                    Text("Your chat list and settings are backed up with your account, encrypted so only you can open them. Unlock the backup to bring them here and keep backing up.")
+                }
+                Section("Recovery Key") {
+                    TextField("Recovery key", text: $recoveryKey)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .font(.body.monospaced())
+                    Button("Unlock with Recovery Key") {
+                        let key = recoveryKey
+                        unlock { await service.restoreAccountStorage(recoveryKey: key) }
+                    }
+                    .disabled(!RecoveryKey.isPlausible(recoveryKey))
+                }
+                Section("PIN") {
+                    SecureField("PIN", text: $pin)
+                        .textContentType(.password)
+                    Button("Unlock with PIN") {
+                        let entered = pin
+                        unlock { await service.unlockBackup(pin: entered) }
+                    }
+                    .disabled(pin.isEmpty)
+                }
+                if let errorMessage {
+                    Section { Text(errorMessage).foregroundStyle(.red) }
+                }
+            }
+            .navigationTitle("Unlock Your Backup")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Not Now") { dismiss() }.disabled(working)
+                }
+                if working {
+                    ToolbarItem(placement: .confirmationAction) { ProgressView() }
+                }
+            }
+            .interactiveDismissDisabled(working)
+        }
+    }
+
+    private func unlock(_ attempt: @escaping () async throws -> Void) {
+        working = true
+        errorMessage = nil
+        Task {
+            do {
+                try await attempt()
+                if service.backupNeedsUnlock {
+                    errorMessage = "That didn't unlock it. Check it and try again."
+                } else {
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    dismiss()
+                }
+            } catch PasskeyError.canceled {
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            working = false
         }
     }
 }
