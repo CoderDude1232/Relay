@@ -552,7 +552,10 @@ can't see who is asking and rely on the target's access key, which only those
 same-side lookups hand out. So that a key learned before an account became a
 demo account stops working, the account's access key is cleared when it is
 marked demo (hence `access_key = NULL` above), on every review sign-in and on a
-reset; the signed-in device uploads its own.
+reset; the signed-in device uploads its own. Demo accounts keep no email: startup clears the email
+token, Supabase link and email discovery of every demo account (and
+`SetDemoAccount` does when marking one), so no screen can show the address an
+account was made with and it can't be used to sign in.
 Username, account password, email change, password reset, email
 discoverability and history segment uploads return `403 "This is a demo
 account, so this is turned off."`.
@@ -826,6 +829,23 @@ email sign-in still pass a `pin` step inline.
 `GET /v1/accounts/me/sign-in-methods` also reports `phone` (bool) and
 `twoStep` (the method). Changes post the `two_step_changed` and
 `account_password_removed` notices.
+
+### Confirming a sensitive change (step-up)
+
+On an account with a two-step method, a signed-in device answers the second
+step again before it can: link or add a device, unlink one, change the email
+or phone number, add or delete a passkey, set or delete the recovery key, set
+or delete the account password (PIN), set up an authenticator, change the
+two-step method, or delete the account. Without a fresh answer those routes
+answer **`403`** `{error, stepUp: {method}}`. One answer covers the device for
+5 minutes (kept in memory; a restart asks again). The recovery key always
+works instead. Clients also ask before changes only the devices know about
+(turning device regions off, showing the recovery key).
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/accounts/me/two-step/challenge` | sig | → `200 {ticket, method, challenge?, credentialIds?}` (`challenge` for a passkey), or `{method: ""}` when there is no second step. |
+| `POST /v1/accounts/me/two-step/verify` | sig | `{ticket, code? \| accountPasswordKey? \| credentialId, clientDataJSON, authenticatorData, signature, userHandle}` or `{recoveryAuthKey}` → `204`. `401` wrong answer or expired ticket; `429` locked out (shared with sign-in's per-account lockout). |
 
 ## Relay Supporter (anonymous subscription credentials)
 

@@ -404,6 +404,8 @@ func TestPasskeyEndToEnd(t *testing.T) {
 	// A registration lock must not block a passkey sign-in.
 	env.doJSON("PUT", "/v1/accounts/me/account-password", alice.authUser(), alice.password,
 		map[string]string{"accountPassword": "account-pw-123"}, http.StatusNoContent, nil)
+	// That made the password the two-step PIN, so adding a passkey asks for it.
+	stepUp(t, alice, map[string]string{"accountPassword": "account-pw-123"}, http.StatusNoContent)
 
 	var opts struct {
 		Challenge  string   `json:"challenge"`

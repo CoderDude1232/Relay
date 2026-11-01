@@ -248,8 +248,10 @@ final class MessagingService {
             processLock: .envelopeProcessing(appGroupId: AppModel.appGroupId)
         )
         self.api = RelayAPIClient(baseURL: serverURL, credentials: credentials, session: session,
-                                  signer: DeviceAuthSigner(keychain: keychain))
+                                  signer: DeviceAuthSigner(keychain: keychain),
+                                  stepUp: { await StepUpCoordinator.shared.confirm() })
         self.allocator = KVPreKeyIdAllocator(database: storage.database)
+        StepUpCoordinator.shared.api = api
         loadMuteExpiries()
         loadBlockedAccounts()
         refreshConversations()
@@ -2783,11 +2785,16 @@ final class MessagingService {
                                   [.text(Self.regionSettingKV), .blob(data)])
     }
 
-    /// Turns regions on or off on every device of this account.
-    func setShowsDeviceRegions(_ on: Bool) async {
+    /// Turns regions on or off on every device of this account. Turning them
+    /// off asks for the second step, so a device someone else linked can't
+    /// hide where it is. False if that was cancelled.
+    @discardableResult
+    func setShowsDeviceRegions(_ on: Bool) async -> Bool {
+        if !on, !(await StepUpCoordinator.shared.confirm()) { return false }
         storeRegionSetting(RegionSetting(on: on, at: Int64(Date().timeIntervalSince1970 * 1000)))
         if on { DeviceRegion.shared.requestAccessIfNeeded() }
         await publishDeviceLabel(force: true)
+        return true
     }
 
     /// Brings this device's label in line with the account's region choice,

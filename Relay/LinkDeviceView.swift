@@ -463,7 +463,7 @@ struct LinkedDevicesView: View {
                         set: { on in
                             regionsShown = on
                             Task {
-                                await service.setShowsDeviceRegions(on)
+                                if !(await service.setShowsDeviceRegions(on)) { regionsShown = !on }
                                 await refresh()
                             }
                         }

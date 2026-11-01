@@ -99,6 +99,7 @@ type Server struct {
 
 	// Two-step verification (twostep.go) and phone sign-in (phone.go).
 	twoStep     *twoStepTickets
+	stepUps     *stepUps
 	phoneSignup *phoneSignups // verified numbers waiting for a username
 	appAttest   appAttestVerifier
 	// phoneWithoutAttest allows phone codes without App Attest (development).
@@ -149,7 +150,7 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 		attachDiskCap: DefaultAttachmentDiskCap,
 		passkeyReg:    newPasskeySessions(), passkeyLogin: newPasskeySessions(),
 		passkeySignup: newPasskeySessions(), passkeyEmailRemove: newPasskeySessions(),
-		passkeyTwoStep: newPasskeySessions(), twoStep: newTwoStepTickets(), phoneSignup: newPhoneSignups()}
+		passkeyTwoStep: newPasskeySessions(), twoStep: newTwoStepTickets(), stepUps: newStepUps(), phoneSignup: newPhoneSignups()}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
 	if err := s.SetPasskeyRP(DefaultPasskeyRPID, []string{DefaultPasskeyOrigin}); err != nil {
 		panic("api: default passkey config: " + err.Error())
@@ -375,7 +376,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/messages/ack", s.auth(s.handleAckMessage))
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
 	mux.HandleFunc("POST /v1/contact-invites/claim", s.handleClaimContactInvite) // unauthenticated: token is the capability
-	mux.HandleFunc("POST /v1/devices", s.auth(s.handleAddDevice))
+	mux.HandleFunc("POST /v1/devices", s.auth(s.stepUp(s.handleAddDevice)))
 	// Reversed device linking: the new device creates a provisioning session and
 	// shows a QR; the primary scans it, creates the device, and stores an
 	// encrypted payload the new device polls for. The path is not under
@@ -384,9 +385,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/provisioning-sessions", s.handleCreateProvisioningSession)     // unauthenticated (new device)
 	mux.HandleFunc("GET /v1/provisioning-sessions/{id}", s.handleFetchProvisioning)         // unauthenticated (new device polls)
 	mux.HandleFunc("PUT /v1/provisioning-sessions/{id}", s.auth(s.handleStoreProvisioning)) // primary stores ciphertext
-	mux.HandleFunc("POST /v1/devices/link", s.auth(s.handleLinkDevice))                     // primary creates the device
+	mux.HandleFunc("POST /v1/devices/link", s.auth(s.stepUp(s.handleLinkDevice)))           // primary creates the device
 	mux.HandleFunc("GET /v1/devices", s.auth(s.handleListDevices))
-	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.handleRemoveDevice))
+	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.stepUp(s.handleRemoveDevice)))
 	mux.HandleFunc("PUT /v1/devices/auth-key", s.bootstrapAuth(s.handleSetDeviceAuthKey)) // the only route accepting HTTP Basic
 	mux.HandleFunc("PUT /v1/devices/apns", s.auth(s.handleSetAPNSToken))
 	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
@@ -400,18 +401,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/usernames/{name}/available", s.handleUsernameAvailable) // unauthenticated, per-IP limited
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/password-reset", s.handlePasswordReset) // unauthenticated; proof = fresh Supabase recovery session
-	mux.HandleFunc("PUT /v1/accounts/me/email", s.auth(s.handleUpdateEmail))
+	mux.HandleFunc("PUT /v1/accounts/me/email", s.auth(s.stepUp(s.handleUpdateEmail)))
 	mux.HandleFunc("PUT /v1/accounts/me/discoverability", s.auth(s.handleSetDiscoverability))
 	mux.HandleFunc("GET /v1/accounts/me/phone", s.auth(s.handleGetPhone))
-	mux.HandleFunc("POST /v1/accounts/me/phone/start", s.auth(s.handleStartPhone))
+	mux.HandleFunc("POST /v1/accounts/me/phone/start", s.auth(s.stepUp(s.handleStartPhone)))
 	mux.HandleFunc("POST /v1/accounts/me/phone/verify", s.auth(s.handleVerifyPhone))
 	mux.HandleFunc("PUT /v1/accounts/me/phone/discoverability", s.auth(s.handleSetPhoneDiscoverability))
-	mux.HandleFunc("DELETE /v1/accounts/me/phone", s.auth(s.handleDeletePhone))
-	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.handleSetAccountPassword))
-	mux.HandleFunc("DELETE /v1/accounts/me/account-password", s.auth(s.handleDeleteAccountPassword))
-	mux.HandleFunc("POST /v1/accounts/me/totp/setup", s.auth(s.handleTOTPSetup))
+	mux.HandleFunc("DELETE /v1/accounts/me/phone", s.auth(s.stepUp(s.handleDeletePhone)))
+	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.stepUp(s.handleSetAccountPassword)))
+	mux.HandleFunc("DELETE /v1/accounts/me/account-password", s.auth(s.stepUp(s.handleDeleteAccountPassword)))
+	mux.HandleFunc("POST /v1/accounts/me/totp/setup", s.auth(s.stepUp(s.handleTOTPSetup)))
 	mux.HandleFunc("POST /v1/accounts/me/totp/confirm", s.auth(s.handleTOTPConfirm))
-	mux.HandleFunc("PUT /v1/accounts/me/two-step", s.auth(s.handleSetTwoStep))
+	mux.HandleFunc("PUT /v1/accounts/me/two-step", s.auth(s.stepUp(s.handleSetTwoStep)))
+	mux.HandleFunc("POST /v1/accounts/me/two-step/challenge", s.auth(s.handleStepUpChallenge))
+	mux.HandleFunc("POST /v1/accounts/me/two-step/verify", s.auth(s.handleStepUpVerify))
 	mux.HandleFunc("POST /v1/accounts/two-step/passkey-options", s.handleTwoStepPasskeyOptions) // unauthenticated: the ticket is the capability
 	mux.HandleFunc("POST /v1/accounts/two-step", s.handleCompleteTwoStep)                       // unauthenticated: the ticket is the capability
 	mux.HandleFunc("POST /v1/app-attest/challenge", s.handleAppAttestChallenge)                 // unauthenticated, per-IP limited
@@ -420,22 +423,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/phone/signin", s.handlePhoneSignIn)                                // unauthenticated, per-number/IP limited
 	mux.HandleFunc("POST /v1/phone/signup", s.handlePhoneSignup)                                // unauthenticated: the signup ticket is the capability
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
-	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
+	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.stepUp(s.handleDeleteAccount)))
 	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
 	mux.HandleFunc("GET /v1/devices/{id}/auth-key", s.auth(s.handleGetDeviceAuthKey))
-	mux.HandleFunc("POST /v1/passkeys/register/options", s.auth(s.handlePasskeyRegisterOptions))
-	mux.HandleFunc("POST /v1/passkeys/register", s.auth(s.handlePasskeyRegister))
+	mux.HandleFunc("POST /v1/passkeys/register/options", s.auth(s.stepUp(s.handlePasskeyRegisterOptions)))
+	mux.HandleFunc("POST /v1/passkeys/register", s.auth(s.stepUp(s.handlePasskeyRegister)))
 	mux.HandleFunc("GET /v1/passkeys", s.auth(s.handleListPasskeys))
-	mux.HandleFunc("DELETE /v1/passkeys/{id}", s.auth(s.handleDeletePasskey))
+	mux.HandleFunc("DELETE /v1/passkeys/{id}", s.auth(s.stepUp(s.handleDeletePasskey)))
 	mux.HandleFunc("POST /v1/passkeys/login/options", s.handlePasskeyLoginOptions)   // unauthenticated, per-IP limited
 	mux.HandleFunc("POST /v1/passkeys/login", s.handlePasskeyLogin)                  // unauthenticated, per-IP limited
 	mux.HandleFunc("POST /v1/passkeys/signup/options", s.handlePasskeySignupOptions) // unauthenticated, per-IP limited
 	mux.HandleFunc("POST /v1/passkeys/signup", s.handlePasskeySignup)                // unauthenticated, per-IP limited
 	mux.HandleFunc("GET /v1/accounts/me/sign-in-methods", s.auth(s.handleSignInMethods))
-	mux.HandleFunc("POST /v1/accounts/me/email/remove/options", s.auth(s.handleRemoveEmailOptions))
-	mux.HandleFunc("POST /v1/accounts/me/email/remove", s.auth(s.handleRemoveEmail))
-	mux.HandleFunc("PUT /v1/accounts/me/recovery-key", s.auth(s.handleSetRecoveryKey))
-	mux.HandleFunc("DELETE /v1/accounts/me/recovery-key", s.auth(s.handleDeleteRecoveryKey))
+	mux.HandleFunc("POST /v1/accounts/me/email/remove/options", s.auth(s.stepUp(s.handleRemoveEmailOptions)))
+	mux.HandleFunc("POST /v1/accounts/me/email/remove", s.auth(s.stepUp(s.handleRemoveEmail)))
+	mux.HandleFunc("PUT /v1/accounts/me/recovery-key", s.auth(s.stepUp(s.handleSetRecoveryKey)))
+	mux.HandleFunc("DELETE /v1/accounts/me/recovery-key", s.auth(s.stepUp(s.handleDeleteRecoveryKey)))
 	mux.HandleFunc("POST /v1/accounts/recovery-key/signin", s.handleRecoveryKeySignIn) // unauthenticated, per-IP limited
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))

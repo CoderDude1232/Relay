@@ -178,6 +178,10 @@ func TestTwoStepPIN(t *testing.T) {
 	c.uploadDeviceAuthKey()
 	env.doJSON("PUT", "/v1/accounts/me/account-password", c.authUser(), c.password,
 		map[string]string{"accountPasswordKey": "pin-key-0123456789abcdefghijklmnopqrstuv"}, http.StatusNoContent, nil)
+	// Sensitive changes now need the PIN again on this device first.
+	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusForbidden, nil)
+	stepUp(t, c, map[string]string{"accountPasswordKey": "wrong-key-0123456789abcdefghijklmnopqrstu"}, http.StatusUnauthorized)
+	stepUp(t, c, map[string]string{"accountPasswordKey": "pin-key-0123456789abcdefghijklmnopqrstuv"}, http.StatusNoContent)
 	// It's now the two-step method, so it can't simply be removed.
 	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusConflict, nil)
 
@@ -200,13 +204,79 @@ func TestTwoStepPIN(t *testing.T) {
 	env.clients[c.authUser()] = c
 	c.uploadDeviceAuthKey()
 
-	// Turned off: the email code alone works again, and the PIN can go.
+	// Turned off (a new device answers the step first): the email code alone
+	// works again, and the PIN can go.
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]string{"method": ""}, http.StatusForbidden, nil)
+	stepUp(t, c, map[string]string{"accountPasswordKey": "pin-key-0123456789abcdefghijklmnopqrstuv"}, http.StatusNoContent)
 	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]string{"method": ""}, http.StatusNoContent, nil)
 	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]string{"method": "passkey"}, http.StatusConflict, nil)
 	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusNoContent, nil)
 	if s := env.postJSON("/v1/accounts/oauth", map[string]string{"accessToken": token, "password": "device-pw-000"}, &out); s != http.StatusOK {
 		t.Fatalf("after turning off %d %q", s, out.Error)
 	}
+}
+
+// stepUp answers a fresh step-up challenge for c with `answer` (plus the
+// ticket) and checks the status.
+func stepUp(t *testing.T, c *client, answer map[string]string, want int) {
+	t.Helper()
+	var ch struct {
+		Ticket string `json:"ticket"`
+		Method string `json:"method"`
+	}
+	c.env.doJSON("POST", "/v1/accounts/me/two-step/challenge", c.authUser(), c.password, nil, http.StatusOK, &ch)
+	if ch.Ticket == "" {
+		t.Fatalf("no step-up ticket (method %q)", ch.Method)
+	}
+	body := map[string]string{"ticket": ch.Ticket}
+	for k, v := range answer {
+		body[k] = v
+	}
+	c.env.doJSON("POST", "/v1/accounts/me/two-step/verify", c.authUser(), c.password, body, want, nil)
+}
+
+// A device linked or signed in without the second step can't change how the
+// account is signed in to until it answers; the recovery key works instead.
+func TestStepUp(t *testing.T) {
+	env := twoStepEnv(t)
+	sfx := uniqueUsername("")
+	token := "stepup" + sfx + "|stepup" + sfx + "@x.com"
+	var first twoStepReply
+	env.doJSON("POST", "/v1/accounts/oauth", "", "", map[string]string{
+		"accessToken": token, "username": "stepup" + sfx, "password": "device-pw-123",
+	}, http.StatusCreated, &first)
+	c := &client{env: env, accountID: first.AccountID, deviceID: first.DeviceID, password: "device-pw-123"}
+	env.clients[c.authUser()] = c
+	c.uploadDeviceAuthKey()
+
+	// No second step yet: nothing to answer, nothing blocked.
+	var none struct {
+		Method string `json:"method"`
+	}
+	env.doJSON("POST", "/v1/accounts/me/two-step/challenge", c.authUser(), c.password, nil, http.StatusOK, &none)
+	if none.Method != "" {
+		t.Fatalf("method %q", none.Method)
+	}
+	recoveryAuth := "recovery-auth-key-0123456789"
+	h := sha256.Sum256([]byte(recoveryKeyAuthHashPrefix + recoveryAuth))
+	env.doJSON("PUT", "/v1/accounts/me/recovery-key", c.authUser(), c.password, map[string]string{"hash": b64URL(h[:])}, http.StatusNoContent, nil)
+	env.doJSON("PUT", "/v1/accounts/me/account-password", c.authUser(), c.password,
+		map[string]string{"accountPasswordKey": "pin-key-0123456789abcdefghijklmnopqrstuv"}, http.StatusNoContent, nil)
+
+	var reply struct {
+		Error  string `json:"error"`
+		StepUp struct {
+			Method string `json:"method"`
+		} `json:"stepUp"`
+	}
+	env.doJSON("DELETE", "/v1/accounts/me/recovery-key", c.authUser(), c.password, nil, http.StatusForbidden, &reply)
+	if reply.StepUp.Method != "pin" {
+		t.Fatalf("step-up reply %+v", reply)
+	}
+	// Someone else's recovery key doesn't count.
+	env.doJSON("POST", "/v1/accounts/me/two-step/verify", c.authUser(), c.password, map[string]string{"recoveryAuthKey": "not-the-key-0123456789"}, http.StatusUnauthorized, nil)
+	env.doJSON("POST", "/v1/accounts/me/two-step/verify", c.authUser(), c.password, map[string]string{"recoveryAuthKey": recoveryAuth}, http.StatusNoContent, nil)
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]string{"method": "pin"}, http.StatusNoContent, nil)
 }
 
 // fakeAttest accepts a key whose attestation is "attested" and assertions

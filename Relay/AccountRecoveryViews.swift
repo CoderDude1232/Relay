@@ -318,6 +318,8 @@ struct RecoveryKeyView: View {
     /// exists but couldn't be loaded here (say, the chat list didn't download)
     /// is never silently replaced: the one the user wrote down would stop working.
     private func reveal() async {
+        // Shows a key that signs in to the account: the second step too.
+        guard await StepUpCoordinator.shared.confirm() else { return }
         if service.recoveryKey == nil { await service.restoreAccountStorage() }
         if let key = service.recoveryKey {
             revealed = key

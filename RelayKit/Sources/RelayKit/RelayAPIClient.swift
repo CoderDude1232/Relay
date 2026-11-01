@@ -120,6 +120,9 @@ public struct RelayAPIClient: Sendable {
     private let session: URLSession
     private let anonymousSession: URLSession
     private let signer: (any RelayRequestSigner)?
+    /// Asks the user to answer the account's second step when the relay wants
+    /// it before a sensitive change (403 with `stepUp`); true to retry.
+    private let stepUp: (@Sendable () async -> Bool)?
 
     /// - Parameters:
     ///   - session: transport for signed requests.
@@ -130,12 +133,14 @@ public struct RelayAPIClient: Sendable {
     public init(baseURL: URL, credentials: RelayCredentials?,
                 session: URLSession = RelayTLS.sharedSession,
                 anonymousSession: URLSession = RelayTLS.sharedAnonymousSession,
-                signer: (any RelayRequestSigner)? = nil) {
+                signer: (any RelayRequestSigner)? = nil,
+                stepUp: (@Sendable () async -> Bool)? = nil) {
         self.baseURL = baseURL
         self.credentials = credentials
         self.session = session
         self.anonymousSession = anonymousSession
         self.signer = signer
+        self.stepUp = stepUp
     }
 
     // MARK: - Accounts
@@ -1026,6 +1031,15 @@ public struct RelayAPIClient: Sendable {
     /// when no signer is configured. A 401 because the relay has no auth key for
     /// the device yet triggers a one-time bootstrap and one re-signed retry.
     private func send(_ request: URLRequest, authenticated: Bool) async throws -> (Data, Int) {
+        do {
+            return try await sendOnce(request, authenticated: authenticated)
+        } catch let needed as StepUpRequired {
+            guard let stepUp, await stepUp() else { throw needed }
+            return try await sendOnce(request, authenticated: authenticated)
+        }
+    }
+
+    private func sendOnce(_ request: URLRequest, authenticated: Bool) async throws -> (Data, Int) {
         guard authenticated else {
             var anonymous = request
             anonymous.setValue(nil, forHTTPHeaderField: "Authorization")
@@ -1094,6 +1108,10 @@ public struct RelayAPIClient: Sendable {
         guard (200..<300).contains(http.statusCode) else {
             struct ErrorBody: Decodable { let error: String }
             let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error ?? ""
+            if http.statusCode == 403 {
+                struct ForbiddenBody: Decodable { let stepUp: StepUpRequired }
+                if let forbidden = try? JSONDecoder().decode(ForbiddenBody.self, from: data) { throw forbidden.stepUp }
+            }
             if http.statusCode == 423 {
                 struct LockedBody: Decodable { let twoStep: TwoStepRequired }
                 if let locked = try? JSONDecoder().decode(LockedBody.self, from: data) { throw locked.twoStep }
@@ -1339,6 +1357,23 @@ extension RelayAPIClient {
 
 // MARK: - Two-step verification and phone sign-in
 
+/// A `403` before a sensitive change: this device must answer the account's
+/// second step first (`stepUpChallenge`, then `verifyStepUp`).
+public struct StepUpRequired: Error, LocalizedError, Decodable, Sendable {
+    public let method: String
+    public var errorDescription: String? { "Confirm it's you with two-step verification to make this change." }
+}
+
+/// A second-step challenge for a signed-in device.
+public struct StepUpChallenge: Sendable, Identifiable {
+    public let ticket: String
+    public let method: TwoStepRequired.Method?
+    /// For a passkey step.
+    public let challenge: Data?
+    public let credentialIds: [Data]
+    public var id: String { ticket }
+}
+
 /// What a phone sign-in came back with.
 public enum PhoneSignInOutcome: Sendable {
     case signedIn(credentials: RelayCredentials, username: String)
@@ -1463,6 +1498,48 @@ extension RelayAPIClient {
     /// Sets the two-step method (nil turns it off). 409: the account lacks what it needs.
     public func setTwoStep(_ method: TwoStepRequired.Method?) async throws {
         try await requestExpectingNoContent("PUT", "v1/accounts/me/two-step", body: ["method": method?.rawValue ?? ""])
+    }
+
+    /// A challenge for this device to answer the account's second step; nil
+    /// when the account has none.
+    public func stepUpChallenge() async throws -> StepUpChallenge? {
+        struct Response: Decodable {
+            let ticket: String?
+            let method: String
+            let challenge: String?
+            let credentialIds: [String]?
+        }
+        let r: Response = try await request("POST", "v1/accounts/me/two-step/challenge", body: [String: String]())
+        guard !r.method.isEmpty, let ticket = r.ticket else { return nil }
+        return StepUpChallenge(
+            ticket: ticket, method: TwoStepRequired.Method(rawValue: r.method),
+            challenge: r.challenge.flatMap { Data(base64URL: $0) },
+            credentialIds: (r.credentialIds ?? []).compactMap { Data(base64URL: $0) }
+        )
+    }
+
+    /// Answers a step-up challenge; this device may then make sensitive
+    /// changes for 5 minutes. 401: wrong answer.
+    public func verifyStepUp(ticket: String, answer: TwoStepAnswer) async throws {
+        var body: [String: String] = ["ticket": ticket]
+        switch answer {
+        case .code(let code):
+            body["code"] = code
+        case .pin(let proof):
+            proof.addFields(to: &body)
+        case .passkey(let credentialId, let clientDataJSON, let authenticatorData, let signature, let userHandle):
+            body["credentialId"] = credentialId.base64URLEncoded
+            body["clientDataJSON"] = clientDataJSON.base64URLEncoded
+            body["authenticatorData"] = authenticatorData.base64URLEncoded
+            body["signature"] = signature.base64URLEncoded
+            body["userHandle"] = userHandle.base64URLEncoded
+        }
+        try await requestExpectingNoContent("POST", "v1/accounts/me/two-step/verify", body: body)
+    }
+
+    /// Answers with the recovery key instead (its derived auth key).
+    public func verifyStepUp(recoveryAuthKey: String) async throws {
+        try await requestExpectingNoContent("POST", "v1/accounts/me/two-step/verify", body: ["recoveryAuthKey": recoveryAuthKey])
     }
 
     public func deleteAccountPassword() async throws {

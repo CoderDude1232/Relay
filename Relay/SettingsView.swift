@@ -203,6 +203,9 @@ struct SettingsView: View {
                         }
                 }
             }
+            // In the iPad sidebar a List defaults to the sidebar style: square,
+            // edge-to-edge sections. Rounded cards, like the pages beside it.
+            .listStyle(.insetGrouped)
             .overlay {
                 if !settingsQuery.trimmingCharacters(in: .whitespaces).isEmpty {
                     settingsSearchResults
@@ -309,6 +312,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
         .modifier(ThemedPageBackground())
         .background { if !appearance.hasWallpaper { Color(.systemGroupedBackground).ignoresSafeArea() } }
     }

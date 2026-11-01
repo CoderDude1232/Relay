@@ -120,6 +120,10 @@ func (s *Store) SetDemoAccount(accountID string, demo bool) error {
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
+	if demo {
+		// A demo account is shared with App Review; it keeps no email.
+		return s.RemoveAccountEmail(accountID)
+	}
 	return nil
 }
 

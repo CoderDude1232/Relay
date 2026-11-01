@@ -175,6 +175,8 @@ struct SignInOptionsView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 40)
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
         }
         .sheet(isPresented: $showingRecoveryKey) { RecoveryKeySignInSheet() }
         .sheet(isPresented: $showingReviewCode) { ReviewCodeSheet() }
@@ -240,6 +242,8 @@ struct PhoneSignInView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 40)
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
         .onChange(of: code) { _, new in
@@ -500,6 +504,8 @@ struct TwoStepView: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 40)
+            .frame(maxWidth: 480)
+            .frame(maxWidth: .infinity)
         }
         .scrollDismissesKeyboard(.interactively)
         .onAppear { focused = true }

@@ -537,6 +537,11 @@ CREATE TABLE IF NOT EXISTS group_invites (
     counter    BIGINT NOT NULL,
     used_at    BIGINT NOT NULL
 )`,
+		// Demo accounts (App Review) were made from the owner's email
+		// accounts; they keep no email, so nothing can show or use it.
+		`DELETE FROM directory WHERE kind = 1 AND account_id IN (SELECT id FROM accounts WHERE is_demo)`,
+		`UPDATE accounts SET email_token = NULL, supabase_user_id = NULL, email_discoverable = FALSE
+		   WHERE is_demo AND (email_token IS NOT NULL OR supabase_user_id IS NOT NULL OR email_discoverable)`,
 	} {
 		if err := s.migrationExec(ctx, stmt); err != nil {
 			return err
