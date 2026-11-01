@@ -7,16 +7,18 @@ import (
 
 // Account notice kinds (relaypb.AccountNotice.kind).
 const (
-	NoticePasskeyAdded        = "passkey_added"
-	NoticePasskeyRemoved      = "passkey_removed"
-	NoticeRecoveryKeySet      = "recovery_key_set"
-	NoticeRecoveryKeyRemoved  = "recovery_key_removed"
-	NoticeAccountPasswordSet  = "account_password_set"
-	NoticeEmailRemoved        = "email_removed"
-	NoticeEmailChanged        = "email_changed"
-	NoticePhoneAdded          = "phone_added"
-	NoticePhoneRemoved        = "phone_removed"
-	accountNoticeRetentionDay = 30
+	NoticePasskeyAdded           = "passkey_added"
+	NoticePasskeyRemoved         = "passkey_removed"
+	NoticeRecoveryKeySet         = "recovery_key_set"
+	NoticeRecoveryKeyRemoved     = "recovery_key_removed"
+	NoticeAccountPasswordSet     = "account_password_set"
+	NoticeEmailRemoved           = "email_removed"
+	NoticeEmailChanged           = "email_changed"
+	NoticePhoneAdded             = "phone_added"
+	NoticePhoneRemoved           = "phone_removed"
+	NoticeTwoStepChanged         = "two_step_changed"
+	NoticeAccountPasswordRemoved = "account_password_removed"
+	accountNoticeRetentionDay    = 30
 )
 
 // AccountNotice is a pending notice for one device.

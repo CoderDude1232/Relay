@@ -18,11 +18,13 @@ import (
 	"github.com/relayapp/relay-server/internal/store"
 )
 
-// Optional phone numbers, for discovery only. A signed-in device asks for a
-// code (POST .../phone/start), the relay has Twilio Verify text it, and the
-// device sends it back (POST .../phone/verify). The relay keeps only the
-// number's OPRF token. Every send is behind Relay-Sig and several limits,
-// because each SMS costs money and SMS pumping is a common attack.
+// Phone numbers: a way to sign in by SMS code, and optionally to be found.
+// A signed-in device adds one (POST /v1/accounts/me/phone/start, .../verify);
+// a new device signs in or up with one (POST /v1/phone/start, /v1/phone/signin,
+// /v1/phone/signup). The relay has Twilio Verify text the code and keeps only
+// the number's OPRF token. Each SMS costs money and SMS pumping is a common
+// attack, so every send is behind several limits, a resend cooldown, and
+// either Relay-Sig or App Attest (a genuine copy of the app).
 
 // smsVerifier sends and checks one-time codes (Twilio Verify in production).
 type smsVerifier interface {
@@ -93,7 +95,16 @@ var (
 	phoneStartNumberLimiter  = newSlidingWindowLimiter(3, 24*time.Hour)
 	phoneStartIPLimiter      = newSlidingWindowLimiter(5, 24*time.Hour)
 	phoneCheckLimiter        = newSlidingWindowLimiter(10, time.Hour)
+	// One text per number per minute, so impatient resends don't each cost.
+	phoneResendLimiter = newSlidingWindowLimiter(1, phoneResendCooldown)
+	// Signing in from a new device: per App Attest key, and code checks per
+	// number and per address.
+	phoneStartKeyLimiter     = newSlidingWindowLimiter(3, 24*time.Hour)
+	phoneSignInNumberLimiter = newSlidingWindowLimiter(10, time.Hour)
+	phoneSignInIPLimiter     = newSlidingWindowLimiter(30, time.Hour)
 )
+
+const phoneResendCooldown = time.Minute
 
 const errPhoneUnavailable = "phone numbers aren't available yet"
 
@@ -139,32 +150,47 @@ func (s *Server) handleStartPhone(w http.ResponseWriter, r *http.Request, dev *s
 		httpError(w, http.StatusUnprocessableEntity, "phone numbers from this country aren't supported yet")
 		return
 	}
-	numberKey := limitkey.Hash("phone-start", req.Phone)
-	if !phoneStartAccountLimiter.allow(dev.AccountID) || !phoneStartNumberLimiter.allow(numberKey) ||
-		!phoneStartIPLimiter.allow(clientIP(r)) {
+	if s.sendPhoneCode(w, r, req.Phone, phoneStartAccountLimiter, dev.AccountID) {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// sendPhoneCode applies the send limits (the caller's own, keyed by
+// callerKey, then per number, per address, the resend cooldown and the daily
+// cap) and has Twilio text a code. False once it has answered with an error.
+func (s *Server) sendPhoneCode(w http.ResponseWriter, r *http.Request, phone string, caller *slidingWindowLimiter, callerKey string) bool {
+	numberKey := limitkey.Hash("phone-start", phone)
+	if !phoneResendLimiter.allow(numberKey) {
+		w.Header().Set("Retry-After", fmt.Sprint(int(phoneResendCooldown.Seconds())))
+		httpError(w, http.StatusTooManyRequests, "a code was just sent; wait a minute before asking again")
+		return false
+	}
+	if !caller.allow(callerKey) || !phoneStartNumberLimiter.allow(numberKey) || !phoneStartIPLimiter.allow(clientIP(r)) {
 		httpError(w, http.StatusTooManyRequests, "too many codes requested; try again tomorrow")
-		return
+		return false
 	}
 	if !s.phone.takeDailySlot(time.Now()) {
+		slog.Warn("phone: daily code cap reached", "cap", s.phone.dailyCap)
 		httpError(w, http.StatusTooManyRequests, "codes are paused for today; try again tomorrow")
-		return
+		return false
 	}
-	if err := s.phone.verifier.Start(r.Context(), req.Phone); err != nil {
+	if err := s.phone.verifier.Start(r.Context(), phone); err != nil {
 		// Nothing was texted, so the attempt doesn't count. The per-address
 		// limit stays, which still bounds probing.
 		s.phone.refundDailySlot()
-		phoneStartAccountLimiter.refund(dev.AccountID)
+		caller.refund(callerKey)
 		phoneStartNumberLimiter.refund(numberKey)
+		phoneResendLimiter.refund(numberKey)
 		var invalid *invalidPhoneError
 		if errors.As(err, &invalid) {
 			httpError(w, http.StatusBadRequest, "that phone number can't receive codes")
-			return
+			return false
 		}
 		slog.Warn("phone: twilio start failed", "err", err)
 		httpError(w, http.StatusBadGateway, "couldn't send the code; try again later")
-		return
+		return false
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // POST /v1/accounts/me/phone/verify {phone, code, discoverable} → 204, and
@@ -230,8 +256,12 @@ func (s *Server) handleSetPhoneDiscoverability(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DELETE /v1/accounts/me/phone → 204.
+// DELETE /v1/accounts/me/phone → 204; 409 if it's the only way to sign in.
 func (s *Server) handleDeletePhone(w http.ResponseWriter, _ *http.Request, dev *store.Device) {
+	if m, err := s.store.AccountSignInMethods(dev.AccountID); err == nil && m.Phone && !m.Email && m.Passkeys == 0 && !m.RecoveryKey {
+		httpError(w, http.StatusConflict, errLastSignInMethod)
+		return
+	}
 	if err := s.store.ClearAccountPhone(dev.AccountID); err != nil {
 		internalError(w, err)
 		return

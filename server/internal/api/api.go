@@ -95,6 +95,14 @@ type Server struct {
 	passkeyLogin       *passkeySessions // keyed by random session id, owned by source IP
 	passkeySignup      *passkeySessions // keyed by random session id, owned by source IP
 	passkeyEmailRemove *passkeySessions // keyed by account id (hashed)
+	passkeyTwoStep     *passkeySessions // keyed by two-step ticket, owned by source IP
+
+	// Two-step verification (twostep.go) and phone sign-in (phone.go).
+	twoStep     *twoStepTickets
+	phoneSignup *phoneSignups // verified numbers waiting for a username
+	appAttest   appAttestVerifier
+	// phoneWithoutAttest allows phone codes without App Attest (development).
+	phoneWithoutAttest bool
 }
 
 // AppleRevoker exchanges a Sign in with Apple authorization code for the
@@ -140,7 +148,8 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 		attachQuota:   newAttachmentQuota(defaultAttachmentDailyBytes, defaultAttachmentDailyCount),
 		attachDiskCap: DefaultAttachmentDiskCap,
 		passkeyReg:    newPasskeySessions(), passkeyLogin: newPasskeySessions(),
-		passkeySignup: newPasskeySessions(), passkeyEmailRemove: newPasskeySessions()}
+		passkeySignup: newPasskeySessions(), passkeyEmailRemove: newPasskeySessions(),
+		passkeyTwoStep: newPasskeySessions(), twoStep: newTwoStepTickets(), phoneSignup: newPhoneSignups()}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
 	if err := s.SetPasskeyRP(DefaultPasskeyRPID, []string{DefaultPasskeyOrigin}); err != nil {
 		panic("api: default passkey config: " + err.Error())
@@ -399,6 +408,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/accounts/me/phone/discoverability", s.auth(s.handleSetPhoneDiscoverability))
 	mux.HandleFunc("DELETE /v1/accounts/me/phone", s.auth(s.handleDeletePhone))
 	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.handleSetAccountPassword))
+	mux.HandleFunc("DELETE /v1/accounts/me/account-password", s.auth(s.handleDeleteAccountPassword))
+	mux.HandleFunc("POST /v1/accounts/me/totp/setup", s.auth(s.handleTOTPSetup))
+	mux.HandleFunc("POST /v1/accounts/me/totp/confirm", s.auth(s.handleTOTPConfirm))
+	mux.HandleFunc("PUT /v1/accounts/me/two-step", s.auth(s.handleSetTwoStep))
+	mux.HandleFunc("POST /v1/accounts/two-step/passkey-options", s.handleTwoStepPasskeyOptions) // unauthenticated: the ticket is the capability
+	mux.HandleFunc("POST /v1/accounts/two-step", s.handleCompleteTwoStep)                       // unauthenticated: the ticket is the capability
+	mux.HandleFunc("POST /v1/app-attest/challenge", s.handleAppAttestChallenge)                 // unauthenticated, per-IP limited
+	mux.HandleFunc("POST /v1/app-attest/keys", s.handleAppAttestKey)                            // unauthenticated, per-IP limited
+	mux.HandleFunc("POST /v1/phone/start", s.handlePhoneSignInStart)                            // unauthenticated, App Attest + limits
+	mux.HandleFunc("POST /v1/phone/signin", s.handlePhoneSignIn)                                // unauthenticated, per-number/IP limited
+	mux.HandleFunc("POST /v1/phone/signup", s.handlePhoneSignup)                                // unauthenticated: the signup ticket is the capability
 	mux.HandleFunc("POST /v1/accounts/me/nuke", s.auth(s.handleNuke))
 	mux.HandleFunc("DELETE /v1/accounts/me", s.auth(s.handleDeleteAccount))
 	mux.HandleFunc("POST /v1/reports", s.auth(s.handleCreateReport))
@@ -688,8 +708,14 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrAccountPasswordLocked):
 		httpError(w, http.StatusTooManyRequests, "too many account password attempts; try again later")
 		return
-	case errors.Is(err, store.ErrAccountPasswordRequired):
-		httpError(w, http.StatusLocked, "account password required")
+	case errors.Is(err, store.ErrAccountPasswordRequired), errors.Is(err, store.ErrTwoStepRequired):
+		// Two-step verification (twostep.go). The PIN can still come inline
+		// with this request, as older clients send it.
+		if s.oprf == nil && errors.Is(err, store.ErrAccountPasswordRequired) {
+			httpError(w, http.StatusLocked, "account password required")
+			return
+		}
+		s.writeTwoStepRequired(w, dev.AccountID, dev.TwoStepMethod, user.ID)
 		return
 	case errors.Is(err, store.ErrStrongerSignInRequired):
 		httpError(w, http.StatusForbidden, "This account has a passkey or recovery key. Sign in with one of those instead.")
@@ -2859,9 +2885,12 @@ func (s *Server) PruneStaleLimiterKeys() {
 	}
 	recoveryLockout.prune()
 	oprfBudget.prune()
-	for _, p := range []*passkeySessions{s.passkeyReg, s.passkeyLogin, s.passkeySignup, s.passkeyEmailRemove} {
+	for _, p := range []*passkeySessions{s.passkeyReg, s.passkeyLogin, s.passkeySignup, s.passkeyEmailRemove, s.passkeyTwoStep} {
 		p.prune()
 	}
+	s.twoStep.prune()
+	s.phoneSignup.prune()
+	appAttestChallenges.prune()
 }
 
 func (l *slidingWindowLimiter) prune() {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"net/http"
 	"testing"
@@ -99,7 +100,8 @@ func TestPhoneVerificationFlow(t *testing.T) {
 		t.Fatalf("after verify = %+v", status)
 	}
 
-	// The number moves to whoever verifies it next.
+	// The number moves to whoever verifies it next (past the resend cooldown).
+	phoneResendLimiter.reset()
 	env.doJSON("POST", "/v1/accounts/me/phone/start", bob.authUser(), bob.password, map[string]string{"phone": number}, http.StatusNoContent, nil)
 	verify(bob, "123456", http.StatusNoContent)
 	env.doJSON("GET", "/v1/accounts/me/phone", alice.authUser(), alice.password, nil, http.StatusOK, &status)
@@ -113,6 +115,10 @@ func TestPhoneVerificationFlow(t *testing.T) {
 	if !status.HasPhone || status.Discoverable {
 		t.Fatalf("after discoverability off = %+v", status)
 	}
+	// The number is bob's only way to sign in until he has another.
+	env.doJSON("DELETE", "/v1/accounts/me/phone", bob.authUser(), bob.password, nil, http.StatusConflict, nil)
+	recovery := sha256.Sum256([]byte(bob.accountID))
+	env.doJSON("PUT", "/v1/accounts/me/recovery-key", bob.authUser(), bob.password, map[string]string{"hash": b64URL(recovery[:])}, http.StatusNoContent, nil)
 	env.doJSON("DELETE", "/v1/accounts/me/phone", bob.authUser(), bob.password, nil, http.StatusNoContent, nil)
 	env.doJSON("GET", "/v1/accounts/me/phone", bob.authUser(), bob.password, nil, http.StatusOK, &status)
 	if status.HasPhone {

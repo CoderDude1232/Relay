@@ -523,6 +523,20 @@ CREATE TABLE IF NOT EXISTS group_invites (
     nonce_tag  BYTEA PRIMARY KEY,
     expires_at BIGINT NOT NULL
 )`,
+		// Two-step verification (store/twostep.go). two_step_method is NULL on
+		// accounts from before it existed, which keep their old behaviour
+		// (see effectiveMethod); new accounts start with none.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS two_step_method TEXT`,
+		`ALTER TABLE accounts ALTER COLUMN two_step_method SET DEFAULT ''`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS totp_secret BYTEA`,
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS totp_last_step BIGINT NOT NULL DEFAULT 0`,
+		// App Attest keys (store/twostep.go), not tied to any account.
+		`CREATE TABLE IF NOT EXISTS app_attest_keys (
+    key_id     BYTEA PRIMARY KEY,
+    public_key BYTEA NOT NULL,
+    counter    BIGINT NOT NULL,
+    used_at    BIGINT NOT NULL
+)`,
 	} {
 		if err := s.migrationExec(ctx, stmt); err != nil {
 			return err
@@ -654,8 +668,8 @@ func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID
 		return "", 0, ErrUsernameTaken
 	}
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, 1)`,
-		accountID, username, nullableBytes(emailToken), nullableString(supabaseUserID), accountHash, now); err != nil {
+		`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, 1)`,
+		accountID, username, nullableBytes(emailToken), nullableString(supabaseUserID), accountHash, methodForNewAccount(accountHash), now); err != nil {
 		return "", 0, accountInsertError(err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
@@ -838,6 +852,9 @@ type AddedDevice struct {
 	// ReplacedDevices are the account's previous devices, removed because a
 	// fresh sign-in or recovery starts a new identity.
 	ReplacedDevices []uint32
+	// TwoStepMethod is set with ErrTwoStepRequired: the second step the
+	// sign-in must complete (see TwoStep).
+	TwoStepMethod string
 }
 
 // replaceDevicesTx removes every device of accountID (with its prekeys and
@@ -919,11 +936,15 @@ func addDeviceTx(ctx context.Context, tx pgx.Tx, accountID string, deviceHash []
 func (s *Store) RecoverAccount(emailToken []byte, accountPassword AccountPassword) (dev AddedDevice, devicePassword string, err error) {
 	ctx := context.Background()
 
+	// An account whose two-step method is stronger than the password (an
+	// authenticator or passkey) can't be recovered with the password alone.
 	var accountHash []byte
+	var stronger bool
 	err = s.db.QueryRow(ctx,
-		`SELECT id, username, account_password_hash FROM accounts WHERE email_token = $1`, emailToken,
-	).Scan(&dev.AccountID, &dev.Username, &accountHash)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && len(accountHash) == 0) {
+		`SELECT id, username, account_password_hash, COALESCE(two_step_method, '') IN ('totp', 'passkey', 'recovery')
+		   FROM accounts WHERE email_token = $1`, emailToken,
+	).Scan(&dev.AccountID, &dev.Username, &accountHash, &stronger)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (len(accountHash) == 0 || stronger)) {
 		accountPassword.burn()
 		return AddedDevice{}, "", ErrAuthFailed
 	}
@@ -972,14 +993,17 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword AccountPasswor
 }
 
 // SetAccountPassword sets (or replaces) the account password: the bcrypt hash
-// that both email recovery and the sign-in registration lock check.
+// that both email recovery and the sign-in registration lock check. Setting
+// it on an account without two-step verification makes it the PIN step.
 func (s *Store) SetAccountPassword(accountID string, accountPassword AccountPassword) error {
 	hash, err := accountPassword.hash()
 	if err != nil {
 		return err
 	}
 	tag, err := s.db.Exec(context.Background(),
-		`UPDATE accounts SET account_password_hash = $1 WHERE id = $2`, hash, accountID)
+		`UPDATE accounts SET account_password_hash = $1,
+		        two_step_method = CASE WHEN two_step_method = '' THEN 'pin' ELSE two_step_method END
+		  WHERE id = $2`, hash, accountID)
 	if err != nil {
 		return err
 	}
@@ -1015,6 +1039,7 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	var demo, stronger bool
 	const pick = `SELECT id, username, is_demo,
 	        recovery_key_hash IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.account_id = accounts.id)
+	        OR COALESCE(two_step_method, '') IN ('totp', 'passkey', 'recovery')
 	   FROM accounts `
 	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1 FOR UPDATE`, supabaseUserID).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
@@ -1131,28 +1156,30 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 
 	// Find an existing account by Supabase user id, then by verified email.
 	var lockHash []byte
-	var stronger bool // the account has a passkey or a recovery key
+	var twoStep TwoStep
 	adoptedByEmail := false
-	const pick = `SELECT id, username, account_password_hash,
-	        recovery_key_hash IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.account_id = accounts.id)
+	const pick = `SELECT ` + twoStepColumns + `, totp_secret, totp_last_step, id, username, account_password_hash
 	   FROM accounts `
-	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1`, supabaseUserID).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
+	twoStep, err = scanTwoStep(tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1`, supabaseUserID), &dev.AccountID, &dev.Username, &lockHash)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1`, emailToken).Scan(&dev.AccountID, &dev.Username, &lockHash, &stronger)
+		twoStep, err = scanTwoStep(tx.QueryRow(ctx, pick+`WHERE email_token = $1`, emailToken), &dev.AccountID, &dev.Username, &lockHash)
 		adoptedByEmail = err == nil
 	}
 
 	if err == nil {
-		// An account with a passkey or recovery key and no account password
-		// can't be taken over with the email inbox alone (an email code, or
-		// Apple/Google): it signs in with the passkey or key instead. With an
-		// account password, the registration lock below applies.
-		if stronger && len(lockHash) == 0 {
-			return AddedDevice{AccountID: dev.AccountID}, false, ErrStrongerSignInRequired
+		// Two-step verification: the email inbox alone (an email code, or
+		// Apple/Google) can't take over an account that turned it on. The
+		// caller completes the second step, then provisions with
+		// ProvisionReplacementDevice (and LinkSupabaseUserIfUnlinked).
+		if twoStep.Method != TwoStepNone && twoStep.Method != TwoStepPIN {
+			if !accountPassword.Empty() {
+				accountPassword.burn()
+			}
+			return AddedDevice{AccountID: dev.AccountID, TwoStepMethod: twoStep.Method}, false, ErrTwoStepRequired
 		}
-		// Registration lock, checked before anything is written.
-		if len(lockHash) > 0 {
-			locked := AddedDevice{AccountID: dev.AccountID}
+		// The PIN can also come with the request (older clients).
+		if twoStep.Method == TwoStepPIN {
+			locked := AddedDevice{AccountID: dev.AccountID, TwoStepMethod: TwoStepPIN}
 			// The client first asks without a password to learn whether one
 			// is needed; only real guesses go through the lockout.
 			if accountPassword.Empty() {
@@ -1215,8 +1242,8 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		}
 		now := coarseDayMillis()
 		if _, e := tx.Exec(ctx,
-			`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, 1)`,
-			dev.AccountID, dev.Username, nullableBytes(emailToken), supabaseUserID, accountHash, now); e != nil {
+			`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, 1)`,
+			dev.AccountID, dev.Username, nullableBytes(emailToken), supabaseUserID, accountHash, methodForNewAccount(accountHash), now); e != nil {
 			return AddedDevice{}, false, accountInsertError(e)
 		}
 		if dev.MailboxID, err = newMailboxID(); err != nil {
@@ -2592,6 +2619,7 @@ func (s *Store) Dequeue(envelopeID, accountID string, deviceID uint32) error {
 //   - nuke_commands: older than an hour (delivered or stale; see nukeRetentionMillis)
 //   - released_usernames: once the 7-day reuse cooldown has ended
 //   - supporter_issuance, supporter_spent: once the transaction or period ends
+//   - app_attest_keys: unused for 90 days
 func (s *Store) PurgeExpired() error {
 	ctx := context.Background()
 	now := time.Now().UnixMilli()
@@ -2609,6 +2637,7 @@ func (s *Store) PurgeExpired() error {
 		{`DELETE FROM released_usernames WHERE released_at < $1`, now - UsernameReuseCooldown.Milliseconds()},
 		{`DELETE FROM supporter_issuance WHERE expires_at < $1`, now},
 		{`DELETE FROM supporter_spent WHERE expires_at < $1`, now},
+		{`DELETE FROM app_attest_keys WHERE used_at < $1`, now - appAttestKeyRetention.Milliseconds()},
 	} {
 		if _, err := s.db.Exec(ctx, q.sql, q.arg); err != nil {
 			return err

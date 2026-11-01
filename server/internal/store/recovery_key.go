@@ -61,6 +61,8 @@ type SignInMethods struct {
 	// matches. A signed-in device asks the user to enter it again.
 	AccountPasswordNeedsUpdate bool
 	RecoveryKey                bool
+	// Phone: a verified number, which signs in by SMS code.
+	Phone bool
 }
 
 // AccountSignInMethods reports the account's sign-in methods (ErrNotFound if
@@ -72,8 +74,9 @@ func (s *Store) AccountSignInMethods(accountID string) (m SignInMethods, err err
 		       COALESCE(length(a.account_password_hash), 0) > 0,
 		       a.recovery_key_hash IS NOT NULL,
 		       COALESCE(length(a.account_password_hash), 0) > 0
-		         AND substring(a.account_password_hash from 1 for 3) <> '\x6b3224'::bytea
-		FROM accounts a WHERE a.id = $1`, accountID).Scan(&m.Email, &m.Passkeys, &m.AccountPassword, &m.RecoveryKey, &m.AccountPasswordNeedsUpdate)
+		         AND substring(a.account_password_hash from 1 for 3) <> '\x6b3224'::bytea,
+		       a.phone_token IS NOT NULL
+		FROM accounts a WHERE a.id = $1`, accountID).Scan(&m.Email, &m.Passkeys, &m.AccountPassword, &m.RecoveryKey, &m.AccountPasswordNeedsUpdate, &m.Phone)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SignInMethods{}, ErrNotFound
 	}

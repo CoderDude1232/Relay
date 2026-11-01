@@ -21,6 +21,7 @@ import (
 	"github.com/relayapp/relay-server/gen/relaypb"
 	"github.com/relayapp/relay-server/internal/api"
 	"github.com/relayapp/relay-server/internal/apns"
+	"github.com/relayapp/relay-server/internal/appattest"
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/fcm"
 	"github.com/relayapp/relay-server/internal/history"
@@ -180,6 +181,8 @@ func main() {
 	twilioVerifySID := flag.String("twilio-verify-service-sid", "", "Twilio Verify service SID used to text phone-number codes")
 	phonePrefixes := flag.String("phone-allowed-prefixes", "+61", "comma-separated calling codes phone numbers may have, e.g. +61,+64")
 	phoneDailyCap := flag.Int("phone-daily-cap", 30, "most phone-number codes texted per day, across all accounts")
+	appAttestOff := flag.Bool("phone-signin-without-app-attest", false, "DEVELOPMENT ONLY: let new devices request phone sign-in codes without App Attest (the simulator has none)")
+	appAttestDev := flag.Bool("app-attest-allow-development", false, "accept App Attest keys from development (Xcode-installed) builds as well as TestFlight and App Store builds")
 	supabaseServiceKeyFile := flag.String("supabase-service-key-file", "", "path to a file holding the Supabase service-role key (enables deleting the Supabase auth user on account deletion)")
 	sealedKey := flag.String("sealed-sender-trust-key", "", "path to the sealed-sender trust-root private key (hex, 32 bytes); generated if absent, enables GET /v1/certificate/delivery")
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
@@ -271,7 +274,22 @@ func main() {
 		apiServer.SetPhoneVerification(
 			api.NewTwilioVerify(*twilioAccountSID, strings.TrimSpace(string(token)), *twilioVerifySID),
 			prefixes, *phoneDailyCap)
-		slog.Info("optional phone numbers enabled", "prefixes", prefixes, "dailyCap", *phoneDailyCap)
+		slog.Info("phone numbers enabled", "prefixes", prefixes, "dailyCap", *phoneDailyCap)
+		// Phone sign-in from a new device needs App Attest, for the app id
+		// "<team id>.<bundle id>".
+		if *apnsTeamID != "" {
+			v, err := appattest.NewVerifier(*apnsTeamID+"."+*apnsTopic, *appAttestDev)
+			if err != nil {
+				slog.Error("app attest", "err", err)
+				os.Exit(1)
+			}
+			apiServer.SetAppAttest(v)
+			slog.Info("phone sign-in enabled (App Attest)", "development", *appAttestDev)
+		}
+		if *appAttestOff {
+			apiServer.SetPhoneSignInWithoutAppAttest(true)
+			slog.Warn("phone sign-in codes don't require App Attest (development only)")
+		}
 	}
 	if *cfTURNKeyID != "" {
 		token, err := os.ReadFile(*cfTURNTokenFile)

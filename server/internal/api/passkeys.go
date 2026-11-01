@@ -401,11 +401,16 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request, dev
 		httpError(w, http.StatusNotFound, "no such passkey")
 		return
 	}
-	if m, err := s.store.AccountSignInMethods(dev.AccountID); err == nil && m.Passkeys == 1 && !m.Email && !m.RecoveryKey {
+	if m, err := s.store.AccountSignInMethods(dev.AccountID); err == nil && m.Passkeys == 1 {
 		// Only if it's that one passkey; an unknown id is still a 404 below.
 		if list, err := s.store.ListPasskeys(dev.AccountID); err == nil && len(list) == 1 && bytes.Equal(list[0].CredentialID, id) {
-			httpError(w, http.StatusConflict, errLastSignInMethod)
-			return
+			if !m.Email && !m.RecoveryKey && !m.Phone {
+				httpError(w, http.StatusConflict, errLastSignInMethod)
+				return
+			}
+			if s.refuseTwoStepInUse(w, s.store.RefuseIfTwoStep(dev.AccountID, store.TwoStepPasskey, true)) {
+				return
+			}
 		}
 	}
 	if err := s.store.DeletePasskey(dev.AccountID, id); errors.Is(err, store.ErrNotFound) {

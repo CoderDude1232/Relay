@@ -43,7 +43,7 @@ func normalizeRecoveryKey(key string) string {
 // recoveryKeyHash is SHA-256("relay-recovery-key-v1|" + normalized key).
 // errLastSignInMethod: removing it would leave no way to sign in on a new
 // device (the account password alone isn't one: recovery needs the email).
-const errLastSignInMethod = "This is the account's only way to sign in on a new device. Add a passkey, recovery key or email first."
+const errLastSignInMethod = "This is the account's only way to sign in on a new device. Add a passkey, recovery key, email or phone number first."
 
 // recoveryKeyAuthHashPrefix: current clients register
 // SHA-256(prefix + authKey), authKey being their derivation of the key.
@@ -63,6 +63,11 @@ func (s *Server) handleSignInMethods(w http.ResponseWriter, _ *http.Request, dev
 		internalError(w, err)
 		return
 	}
+	twoStep, err := s.store.TwoStepFor(dev.AccountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"email":           m.Email,
 		"passkeys":        m.Passkeys,
@@ -70,6 +75,8 @@ func (s *Server) handleSignInMethods(w http.ResponseWriter, _ *http.Request, dev
 		"recoveryKey":     m.RecoveryKey,
 		// The stored password predates key derivation; re-set it from here.
 		"accountPasswordNeedsUpdate": m.AccountPasswordNeedsUpdate,
+		"phone":                      m.Phone,
+		"twoStep":                    twoStep.Method,
 	})
 }
 
@@ -106,8 +113,11 @@ func (s *Server) handleSetRecoveryKey(w http.ResponseWriter, r *http.Request, de
 }
 
 func (s *Server) handleDeleteRecoveryKey(w http.ResponseWriter, _ *http.Request, dev *store.Device) {
-	if m, err := s.store.AccountSignInMethods(dev.AccountID); err == nil && m.RecoveryKey && m.Passkeys == 0 && !m.Email {
+	if m, err := s.store.AccountSignInMethods(dev.AccountID); err == nil && m.RecoveryKey && m.Passkeys == 0 && !m.Email && !m.Phone {
 		httpError(w, http.StatusConflict, errLastSignInMethod)
+		return
+	}
+	if s.refuseTwoStepInUse(w, s.store.RefuseIfTwoStep(dev.AccountID, store.TwoStepRecovery, true)) {
 		return
 	}
 	if err := s.store.ClearRecoveryKeyHash(dev.AccountID); err != nil {

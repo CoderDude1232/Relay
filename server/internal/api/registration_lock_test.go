@@ -69,7 +69,7 @@ func TestOAuthRegistrationLock(t *testing.T) {
 		"accessToken": token, "username": "lock" + sfx, "password": "device-pw-123", "accountPassword": "lock-pw-123",
 	}, http.StatusCreated, &first)
 
-	if _, msg := signIn("", http.StatusLocked); msg != "account password required" {
+	if _, msg := signIn("", http.StatusLocked); msg != "two-step verification required" {
 		t.Fatalf("missing password message %q", msg)
 	}
 	if _, msg := signIn("wrong-pw-123", http.StatusLocked); msg != "account password incorrect" {

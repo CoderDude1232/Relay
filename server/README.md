@@ -226,8 +226,9 @@ account's **other** devices. Connected devices get it at once as a WebSocket
 frame; the rest get it right after `QueueEmpty` on their next connection. A
 notice is deleted once sent, when its device is removed, or after 30 days.
 Kinds: `passkey_added`, `passkey_removed`, `recovery_key_set`,
-`recovery_key_removed`, `account_password_set`, `email_removed`,
-`email_changed`.
+`recovery_key_removed`, `account_password_set`, `account_password_removed`,
+`email_removed`, `email_changed`, `phone_added`, `phone_removed`,
+`two_step_changed`.
 
 ### Account password on the wire
 
@@ -256,14 +257,14 @@ password from a signed-in current client, or reset it.
 | `GET /v1/usernames/{name}/available` | none | → `{available: bool}` (case-insensitive; `false` also while the name is in its reuse cooldown). Never returns an account id. `400` invalid name. 120/IP/hour. (Replaces the removed `GET /v1/accounts/by-username` and `GET /v1/accounts/by-email` lookups.) |
 | `PUT /v1/accounts/me/username` | sig | `{username}` → `204`. `409` taken (case-insensitive; changing the case of your own name is allowed). Reindexes the blinded directory. At most **5 completed changes per account per rolling day** (`429`; a `409` costs nothing). The old name enters the **username reuse cooldown** (below); `409` also when the requested name is in another account's cooldown. |
 | `PUT /v1/accounts/me/discoverability` | sig | `{email: bool}` (required) → `204`. **Email discovery is opt-in**: an account's verified email gets a blinded-directory entry only while this is `true` (`accounts.email_discoverable`, default `false` — existing accounts included). Reindexes the account immediately. Username entries are unaffected (always discoverable). `400` when `email` is missing / not a bool. |
-| `GET /v1/accounts/me/phone` | sig | → `200 {hasPhone, discoverable, available, allowedPrefixes}`. **Optional phone number, for discovery only** (never a way to sign in, never shown to anyone). `available` is false until the relay has Twilio configured. `allowedPrefixes` is `-phone-allowed-prefixes` (e.g. `["+61"]`), so the app offers only those countries. |
-| `POST /v1/accounts/me/phone/start` | sig | `{phone}` (E.164, e.g. `+61412345678`) → `204` once Twilio Verify has texted a code. `400` bad format or a number Twilio rejects; `422` country not in `-phone-allowed-prefixes`; `429` over a limit (3 sends a day per account and per number, 5 per source address, `-phone-daily-cap` across everyone; a send Twilio refuses doesn't count against the account, the number or the daily cap); `503` not configured; `403` demo account. The relay stores nothing at this point. |
+| `GET /v1/accounts/me/phone` | sig | → `200 {hasPhone, discoverable, available, allowedPrefixes}`. **Optional phone number**: signs in by SMS code and, if discoverable, lets people who have it find the account; never shown to anyone (see *Phone numbers*). `available` is false until the relay has Twilio configured. `allowedPrefixes` is `-phone-allowed-prefixes` (e.g. `["+61"]`), so the app offers only those countries. |
+| `POST /v1/accounts/me/phone/start` | sig | `{phone}` (E.164, e.g. `+61412345678`) → `204` once Twilio Verify has texted a code. `400` bad format or a number Twilio rejects; `422` country not in `-phone-allowed-prefixes`; `429` over a limit (one text per number per minute, 3 sends a day per account and per number, 5 per source address, `-phone-daily-cap` across everyone; a send Twilio refuses doesn't count against the account, the number or the daily cap); `503` not configured; `403` demo account. The relay stores nothing at this point. |
 | `POST /v1/accounts/me/phone/verify` | sig | `{phone, code, discoverable}` → `204`. A correct code stores the number's **OPRF token** (`accounts.phone_token`, never the number) and `phone_discoverable`, and reindexes: a discoverable number gets a blinded-directory entry (kind 2) found the same way as emails. A number belongs to one account; verifying it takes it from any other account. Posts a `phone_added` account notice. `401` wrong or expired code; `429` over 10 checks an hour. |
 | `PUT /v1/accounts/me/phone/discoverability` | sig | `{discoverable: bool}` → `204`; `404` when the account has no number. |
-| `DELETE /v1/accounts/me/phone` | sig | → `204`. Removes the token and its directory entry; posts `phone_removed`. |
+| `DELETE /v1/accounts/me/phone` | sig | → `204`. Removes the token and its directory entry; posts `phone_removed`. `409` when it's the account's only way to sign in. |
 | `PUT /v1/accounts/me/access-key` | sig | `{accessKey}` (base64, **exactly 32 bytes**) → `204`. Sealed-sender access key; returned to session-establishing peers in `GET /v1/keys/{account}`, presented on the unauthenticated delivery path. Rotating revokes old senders. |
 | `DELETE /v1/accounts/me` | sig | Optional body `{appleAuthorizationCode?}` (empty body allowed; malformed JSON → `400` and nothing is deleted) → `204`. When `appleAuthorizationCode` is present and the relay runs with `-siwa-key` (see *Sign in with Apple* below), the relay, after deleting the account, exchanges the code at Apple's `/auth/token` and revokes the resulting refresh token at `/auth/revoke` (App Store guideline 5.1.1(v)) — **best-effort**: Apple failing or timing out (10 s) never fails the deletion, and the code/tokens are never stored or logged. Unconfigured relays ignore the field. The client must obtain a **fresh** code (re-authenticate with Apple; codes expire after 5 minutes and are single-use) right before calling. **Permanently deletes the authenticated account** and everything keyed to it, in one DB transaction: devices (mailbox ids, auth keys, APNs/FCM/VoIP tokens), signed/Kyber/one-time prekeys, queued envelopes for its devices, contact invites it minted, blinded-directory rows, stored nuke commands, reports it **filed**, its passkeys, and the account row (username, email token, Supabase user id, access key, recovery hash, recovery key hash, passkey user handle). Then closes all of the account's live WebSockets (close code 1008, "account deleted"). A linked Supabase auth user is queued for deletion (`pending_supabase_deletions`, holding only its Supabase user id) in the same transaction, and with `-supabase-service-key-file` deleted right away via the admin API; if Supabase can't be reached the deletion still succeeds and relayd retries the queue at startup and hourly until Supabase confirms (`404` counts as done). A queued user that is linked to an account again before the retry (the person signed up anew) is dropped from the queue, not deleted. Afterwards its credentials get `401`; the username enters the 7-day reuse cooldown (claimable by **no one** until it ends) and is then free to register again. **Kept:** reports filed *against* the account (moderation records). **Not reachable:** anonymous `provisioning_sessions` / `encrypted_group_invites` (no account column; TTL-reaped), attachment blobs (ownership isn't tracked; reaped by blob GC), and envelopes it sent that sit in *other* accounts' queues (the recipients' data). No extra confirmation signature — clients must confirm with the user before calling. |
-| `GET /v1/accounts/me/sign-in-methods` | sig | → `200 {email: bool, passkeys: int, accountPassword: bool, recoveryKey: bool, accountPasswordNeedsUpdate: bool}`. `email` is true when the account has an email token **or** a Supabase link; `passkeys` is the passkey count; `accountPassword` / `recoveryKey` whether each is set. `accountPasswordNeedsUpdate` is true when the stored password hash predates key derivation (a hash of the raw password, which a current client's key never matches): the client asks the user to enter it again. Lets the client warn before removing the last way back in. |
+| `GET /v1/accounts/me/sign-in-methods` | sig | → `200 {email: bool, passkeys: int, accountPassword: bool, recoveryKey: bool, accountPasswordNeedsUpdate: bool, phone: bool, twoStep: string}`. `twoStep` is the two-step method (`""`, `totp`, `passkey`, `pin`, `recovery`; see *Two-step verification*). `email` is true when the account has an email token **or** a Supabase link; `passkeys` is the passkey count; `accountPassword` / `recoveryKey` whether each is set. `accountPasswordNeedsUpdate` is true when the stored password hash predates key derivation (a hash of the raw password, which a current client's key never matches): the client asks the user to enter it again. Lets the client warn before removing the last way back in. |
 | `POST /v1/accounts/me/nuke` | sig | `{commandId, creationTimeMs, initiatingDeviceId, signature}` → `204`. Signed remote wipe; broadcasts a `Nuke` frame to all live sessions. Signature over `relay-nuke-v1\n…`; rejects >5 min old / >30 s future / duplicate `commandId`. |
 
 **Reserved usernames.** Nobody can take a name the app uses for you or its own
@@ -743,23 +744,88 @@ sudo ./relayproxy -cert fullchain.pem -key privkey.pem
 | `-allow` | relay API + Supabase, port 443 | comma-separated `host:port` targets |
 | `-max-conns` | 4000 | concurrent tunnels before new ones get 503 |
 
-## Optional phone numbers (Twilio Verify)
+## Phone numbers (Twilio Verify)
 
-Phone numbers are optional and used only so people who have the number can
-find the account; they never sign anyone in and are never shown. Codes are
-texted by a Twilio Verify service; the relay keeps only the number's OPRF
-token. Off unless all three Twilio flags are set (then `GET .../phone`
-reports `available: true`).
+A verified phone number signs in by SMS code and can, if the user opts in, let
+people who have it find the account. It is never shown. Codes are texted by a
+Twilio Verify service; the relay keeps only the number's OPRF token
+(`accounts.phone_token`). Off unless all three Twilio flags are set (then
+`GET .../phone` reports `available: true`).
 
 Flags: `-twilio-account-sid`, `-twilio-auth-token-file` (file holding the auth
 token, root-only), `-twilio-verify-service-sid`, `-phone-allowed-prefixes`
 (default `+61`), `-phone-daily-cap` (default 30 texts a day across everyone).
+Phone **sign-in** from a new device also needs App Attest, enabled by
+`-apns-team-id` (app id `<team id>.<-apns-topic>`);
+`-app-attest-allow-development` accepts keys from Xcode-installed builds, and
+`-phone-signin-without-app-attest` (development only) skips it.
 
-Limits before anything is texted: Relay-Sig auth, E.164 format, the country
-allow-list, 3 sends a day per account and per number, 5 per source address and
-the daily cap. On the Twilio side, enable **Fraud Guard** on the Verify service,
-limit **SMS geo permissions** to the same countries, and set a usage alert or
-spending limit on the account.
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/app-attest/challenge` | none | → `200 {challenge}` (base64url, single use, 5 min). 60/IP/hour. |
+| `POST /v1/app-attest/keys` | none | `{keyId, attestation, challenge}` (base64url) → `204`. An App Attest attestation (`DCAppAttestService.attestKey`) whose client data hash is `SHA-256("relay-app-attest-key-v1|" + challenge)`; the chain must reach Apple's App Attestation Root CA, for this app id, production environment (or development with the flag). `403` if it doesn't verify. 10/IP/day. Keys unused for 90 days are purged. |
+| `POST /v1/phone/start` | none (App Attest) | `{phone, keyId, assertion, challenge}` → `204` once a code is on its way. `assertion` is by an attested key over `SHA-256("relay-phone-start-v1|" + challenge + "|" + phone)`, its counter higher than the last one seen. `412` unknown key (attest it, retry); `403` assertion refused; `422` country not allowed; `429` limits (below). |
+| `POST /v1/phone/signin` | none | `{phone, code, password}` (`password` = the new device's password) → `200 {accountId, deviceId, username, mailboxId, created:false}`, replacing the account's devices; `423` with a two-step ticket (see Two-step verification); `404 {error, signupTicket}` when no account has the number; `401` wrong or expired code. 10 checks per number and 30 per IP an hour. |
+| `POST /v1/phone/signup` | none | `{signupTicket, username, password, discoverable}` → `201 {accountId, deviceId, username, mailboxId, created:true}`. The ticket (15 min) is from `/v1/phone/signin`; `409 "username already taken"` keeps it for another try. |
+
+A signed-in device adds or changes its number with `POST
+/v1/accounts/me/phone/start` and `.../verify` (Accounts table). A number moves
+to the account that last verified it. `DELETE /v1/accounts/me/phone` is `409`
+when the number is the account's only way to sign in.
+
+Limits before anything is texted: Relay-Sig auth (signed-in) or an App Attest
+assertion (new device), E.164 format, the country allow-list, **one text per
+number per minute** (`429` with `Retry-After`), 3 sends a day per account or
+App Attest key, 3 per number, 5 per source address, and the daily cap (logged
+when reached). On the Twilio side, keep **Fraud Guard** on (included with
+Verify), limit **SMS geo permissions** to the same countries, and set a usage
+alert or spending limit on the account.
+
+## Two-step verification
+
+An email or phone code proves only the inbox or the number. An account can
+require one second step on top, for a sign-in by email code, Apple/Google or
+phone code. Passkey and recovery-key sign-ins are strong on their own and never
+need it. The account chooses one method (`accounts.two_step_method`):
+
+- `totp` — a code from an authenticator app (RFC 6238, SHA-1, 30 s, 6 digits,
+  ±1 step). The secret is AES-GCM-sealed at rest under a key derived from the
+  OPRF key (`DeriveKey("relay-totp-secret-v1")`, AD `totp|<account id>`), and
+  a code's time step can't be used twice.
+- `passkey` — an assertion by one of the account's passkeys.
+- `pin` — the account password (the client sends its device-derived key, see
+  "Account password on the wire"). Setting an account password on an account
+  without two-step verification makes it this method.
+- `recovery` — only the recovery key (accounts from before two-step
+  verification that had a recovery key and no passkey).
+
+The recovery key always works instead, through its own sign-in. Accounts from
+before two-step verification (`two_step_method` NULL) keep their old
+protection: the account password as the PIN step, else a passkey, else the
+recovery key. New accounts start with none. While the method is
+`totp`/`passkey`/`recovery`, email password reset and email + password
+recovery are refused. Removing the account password, the last passkey or the
+recovery key is `409` while it is the method.
+
+A sign-in that needs the step answers **`423`** `{error: "two-step
+verification required", twoStep: {ticket, method, recoveryKey}}`. The ticket
+lasts 10 minutes and ends after 5 wrong answers; every answer also goes
+through the per-account lockout (5 free, then exponential backoff to 24 h).
+Older clients that send `accountPassword`/`accountPasswordKey` with the
+email sign-in still pass a `pin` step inline.
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/accounts/two-step/passkey-options` | none (ticket) | `{ticket}` → `200 {challenge, credentialIds[]}` for a `passkey` step. |
+| `POST /v1/accounts/two-step` | none (ticket) | `{ticket, password, code? \| accountPasswordKey? \| credentialId, clientDataJSON, authenticatorData, signature, userHandle}` → `200 {accountId, deviceId, username, mailboxId, created:false}`, replacing the account's devices. `401` wrong answer or expired ticket; `429` locked out. 60/IP/hour. |
+| `POST /v1/accounts/me/totp/setup` | sig | → `200 {secret, uri}` (base32 secret and `otpauth://` URI for the authenticator). Nothing changes until it's confirmed (10 min). |
+| `POST /v1/accounts/me/totp/confirm` | sig | `{code}` → `204`: the authenticator is now the method. `401` wrong code; `409` set up again. |
+| `PUT /v1/accounts/me/two-step` | sig | `{method}` (`""` off, `passkey`, `pin`, `recovery`) → `204`. `409` the account lacks what the method needs. Leaving `totp` deletes its secret. 20 changes/account/hour. |
+| `DELETE /v1/accounts/me/account-password` | sig | → `204`; `409` while it is the method. |
+
+`GET /v1/accounts/me/sign-in-methods` also reports `phone` (bool) and
+`twoStep` (the method). Changes post the `two_step_changed` and
+`account_password_removed` notices.
 
 ## Relay Supporter (anonymous subscription credentials)
 
