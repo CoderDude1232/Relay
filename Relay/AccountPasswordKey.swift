@@ -19,10 +19,23 @@ enum AccountPasswordKey {
         _ = sodium_init()
         let salt = Array(SHA256.hash(data: Data("relay-account-password-key-v1".utf8)).prefix(Int(crypto_pwhash_SALTBYTES)))
         var key = [UInt8](repeating: 0, count: 32)
-        let rc = password.withCString { pw in
-            crypto_pwhash(&key, UInt64(key.count), pw, UInt64(password.utf8.count), salt,
-                          UInt64(crypto_pwhash_OPSLIMIT_MODERATE), Int(crypto_pwhash_MEMLIMIT_INTERACTIVE),
-                          crypto_pwhash_ALG_ARGON2ID13)
+        // Plain bytes with an explicit length: a C string made from a text
+        // field's (bridged) string isn't safe to hash from here.
+        var passwordBytes = Array(password.utf8)
+        guard !passwordBytes.isEmpty else { return nil }
+        defer { sodium_memzero(&passwordBytes, passwordBytes.count) }
+        let keyLength = key.count
+        let rc = passwordBytes.withUnsafeBufferPointer { pw in
+            salt.withUnsafeBufferPointer { saltBytes in
+                key.withUnsafeMutableBufferPointer { out in
+                    pw.withMemoryRebound(to: CChar.self) { pwChars in
+                        crypto_pwhash(out.baseAddress!, UInt64(keyLength), pwChars.baseAddress!, UInt64(pwChars.count),
+                                      saltBytes.baseAddress!,
+                                      UInt64(crypto_pwhash_OPSLIMIT_MODERATE), Int(crypto_pwhash_MEMLIMIT_INTERACTIVE),
+                                      crypto_pwhash_ALG_ARGON2ID13)
+                    }
+                }
+            }
         }
         defer { sodium_memzero(&key, key.count) }
         guard rc == 0 else { return nil }
