@@ -36,6 +36,10 @@ func sourceAddr(r *http.Request) string {
 }
 
 func forwardedSourceAddr(r *http.Request) string {
+	// A fallback Worker names the client it forwards for (see fallback.go).
+	if addr, ok := fallbackClientAddr(r); ok {
+		return addr
+	}
 	if len(trustedProxies) == 0 {
 		return r.RemoteAddr
 	}

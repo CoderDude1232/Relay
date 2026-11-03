@@ -41,6 +41,9 @@ import (
 )
 
 type Server struct {
+	// fallbacks lists the workers.dev addresses that reach this relay; nil
+	// when not configured.
+	fallbacks *fallbackHosts
 	// phone sends and checks SMS codes for optional phone numbers; nil when
 	// not configured (phone numbers are then unavailable).
 	phone        *phoneVerification
@@ -441,6 +444,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/accounts/me/recovery-key", s.auth(s.stepUp(s.handleDeleteRecoveryKey)))
 	mux.HandleFunc("POST /v1/accounts/recovery-key/signin", s.handleRecoveryKeySignIn) // unauthenticated, per-IP limited
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
+	mux.HandleFunc("GET /v1/fallbacks", s.auth(s.handleFallbacks))
+	mux.HandleFunc("GET /v1/ping", s.handlePing)
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
 	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability

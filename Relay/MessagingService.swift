@@ -511,6 +511,10 @@ final class MessagingService {
             guard let self else { return }
             try? await self.api.setPushIncludeContent(self.pushIncludeContent)
         }
+        // Backup addresses, kept for the day this network blocks the main one.
+        if RelayFallback.isListStale {
+            Task { [weak self] in try? await self?.api.refreshFallbackHosts() }
+        }
         startPathMonitor()
         // Housekeeping once per start: dedup claims, orphaned files, and
         // App Group files written before they were sealed.

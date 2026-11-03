@@ -747,6 +747,46 @@ sudo ./relayproxy -cert fullchain.pem -key privkey.pem
 | `-allow` | relay API + Supabase, port 443 | comma-separated `host:port` targets |
 | `-max-conns` | 4000 | concurrent tunnels before new ones get 503 |
 
+## Fallback addresses (`cmd/fallbackrotate`)
+
+For networks (schools, workplaces) that block `api.relaymsg.app` by name.
+Cloudflare Workers on `workers.dev` pass every request, the WebSocket included,
+through to the relay unchanged (`cmd/fallbackrotate/worker.js`). Messages are
+end-to-end encrypted and `Relay-Sig` covers the path, not the host, so a Worker
+sees nothing Cloudflare doesn't already see for the API.
+
+- `GET /v1/fallbacks` (authenticated) → `200 {hosts: [...]}`, newest first.
+  Signed-in devices fetch it every few hours while they can connect, so they
+  already have it when the main address gets blocked. Not public, so a filter
+  can't just fetch and block the list.
+- `GET /v1/ping` (unauthenticated) → `204` with `X-Relay: 1`, so a client can
+  tell the relay from a block page when it tries an address.
+- The app moves to the first address that answers when the main one can't be
+  reached at all (DNS, connection or certificate failures), retries the main
+  one after 15 minutes, and does none of this while a proxy is set.
+- Each Worker sends `X-Relay-Fallback-Key` (a shared secret) and
+  `X-Relay-Client-IP`; with the secret relayd keys rate limits on that address
+  instead of the Worker's.
+- Not covered: Supabase sign-in, calls (TURN) and attachments' direct uploads
+  all keep their own addresses.
+
+`fallbackrotate` runs from a systemd timer. Each run deploys a Worker under a new
+random name when the newest is older than `-every` (72h), checks it reaches the
+relay, retires Workers older than `-keep` (7 days; the newest two always stay),
+and writes the live hostnames to `-hosts`, which relayd re-reads on change.
+
+| Flag | |
+|---|---|
+| `relayd -fallback-hosts-file` | the hostname file fallbackrotate writes |
+| `relayd -fallback-key-file` | the shared secret (same file as `fallbackrotate -key-file`) |
+| `fallbackrotate -account` | Cloudflare account id |
+| `fallbackrotate -token-file` | API token with *Workers Scripts: Edit* (account) |
+| `fallbackrotate -key-file`, `-hosts`, `-state`, `-every`, `-keep` | see `-h` |
+
+Free-plan limits: 100,000 Worker requests a day across all of them, which is
+plenty while they're only used when the main address is blocked. A filter that
+blocks all of `workers.dev` defeats this; a proxy (above) still works there.
+
 ## Phone numbers (Twilio Verify)
 
 A verified phone number signs in by SMS code and can, if the user opts in, let

@@ -1103,7 +1103,7 @@ public struct RelayAPIClient: Sendable {
     /// `answered`: a response already fetched, to check without sending again.
     private func perform(_ request: URLRequest, on session: URLSession,
                          answered: (Data, URLResponse)? = nil) async throws -> (Data, Int) {
-        let (data, response) = if let answered { answered } else { try await session.data(for: request) }
+        let (data, response) = if let answered { answered } else { try await fetch(request, on: session) }
         guard let http = response as? HTTPURLResponse else { throw RelayAPIError.malformedResponse }
         guard (200..<300).contains(http.statusCode) else {
             struct ErrorBody: Decodable { let error: String }
@@ -1123,6 +1123,35 @@ public struct RelayAPIClient: Sendable {
             throw RelayAPIError.http(status: http.statusCode, message: message)
         }
         return (data, http.statusCode)
+    }
+
+    /// Sends to the relay's current address (the main one or a backup; see
+    /// RelayFallback). If that address can't be reached at all, the request
+    /// never arrived, so it's sent once more to whichever address answers.
+    private func fetch(_ request: URLRequest, on session: URLSession) async throws -> (Data, URLResponse) {
+        guard let url = request.url, let primary = baseURL.host(), url.host() == primary else {
+            return try await session.data(for: request)
+        }
+        var routed = request
+        routed.url = RelayFallback.route(url)
+        do {
+            return try await session.data(for: routed)
+        } catch where RelayProxy.active == nil && RelayFallback.isUnreachable(error) {
+            let failed = routed.url?.host() ?? primary
+            guard let host = await RelayFallback.failover(primary: primary, failedHost: failed, session: session),
+                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            else { throw error }
+            components.host = host
+            routed.url = components.url
+            return try await session.data(for: routed)
+        }
+    }
+
+    /// GET /v1/fallbacks: the backup addresses, saved for when the main one is blocked.
+    public func refreshFallbackHosts() async throws {
+        struct Response: Decodable { let hosts: [String] }
+        let response: Response = try await request("GET", "v1/fallbacks", body: nil as String?)
+        RelayFallback.save(hosts: response.hosts)
     }
 
     private func request<Body: Encodable, Response: Decodable>(

@@ -76,7 +76,7 @@ public actor RelayWebSocket {
             continuation.finish()
             return stream
         }
-        let url = wsBaseURL.appending(path: "v1/ws")
+        let url = RelayFallback.route(wsBaseURL.appending(path: "v1/ws"))
         var request = URLRequest(url: url)
         // Don't set assumesHTTP3Capable. On a device it makes iOS try the
         // WebSocket over QUIC, which the server doesn't support; the connection
