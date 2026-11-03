@@ -1228,6 +1228,10 @@ struct ChatView: View {
         } else {
             verification = service.peerVerification(for: conversationId)
         }
+        if isGroup, !didCheckTransparency, let group = service.group(for: conversationId) {
+            didCheckTransparency = true
+            service.refreshTransparency(groupMembers: group.members)
+        }
         // Checked against the key directory once per visit.
         if !isGroup, !didCheckTransparency, let peer = service.verificationPeer(for: conversationId) {
             didCheckTransparency = true

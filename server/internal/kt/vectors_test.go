@@ -34,7 +34,11 @@ func TestWriteVectors(t *testing.T) {
 		for _, k := range r.Keys {
 			ks = append(ks, b(k))
 		}
-		return map[string]any{"vrfProof": b(r.VRFProof), "version": r.Version, "commitment": b(r.Commitment[:]),
+		links := []map[string]any{}
+		for _, l := range r.Links {
+			links = append(links, map[string]any{"version": l.Version, "commitment": b(l.Commitment[:])})
+		}
+		return map[string]any{"links": links, "vrfProof": b(r.VRFProof), "version": r.Version, "commitment": b(r.Commitment[:]),
 			"prevChain": b(r.PrevChain[:]), "nonce": b(r.Nonce[:]), "keys": ks,
 			"proof": map[string]any{"bitmap": b(r.Proof.Bitmap[:]), "siblings": sibs}, "head": head(r.Head)}
 	}
@@ -52,6 +56,8 @@ func TestWriteVectors(t *testing.T) {
 		heads = append(heads, h)
 	}
 	latest, _ := d.Lookup("acct-7")
+	grown, _ := d.LookupSince("acct-7", first.Version)
+	firstChain := Chain(first.PrevChain, first.Version, first.Commitment)
 	absent, _ := d.Lookup("nobody")
 
 	var history []map[string]any
@@ -78,6 +84,7 @@ func TestWriteVectors(t *testing.T) {
 		"first":             map[string]any{"account": "acct-7", "key": b([]byte("key-7")), "lookup": lookup(first)},
 		"latest":            map[string]any{"account": "acct-7", "key": b([]byte("key-7-v7")), "lookup": lookup(latest)},
 		"absent":            map[string]any{"account": "nobody", "lookup": lookup(absent)},
+		"extends":           map[string]any{"version": first.Version, "chain": b(firstChain[:]), "lookup": lookup(grown)},
 		"history":           history,
 		"consistency":       consistency,
 	}, "", " ")

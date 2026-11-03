@@ -178,6 +178,7 @@ final class MessagingService {
     private(set) var typingConversations: Set<String> = []
     /// Key transparency results by account (MessagingService+KeyTransparency).
     var keyTransparencyStatus: [String: TransparencyStatus] = [:]
+    @ObservationIgnored var keyTransparencyCheckedAt: [String: Date] = [:]
     /// Mute expiry per conversation: Int64.max = forever, positive = Unix ms expiry.
     private var muteExpiries: [String: Int64] = [:]
     var onCallMessage: ((CallInfo) async -> Void)?
@@ -4911,6 +4912,7 @@ final class MessagingService {
     /// safety number (cheap enough to run for every group member).
     private func hasUnacknowledgedSafetyNumberChange(_ peer: String) -> Bool {
         if hasConflictingIdentityKeys(peer) { return true }
+        if keyTransparencyStatus[peer] == .mismatch { return true }
         switch try? storage.signalStore.verificationState(address: peer) {
         case .changed: return true
         case .unverified: return (try? isIdentityChangeAwaitingAcknowledgement(forPeer: peer)) == true

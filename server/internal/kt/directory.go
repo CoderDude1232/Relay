@@ -237,8 +237,18 @@ func (d *Directory) Head() (Head, bool) {
 	return d.heads[len(d.heads)-1], true
 }
 
+// Link is one version's place in an account's chain: enough to recompute the
+// chain without seeing the keys.
+type Link struct {
+	Version    uint32
+	Commitment [32]byte
+}
+
 // LookupResult is what a client needs to check an account's current keys.
 type LookupResult struct {
+	// Links after the version the client last saw (Since), oldest first,
+	// through the current one, so it can check the history only grew.
+	Links      []Link
 	VRFProof   []byte
 	Version    uint32 // 0: the account isn't in the directory
 	Commitment [32]byte
@@ -250,6 +260,22 @@ type LookupResult struct {
 }
 
 var ErrNotPublished = errors.New("kt: nothing published yet")
+
+// LookupSince is Lookup plus the links after version `since`.
+func (d *Directory) LookupSince(account string, since uint32) (LookupResult, error) {
+	r, err := d.Lookup(account)
+	if err != nil {
+		return r, err
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	for _, v := range d.accounts[account] {
+		if v.Epoch != 0 && v.Version > since && v.Version <= r.Version {
+			r.Links = append(r.Links, Link{Version: v.Version, Commitment: v.Commitment})
+		}
+	}
+	return r, nil
+}
 
 // Lookup proves the account's latest published version (or its absence).
 func (d *Directory) Lookup(account string) (LookupResult, error) {
@@ -344,6 +370,35 @@ func VerifyLookup(vrfPub *rsa.PublicKey, signPub ed25519.PublicKey, account stri
 	chain := Chain(r.PrevChain, r.Version, r.Commitment)
 	root, err := RootFromProof(label, &chain, r.Proof)
 	if err != nil || root != r.Head.SMTRoot {
+		return ErrNotInTree
+	}
+	return nil
+}
+
+// VerifyExtends checks the lookup's history grew from (version, chain), a
+// state the client accepted before: the server can't swap a key and later
+// swap it back without breaking the chain the client remembers.
+func VerifyExtends(version uint32, chain [32]byte, r LookupResult) error {
+	if r.Version < version {
+		return ErrNotInTree
+	}
+	latest := Chain(r.PrevChain, r.Version, r.Commitment)
+	if r.Version == version {
+		if latest != chain {
+			return ErrNotInTree
+		}
+		return nil
+	}
+	c := chain
+	next := version + 1
+	for _, l := range r.Links {
+		if l.Version != next {
+			return ErrNotInTree
+		}
+		c = Chain(c, l.Version, l.Commitment)
+		next++
+	}
+	if next != r.Version+1 || c != latest {
 		return ErrNotInTree
 	}
 	return nil

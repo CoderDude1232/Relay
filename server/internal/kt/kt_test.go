@@ -174,3 +174,41 @@ func TestDirectoryLookupAndHistory(t *testing.T) {
 		t.Fatal("consistency between heads")
 	}
 }
+
+func TestVerifyExtends(t *testing.T) {
+	vrfKey, signKey := keys(t)
+	d := NewDirectory(vrfKey, signKey)
+	d.SetKeys("bob", [][]byte{[]byte("k1")})
+	d.Publish(time.Now(), nil)
+	first, _ := d.Lookup("bob")
+	seen := Chain(first.PrevChain, first.Version, first.Commitment)
+
+	for i := 2; i <= 4; i++ {
+		d.SetKeys("bob", [][]byte{[]byte(fmt.Sprintf("k%d", i))})
+		d.Publish(time.Now(), nil)
+	}
+	later, _ := d.LookupSince("bob", first.Version)
+	if len(later.Links) != 3 || VerifyExtends(first.Version, seen, later) != nil {
+		t.Fatalf("honest growth rejected: %d links", len(later.Links))
+	}
+	// Same version: chain must match.
+	same, _ := d.LookupSince("bob", later.Version)
+	if VerifyExtends(later.Version, Chain(later.PrevChain, later.Version, later.Commitment), same) != nil {
+		t.Fatal("same version rejected")
+	}
+	// A client that saw a fake version 2 can't be reconciled with the real one.
+	fakeChain := Chain(seen, 2, Commit([32]byte{9}, [][]byte{[]byte("evil")}))
+	if VerifyExtends(2, fakeChain, later) == nil {
+		t.Fatal("forked history accepted")
+	}
+	// Going backwards is caught.
+	if VerifyExtends(5, seen, later) == nil {
+		t.Fatal("older version accepted")
+	}
+	// Dropped links are caught.
+	gap := later
+	gap.Links = gap.Links[1:]
+	if VerifyExtends(first.Version, seen, gap) == nil {
+		t.Fatal("missing link accepted")
+	}
+}

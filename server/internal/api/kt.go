@@ -93,7 +93,10 @@ func (s *Server) handleKTHead(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /v1/kt/lookup/{account} → proof of the account's current keys.
-func (s *Server) handleKTLookup(w http.ResponseWriter, r *http.Request, _ *store.Device) {
+// ktLookupLimiter: a device checks its contacts, not the whole directory.
+var ktLookupLimiter = newSlidingWindowLimiter(600, time.Hour)
+
+func (s *Server) handleKTLookup(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.kt == nil {
 		httpError(w, http.StatusServiceUnavailable, "key transparency not configured")
 		return
@@ -103,7 +106,15 @@ func (s *Server) handleKTLookup(w http.ResponseWriter, r *http.Request, _ *store
 		httpError(w, http.StatusBadRequest, "account required")
 		return
 	}
-	res, err := s.kt.Lookup(account)
+	if !ktLookupLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many lookups; try again later")
+		return
+	}
+	var since uint32
+	if v, err := strconv.ParseUint(r.URL.Query().Get("since"), 10, 32); err == nil {
+		since = uint32(v)
+	}
+	res, err := s.kt.LookupSince(account, since)
 	if errors.Is(err, kt.ErrNotPublished) {
 		httpError(w, http.StatusServiceUnavailable, "nothing published yet")
 		return
@@ -111,8 +122,13 @@ func (s *Server) handleKTLookup(w http.ResponseWriter, r *http.Request, _ *store
 		internalError(w, err)
 		return
 	}
+	links := make([]map[string]any, len(res.Links))
+	for i, l := range res.Links {
+		links[i] = map[string]any{"version": l.Version, "commitment": ktB64(l.Commitment[:])}
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
+		"links":    links,
 		"vrfProof": ktB64(res.VRFProof), "version": res.Version,
 		"commitment": ktB64(res.Commitment[:]), "prevChain": ktB64(res.PrevChain[:]),
 		"nonce": ktB64(res.Nonce[:]), "keys": ktKeysJSON(res.Keys),

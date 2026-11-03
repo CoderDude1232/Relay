@@ -53,7 +53,14 @@ public enum KeyTransparency {
         public let siblings: [Data]
     }
 
+    public struct Link: Codable, Equatable, Sendable {
+        public let version: UInt32
+        public let commitment: Data
+    }
+
     public struct Lookup: Codable, Equatable, Sendable {
+        /// Links after the version asked for with `since`, through the current one.
+        public let links: [Link]?
         public let vrfProof: Data
         public let version: UInt32
         public let commitment: Data
@@ -64,7 +71,8 @@ public enum KeyTransparency {
         public let head: Head
 
         public init(vrfProof: Data, version: UInt32, commitment: Data, prevChain: Data, nonce: Data?,
-                    keys: [Data]?, proof: Proof, head: Head) {
+                    keys: [Data]?, proof: Proof, head: Head, links: [Link]? = nil) {
+            self.links = links
             self.vrfProof = vrfProof
             self.version = version
             self.commitment = commitment
@@ -261,6 +269,30 @@ public enum KeyTransparency {
         guard rootFromProof(label: label, value: value, proof: lookup.proof) == lookup.head.smtRoot else {
             throw Failure.notInTree
         }
+    }
+
+    /// The chain value a lookup ends at.
+    public static func latestChain(_ lookup: Lookup) -> Data {
+        chain(prev: lookup.prevChain, version: lookup.version, commitment: lookup.commitment)
+    }
+
+    /// `lookup` grew from a state this device accepted before (version,
+    /// chain): a key swapped in and later swapped back breaks the chain.
+    public static func verifyExtends(version: UInt32, chain seen: Data, lookup: Lookup) throws {
+        guard lookup.version >= version else { throw Failure.notInTree }
+        let latest = latestChain(lookup)
+        if lookup.version == version {
+            guard latest == seen else { throw Failure.notInTree }
+            return
+        }
+        var c = seen
+        var next = version + 1
+        for link in lookup.links ?? [] {
+            guard link.version == next else { throw Failure.notInTree }
+            c = chain(prev: c, version: link.version, commitment: link.commitment)
+            next += 1
+        }
+        guard next == lookup.version + 1, c == latest else { throw Failure.notInTree }
     }
 
     /// An owner's history is one unbroken chain ending at `latest`. Returns the

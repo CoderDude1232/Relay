@@ -58,16 +58,58 @@ extension MessagingService {
     }
 
     private func lookUp(peer: String, key: Data) async -> TransparencyStatus {
+        let seen = seenState(Self.peerStateKey(peer))
         do {
-            let lookup = try await apiClient.keyTransparencyLookup(account: peer)
+            let lookup = try await apiClient.keyTransparencyLookup(account: peer, since: seen?.version ?? 0)
             guard await acceptHead(lookup.head) else { return .mismatch }
             try KeyTransparency.verify(lookup, account: peer, key: key)
+            // Their history must have grown from what we accepted before, so a
+            // key shown once and later swapped back doesn't go unnoticed.
+            if let seen {
+                try KeyTransparency.verifyExtends(version: seen.version, chain: seen.chain, lookup: lookup)
+            }
+            storeSeenState(Self.peerStateKey(peer), version: lookup.version, chain: KeyTransparency.latestChain(lookup))
+            keyTransparencyCheckedAt[peer] = Date()
             return .verified
         } catch is KeyTransparency.Failure {
             return .mismatch
         } catch {
             return .unavailable
         }
+    }
+
+    /// Group members not checked in the last few hours.
+    func refreshTransparency(groupMembers members: [String]) {
+        let due = members.filter { member in
+            member != credentials.accountId
+                && (keyTransparencyCheckedAt[member].map { Date().timeIntervalSince($0) > 6 * 3600 } ?? true)
+        }
+        guard !due.isEmpty else { return }
+        Task {
+            for member in due { await refreshTransparency(peer: member) }
+        }
+    }
+
+    // MARK: What this device accepted before
+
+    private struct SeenState: Codable {
+        let version: UInt32
+        let chain: Data
+    }
+
+    private static func peerStateKey(_ peer: String) -> String { "kt.peer.\(peer)" }
+    private static let ownStateKey = "kt.own.state"
+
+    private func seenState(_ key: String) -> SeenState? {
+        guard let data = (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(key)]).first?.first?.data) ?? nil
+        else { return nil }
+        return try? JSONDecoder().decode(SeenState.self, from: data)
+    }
+
+    private func storeSeenState(_ key: String, version: UInt32, chain: Data) {
+        guard let data = try? JSONEncoder().encode(SeenState(version: version, chain: chain)) else { return }
+        try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(data)])
     }
 
     // MARK: Heads
@@ -135,7 +177,7 @@ extension MessagingService {
     /// account made. The first check takes the history as it is.
     func monitorOwnKeysIfDue() async {
         let now = Int64(Date().timeIntervalSince1970)
-        guard now - readKVTimestamp(Self.monitorAtKey) > 6 * 3600 else { return }
+        guard now - readKVTimestamp(Self.monitorAtKey) > 3600 else { return }
         guard let own = ownIdentityKey(),
               let (versions, latest) = try? await apiClient.keyTransparencyMonitor(),
               let last = versions.last
@@ -150,6 +192,19 @@ extension MessagingService {
             // Not published yet right after sign-up; checked again next time.
             return
         }
+        // Our older history must be exactly what we saw before: the relay
+        // can't rewrite it (say, to hide a key it showed someone) unnoticed.
+        if let seen = seenState(Self.ownStateKey) {
+            var chain = Data(count: 32)
+            for v in versions where v.version <= seen.version {
+                chain = KeyTransparency.chain(prev: chain, version: v.version, commitment: v.commitment)
+            }
+            if versions.count < Int(seen.version) || chain != seen.chain {
+                alarmHistory()
+                return
+            }
+        }
+        storeSeenState(Self.ownStateKey, version: latest.version, chain: KeyTransparency.latestChain(full))
         writeKVTimestamp(Self.monitorAtKey, now)
         var baseline = readKVTimestamp(Self.monitorBaselineKey)
         if baseline == 0 {

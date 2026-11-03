@@ -1155,8 +1155,11 @@ public struct RelayAPIClient: Sendable {
     // MARK: Key transparency (docs/KEY_TRANSPARENCY.md)
 
     /// GET /v1/kt/lookup/{account}: proof of an account's current identity keys.
-    public func keyTransparencyLookup(account: String) async throws -> KeyTransparency.Lookup {
-        try await request("GET", "v1/kt/lookup/\(account)", body: nil as String?)
+    public func keyTransparencyLookup(account: String, since: UInt32 = 0) async throws -> KeyTransparency.Lookup {
+        var request = makeRequest("GET", "v1/kt/lookup/\(account)")
+        if since > 0 { request.url?.append(queryItems: [URLQueryItem(name: "since", value: String(since))]) }
+        let (data, _) = try await send(request, authenticated: true)
+        return try JSONDecoder().decode(KeyTransparency.Lookup.self, from: data)
     }
 
     /// GET /v1/kt/consistency: proof the log at `to` extends the log at `from`.

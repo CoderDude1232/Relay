@@ -45,6 +45,16 @@ Merkle tree** (SMT, depth 256) and publishes a **signed head**.
    used for fallback addresses; clients compare, so the relay can't show
    different people different trees without it showing.
 
+## Remembering what was accepted (stage 5)
+
+A client stores, per contact, the `(version, chain)` it last accepted, and
+asks for later lookups with `?since=version`: the relay returns the links
+(`version`, `commitment`) after it, and the client recomputes the chain from
+its remembered value to the new one. A key shown once and later swapped back
+can't be reconciled with what the client remembers. A device does the same for
+its own account (hourly), so its older history can't be rewritten either.
+Lookups are limited to 600 an hour per account.
+
 ## Privacy
 
 The tree shows only pseudonymous labels and commitments. Anyone fetching heads
