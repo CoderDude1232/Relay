@@ -61,6 +61,10 @@ func main() {
 	}
 	state := loadState(*stateFile)
 	now := time.Now()
+	// Addresses follow the account's workers.dev subdomain, which can be renamed.
+	for i := range state.Workers {
+		state.Workers[i].Host = state.Workers[i].Name + "." + subdomain + ".workers.dev"
+	}
 
 	if len(state.Workers) == 0 || now.Sub(state.Workers[0].Created) >= *every {
 		name := randomName()
