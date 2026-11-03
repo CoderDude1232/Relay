@@ -128,20 +128,43 @@ func (d *Directory) RestoreLog(heads []Head) {
 	}
 }
 
+// Persist stores a new head and the versions it publishes before anyone can
+// see them. If it fails the directory's state is ahead of storage: the caller
+// must stop (and restore from storage on restart).
+type Persist func(head Head, published map[string][]Version) error
+
+// CheckRestored confirms the restored tree is the one the last stored head
+// signed for.
+func (d *Directory) CheckRestored() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.heads) == 0 {
+		return nil
+	}
+	last := d.heads[len(d.heads)-1]
+	if d.smt.Root() != last.SMTRoot || LogRoot(d.logLeaves) != last.LogRoot {
+		return ErrNotInTree
+	}
+	return nil
+}
+
 // Publish makes the pending versions visible as a new epoch, if there are
 // any (or nothing was published yet). Returns the head and whether it's new.
-func (d *Directory) Publish(now time.Time) (Head, bool) {
+// Lookups wait while persist runs, so an unsaved head is never served.
+func (d *Directory) Publish(now time.Time, persist Persist) (Head, bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.dirty && len(d.heads) > 0 {
-		return d.heads[len(d.heads)-1], false
+		return d.heads[len(d.heads)-1], false, nil
 	}
 	epoch := uint64(len(d.heads) + 1)
+	published := map[string][]Version{}
 	for account, history := range d.accounts {
 		changed := false
 		for i := range history {
 			if history[i].Epoch == 0 {
 				history[i].Epoch = epoch
+				published[account] = append(published[account], history[i])
 				changed = true
 			}
 		}
@@ -158,9 +181,50 @@ func (d *Directory) Publish(now time.Time) (Head, bool) {
 		Time: uint64(now.Unix()),
 	}
 	head.Sign(d.signKey)
+	if persist != nil {
+		if err := persist(head, published); err != nil {
+			return Head{}, false, err
+		}
+	}
 	d.heads = append(d.heads, head)
 	d.dirty = false
-	return head, true
+	return head, true, nil
+}
+
+// Sync records every account's current keys: accounts missing from `current`
+// commit to no keys (deleted). Returns how many versions it added.
+func (d *Directory) Sync(current map[string][][]byte) (int, error) {
+	d.mu.RLock()
+	var gone []string
+	for account, history := range d.accounts {
+		if _, ok := current[account]; !ok && len(history) > 0 && len(history[len(history)-1].Keys) > 0 {
+			gone = append(gone, account)
+		}
+	}
+	d.mu.RUnlock()
+	added := 0
+	for account, keys := range current {
+		changed, err := d.SetKeys(account, keys)
+		if err != nil {
+			return added, err
+		}
+		if changed {
+			added++
+		}
+	}
+	for _, account := range gone {
+		if changed, err := d.SetKeys(account, nil); err != nil {
+			return added, err
+		} else if changed {
+			added++
+		}
+	}
+	return added, nil
+}
+
+// PublicKeys are what clients verify against.
+func (d *Directory) PublicKeys() (*rsa.PublicKey, ed25519.PublicKey) {
+	return &d.vrfKey.PublicKey, d.signKey.Public().(ed25519.PublicKey)
 }
 
 // Head is the latest published head.

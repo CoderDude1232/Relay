@@ -52,13 +52,33 @@ learns roughly how many entries change per epoch, nothing else. Lookups
 reveal who you look up only to the relay, which already learns that when it
 hands out the contact's prekey bundle.
 
+## Live keys (public halves; the app builds these in)
+
+Created 2026-11-04 by relayd (`-kt-key-dir /opt/relay/kt`). The private halves
+must never be replaced or lost: every app's checks depend on them.
+
+- Head signing key (Ed25519, base64): `AzBwua2UHxq2M6FiWv+rJ8lAwOvG8b3f2BZXafwWW0I=`
+- VRF key (RSA-2048):
+
+```
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoFRYR4xchotekT/gxGcW
+yby+F4mVI65SmVB3bP1XTrm1B2d6XtPVbGadyav2WooeHKanNZNoT6Q0saFWZJxU
+0dzx5vB2bqwcbrWMT6/j+3IWBlevqi2QJgs7crrqNYkV8V8eg7dR9jGr8LrCSg8T
+rYZXW6viQK0IUtkxqe04m8AvZItjQhjHsWfpWzdS0dZE9PrYvHdqJj6MJ4cmR2eM
+oN4++k6hYrRQw62Ny4vTr8CoIG2BsOVGq8G1WVN1rcHHeHguz88fAta05UtneZUI
+ebGaNVvwqKpRPZciX+++HDOnCliMItkFlrPhPRch7BvpYgo6Viz2gAgihogckh9c
+NwIDAQAB
+-----END PUBLIC KEY-----
+```
+
 ## Stages
 
 1. Crypto core (`server/internal/kt`): VRF, SMT, root log, heads, and the
-   verification functions, with tests. ← this
+   verification functions, with tests. ← done
 2. Relay: tables, a sync job that versions keys from `devices`, endpoints
    (`GET /v1/kt/head`, `/v1/kt/lookup/{account}`, `/v1/kt/consistency`,
-   `/v1/kt/monitor`), deploy.
+   `/v1/kt/monitor`), deploy. ← live since 2026-11-04
 3. App: verify lookups when processing a bundle and on the safety-number
    screen; monitor its own account; remember the last head.
 4. Witness: publish heads to the Gist; clients compare.

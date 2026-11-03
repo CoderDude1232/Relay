@@ -33,6 +33,7 @@ import (
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/history"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/kt"
 	"github.com/relayapp/relay-server/internal/limitkey"
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
@@ -41,6 +42,8 @@ import (
 )
 
 type Server struct {
+	// kt is the key transparency directory; nil when not configured.
+	kt *kt.Directory
 	// fallbacks lists the workers.dev addresses that reach this relay; nil
 	// when not configured.
 	fallbacks *fallbackHosts
@@ -447,6 +450,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/fallbacks", s.auth(s.handleFallbacks))
 	mux.HandleFunc("GET /v1/ping", s.handlePing)
 	mux.HandleFunc("GET /v1/speedtest", s.handleSpeedTest)
+	mux.HandleFunc("GET /v1/kt/head", s.handleKTHead)
+	mux.HandleFunc("GET /v1/kt/consistency", s.handleKTConsistency)
+	mux.HandleFunc("GET /v1/kt/lookup/{account}", s.auth(s.handleKTLookup))
+	mux.HandleFunc("GET /v1/kt/monitor", s.auth(s.handleKTMonitor))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
 	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability

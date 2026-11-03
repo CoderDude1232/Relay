@@ -114,7 +114,7 @@ func TestDirectoryLookupAndHistory(t *testing.T) {
 	if _, err := d.Lookup("acct-1"); err != ErrNotPublished {
 		t.Fatal("lookup before publish")
 	}
-	h1, _ := d.Publish(time.Now())
+	h1, _, _ := d.Publish(time.Now(), nil)
 
 	r, err := d.Lookup("acct-3")
 	if err != nil {
@@ -150,7 +150,7 @@ func TestDirectoryLookupAndHistory(t *testing.T) {
 	if r, _ := d.Lookup("acct-3"); r.Version != 1 {
 		t.Fatal("unpublished version visible")
 	}
-	h2, _ := d.Publish(time.Now())
+	h2, _, _ := d.Publish(time.Now(), nil)
 	r2, _ := d.Lookup("acct-3")
 	if r2.Version != 2 || VerifyLookup(&vrfKey.PublicKey, pub, "acct-3", []byte("key-3b"), r2) != nil {
 		t.Fatal("new version")
@@ -164,7 +164,7 @@ func TestDirectoryLookupAndHistory(t *testing.T) {
 	if changed, _ := d.SetKeys("acct-5", [][]byte{[]byte("key-5")}); changed {
 		t.Fatal("no-op change recorded")
 	}
-	if _, isNew := d.Publish(time.Now()); isNew {
+	if _, isNew, _ := d.Publish(time.Now(), nil); isNew {
 		t.Fatal("empty epoch published")
 	}
 

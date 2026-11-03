@@ -26,6 +26,7 @@ import (
 	"github.com/relayapp/relay-server/internal/fcm"
 	"github.com/relayapp/relay-server/internal/history"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/kt"
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
@@ -162,6 +163,7 @@ func main() {
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
 	apnsTopic := flag.String("apns-topic", "app.relaymsg", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
+	ktKeyDir := flag.String("kt-key-dir", "", "directory holding the key transparency VRF and signing keys (created on first run; never replace them); empty = key transparency off")
 	fallbackHostsFile := flag.String("fallback-hosts-file", "", "file of fallback hostnames (one per line, newest first) written by fallbackrotate; served at GET /v1/fallbacks")
 	fallbackKeyFile := flag.String("fallback-key-file", "", "file holding the secret the fallback Workers send; lets them pass on the real client address")
 	trustedProxies := flag.String("trusted-proxies", "", "honour CF-Connecting-IP only from these proxies: \"cloudflare\" (built-in Cloudflare ranges) or comma-separated CIDRs; empty = never")
@@ -336,6 +338,29 @@ func main() {
 			slog.Info("supabase auth-user deletion enabled")
 			go runSupabaseDeletionRetry(apiServer)
 		}
+	}
+	if *ktKeyDir != "" {
+		vrfKey, signKey, err := kt.LoadOrCreateKeys(*ktKeyDir)
+		if err != nil {
+			slog.Error("kt keys", "err", err)
+			os.Exit(1)
+		}
+		dir := kt.NewDirectory(vrfKey, signKey)
+		histories, heads, err := st.KTLoad()
+		if err != nil {
+			slog.Error("kt load", "err", err)
+			os.Exit(1)
+		}
+		for account, versions := range histories {
+			dir.Restore(account, versions)
+		}
+		dir.RestoreLog(heads)
+		if err := dir.CheckRestored(); err != nil {
+			slog.Error("kt: stored directory doesn't match its last head", "err", err)
+			os.Exit(1)
+		}
+		apiServer.SetKeyTransparency(dir, time.Minute)
+		slog.Info("key transparency enabled", "epochs", len(heads))
 	}
 	if *fallbackHostsFile != "" {
 		apiServer.SetFallbackHostsFile(*fallbackHostsFile)

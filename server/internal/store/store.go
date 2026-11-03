@@ -537,6 +537,25 @@ CREATE TABLE IF NOT EXISTS group_invites (
     counter    BIGINT NOT NULL,
     used_at    BIGINT NOT NULL
 )`,
+		// Key transparency (store/kt.go, docs/KEY_TRANSPARENCY.md).
+		`CREATE TABLE IF NOT EXISTS kt_versions (
+    account_id TEXT   NOT NULL,
+    version    INT    NOT NULL,
+    commitment BYTEA  NOT NULL,
+    nonce      BYTEA  NOT NULL,
+    keys       BYTEA  NOT NULL,
+    chain      BYTEA  NOT NULL,
+    epoch      BIGINT NOT NULL,
+    PRIMARY KEY (account_id, version)
+)`,
+		`CREATE TABLE IF NOT EXISTS kt_heads (
+    epoch      BIGINT PRIMARY KEY,
+    smt_root   BYTEA  NOT NULL,
+    log_size   BIGINT NOT NULL,
+    log_root   BYTEA  NOT NULL,
+    time       BIGINT NOT NULL,
+    sig        BYTEA  NOT NULL
+)`,
 		// Demo accounts (App Review) were made from the owner's email
 		// accounts; they keep no email, so nothing can show or use it.
 		`DELETE FROM directory WHERE kind = 1 AND account_id IN (SELECT id FROM accounts WHERE is_demo)`,

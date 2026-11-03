@@ -755,6 +755,25 @@ reachable, and reads Cloudflare's `/cdn-cgi/trace` on the relay's domain through
 the proxy for the country it connects from. Findings are warnings; the user can
 still turn the proxy on.
 
+## Key transparency (`internal/kt`)
+
+Design: `docs/KEY_TRANSPARENCY.md`. With `-kt-key-dir`, relayd keeps a
+directory of every account's identity keys (versioned, hash-chained, behind a
+VRF label and a commitment) in a sparse Merkle tree, and every minute records
+key changes from `devices` and publishes a signed head (`kt_versions`,
+`kt_heads`; rows are only added). A head is stored before it's served, and on
+start the restored tree must match the last head or relayd exits.
+
+- `GET /v1/kt/head` → `{epoch, smtRoot, logSize, logRoot, time, sig}`.
+- `GET /v1/kt/consistency?from=M&to=N` → `{proof}`: the log at N extends M.
+- `GET /v1/kt/lookup/{account}` (authenticated) → `{vrfProof, version,
+  commitment, prevChain, nonce, keys, proof: {bitmap, siblings}, head}`.
+- `GET /v1/kt/monitor` (authenticated) → the caller's own `versions` (with
+  nonces and keys) and the `latest` lookup they must chain to.
+
+Binary values are base64. The key directory holds `vrf.pem` and `sign.key`;
+the app builds in their public halves, so never replace them.
+
 ## Fallback addresses (`cmd/fallbackrotate`)
 
 For networks (schools, workplaces) that block `api.relaymsg.app` by name.
