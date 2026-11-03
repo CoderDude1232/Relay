@@ -80,5 +80,9 @@ NwIDAQAB
    (`GET /v1/kt/head`, `/v1/kt/lookup/{account}`, `/v1/kt/consistency`,
    `/v1/kt/monitor`), deploy. ← live since 2026-11-04
 3. App: verify lookups when processing a bundle and on the safety-number
-   screen; monitor its own account; remember the last head.
+   screen; monitor its own account; remember the last head. ← done
+   (RelayKit `KeyTransparency.swift`, `MessagingService+KeyTransparency.swift`;
+   the Go test `TestWriteVectors` writes vectors the Swift side is checked
+   against). A mismatch is re-checked after 75 s, since a key changed in the
+   last minute isn't published yet, then shows as a changed safety number.
 4. Witness: publish heads to the Gist; clients compare.

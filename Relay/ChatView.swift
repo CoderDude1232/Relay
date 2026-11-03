@@ -53,6 +53,7 @@ struct ChatView: View {
     @State private var isOnScreen = false
     /// Stale keys are checked once per visit to the chat.
     @State private var didCheckStaleKeys = false
+    @State private var didCheckTransparency = false
     /// Height of the tip floating above the composer (0 when none).
     @State private var floatingTipHeight: CGFloat = 0
     /// How far the messages extend under the composer (and home indicator).
@@ -1226,6 +1227,14 @@ struct ChatView: View {
             changedGroupMembers = service.groupMembersWithChangedSafetyNumbers(conversationId)
         } else {
             verification = service.peerVerification(for: conversationId)
+        }
+        // Checked against the key directory once per visit.
+        if !isGroup, !didCheckTransparency, let peer = service.verificationPeer(for: conversationId) {
+            didCheckTransparency = true
+            Task {
+                await service.refreshTransparency(peer: peer)
+                verification = service.peerVerification(for: conversationId)
+            }
         }
         // A key left behind by someone's removed device makes the safety number
         // look changed though it matches: check their current devices first.

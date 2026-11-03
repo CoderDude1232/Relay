@@ -131,6 +131,10 @@ struct VerificationView: View {
                     .background(.orange.opacity(0.12), in: .rect(cornerRadius: 12))
                 }
 
+                if let transparency = verification.transparency {
+                    TransparencyRow(status: transparency, peerName: peerName)
+                }
+
                 SafetyNumberGrid(numeric: verification.safetyNumber.numeric)
 
                 if let qr = Self.qrImage(for: verification.safetyNumber.scannable) {
@@ -506,6 +510,59 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             guard let self, !self.didScan else { return }
             self.didScan = true
             self.onScan?(value)
+        }
+    }
+}
+
+/// What the relay's public key directory says about this contact's key.
+private struct TransparencyRow: View {
+    let status: MessagingService.TransparencyStatus
+    let peerName: String
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(detail).font(.footnote).foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(color)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.1), in: .rect(cornerRadius: 12))
+        .accessibilityElement(children: .combine)
+    }
+
+    private var title: String {
+        switch status {
+        case .verified: "Matches Relay's key directory"
+        case .mismatch: "Doesn't match Relay's key directory"
+        case .unavailable: "Key directory not checked"
+        }
+    }
+
+    private var detail: String {
+        switch status {
+        case .verified: "Checked automatically: \(peerName)'s key is the one Relay publishes for them, in a directory anyone can audit. Comparing numbers in person is still the strongest check."
+        case .mismatch: "The key your messages use isn't the one Relay publishes for \(peerName). Someone may be intercepting. Compare safety numbers in person before trusting this chat."
+        case .unavailable: "Relay's key directory couldn't be reached. It's checked again next time you open the chat."
+        }
+    }
+
+    private var symbol: String {
+        switch status {
+        case .verified: "checkmark.seal.fill"
+        case .mismatch: "exclamationmark.octagon.fill"
+        case .unavailable: "questionmark.circle"
+        }
+    }
+
+    private var color: Color {
+        switch status {
+        case .verified: .green
+        case .mismatch: .red
+        case .unavailable: .secondary
         }
     }
 }

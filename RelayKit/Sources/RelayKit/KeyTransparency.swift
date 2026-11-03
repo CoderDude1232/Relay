@@ -1,0 +1,270 @@
+//
+//  KeyTransparency.swift
+//  RelayKit
+//
+//  Checks the relay's key directory (docs/KEY_TRANSPARENCY.md): that a
+//  contact's identity key is the one the relay publishes for them, that the
+//  directory only ever grows, and that our own account holds no key we didn't
+//  make. Mirrors server/internal/kt; the Go tests write vectors this must agree
+//  with.
+//
+
+import CryptoKit
+import Foundation
+import Security
+
+public enum KeyTransparency {
+    // MARK: Live keys (public halves; docs/KEY_TRANSPARENCY.md)
+
+    /// Ed25519 key that signs heads.
+    public static let signPublicKey = Data(base64Encoded: "AzBwua2UHxq2M6FiWv+rJ8lAwOvG8b3f2BZXafwWW0I=")!
+    /// RSA VRF key, PKCS#1.
+    public static let vrfPublicKey = Data(base64Encoded: liveVRFPKCS1)!
+
+    // MARK: Wire types
+
+    public struct Head: Codable, Equatable, Sendable {
+        public let epoch: UInt64
+        public let smtRoot: Data
+        public let logSize: UInt64
+        public let logRoot: Data
+        public let time: UInt64
+        public let sig: Data
+    }
+
+    public struct Proof: Codable, Equatable, Sendable {
+        public let bitmap: Data
+        public let siblings: [Data]
+    }
+
+    public struct Lookup: Codable, Equatable, Sendable {
+        public let vrfProof: Data
+        public let version: UInt32
+        public let commitment: Data
+        public let prevChain: Data
+        public let nonce: Data?
+        public let keys: [Data]?
+        public let proof: Proof
+        public let head: Head
+
+        public init(vrfProof: Data, version: UInt32, commitment: Data, prevChain: Data, nonce: Data?,
+                    keys: [Data]?, proof: Proof, head: Head) {
+            self.vrfProof = vrfProof
+            self.version = version
+            self.commitment = commitment
+            self.prevChain = prevChain
+            self.nonce = nonce
+            self.keys = keys
+            self.proof = proof
+            self.head = head
+        }
+    }
+
+    public struct Version: Codable, Equatable, Sendable {
+        public let version: UInt32
+        public let commitment: Data
+        public let nonce: Data
+        public let keys: [Data]
+        public let epoch: UInt64
+    }
+
+    public enum Failure: Error, Equatable {
+        case headSignature, vrfProof, keyMismatch, notInTree, inconsistent, foreignKey
+    }
+
+    // MARK: Hashing
+
+    static func sha256(_ parts: Data...) -> Data {
+        var h = SHA256()
+        for p in parts { h.update(data: p) }
+        return Data(h.finalize())
+    }
+
+    static func uint32(_ v: UInt32) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
+    static func uint64(_ v: UInt64) -> Data { withUnsafeBytes(of: v.bigEndian) { Data($0) } }
+
+    public static func commit(nonce: Data, keys: [Data]) -> Data {
+        var data = Data("relay-kt-commit".utf8) + nonce
+        for key in keys.sorted(by: { $0.lexicographicallyPrecedes($1) }) {
+            data += withUnsafeBytes(of: UInt16(key.count).bigEndian) { Data($0) } + key
+        }
+        return sha256(data)
+    }
+
+    public static func chain(prev: Data, version: UInt32, commitment: Data) -> Data {
+        sha256(Data("relay-kt-chain".utf8), prev, uint32(version), commitment)
+    }
+
+    // MARK: VRF (RSA-FDH-VRF-SHA256, RFC 9381 §4)
+
+    static func mgf1(_ seed: Data, length: Int) -> Data {
+        var out = Data()
+        var counter: UInt32 = 0
+        while out.count < length {
+            out += sha256(seed, uint32(counter))
+            counter += 1
+        }
+        return out.prefix(length)
+    }
+
+    /// The label for `account`, if `proof` is the VRF's proof for it.
+    static func vrfLabel(account: String, proof: Data, publicKey: Data) -> Data? {
+        let attributes: [CFString: Any] = [kSecAttrKeyType: kSecAttrKeyTypeRSA, kSecAttrKeyClass: kSecAttrKeyClassPublic]
+        guard let key = SecKeyCreateWithData(publicKey as CFData, attributes as CFDictionary, nil),
+              let modulus = rsaModulus(pkcs1: publicKey)
+        else { return nil }
+        let k = modulus.count
+        guard proof.count == k,
+              let m = SecKeyCreateEncryptedData(key, .rsaEncryptionRaw, proof as CFData, nil) as Data?,
+              m.count == k, m.first == 0
+        else { return nil }
+        var seed = Data([0x01, 0x01]) + uint32(UInt32(k)) + modulus
+        seed += Data(account.utf8)
+        guard m.dropFirst() == mgf1(seed, length: k - 1) else { return nil }
+        return sha256(Data([0x01, 0x02]), proof)
+    }
+
+    /// The modulus of a PKCS#1 RSAPublicKey, k bytes with no leading zero.
+    static func rsaModulus(pkcs1: Data) -> Data? {
+        var i = pkcs1.startIndex
+        func readLength() -> Int? {
+            guard i < pkcs1.endIndex else { return nil }
+            let first = pkcs1[i]; i += 1
+            if first < 0x80 { return Int(first) }
+            let count = Int(first & 0x7F)
+            guard count <= 4, i + count <= pkcs1.endIndex else { return nil }
+            var length = 0
+            for _ in 0..<count { length = length << 8 | Int(pkcs1[i]); i += 1 }
+            return length
+        }
+        guard i < pkcs1.endIndex, pkcs1[i] == 0x30 else { return nil }
+        i += 1
+        guard readLength() != nil, i < pkcs1.endIndex, pkcs1[i] == 0x02 else { return nil }
+        i += 1
+        guard let length = readLength(), i + length <= pkcs1.endIndex else { return nil }
+        var modulus = pkcs1[i..<(i + length)]
+        while modulus.first == 0 { modulus = modulus.dropFirst() }
+        return Data(modulus)
+    }
+
+    // MARK: Sparse Merkle tree
+
+    static let depth = 256
+    static let emptyHash: [Data] = {
+        var hashes = Array(repeating: Data(count: 32), count: depth + 1)
+        for d in stride(from: depth - 1, through: 0, by: -1) {
+            hashes[d] = sha256(Data([0x01]), hashes[d + 1], hashes[d + 1])
+        }
+        return hashes
+    }()
+
+    static func bit(_ data: Data, _ i: Int) -> Int {
+        Int(data[data.startIndex + i / 8] >> (7 - UInt8(i % 8))) & 1
+    }
+
+    /// The root implied by a leaf (nil value: absent) and its path.
+    static func rootFromProof(label: Data, value: Data?, proof: Proof) -> Data? {
+        guard label.count == 32, proof.bitmap.count == 32 else { return nil }
+        var set = 0
+        for d in 0..<depth where bit(proof.bitmap, d) == 1 { set += 1 }
+        guard set == proof.siblings.count else { return nil }
+        var h = value.map { sha256(Data([0x00]), label, $0) } ?? emptyHash[depth]
+        var next = proof.siblings.count - 1
+        for d in stride(from: depth - 1, through: 0, by: -1) {
+            var sibling = emptyHash[d + 1]
+            if bit(proof.bitmap, d) == 1 {
+                sibling = proof.siblings[next]
+                next -= 1
+            }
+            h = bit(label, d) == 0
+                ? sha256(Data([0x01]), h, sibling)
+                : sha256(Data([0x01]), sibling, h)
+        }
+        return h
+    }
+
+    // MARK: Heads and the root log
+
+    public static func verifySignature(_ head: Head, signPublicKey: Data = signPublicKey) -> Bool {
+        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: signPublicKey) else { return false }
+        let message = Data("relay-kt-head-v1".utf8) + uint64(head.epoch) + head.smtRoot
+            + uint64(head.logSize) + head.logRoot + uint64(head.time)
+        return key.isValidSignature(head.sig, for: message)
+    }
+
+    static func logNode(_ left: Data, _ right: Data) -> Data { sha256(Data([0x01]), left, right) }
+
+    /// The log at `new` extends the log at `old` (RFC 9162 §2.1.4.2).
+    public static func verifyConsistency(old: Head, new: Head, proof: [Data]) -> Bool {
+        let m = Int(old.logSize), n = Int(new.logSize)
+        guard m >= 1, m <= n else { return false }
+        if m == n { return proof.isEmpty && old.logRoot == new.logRoot }
+        var path = proof
+        if m & (m - 1) == 0 { path.insert(old.logRoot, at: 0) }
+        guard !path.isEmpty else { return false }
+        var fn = m - 1, sn = n - 1
+        while fn & 1 == 1 { fn >>= 1; sn >>= 1 }
+        var fr = path[0], sr = path[0]
+        for c in path.dropFirst() {
+            guard sn != 0 else { return false }
+            if fn & 1 == 1 || fn == sn {
+                fr = logNode(c, fr)
+                sr = logNode(c, sr)
+                while fn != 0 && fn & 1 == 0 { fn >>= 1; sn >>= 1 }
+            } else {
+                sr = logNode(sr, c)
+            }
+            fn >>= 1
+            sn >>= 1
+        }
+        return sn == 0 && fr == old.logRoot && sr == new.logRoot
+    }
+
+    // MARK: Checks
+
+    /// `lookup` proves `account`'s current keys under a validly signed head
+    /// and, if `key` is given, that it's one of them.
+    public static func verify(_ lookup: Lookup, account: String, key: Data?,
+                              vrfPublicKey: Data = vrfPublicKey, signPublicKey: Data = signPublicKey) throws {
+        guard verifySignature(lookup.head, signPublicKey: signPublicKey) else { throw Failure.headSignature }
+        guard let label = vrfLabel(account: account, proof: lookup.vrfProof, publicKey: vrfPublicKey) else {
+            throw Failure.vrfProof
+        }
+        if lookup.version == 0 {
+            guard rootFromProof(label: label, value: nil, proof: lookup.proof) == lookup.head.smtRoot else {
+                throw Failure.notInTree
+            }
+            if key != nil { throw Failure.keyMismatch }
+            return
+        }
+        guard let nonce = lookup.nonce, let keys = lookup.keys,
+              commit(nonce: nonce, keys: keys) == lookup.commitment
+        else { throw Failure.keyMismatch }
+        if let key, !keys.contains(key) { throw Failure.keyMismatch }
+        let value = chain(prev: lookup.prevChain, version: lookup.version, commitment: lookup.commitment)
+        guard rootFromProof(label: label, value: value, proof: lookup.proof) == lookup.head.smtRoot else {
+            throw Failure.notInTree
+        }
+    }
+
+    /// An owner's history is one unbroken chain ending at `latest`. Returns the
+    /// key set of every version.
+    public static func verifyHistory(_ versions: [Version], latest: Lookup) throws -> [[Data]] {
+        var prev = Data(count: 32)
+        var sets: [[Data]] = []
+        for (i, v) in versions.enumerated() {
+            guard v.version == UInt32(i + 1), commit(nonce: v.nonce, keys: v.keys) == v.commitment else {
+                throw Failure.notInTree
+            }
+            prev = chain(prev: prev, version: v.version, commitment: v.commitment)
+            sets.append(v.keys)
+        }
+        guard versions.count == Int(latest.version),
+              prev == chain(prev: latest.prevChain, version: latest.version, commitment: latest.commitment)
+        else { throw Failure.notInTree }
+        return sets
+    }
+}
+
+/// The live VRF key's RSAPublicKey (PKCS#1, DER, base64).
+private let liveVRFPKCS1 = "MIIBCgKCAQEAoFRYR4xchotekT/gxGcWyby+F4mVI65SmVB3bP1XTrm1B2d6XtPVbGadyav2WooeHKanNZNoT6Q0saFWZJxU0dzx5vB2bqwcbrWMT6/j+3IWBlevqi2QJgs7crrqNYkV8V8eg7dR9jGr8LrCSg8TrYZXW6viQK0IUtkxqe04m8AvZItjQhjHsWfpWzdS0dZE9PrYvHdqJj6MJ4cmR2eMoN4++k6hYrRQw62Ny4vTr8CoIG2BsOVGq8G1WVN1rcHHeHguz88fAta05UtneZUIebGaNVvwqKpRPZciX+++HDOnCliMItkFlrPhPRch7BvpYgo6Viz2gAgihogckh9cNwIDAQAB"

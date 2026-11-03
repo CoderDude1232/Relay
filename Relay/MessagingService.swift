@@ -176,6 +176,8 @@ final class MessagingService {
     private(set) var authenticationExpired = false
     /// Per-conversation so the chat list can show typing for chats that aren't open.
     private(set) var typingConversations: Set<String> = []
+    /// Key transparency results by account (MessagingService+KeyTransparency).
+    var keyTransparencyStatus: [String: TransparencyStatus] = [:]
     /// Mute expiry per conversation: Int64.max = forever, positive = Unix ms expiry.
     private var muteExpiries: [String: Int64] = [:]
     var onCallMessage: ((CallInfo) async -> Void)?
@@ -299,6 +301,9 @@ final class MessagingService {
 
     /// For PushKitDelegate's VoIP token registration.
     var apiClient: RelayAPIClient { api }
+
+    /// This account's identity key, serialized (for the key directory checks).
+    func ownIdentityKey() -> Data? { try? engine.identityKey() }
 
     /// Redeems a one-time contact invite and returns the inviter's username.
     /// Throws if the token is spent or expired.
@@ -689,6 +694,7 @@ final class MessagingService {
                     isDrainingQueue = false
                     connectionState = .connected
                     noteConnected()
+                    Task { await self.monitorOwnKeysIfDue() }
                     backoffSeconds = 1.0
                     // Includes the open chat: envelopes the NSE already stored are
                     // skipped as duplicates and wouldn't refresh it themselves.
@@ -4030,6 +4036,11 @@ final class MessagingService {
     }
 
     private func refreshSessions(withPeer account: String) async throws {
+        defer {
+            if account != credentials.accountId {
+                Task { await self.refreshTransparency(peer: account) }
+            }
+        }
         let bundles: [PeerPreKeyBundle]
         // With an access key the fetch is anonymous. Contacts hand us theirs in
         // their profile update; for someone we haven't heard from, look up their
@@ -4859,6 +4870,8 @@ final class MessagingService {
         /// The peer's devices present different identity keys. The safety number
         /// covers only one, so verification is refused.
         var hasConflictingKeys = false
+        /// What the relay's key directory says about their key, once checked.
+        var transparency: TransparencyStatus?
     }
 
     private func hasConflictingIdentityKeys(_ peer: String) -> Bool {
@@ -4907,7 +4920,10 @@ final class MessagingService {
             }
             let conflicting = hasConflictingIdentityKeys(peer)
             if conflicting { state = .changed }
-            return PeerVerification(safetyNumber: safetyNumber, state: state, hasConflictingKeys: conflicting)
+            let transparency = keyTransparencyStatus[peer]
+            if transparency == .mismatch { state = .changed }
+            return PeerVerification(safetyNumber: safetyNumber, state: state, hasConflictingKeys: conflicting,
+                                    transparency: transparency)
         } catch {
             log.error("safety number failed: \(PrivacyRedactor.error(error))")
             return nil

@@ -1152,6 +1152,30 @@ public struct RelayAPIClient: Sendable {
         }
     }
 
+    // MARK: Key transparency (docs/KEY_TRANSPARENCY.md)
+
+    /// GET /v1/kt/lookup/{account}: proof of an account's current identity keys.
+    public func keyTransparencyLookup(account: String) async throws -> KeyTransparency.Lookup {
+        try await request("GET", "v1/kt/lookup/\(account)", body: nil as String?)
+    }
+
+    /// GET /v1/kt/consistency: proof the log at `to` extends the log at `from`.
+    public func keyTransparencyConsistency(from: UInt64, to: UInt64) async throws -> [Data] {
+        struct Response: Decodable { let proof: [Data] }
+        var request = makeRequest("GET", "v1/kt/consistency")
+        request.url?.append(queryItems: [URLQueryItem(name: "from", value: String(from)),
+                                         URLQueryItem(name: "to", value: String(to))])
+        let (data, _) = try await send(request, authenticated: false)
+        return try JSONDecoder().decode(Response.self, from: data).proof
+    }
+
+    /// GET /v1/kt/monitor: this account's whole key history.
+    public func keyTransparencyMonitor() async throws -> (versions: [KeyTransparency.Version], latest: KeyTransparency.Lookup) {
+        struct Response: Decodable { let versions: [KeyTransparency.Version]; let latest: KeyTransparency.Lookup }
+        let r: Response = try await request("GET", "v1/kt/monitor", body: nil as String?)
+        return (r.versions, r.latest)
+    }
+
     /// GET /v1/fallbacks: the backup addresses, saved for when the main one is blocked.
     public func refreshFallbackHosts() async throws {
         struct Response: Decodable { let hosts: [String] }
