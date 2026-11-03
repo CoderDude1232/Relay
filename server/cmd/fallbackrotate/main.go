@@ -41,6 +41,7 @@ func main() {
 	stateFile := flag.String("state", "/var/lib/relay/fallback-workers.json", "the Workers this tool manages")
 	every := flag.Duration("every", 72*time.Hour, "deploy a new Worker when the newest is this old")
 	keep := flag.Duration("keep", 7*24*time.Hour, "retire Workers older than this")
+	anchor := flag.String("anchor", "", "a Worker name that's never rotated; built into the app for devices without a list yet")
 	flag.Parse()
 
 	token, err := os.ReadFile(*tokenFile)
@@ -102,10 +103,27 @@ func main() {
 		fail("save state", err)
 	}
 
+	// The anchor stays put; redeployed only if it's missing or not answering.
+	if *anchor != "" {
+		host := *anchor + "." + subdomain + ".workers.dev"
+		if err := waitReachableOnce(ctx, host); err != nil {
+			if err := cf.deploy(ctx, *anchor, strings.TrimSpace(string(key))); err != nil {
+				slog.Error("deploy anchor", "err", err)
+			} else if err := waitReachable(ctx, host); err != nil {
+				slog.Error("anchor isn't reaching the relay", "host", host, "err", err)
+			} else {
+				slog.Info("deployed anchor", "host", host)
+			}
+		}
+	}
+
 	var hosts strings.Builder
 	hosts.WriteString("# written by fallbackrotate; newest first\n")
 	for _, w := range state.Workers {
 		hosts.WriteString(w.Host + "\n")
+	}
+	if *anchor != "" {
+		hosts.WriteString(*anchor + "." + subdomain + ".workers.dev\n")
 	}
 	if err := writeAtomic(*hostsFile, []byte(hosts.String()), 0o644); err != nil {
 		fail("write hosts", err)
@@ -128,6 +146,20 @@ func randomName() string {
 		out = append(out, alnum[int(c)%len(alnum)])
 	}
 	return string(out)
+}
+
+// waitReachableOnce checks an address a single time.
+func waitReachableOnce(ctx context.Context, host string) error {
+	req, _ := http.NewRequestWithContext(ctx, "GET", "https://"+host+"/v1/ping", nil)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || resp.Header.Get("X-Relay") != "1" {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // waitReachable polls the new address until the relay answers through it; a

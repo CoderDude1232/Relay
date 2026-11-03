@@ -166,6 +166,13 @@ public actor RelayWebSocket {
                 message = try await task.receive()
             } catch {
                 log.warning("websocket receive failed")
+                // Couldn't reach the relay's address at all: find one that
+                // answers, so the reconnect goes there.
+                if RelayProxy.active == nil, RelayFallback.suggestsBlock(error),
+                   let primary = baseURL.host() {
+                    _ = await RelayFallback.failover(primary: primary, failedHost: task.originalRequest?.url?.host() ?? primary,
+                                                     session: session)
+                }
                 return
             }
             guard case .data(let data) = message,

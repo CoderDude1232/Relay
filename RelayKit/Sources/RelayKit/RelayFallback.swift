@@ -24,14 +24,22 @@ public enum RelayFallback {
 
     private static var defaults: UserDefaults? { UserDefaults(suiteName: RelayProxy.appGroupId) }
 
-    /// The backups the relay last sent, newest first.
-    public static var hosts: [String] { defaults?.stringArray(forKey: hostsKey) ?? [] }
+    /// A Worker that's never rotated, for devices that haven't fetched the list
+    /// yet (a new install on a network that already blocks the relay).
+    /// cmd/fallbackrotate keeps it deployed (-anchor).
+    static let builtIn = ["paperlantern.amberfield.workers.dev"]
+
+    /// The backups the relay last sent, newest first, then the built-in one.
+    public static var hosts: [String] {
+        let fetched = defaults?.stringArray(forKey: hostsKey) ?? []
+        return fetched + builtIn.filter { !fetched.contains($0) }
+    }
 
     /// Saves the relay's list. A backup in use that's no longer listed is dropped.
     public static func save(hosts: [String]) {
         defaults?.set(hosts, forKey: hostsKey)
         defaults?.set(Date().timeIntervalSince1970, forKey: fetchedAtKey)
-        if let active = activeHost, !hosts.contains(active) { setActive(nil) }
+        if let active = activeHost, !Self.hosts.contains(active) { setActive(nil) }
     }
 
     /// True when the list is old enough to fetch again.
@@ -87,6 +95,12 @@ public enum RelayFallback {
         default:
             return false
         }
+    }
+
+    /// Worth looking for another address, though the request may have arrived
+    /// (a filter that silently drops the connection looks like a timeout).
+    static func suggestsBlock(_ error: Error) -> Bool {
+        isUnreachable(error) || (error as? URLError)?.code == .timedOut
     }
 
     /// After `failedHost` couldn't be reached: picks the first address (the main

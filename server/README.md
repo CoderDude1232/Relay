@@ -770,6 +770,11 @@ sees nothing Cloudflare doesn't already see for the API.
 - Not covered: Supabase sign-in, calls (TURN) and attachments' direct uploads
   all keep their own addresses.
 
+`-anchor` names one Worker that's never rotated; its address is built into the
+app (`RelayFallback.builtIn`), so a new install on a network that already blocks
+the relay can still get in and fetch the list. Renaming the account's workers.dev
+subdomain changes that address, so the app's copy has to change with it.
+
 `fallbackrotate` runs from a systemd timer. Each run deploys a Worker under a new
 random name when the newest is older than `-every` (72h), checks it reaches the
 relay, retires Workers older than `-keep` (7 days; the newest two always stay),

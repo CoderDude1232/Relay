@@ -1139,9 +1139,11 @@ public struct RelayAPIClient: Sendable {
             if RelayFallback.simulatesBlockedPrimary, routed.url?.host() == primary { throw URLError(.cannotFindHost) }
             #endif
             return try await session.data(for: routed)
-        } catch where RelayProxy.active == nil && RelayFallback.isUnreachable(error) {
+        } catch where RelayProxy.active == nil && RelayFallback.suggestsBlock(error) {
             let failed = routed.url?.host() ?? primary
-            guard let host = await RelayFallback.failover(primary: primary, failedHost: failed, session: session),
+            let host = await RelayFallback.failover(primary: primary, failedHost: failed, session: session)
+            // A timeout may have reached the relay: switch for later requests, don't resend.
+            guard RelayFallback.isUnreachable(error), let host,
                   var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
             else { throw error }
             components.host = host
