@@ -2381,13 +2381,40 @@ struct ChatView: View {
         let attachments = pendingAttachments
         if viewOnce && !attachments.isEmpty { text = "~once~" + text }
         let preview = draftLinkPreview.flatMap { text.contains($0.url) ? $0 : nil }
+        // Sent before the link's preview was ready: give it a moment to finish.
+        let unbuiltLink = preview == nil && !isRequest && attachments.isEmpty
+            ? text.firstURLText.flatMap { dismissedPreviewURLs.contains($0) ? nil : $0 } : nil
         draftLinkPreview = nil
         draftPreviewTask?.cancel()
         draft = ""
         replyingTo = nil
         viewOnce = false
         clearPendingAttachments()
-        Task { await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments, linkPreview: preview) }
+        let service = service
+        Task {
+            var preview = preview
+            if let link = unbuiltLink { preview = await Self.buildPreview(for: link, service: service, timeout: .seconds(3)) }
+            await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments, linkPreview: preview)
+        }
+    }
+
+    /// The link's preview, or nil if it takes longer than `timeout`.
+    private static func buildPreview(for link: String, service: MessagingService,
+                                     timeout: Duration) async -> MessageStore.LinkPreview? {
+        await withTaskGroup(of: MessageStore.LinkPreview?.self) { group in
+            group.addTask {
+                URL(string: link).flatMap(RelayLink.init) != nil
+                    ? await RelayLink.preview(for: link, service: service)
+                    : await LinkPreviewBuilder.build(for: link)
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     /// Builds a preview for the draft's first link, after typing pauses.

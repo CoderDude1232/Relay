@@ -1175,11 +1175,15 @@ final class MessagingService {
                         isDownloaded: true
                     ))
                 }
+                let noteId = UUID().uuidString
                 _ = try? storage.messages.insertMessage(
-                    id: UUID().uuidString, conversationId: conversationId,
+                    id: noteId, conversationId: conversationId,
                     isOutgoing: true, body: text, timestamp: ts, status: .read,
                     replyTo: replyTo, attachments: localAttachments
                 )
+                if let linkPreview, text.contains(linkPreview.url) {
+                    try? storage.messages.saveLinkPreview(linkPreview, messageId: noteId)
+                }
                 refreshConversations()
                 refreshActiveMessages(ifShowing: conversationId)
                 return

@@ -24,7 +24,8 @@ extension String {
         return detector.firstMatch(in: self, range: range)
             .flatMap { $0.url }
             .flatMap { url in
-                guard let scheme = url.scheme,
+                // "Https://" when the keyboard capitalised it.
+                guard let scheme = url.scheme?.lowercased(),
                       scheme == "http" || scheme == "https" else { return nil }
                 return url
             }
@@ -34,7 +35,7 @@ extension String {
     var firstURLText: String? {
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue),
               let match = detector.firstMatch(in: self, range: NSRange(location: 0, length: (self as NSString).length)),
-              let url = match.url, url.scheme == "http" || url.scheme == "https",
+              let url = match.url, ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               let range = Range(match.range, in: self)
         else { return nil }
         return String(self[range])
@@ -49,22 +50,141 @@ enum LinkPreviewBuilder {
     /// would go straight to the site).
     static func build(for urlText: String) async -> MessageStore.LinkPreview? {
         guard PrivacyPreferences.linkPreviewsEnabled, RelayProxy.active == nil else { return nil }
-        let normalized = urlText.lowercased().hasPrefix("http") ? urlText : "https://" + urlText
+        var normalized = urlText.lowercased().hasPrefix("http") ? urlText : "https://" + urlText
+        // The scheme in lower case: "Https://" from the keyboard isn't fetchable.
+        if let colon = normalized.firstIndex(of: ":") {
+            normalized = normalized[..<colon].lowercased() + normalized[colon...]
+        }
         guard let url = URL(string: normalized) else { return nil }
         // Relay's own links get an embed built on this device instead.
         if url.host() == "relaymsg.app" { return nil }
+        // YouTube often gives LinkPresentation a title and no image; its own
+        // thumbnail and oEmbed title are reliable.
+        if let videoId = youTubeVideoId(url), let preview = await youTubePreview(videoId: videoId, url: url, urlText: urlText) {
+            return preview
+        }
         let provider = LPMetadataProvider()
         provider.timeout = 8
-        guard let meta = try? await provider.startFetchingMetadata(for: url) else { return nil }
-        let title = (meta.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let meta = try? await provider.startFetchingMetadata(for: url)
+        var title = (meta?.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         var imageData: Data?
-        if let imageProvider = meta.imageProvider,
+        if let imageProvider = meta?.imageProvider,
            let image = await loadImage(imageProvider) {
             imageData = thumbnail(image)
+        }
+        // No image (or nothing at all): the page's own og:image / twitter:image.
+        if imageData == nil, let tags = await pageTags(url) {
+            if title.isEmpty { title = tags.title ?? "" }
+            if let imageURL = tags.image { imageData = await fetchImage(imageURL).flatMap(thumbnail) }
         }
         guard !title.isEmpty || imageData != nil else { return nil }
         return MessageStore.LinkPreview(url: urlText, title: String(title.prefix(300)), image: imageData)
     }
+
+    // MARK: YouTube
+
+    /// The video id in youtube.com/watch?v=, youtu.be/, /shorts/, /live/ and /embed/ links.
+    static func youTubeVideoId(_ url: URL) -> String? {
+        guard let host = url.host()?.lowercased() else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        var id: String?
+        if host == "youtu.be" {
+            id = parts.first
+        } else if host == "youtube.com" || host.hasSuffix(".youtube.com") {
+            if parts.first == "watch" {
+                id = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first { $0.name == "v" }?.value
+            } else if let first = parts.first, ["shorts", "live", "embed", "v"].contains(first), parts.count > 1 {
+                id = parts[1]
+            }
+        }
+        guard let id, (6...20).contains(id.count),
+              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+        else { return nil }
+        return id
+    }
+
+    private static func youTubePreview(videoId: String, url: URL, urlText: String) async -> MessageStore.LinkPreview? {
+        var title = ""
+        var oembed = URLComponents(string: "https://www.youtube.com/oembed")!
+        oembed.queryItems = [URLQueryItem(name: "url", value: "https://www.youtube.com/watch?v=\(videoId)"),
+                             URLQueryItem(name: "format", value: "json")]
+        if let oembedURL = oembed.url, let data = await fetch(oembedURL, limit: 64 * 1024),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            title = (json["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var image: Data?
+        // hqdefault always exists; maxres is sharper but missing for some videos.
+        for size in ["hqdefault", "mqdefault"] {
+            if let thumbURL = URL(string: "https://i.ytimg.com/vi/\(videoId)/\(size).jpg"),
+               let data = await fetchImage(thumbURL).flatMap(thumbnail) {
+                image = data
+                break
+            }
+        }
+        guard !title.isEmpty || image != nil else { return nil }
+        return MessageStore.LinkPreview(url: urlText, title: String(title.prefix(300)), image: image)
+    }
+
+    // MARK: Page tags
+
+    /// og:/twitter: title and image from the start of the page.
+    private static func pageTags(_ url: URL) async -> (title: String?, image: URL?)? {
+        guard let data = await fetch(url, limit: 512 * 1024),
+              let html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)
+        else { return nil }
+        func meta(_ names: [String]) -> String? {
+            for name in names {
+                let pattern = #"<meta[^>]+(?:property|name)\s*=\s*["']"# + NSRegularExpression.escapedPattern(for: name)
+                    + #"["'][^>]*content\s*=\s*["']([^"']+)["']|<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]*(?:property|name)\s*=\s*["']"#
+                    + NSRegularExpression.escapedPattern(for: name) + #"["']"#
+                guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+                      let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html))
+                else { continue }
+                for group in 1...2 {
+                    if let range = Range(match.range(at: group), in: html) {
+                        return String(html[range]).replacingOccurrences(of: "&amp;", with: "&")
+                    }
+                }
+            }
+            return nil
+        }
+        let image = meta(["og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"])
+            .flatMap { URL(string: $0, relativeTo: url)?.absoluteURL }
+            .flatMap { $0.scheme == "https" || $0.scheme == "http" ? $0 : nil }
+        return (meta(["og:title", "twitter:title"]), image)
+    }
+
+    private static func fetchImage(_ url: URL) async -> UIImage? {
+        guard let data = await fetch(url, limit: 8 * 1024 * 1024) else { return nil }
+        return SafeImage.image(from: data)
+    }
+
+    /// GET with no cookies or cache, giving up past `limit` bytes.
+    private static func fetch(_ url: URL, limit: Int) async -> Data? {
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+                         forHTTPHeaderField: "User-Agent")
+        guard let (bytes, response) = try? await previewSession.bytes(for: request),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
+        else { return nil }
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= limit { break }
+            }
+        } catch { return nil }
+        return data
+    }
+
+    private static let previewSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        return URLSession(configuration: config)
+    }()
 
     private static func loadImage(_ provider: NSItemProvider) async -> UIImage? {
         await withCheckedContinuation { continuation in
