@@ -67,6 +67,12 @@ public enum RelayFallback {
         return components.url ?? url
     }
 
+    #if DEBUG
+    /// Debug builds launched with `-relaySimulateBlockedAPI YES` act as if a
+    /// network filter blocked the main address, to test the fallback.
+    static var simulatesBlockedPrimary: Bool { UserDefaults.standard.bool(forKey: "relaySimulateBlockedAPI") }
+    #endif
+
     /// A failure that means this address couldn't be reached at all (not a
     /// slow or broken response), so the request never got to the relay and
     /// trying another address is safe.
@@ -113,6 +119,9 @@ public enum RelayFallback {
 
     /// The relay answers `/v1/ping` with 204 and X-Relay: 1; a block page doesn't.
     static func answers(_ host: String, session: URLSession) async -> Bool {
+        #if DEBUG
+        if simulatesBlockedPrimary, host == "api.relaymsg.app" { return false }
+        #endif
         guard let url = URL(string: "https://\(host)/v1/ping") else { return false }
         var request = URLRequest(url: url, timeoutInterval: 8)
         request.cachePolicy = .reloadIgnoringLocalCacheData
