@@ -1,6 +1,7 @@
 package kt
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
@@ -154,4 +155,55 @@ func (h *Head) Sign(key ed25519.PrivateKey) {
 
 func (h Head) Verify(pub ed25519.PublicKey) bool {
 	return ed25519.Verify(pub, h.signedBytes(), h.Sig)
+}
+
+// MARK: witness co-signatures and key endorsements
+
+// WitnessBytes is what the independent witness signs for a head it has
+// checked extends every head it saw before.
+func (h Head) WitnessBytes() []byte {
+	return append([]byte("relay-kt-witness-v1"), h.signedBytes()[len("relay-kt-head-v1"):]...)
+}
+
+// Endorsement says a key (Key) may sign in place of an older trusted one
+// (By): how a signing key is replaced without an app update.
+type Endorsement struct {
+	Key []byte `json:"key"`
+	By  []byte `json:"by"`
+	Sig []byte `json:"sig"`
+}
+
+func endorsementBytes(purpose string, key []byte) []byte {
+	return append([]byte("relay-kt-endorse-v1|"+purpose+"|"), key...)
+}
+
+// Endorse signs `key` with `by` for `purpose` ("head" or "witness").
+func Endorse(purpose string, by ed25519.PrivateKey, key ed25519.PublicKey) Endorsement {
+	return Endorsement{Key: key, By: by.Public().(ed25519.PublicKey), Sig: ed25519.Sign(by, endorsementBytes(purpose, key))}
+}
+
+// TrustedKeys extends `roots` with every endorsed key, in order: each must be
+// endorsed by a key already trusted.
+func TrustedKeys(purpose string, roots []ed25519.PublicKey, endorsements []Endorsement) []ed25519.PublicKey {
+	trusted := append([]ed25519.PublicKey{}, roots...)
+	for _, e := range endorsements {
+		for _, t := range trusted {
+			if bytes.Equal(t, e.By) && len(e.Key) == ed25519.PublicKeySize &&
+				ed25519.Verify(t, endorsementBytes(purpose, e.Key), e.Sig) {
+				trusted = append(trusted, ed25519.PublicKey(e.Key))
+				break
+			}
+		}
+	}
+	return trusted
+}
+
+// VerifyAny checks the head against any of `keys`.
+func (h Head) VerifyAny(keys []ed25519.PublicKey) bool {
+	for _, k := range keys {
+		if h.Verify(k) {
+			return true
+		}
+	}
+	return false
 }

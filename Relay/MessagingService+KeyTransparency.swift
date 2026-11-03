@@ -62,7 +62,7 @@ extension MessagingService {
         do {
             let lookup = try await apiClient.keyTransparencyLookup(account: peer, since: seen?.version ?? 0)
             guard await acceptHead(lookup.head) else { return .mismatch }
-            try KeyTransparency.verify(lookup, account: peer, key: key)
+            try KeyTransparency.verify(lookup, account: peer, key: key, signPublicKeys: trustedSignKeys())
             // Their history must have grown from what we accepted before, so a
             // key shown once and later swapped back doesn't go unnoticed.
             if let seen {
@@ -130,7 +130,7 @@ extension MessagingService {
     /// A head is acceptable if it's signed and its log extends (or is extended
     /// by) the last head this device saw. Remembers the newest.
     func acceptHead(_ head: KeyTransparency.Head) async -> Bool {
-        guard KeyTransparency.verifySignature(head) else { return false }
+        guard KeyTransparency.verifySignature(head, signPublicKeys: trustedSignKeys()) else { return false }
         guard let last = storedHead() else {
             store(head: head)
             return true
@@ -156,6 +156,26 @@ extension MessagingService {
         postRelayNotice("Relay's public record of keys showed this iPhone a history that doesn't match what it showed before or what everyone else sees. Someone may be trying to show you fake keys. Compare safety numbers in person with anyone you need to trust before sharing anything sensitive.")
     }
 
+    // MARK: Signing keys
+
+    private static let endorsementsKey = "kt.endorsements"
+
+    /// The built-in head signing key plus any it endorsed (learned from the
+    /// witness's published head, which carries the relay's endorsements).
+    func trustedSignKeys() -> [Data] {
+        guard let data = (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(Self.endorsementsKey)]).first?.first?.data) ?? nil,
+              let endorsements = try? JSONDecoder().decode([KeyTransparency.Endorsement].self, from: data)
+        else { return [KeyTransparency.signPublicKey] }
+        return KeyTransparency.trustedSignKeys(endorsements)
+    }
+
+    private func storeEndorsements(_ endorsements: [KeyTransparency.Endorsement]) {
+        guard !endorsements.isEmpty, let data = try? JSONEncoder().encode(endorsements) else { return }
+        try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                                  [.text(Self.endorsementsKey), .blob(data)])
+    }
+
     // MARK: Witness
 
     /// About hourly: the head published outside Relay's servers must be part of
@@ -164,7 +184,9 @@ extension MessagingService {
     func checkWitnessIfDue() async {
         let now = Int64(Date().timeIntervalSince1970)
         guard now - readKVTimestamp(Self.witnessAtKey) > 3600 else { return }
-        guard let witness = await KeyTransparency.fetchWitnessHead() else { return }
+        // Signed by the relay and co-signed by the witness on another machine.
+        guard let (witness, endorsements) = await KeyTransparency.fetchWitnessHead() else { return }
+        storeEndorsements(endorsements)
         // A failed consistency check raises the alarm inside acceptHead.
         if await acceptHead(witness) {
             writeKVTimestamp(Self.witnessAtKey, now)
@@ -186,7 +208,8 @@ extension MessagingService {
         let full = KeyTransparency.Lookup(
             vrfProof: latest.vrfProof, version: latest.version, commitment: latest.commitment,
             prevChain: latest.prevChain, nonce: last.nonce, keys: last.keys, proof: latest.proof, head: latest.head)
-        guard (try? KeyTransparency.verify(full, account: credentials.accountId, key: own)) != nil,
+        guard (try? KeyTransparency.verify(full, account: credentials.accountId, key: own,
+                                           signPublicKeys: trustedSignKeys())) != nil,
               let sets = try? KeyTransparency.verifyHistory(versions, latest: full)
         else {
             // Not published yet right after sign-up; checked again next time.

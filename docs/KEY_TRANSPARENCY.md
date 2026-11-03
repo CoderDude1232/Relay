@@ -55,6 +55,27 @@ can't be reconciled with what the client remembers. A device does the same for
 its own account (hourly), so its older history can't be rewritten either.
 Lookups are limited to 600 an hour per account.
 
+## Witness and key rotation (stage 6)
+
+`server/cmd/ktwitness` runs on the TURN box, a different machine from the
+relay. Every 5 minutes it fetches the relay's head, checks the relay's
+signature and that the head extends the last one it co-signed (consistency
+proof), then co-signs it, Ed25519 over `"relay-kt-witness-v1"` and the head's
+fields, and publishes `{head fields, sig, witnessSig, endorsements}` to
+`kt-head.json` in the public Gist. If a head doesn't extend what it saw, it
+stops co-signing and logs an error. Apps accept the published head only with
+both signatures and require it to be consistent with the head they were shown,
+so faking the directory means compromising both machines.
+
+The relay's signing key can be replaced without an app update:
+`relayd -kt-key-dir … -kt-rotate-sign-key` makes a new key, endorsed by the old
+one (Ed25519 over `"relay-kt-endorse-v1|head|"` and the new public key), kept in
+`endorsements.json` and served at `GET /v1/kt/keys`; the witness passes them on
+and apps trust any key reachable from the built-in one by endorsements.
+
+Live witness key (public half, built into the app):
+`t4GYsxbk2iG6sPnAWGPnF1I61Kcf4ujTsbhYRNhRkLE=`
+
 ## Privacy
 
 The tree shows only pseudonymous labels and commitments. Anyone fetching heads
@@ -95,7 +116,9 @@ NwIDAQAB
    the Go test `TestWriteVectors` writes vectors the Swift side is checked
    against). A mismatch is re-checked after 75 s, since a key changed in the
    last minute isn't published yet, then shows as a changed safety number.
-4. Witness: publish heads to the Gist; clients compare. ← done: relayd
-   `-kt-witness-gist` writes the latest head to `kt-head.json` in the public
-   Gist (at most every 10 minutes); about hourly the app fetches it, checks the
-   signature, and requires it to be consistent with the head it last saw.
+4. Witness: publish heads to the Gist; clients compare. ← done
+5. Remember accepted state per contact and for ourselves (above). ← done
+6. Independent co-signing witness and signing-key rotation (above). ← done
+
+Not covered: rotating the VRF key or the witness key needs an app update (they
+only need to be kept safe; see the backups in the deploy notes).

@@ -21,20 +21,58 @@ public enum KeyTransparency {
     /// RSA VRF key, PKCS#1.
     public static let vrfPublicKey = Data(base64Encoded: liveVRFPKCS1)!
 
-    /// The relay also publishes its latest head here, outside its own servers,
-    /// so every app can check it's being shown the same directory as everyone.
+    /// The witness (server/cmd/ktwitness, on a different machine from the
+    /// relay) co-signs each head after checking it extends every head it saw.
+    public static let witnessPublicKey = Data(base64Encoded: "t4GYsxbk2iG6sPnAWGPnF1I61Kcf4ujTsbhYRNhRkLE=")!
+    /// Where the witness publishes the head it co-signed.
     public static let witnessURL = URL(string: "https://gist.githubusercontent.com/CoderDude1232/02b29ce6632a4784f37e1902e11aea5b/raw/kt-head.json")!
 
-    /// The head published at `witnessURL`, if it's there and validly signed.
-    public static func fetchWitnessHead(session: URLSession = .shared) async -> Head? {
+    public struct Endorsement: Codable, Equatable, Sendable {
+        public let key: Data
+        public let by: Data
+        public let sig: Data
+    }
+
+    /// Head signing keys: the built-in one plus every key it (or a key it
+    /// endorsed) vouched for, so the relay's key can be replaced without an
+    /// app update.
+    public static func trustedSignKeys(_ endorsements: [Endorsement]) -> [Data] {
+        var trusted = [signPublicKey]
+        for e in endorsements {
+            let message = Data("relay-kt-endorse-v1|head|".utf8) + e.key
+            for t in trusted {
+                if t == e.by, e.key.count == 32,
+                   let key = try? Curve25519.Signing.PublicKey(rawRepresentation: t),
+                   key.isValidSignature(e.sig, for: message) {
+                    trusted.append(e.key)
+                    break
+                }
+            }
+        }
+        return trusted
+    }
+
+    /// The witness's published head, if both the relay's signature and the
+    /// witness's co-signature check out. Also returns the relay's endorsements.
+    public static func fetchWitnessHead(session: URLSession = .shared) async -> (head: Head, endorsements: [Endorsement])? {
+        struct Published: Decodable {
+            let epoch: UInt64, smtRoot: Data, logSize: UInt64, logRoot: Data, time: UInt64, sig: Data
+            let witnessSig: Data
+            let endorsements: [Endorsement]?
+        }
         var request = URLRequest(url: witnessURL, timeoutInterval: 10)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         guard let (data, response) = try? await session.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
-              let head = try? JSONDecoder().decode(Head.self, from: data),
-              verifySignature(head)
+              let p = try? JSONDecoder().decode(Published.self, from: data)
         else { return nil }
-        return head
+        let head = Head(epoch: p.epoch, smtRoot: p.smtRoot, logSize: p.logSize, logRoot: p.logRoot, time: p.time, sig: p.sig)
+        let endorsements = p.endorsements ?? []
+        guard verifySignature(head, signPublicKeys: trustedSignKeys(endorsements)),
+              let witness = try? Curve25519.Signing.PublicKey(rawRepresentation: witnessPublicKey),
+              witness.isValidSignature(p.witnessSig, for: Data("relay-kt-witness-v1".utf8) + headFields(head))
+        else { return nil }
+        return (head, endorsements)
     }
 
     // MARK: Wire types
@@ -209,11 +247,20 @@ public enum KeyTransparency {
 
     // MARK: Heads and the root log
 
+    static func headFields(_ head: Head) -> Data {
+        uint64(head.epoch) + head.smtRoot + uint64(head.logSize) + head.logRoot + uint64(head.time)
+    }
+
     public static func verifySignature(_ head: Head, signPublicKey: Data = signPublicKey) -> Bool {
-        guard let key = try? Curve25519.Signing.PublicKey(rawRepresentation: signPublicKey) else { return false }
-        let message = Data("relay-kt-head-v1".utf8) + uint64(head.epoch) + head.smtRoot
-            + uint64(head.logSize) + head.logRoot + uint64(head.time)
-        return key.isValidSignature(head.sig, for: message)
+        verifySignature(head, signPublicKeys: [signPublicKey])
+    }
+
+    /// Signed by any of `signPublicKeys` (see `trustedSignKeys`).
+    public static func verifySignature(_ head: Head, signPublicKeys: [Data]) -> Bool {
+        let message = Data("relay-kt-head-v1".utf8) + headFields(head)
+        return signPublicKeys.contains { raw in
+            (try? Curve25519.Signing.PublicKey(rawRepresentation: raw))?.isValidSignature(head.sig, for: message) == true
+        }
     }
 
     static func logNode(_ left: Data, _ right: Data) -> Data { sha256(Data([0x01]), left, right) }
@@ -249,8 +296,11 @@ public enum KeyTransparency {
     /// `lookup` proves `account`'s current keys under a validly signed head
     /// and, if `key` is given, that it's one of them.
     public static func verify(_ lookup: Lookup, account: String, key: Data?,
-                              vrfPublicKey: Data = vrfPublicKey, signPublicKey: Data = signPublicKey) throws {
-        guard verifySignature(lookup.head, signPublicKey: signPublicKey) else { throw Failure.headSignature }
+                              vrfPublicKey: Data = vrfPublicKey, signPublicKey: Data = signPublicKey,
+                              signPublicKeys: [Data]? = nil) throws {
+        guard verifySignature(lookup.head, signPublicKeys: signPublicKeys ?? [signPublicKey]) else {
+            throw Failure.headSignature
+        }
         guard let label = vrfLabel(account: account, proof: lookup.vrfProof, publicKey: vrfPublicKey) else {
             throw Failure.vrfProof
         }

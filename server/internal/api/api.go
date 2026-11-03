@@ -43,7 +43,8 @@ import (
 
 type Server struct {
 	// kt is the key transparency directory; nil when not configured.
-	kt *kt.Directory
+	kt             *kt.Directory
+	ktEndorsements []kt.Endorsement
 	// fallbacks lists the workers.dev addresses that reach this relay; nil
 	// when not configured.
 	fallbacks *fallbackHosts
@@ -451,6 +452,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/ping", s.handlePing)
 	mux.HandleFunc("GET /v1/speedtest", s.handleSpeedTest)
 	mux.HandleFunc("GET /v1/kt/head", s.handleKTHead)
+	mux.HandleFunc("GET /v1/kt/keys", s.handleKTKeys)
 	mux.HandleFunc("GET /v1/kt/consistency", s.handleKTConsistency)
 	mux.HandleFunc("GET /v1/kt/lookup/{account}", s.auth(s.handleKTLookup))
 	mux.HandleFunc("GET /v1/kt/monitor", s.auth(s.handleKTMonitor))

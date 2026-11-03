@@ -771,9 +771,12 @@ start the restored tree must match the last head or relayd exits.
 - `GET /v1/kt/monitor` (authenticated) → the caller's own `versions` (with
   nonces and keys) and the `latest` lookup they must chain to.
 
-With `-kt-witness-gist` and `-kt-witness-token-file`, relayd also writes the
-latest head to `kt-head.json` in that public Gist (at most every 10 minutes),
-so apps can check they're shown the same directory as everyone else.
+- `GET /v1/kt/keys` → `{endorsements: [{key, by, sig}]}`: replacement head
+  signing keys (`relayd -kt-rotate-sign-key` makes one).
+
+Lookups take `?since=N` and return `links` after version N; 600 an hour per
+account. The witness (`cmd/ktwitness`, on the TURN box) co-signs heads and
+publishes them to the public Gist; see `docs/KEY_TRANSPARENCY.md`.
 
 Binary values are base64. The key directory holds `vrf.pem` and `sign.key`;
 the app builds in their public halves, so never replace them.

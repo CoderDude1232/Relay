@@ -78,7 +78,14 @@ func TestWriteVectors(t *testing.T) {
 		}
 		consistency = append(consistency, map[string]any{"from": head(heads[pair[0]-1]), "to": head(heads[pair[1]-1]), "proof": ps})
 	}
+	// A replacement signing key the test key endorses, and a head it signed.
+	_, next, _ := ed25519.GenerateKey(nil)
+	endorsed := Endorse("head", signKey, next.Public().(ed25519.PublicKey))
+	rotated := Head{Epoch: 99, LogSize: 99, Time: 1}
+	rotated.Sign(next)
 	out, _ := json.MarshalIndent(map[string]any{
+		"endorsement":   map[string]any{"key": b(endorsed.Key), "by": b(endorsed.By), "sig": b(endorsed.Sig)},
+		"rotatedHead":   head(rotated),
 		"vrfPublicKeyPKCS1": b(x509.MarshalPKCS1PublicKey(&vrfKey.PublicKey)),
 		"signPublicKey":     b(signKey.Public().(ed25519.PublicKey)),
 		"first":             map[string]any{"account": "acct-7", "key": b([]byte("key-7")), "lookup": lookup(first)},

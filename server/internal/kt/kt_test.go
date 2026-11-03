@@ -1,6 +1,7 @@
 package kt
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -210,5 +211,32 @@ func TestVerifyExtends(t *testing.T) {
 	gap.Links = gap.Links[1:]
 	if VerifyExtends(first.Version, seen, gap) == nil {
 		t.Fatal("missing link accepted")
+	}
+}
+
+func TestEndorsementsAndWitness(t *testing.T) {
+	_, a, _ := ed25519.GenerateKey(rand.Reader)
+	_, b, _ := ed25519.GenerateKey(rand.Reader)
+	_, c, _ := ed25519.GenerateKey(rand.Reader)
+	_, evil, _ := ed25519.GenerateKey(rand.Reader)
+	root := a.Public().(ed25519.PublicKey)
+	chain := []Endorsement{Endorse("head", a, b.Public().(ed25519.PublicKey)), Endorse("head", b, c.Public().(ed25519.PublicKey))}
+	trusted := TrustedKeys("head", []ed25519.PublicKey{root}, chain)
+	if len(trusted) != 3 {
+		t.Fatalf("chain of endorsements: %d keys", len(trusted))
+	}
+	// An endorsement by an untrusted key, or for another purpose, doesn't count.
+	bogus := []Endorsement{Endorse("head", evil, evil.Public().(ed25519.PublicKey)), Endorse("witness", a, b.Public().(ed25519.PublicKey))}
+	if len(TrustedKeys("head", []ed25519.PublicKey{root}, bogus)) != 1 {
+		t.Fatal("bogus endorsement accepted")
+	}
+	h := Head{Epoch: 3, LogSize: 3, Time: 1}
+	h.Sign(c)
+	if !h.VerifyAny(trusted) || h.VerifyAny([]ed25519.PublicKey{root}) {
+		t.Fatal("verify any")
+	}
+	// The witness signs different bytes from the relay.
+	if bytes.Equal(h.WitnessBytes(), h.signedBytes()) {
+		t.Fatal("witness and head signatures must not be interchangeable")
 	}
 }

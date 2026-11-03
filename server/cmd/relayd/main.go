@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -163,8 +164,7 @@ func main() {
 	apnsTeamID := flag.String("apns-team-id", "", "Apple team id")
 	apnsTopic := flag.String("apns-topic", "app.relaymsg", "APNs topic (app bundle id)")
 	apnsProduction := flag.Bool("apns-production", false, "use the APNs production host (default: sandbox)")
-	ktWitnessGist := flag.String("kt-witness-gist", "", "GitHub Gist id to publish key transparency heads to (file kt-head.json)")
-	ktWitnessTokenFile := flag.String("kt-witness-token-file", "", "file holding a GitHub token that can edit -kt-witness-gist")
+	ktRotate := flag.Bool("kt-rotate-sign-key", false, "replace the key transparency signing key with a new one the old one endorses, then exit")
 	ktKeyDir := flag.String("kt-key-dir", "", "directory holding the key transparency VRF and signing keys (created on first run; never replace them); empty = key transparency off")
 	fallbackHostsFile := flag.String("fallback-hosts-file", "", "file of fallback hostnames (one per line, newest first) written by fallbackrotate; served at GET /v1/fallbacks")
 	fallbackKeyFile := flag.String("fallback-key-file", "", "file holding the secret the fallback Workers send; lets them pass on the real client address")
@@ -202,6 +202,15 @@ func main() {
 	historyRemoteURL := flag.String("history-remote-url", "", "historyd base URL for segments when local disk is low (e.g. https://turn.example:9479)")
 	historyRemoteSecretFile := flag.String("history-remote-secret-file", "", "path to the secret shared with historyd")
 	flag.Parse()
+	if *ktRotate {
+		pub, err := kt.RotateSignKey(*ktKeyDir)
+		if err != nil {
+			slog.Error("rotate kt signing key", "err", err)
+			os.Exit(1)
+		}
+		fmt.Printf("new key transparency signing key: %s\nrestart relayd to use it\n", base64.StdEncoding.EncodeToString(pub))
+		return
+	}
 
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
@@ -362,14 +371,12 @@ func main() {
 			os.Exit(1)
 		}
 		apiServer.SetKeyTransparency(dir, time.Minute)
-		if *ktWitnessGist != "" {
-			token, err := os.ReadFile(*ktWitnessTokenFile)
-			if err != nil {
-				slog.Error("read kt witness token", "err", err)
-				os.Exit(1)
-			}
-			apiServer.SetKeyTransparencyWitness(*ktWitnessGist, strings.TrimSpace(string(token)), 10*time.Minute)
+		endorsements, err := kt.LoadEndorsements(*ktKeyDir)
+		if err != nil {
+			slog.Error("kt endorsements", "err", err)
+			os.Exit(1)
 		}
+		apiServer.SetKeyTransparencyEndorsements(endorsements)
 		slog.Info("key transparency enabled", "epochs", len(heads))
 	}
 	if *fallbackHostsFile != "" {
