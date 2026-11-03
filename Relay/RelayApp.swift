@@ -63,6 +63,8 @@ struct RelayApp: App {
                 .onChange(of: model.isReady) { _, isReady in
                     if isReady {
                         wireCallManager()
+                        // A WhatsApp export shared while Relay wasn't running.
+                        if WhatsAppImportView.stagedExport() != nil { model.pendingWhatsAppImport = true }
                         // Right after registration/sign-in: nothing is "new" yet,
                         // and notifications are explained before the system asks.
                         WhatsNew.markSeen()

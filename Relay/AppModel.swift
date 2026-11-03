@@ -290,6 +290,8 @@ final class AppModel {
             service.markActiveConversationReadOnForeground()
             Task { await Supporter.shared.sync() }
             Task { await service.ensureNoteToSelf() }
+            // A WhatsApp export the share extension left: open the importer.
+            if WhatsAppImportView.stagedExport() != nil { pendingWhatsAppImport = true }
             Task {
                 if let convId = await service.processPendingShare() {
                     pendingNotificationConversationId = convId

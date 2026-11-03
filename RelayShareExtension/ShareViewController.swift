@@ -114,17 +114,25 @@ final class ShareViewController: UIViewController {
     }
 
     /// Copies the export into the App Group inbox and opens the app on it.
+    /// Copies the export into the App Group inbox; Relay opens its importer
+    /// the next time it comes to the front (a share extension can't open it).
     private func importWhatsAppExport(_ provider: NSItemProvider) {
-        let label = UILabel()
-        label.text = "Opening Relay…"
-        label.textColor = .secondaryLabel
-        label.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-        ])
+        let status = ImportHandoffModel()
         let ctx = extensionContext
+        let host = UIHostingController(rootView: ImportHandoffView(model: status) {
+            ctx?.completeRequest(returningItems: [], completionHandler: nil)
+        })
+        addChild(host)
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: view.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+        host.didMove(toParent: self)
+
         let type = provider.hasItemConformingToTypeIdentifier(UTType.zip.identifier)
             ? UTType.zip.identifier : UTType.data.identifier
         provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
@@ -138,12 +146,7 @@ final class ShareViewController: UIViewController {
                 if (name as NSString).pathExtension.isEmpty { name += "." + url.pathExtension }
                 staged = (try? fm.copyItem(at: url, to: inbox.appendingPathComponent(name))) != nil
             }
-            Task { @MainActor in
-                if staged, let open = URL(string: "relay://import-whatsapp") {
-                    await ctx?.open(open)
-                }
-                ctx?.completeRequest(returningItems: [], completionHandler: nil)
-            }
+            Task { @MainActor in status.state = staged ? .ready : .failed }
         }
     }
 
@@ -297,6 +300,58 @@ final class ShareViewController: UIViewController {
 
 /// Relay's accent (the app's AccentColor; the extension has no asset of its own).
 private let relayAccent = Color(red: 0xF6 / 255, green: 0x3B / 255, blue: 1)
+
+/// The WhatsApp export hand-off: copying, then "open Relay to finish".
+@Observable
+final class ImportHandoffModel {
+    enum State { case copying, ready, failed }
+    var state = State.copying
+}
+
+private struct ImportHandoffView: View {
+    let model: ImportHandoffModel
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            switch model.state {
+            case .copying:
+                ProgressView()
+                Text("Getting the chat ready…")
+                    .foregroundStyle(.secondary)
+            case .ready:
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 52))
+                    .foregroundStyle(.green)
+                Text("Chat ready to import")
+                    .font(.title2.weight(.bold))
+                Text("Open Relay to choose which chat it goes into. Nothing is sent to anyone.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            case .failed:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 52))
+                    .foregroundStyle(.orange)
+                Text("Couldn't read the export")
+                    .font(.title2.weight(.bold))
+                Text("Export the chat from WhatsApp again, or save it to Files and import it from Relay's Settings.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(action: onDone) {
+                Text("Done")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 50)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(relayAccent)
+            .disabled(model.state == .copying)
+        }
+        .padding(24)
+    }
+}
 
 /// What's being shared, read when the sheet opens.
 @Observable
