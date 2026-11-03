@@ -2798,14 +2798,11 @@ enum BubblePosition {
     var closesGroup: Bool { self == .single || self == .last }
 }
 
-/// Badge next to the peer's name in the title. Unverified peers get none.
+/// Badge next to the peer's name in the title: only a warning when their
+/// safety number changed.
 private extension VerificationState {
     var titleSymbol: (name: String, tint: Color)? {
-        switch self {
-        case .verified: ("checkmark.shield.fill", .green)
-        case .changed: ("exclamationmark.shield.fill", .orange)
-        case .unverified: nil
-        }
+        self == .changed ? ("exclamationmark.shield.fill", .orange) : nil
     }
 }
 

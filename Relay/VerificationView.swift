@@ -116,121 +116,120 @@ struct VerificationView: View {
     @ViewBuilder
     private func content(for verification: MessagingService.PeerVerification) -> some View {
         ScrollView {
-            VStack(spacing: 24) {
-                statusHeader(verification.state)
-
-                if verification.state == .changed {
-                    Label(
-                        "\(peerName)’s safety number has changed. This can happen if they reinstalled Relay — or it could mean someone is intercepting your messages. Compare the number below before trusting it.",
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.orange.opacity(0.12), in: .rect(cornerRadius: 12))
-                }
-
-                if let transparency = verification.transparency {
-                    TransparencyRow(status: transparency, peerName: peerName)
-                }
-
-                SafetyNumberGrid(numeric: verification.safetyNumber.numeric)
-
-                if let qr = Self.qrImage(for: verification.safetyNumber.scannable) {
-                    VStack(spacing: 8) {
+            VStack(spacing: 20) {
+                // The code and the number, together, like a card to hold up.
+                VStack(spacing: 16) {
+                    if let qr = Self.qrImage(for: verification.safetyNumber.scannable) {
                         Image(uiImage: qr)
                             .interpolation(.none)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 200, height: 200)
-                            .padding(12)
-                            .background(.white, in: .rect(cornerRadius: 16))
+                            .frame(width: 180, height: 180)
+                            .padding(10)
+                            .background(.white, in: .rect(cornerRadius: 14))
                             .accessibilityLabel("Safety number QR code")
                             .accessibilityHint("\(peerName) can scan this code to verify you.")
-                        Button {
-                            saveQRToPhotos(qr)
-                        } label: {
-                            Label("Save to Photos", systemImage: "square.and.arrow.down")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
+                    SafetyNumberGrid(numeric: verification.safetyNumber.numeric)
                 }
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity)
+                .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 20))
 
-                Text("Compare these numbers with \(peerName) in person or over a call you trust — or tap Scan to check their code automatically.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+                status(verification)
 
-                actionButtons(verification.state)
+                actionButtons(verification)
             }
             .padding()
         }
+        .toolbar {
+            if let qr = Self.qrImage(for: verification.safetyNumber.scannable) {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button { saveQRToPhotos(qr) } label: {
+                            Label("Save Code to Photos", systemImage: "square.and.arrow.down")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    .accessibilityLabel("More")
+                }
+            }
+        }
     }
 
-    private func statusHeader(_ state: VerificationState) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: state.symbol)
-                .font(.system(size: 44))
-                .foregroundStyle(state.tint)
+    /// One short line about where things stand.
+    private func status(_ verification: MessagingService.PeerVerification) -> some View {
+        let (symbol, tint, title, detail): (String, Color, String, String) = {
+            if verification.transparency == .mismatch {
+                return ("exclamationmark.shield.fill", .red, "Can't be verified",
+                        "Someone may be intercepting your messages with \(peerName). Compare these numbers in person before trusting this chat.")
+            }
+            switch verification.state {
+            case .changed:
+                return ("exclamationmark.shield.fill", .orange, "Safety number changed",
+                        "This usually means \(peerName) reinstalled Relay or got a new phone. Compare the numbers to be sure.")
+            case .verified:
+                return ("checkmark.shield.fill", .green, "Verified", "You verified your safety number with \(peerName).")
+            case .unverified:
+                if verification.isVerifiedAutomatically {
+                    return ("checkmark.shield.fill", .green, "Verified", "Your safety number with \(peerName) was verified automatically.")
+                }
+                return ("shield", .secondary, "Not verified",
+                        "To verify, compare these numbers with \(peerName) or scan their code.")
+            }
+        }()
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title2)
+                .foregroundStyle(tint)
                 .accessibilityHidden(true)
-            Text(state.label)
-                .font(.headline)
-                .foregroundStyle(state.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.headline)
+                Text(detail).font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
-    private func actionButtons(_ state: VerificationState) -> some View {
-        if verification?.hasConflictingKeys == true {
-            Label {
-                Text("\(peerName) has a device using a different security key. A safety number can't confirm it, so verification is unavailable. Ask \(peerName) to check their linked devices and remove any they don't recognise.")
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            }
-            .font(.footnote)
-            .padding()
-            .background(.orange.opacity(0.12), in: .rect(cornerRadius: 12))
+    private func actionButtons(_ verification: MessagingService.PeerVerification) -> some View {
+        if verification.hasConflictingKeys {
+            Text("\(peerName) has a device with a different key, so this number can't be verified. Ask them to check their linked devices and remove any they don't recognise.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            verificationActions(state)
-        }
-    }
-
-    @ViewBuilder
-    private func verificationActions(_ state: VerificationState) -> some View {
-        VStack(spacing: 12) {
-            Button {
-                showingScanner = true
-            } label: {
-                Label("Scan \(peerName)’s Code", systemImage: "qrcode.viewfinder")
-                    .frame(maxWidth: .infinity)
-            }
-            .glassProminentCompat()
-
-            if state == .verified {
-                Button(role: .destructive) {
-                    if let peer { service.setVerified(false, peer: peer) }
-                    reload()
-                } label: {
-                    Text("Clear Verification").frame(maxWidth: .infinity)
-                }
-                .glassStyleCompat()
-            } else {
+            VStack(spacing: 12) {
                 Button {
-                    if let peer { service.setVerified(true, peer: peer) }
-                    reload()
+                    showingScanner = true
                 } label: {
-                    Text("Mark as Verified").frame(maxWidth: .infinity)
+                    Label("Scan Code", systemImage: "qrcode.viewfinder")
+                        .frame(maxWidth: .infinity)
                 }
-                .glassStyleCompat()
+                .glassProminentCompat()
+
+                if verification.state == .verified {
+                    Button(role: .destructive) {
+                        if let peer { service.setVerified(false, peer: peer) }
+                        reload()
+                    } label: {
+                        Text("Clear Verification").frame(maxWidth: .infinity)
+                    }
+                    .glassStyleCompat()
+                } else if !verification.isVerifiedAutomatically {
+                    Button {
+                        if let peer { service.setVerified(true, peer: peer) }
+                        reload()
+                    } label: {
+                        Text("Mark as Verified").frame(maxWidth: .infinity)
+                    }
+                    .glassStyleCompat()
+                }
             }
+            .controlSize(.large)
         }
-        .controlSize(.large)
     }
 
     // MARK: - Actions
@@ -356,9 +355,8 @@ private struct SafetyNumberGrid: View {
                     .accessibilityLabel(group.map(String.init).joined(separator: " "))
             }
         }
-        .padding()
+        .padding(.horizontal)
         .frame(maxWidth: .infinity)
-        .background(.fill.tertiary, in: .rect(cornerRadius: 16))
         .textSelection(.enabled)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Safety number")
@@ -510,59 +508,6 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             guard let self, !self.didScan else { return }
             self.didScan = true
             self.onScan?(value)
-        }
-    }
-}
-
-/// Whether this contact's public key is the one everyone else sees.
-private struct TransparencyRow: View {
-    let status: MessagingService.TransparencyStatus
-    let peerName: String
-
-    var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(detail).font(.footnote).foregroundStyle(.secondary)
-            }
-        } icon: {
-            Image(systemName: symbol).foregroundStyle(color)
-        }
-        .padding()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.1), in: .rect(cornerRadius: 12))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var title: String {
-        switch status {
-        case .verified: "Key confirmed"
-        case .mismatch: "Key couldn't be confirmed"
-        case .unavailable: "Key not checked yet"
-        }
-    }
-
-    private var detail: String {
-        switch status {
-        case .verified: "Relay checked automatically that \(peerName)'s public key is the same one everyone else sees, so it hasn't been swapped. A public key only lets people send them messages; it can't open anything. Comparing numbers in person is still the strongest check."
-        case .mismatch: "The key your messages use for \(peerName) isn't the one everyone else sees. Someone may be intercepting. Compare safety numbers in person before trusting this chat."
-        case .unavailable: "Relay couldn't check \(peerName)'s key right now. It tries again next time you open the chat."
-        }
-    }
-
-    private var symbol: String {
-        switch status {
-        case .verified: "checkmark.seal.fill"
-        case .mismatch: "exclamationmark.octagon.fill"
-        case .unavailable: "questionmark.circle"
-        }
-    }
-
-    private var color: Color {
-        switch status {
-        case .verified: .green
-        case .mismatch: .red
-        case .unavailable: .secondary
         }
     }
 }

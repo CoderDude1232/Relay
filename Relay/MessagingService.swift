@@ -4875,6 +4875,12 @@ final class MessagingService {
         var hasConflictingKeys = false
         /// What the relay's key directory says about their key, once checked.
         var transparency: TransparencyStatus?
+
+        /// Verified without anyone comparing numbers: their key is the one
+        /// everyone else is shown.
+        var isVerifiedAutomatically: Bool { state == .unverified && transparency == .verified }
+        /// Verified either way.
+        var isVerified: Bool { state == .verified || isVerifiedAutomatically }
     }
 
     private func hasConflictingIdentityKeys(_ peer: String) -> Bool {
