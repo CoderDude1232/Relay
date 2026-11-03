@@ -888,19 +888,6 @@ struct ChatView: View {
             }
             .animation(.spring(duration: 0.2), value: isAtBottom)
             .animation(.spring(duration: 0.3), value: newMessageBanner != nil)
-            // Messages scroll behind the composer; blur them in gradually, so
-            // there's no hard edge and the glass stays readable.
-            .background(alignment: .top) {
-                Rectangle()
-                    .fill(.regularMaterial)
-                    .mask {
-                        LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.45)],
-                                       startPoint: .top, endPoint: .bottom)
-                    }
-                    .padding(.top, -16)
-                    .ignoresSafeArea(edges: .bottom)
-                    .allowsHitTesting(false)
-            }
         }
         .alert(
             "Message Not Sent",
