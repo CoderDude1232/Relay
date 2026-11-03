@@ -51,6 +51,8 @@ struct ChatView: View {
     @Environment(CallManager.self) private var callManager
     @Environment(AppModel.self) private var model
     @State private var isOnScreen = false
+    /// Stale keys are checked once per visit to the chat.
+    @State private var didCheckStaleKeys = false
     /// Height of the tip floating above the composer (0 when none).
     @State private var floatingTipHeight: CGFloat = 0
     /// How far the messages extend under the composer (and home indicator).
@@ -508,6 +510,7 @@ struct ChatView: View {
 
     var body: some View {
         rawScrollView
+            .hiddenInAppSwitcher()
         // The screenshot-hidden container re-hosts its content in a separate
         // UIHostingController that doesn't inherit this environment. Re-inject
         // everything the rows read, or they trap on a missing @Environment object.
@@ -593,6 +596,7 @@ struct ChatView: View {
                         }
                     }
                 }
+                .hiddenInAppSwitcher()
                 .tint(.primary)
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -1222,6 +1226,16 @@ struct ChatView: View {
             changedGroupMembers = service.groupMembersWithChangedSafetyNumbers(conversationId)
         } else {
             verification = service.peerVerification(for: conversationId)
+        }
+        // A key left behind by someone's removed device makes the safety number
+        // look changed though it matches: check their current devices first.
+        if !didCheckStaleKeys, isGroup ? !changedGroupMembers.isEmpty : verification?.hasConflictingKeys == true {
+            didCheckStaleKeys = true
+            let peers = isGroup ? changedGroupMembers : [service.verificationPeer(for: conversationId)].compactMap { $0 }
+            Task {
+                for peer in peers { await service.refreshPeerIdentitiesIfConflicting(peer: peer) }
+                refreshVerification()
+            }
         }
     }
 

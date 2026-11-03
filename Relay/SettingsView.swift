@@ -1222,6 +1222,7 @@ private struct SecuritySettingsView: View {
     let service: MessagingService
     @State private var panicMode = PanicModeManager.shared
     @State private var showingPanicSettings = false
+    @AppStorage(AppSwitcherPrivacy.modeKey) private var appSwitcherMode = AppSwitcherPrivacy.Mode.content.rawValue
     @AppStorage("relay.screenLockEnabled") private var screenLockEnabled = false
     @AppStorage("relay.screenLockTimeout") private var screenLockTimeout = 60
 
@@ -1240,6 +1241,23 @@ private struct SecuritySettingsView: View {
                     SettingsIcon(systemName: "key.fill", color: .orange)
                     LabeledContent("Keys", value: "Secure Enclave")
                 }
+            }
+
+            Section {
+                Picker(selection: $appSwitcherMode) {
+                    ForEach(AppSwitcherPrivacy.Mode.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "square.on.square", color: .indigo)
+                        Text("App Switcher")
+                    }
+                }
+            } header: {
+                Text("App Switcher")
+            } footer: {
+                Text("What's hidden when Relay shows in the app switcher. Hide Messages & Names blurs messages, names and photos and leaves the rest of the screen as it is.")
             }
 
             Section("Screen Lock") {

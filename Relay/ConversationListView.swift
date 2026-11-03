@@ -690,6 +690,7 @@ struct ConversationListView: View {
                         .frame(width: 30, height: 30)
                         .contentTransition(.symbolEffect(.replace))
                     ConversationRow(conversation: conversation, service: service)
+.hiddenInAppSwitcher()
                 }
                 .padding(.vertical, 2)
                 .background {
@@ -703,6 +704,7 @@ struct ConversationListView: View {
             .tag(conversation.id as String?)
         } else {
         ConversationRow(conversation: conversation, service: service)
+.hiddenInAppSwitcher()
         .tag(conversation.id as String?)
         .selectionDisabled()
         .onTapGesture { selectedConversationId = conversation.id }
@@ -1092,6 +1094,7 @@ struct ConversationListView: View {
                             } label: {
                                 ConversationRow(conversation: request, service: service,
                                                 scamFlagged: requestLooksLikeScam(request.id))
+                                    .hiddenInAppSwitcher()
                             }
                             .buttonStyle(.plain)
                             .task(id: request.id) { await service.checkRequestForScam(request.id) }
@@ -1167,6 +1170,7 @@ struct ConversationListView: View {
                 Section("Chats") {
                     ForEach(matchingConversations) { conversation in
                         ConversationRow(conversation: conversation, service: service)
+.hiddenInAppSwitcher()
                             .tag(conversation.id as String?)
                             .listRowBackground(Color.clear)
                     }
@@ -2232,6 +2236,7 @@ private struct ArchivedChatsView: View {
                     dismiss()
                 } label: {
                     ConversationRow(conversation: conversation, service: service)
+.hiddenInAppSwitcher()
                 }
                 .buttonStyle(.plain)
                 .swipeActions(edge: .trailing) {

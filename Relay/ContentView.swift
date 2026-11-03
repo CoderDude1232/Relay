@@ -145,13 +145,21 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            isObscured = true
-            // Synchronously: the app-switcher snapshot is taken right after this.
-            updateShield()
+            switch AppSwitcherPrivacy.mode {
+            case .everything:
+                isObscured = true
+                // Synchronously: the app-switcher snapshot is taken right after this.
+                updateShield()
+            case .content:
+                AppSwitcherPrivacy.shared.hide()
+            case .off:
+                break
+            }
             if screenLockEnabled { backgroundedAt = Date() }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             isObscured = false
+            AppSwitcherPrivacy.shared.show()
             guard screenLockEnabled, !isLocked else { return }
             let elapsed = backgroundedAt.map { Date().timeIntervalSince($0) } ?? .infinity
             if elapsed >= Double(screenLockTimeout) {

@@ -122,6 +122,7 @@ struct CallsView: View {
                                     CallHistoryRow(call: call, count: group.calls.count, service: service) { kind in
                                         callBack(call, kind: kind)
                                     }
+                                    .hiddenInAppSwitcher()
                                     .onTapGesture { handleTap(call) }
                                     .accessibilityAction(named: conversationId(for: call) != nil ? "Open chat" : "Call back") {
                                         handleTap(call)
