@@ -48,6 +48,15 @@ extension MessagingService {
                 accountByName[displayName(forAccount: member).lowercased()] = member
             }
         }
+        // Imports from before unsent messages were recognised kept WhatsApp's
+        // wording as plain text; the unsent rows below replace them.
+        _ = try? storage.database.run(
+            """
+            DELETE FROM messages WHERE conversation_id = ? AND id LIKE ? AND deleted = 0
+              AND body IN ('This message was deleted', 'This message was deleted.',
+                           'You deleted this message', 'You deleted this message.')
+            """, [.text(conversationId), .text(Self.importedIdPrefix + "%")]
+        )
         let messages = storage.messages
         let blobs = attachmentStore
         // Imported media stays on this device, so the relay's upload cap
@@ -86,7 +95,7 @@ extension MessagingService {
                 } else if message.omittedMedia {
                     body = "[Media not included in the export]"
                 }
-                if body.isEmpty, attachments.isEmpty { continue }
+                if body.isEmpty, attachments.isEmpty, !message.deleted { continue }
 
                 // Stable ids: the same export imported again matches its rows.
                 let key = "\(conversationId)|\(timestamp)|\(message.sender)|\(message.text)|\(message.attachment ?? "")"
@@ -102,7 +111,7 @@ extension MessagingService {
                 }
                 rows.append(MessageStore.ImportedMessage(
                     id: id, isOutgoing: isMe, body: body, timestamp: timestamp,
-                    senderAccount: sender, attachments: attachments
+                    senderAccount: sender, attachments: attachments, isDeleted: message.deleted
                 ))
             }
             return try messages.importMessages(rows, conversationId: conversationId)

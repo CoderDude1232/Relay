@@ -20,6 +20,8 @@ nonisolated struct WhatsAppExport: Sendable {
         var attachment: String?
         /// The export says a photo or file was left out ("image omitted").
         var omittedMedia = false
+        /// "This message was deleted" / "You deleted this message".
+        var deleted = false
     }
 
     /// The chat's name from the file name ("WhatsApp Chat - Morgan"), if any.
@@ -134,7 +136,7 @@ nonisolated enum WhatsAppChatParser {
                 message.text += "\n" + continuation.joined(separator: "\n")
             }
             message.text = clean(message.text)
-            if message.text.isEmpty, message.attachment == nil, !message.omittedMedia { continue }
+            if message.text.isEmpty, message.attachment == nil, !message.omittedMedia, !message.deleted { continue }
             messages.append(message)
         }
         // The notice WhatsApp puts at the top of every chat.
@@ -234,7 +236,12 @@ nonisolated enum WhatsAppChatParser {
             message.text = String(body[range.upperBound...])
             return message
         }
-        let lower = body.lowercased()
+        let lower = body.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        if lower == "this message was deleted" || lower == "you deleted this message" {
+            message.deleted = true
+            message.text = ""
+            return message
+        }
         if lower == "<media omitted>" || (isNotice && lower.hasSuffix(" omitted")) {
             message.omittedMedia = true
             message.text = ""

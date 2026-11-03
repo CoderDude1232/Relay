@@ -895,15 +895,18 @@ public final class MessageStore: @unchecked Sendable {
         public let timestamp: Int64
         public let senderAccount: String?
         public let attachments: [StoredAttachment]
+        /// Unsent by its author before the export: shown like any unsent message.
+        public let isDeleted: Bool
 
         public init(id: String, isOutgoing: Bool, body: String, timestamp: Int64,
-                    senderAccount: String?, attachments: [StoredAttachment]) {
+                    senderAccount: String?, attachments: [StoredAttachment], isDeleted: Bool = false) {
             self.id = id
             self.isOutgoing = isOutgoing
             self.body = body
             self.timestamp = timestamp
             self.senderAccount = senderAccount
             self.attachments = attachments
+            self.isDeleted = isDeleted
         }
     }
 
@@ -928,14 +931,15 @@ public final class MessageStore: @unchecked Sendable {
                 try db.run(
                     """
                     INSERT INTO messages
-                        (id, conversation_id, is_outgoing, body, timestamp, status, created_at, sender_account)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, conversation_id, is_outgoing, body, timestamp, status, created_at, sender_account, deleted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         .text(message.id), .text(conversationId), .integer(message.isOutgoing ? 1 : 0),
                         .text(message.body), .integer(message.timestamp),
                         .text(message.isOutgoing ? MessageStatus.sent.rawValue : MessageStatus.received.rawValue),
                         .integer(createdAt), message.senderAccount.map { .text($0) } ?? .null,
+                        .integer(message.isDeleted ? 1 : 0),
                     ]
                 )
                 for (ordinal, attachment) in message.attachments.enumerated() {
