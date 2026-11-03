@@ -19,7 +19,25 @@ final class ShareViewController: UIViewController {
             importWhatsAppExport(provider)
             return
         }
+        // Without a suggested name, the file's own name tells.
+        if let provider = singleFileProvider() {
+            provider.loadObject(ofClass: NSURL.self) { [weak self] object, _ in
+                let name = (object as? URL)?.lastPathComponent.lowercased() ?? ""
+                Task { @MainActor in
+                    guard let self else { return }
+                    if Self.isWhatsAppExportName(name) {
+                        self.importWhatsAppExport(provider)
+                    } else {
+                        self.showPicker()
+                    }
+                }
+            }
+            return
+        }
+        showPicker()
+    }
 
+    private func showPicker() {
         var preselectedAccount: String?
         if let intent = extensionContext?.intent as? INSendMessageIntent {
             preselectedAccount = intent.recipients?.first?.customIdentifier
@@ -74,9 +92,25 @@ final class ShareViewController: UIViewController {
         let providers = items.flatMap { $0.attachments ?? [] }
         guard providers.count == 1, let provider = providers.first,
               let name = provider.suggestedName?.lowercased(),
-              name.hasPrefix("whatsapp chat")
+              Self.isWhatsAppExportName(name)
         else { return nil }
         return provider
+    }
+
+    /// One shared file (WhatsApp hands its export over as a file URL).
+    private func singleFileProvider() -> NSItemProvider? {
+        let items = extensionContext?.inputItems as? [NSExtensionItem] ?? []
+        let providers = items.flatMap { $0.attachments ?? [] }
+        guard providers.count == 1, let provider = providers.first,
+              provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || provider.hasItemConformingToTypeIdentifier(UTType.zip.identifier)
+        else { return nil }
+        return provider
+    }
+
+    /// "WhatsApp Chat - Morgan(.zip)" on iPhone, "WhatsApp Chat with Morgan" on Android.
+    private static func isWhatsAppExportName(_ name: String) -> Bool {
+        name.hasPrefix("whatsapp chat") || name == "_chat.txt"
     }
 
     /// Copies the export into the App Group inbox and opens the app on it.
