@@ -775,6 +775,14 @@ app (`RelayFallback.builtIn`), so a new install on a network that already blocks
 the relay can still get in and fetch the list. Renaming the account's workers.dev
 subdomain changes that address, so the app's copy has to change with it.
 
+The list is also published, signed, to a public GitHub Gist (`fallbacks.json`):
+`{"v":1,"issued":<unix>,"hosts":[...],"sig":<base64>}`, an Ed25519 signature
+over `relay-fallbacks-v1\n<issued>\n` and each host plus `\n`. A device that
+can't reach the relay fetches it before trying its saved addresses and keeps it
+only if the signature checks against the key built into the app
+(`RelayFallback.listSigningKey`) and it's newer than what it has. The signing
+seed stays on the API box (`-sign-key`); the Gist token only needs gist access.
+
 `fallbackrotate` runs from a systemd timer. Each run deploys a Worker under a new
 random name when the newest is older than `-every` (72h), checks it reaches the
 relay, retires Workers older than `-keep` (7 days; the newest two always stay),
@@ -787,6 +795,8 @@ and writes the live hostnames to `-hosts`, which relayd re-reads on change.
 | `fallbackrotate -account` | Cloudflare account id |
 | `fallbackrotate -token-file` | API token with *Workers Scripts: Edit* (account) |
 | `fallbackrotate -key-file`, `-hosts`, `-state`, `-every`, `-keep` | see `-h` |
+| `fallbackrotate -sign-key`, `-gen-key`, `-public-key` | the list's signing seed |
+| `fallbackrotate -gist`, `-gist-token-file`, `-signed-out` | where the signed list goes |
 
 Free-plan limits: 100,000 Worker requests a day across all of them, which is
 plenty while they're only used when the main address is blocked. A filter that

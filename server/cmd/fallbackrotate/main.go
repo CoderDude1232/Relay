@@ -10,8 +10,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	_ "embed"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -42,7 +45,29 @@ func main() {
 	every := flag.Duration("every", 72*time.Hour, "deploy a new Worker when the newest is this old")
 	keep := flag.Duration("keep", 7*24*time.Hour, "retire Workers older than this")
 	anchor := flag.String("anchor", "", "a Worker name that's never rotated; built into the app for devices without a list yet")
+	signKeyFile := flag.String("sign-key", "", "Ed25519 seed (hex) that signs the published list; -gen-key makes one")
+	genKey := flag.Bool("gen-key", false, "write a new signing seed to -sign-key, print its public key and exit")
+	publicKey := flag.Bool("public-key", false, "print the public key for -sign-key (built into the app) and exit")
+	gistID := flag.String("gist", "", "GitHub Gist that carries the signed list (file fallbacks.json)")
+	gistTokenFile := flag.String("gist-token-file", "", "file holding a GitHub token that can edit -gist")
+	signedOut := flag.String("signed-out", "", "also write the signed list to this file")
 	flag.Parse()
+
+	if *genKey || *publicKey {
+		if *genKey {
+			seed := make([]byte, ed25519.SeedSize)
+			_, _ = rand.Read(seed)
+			if err := writeAtomic(*signKeyFile, []byte(hex.EncodeToString(seed)+"\n"), 0o600); err != nil {
+				fail("write sign key", err)
+			}
+		}
+		priv, err := loadSignKey(*signKeyFile)
+		if err != nil {
+			fail("read sign key", err)
+		}
+		fmt.Println(base64.StdEncoding.EncodeToString(priv.Public().(ed25519.PublicKey)))
+		return
+	}
 
 	token, err := os.ReadFile(*tokenFile)
 	if err != nil {
@@ -128,6 +153,88 @@ func main() {
 	if err := writeAtomic(*hostsFile, []byte(hosts.String()), 0o644); err != nil {
 		fail("write hosts", err)
 	}
+
+	// The same list, signed, where a blocked device can still find it.
+	if *signKeyFile != "" {
+		priv, err := loadSignKey(*signKeyFile)
+		if err != nil {
+			fail("read sign key", err)
+		}
+		var live []string
+		for _, w := range state.Workers {
+			live = append(live, w.Host)
+		}
+		if *anchor != "" {
+			live = append(live, *anchor+"."+subdomain+".workers.dev")
+		}
+		signed := signList(priv, live, now)
+		if *signedOut != "" {
+			if err := writeAtomic(*signedOut, signed, 0o644); err != nil {
+				slog.Error("write signed list", "err", err)
+			}
+		}
+		if *gistID != "" {
+			// Publishing is a bonus: without a token the rotation still counts.
+			if token, err := os.ReadFile(*gistTokenFile); err != nil {
+				slog.Error("read gist token; list not published", "err", err)
+			} else if err := updateGist(ctx, *gistID, strings.TrimSpace(string(token)), signed); err != nil {
+				slog.Error("publish list", "err", err)
+			} else {
+				slog.Info("published list", "hosts", len(live))
+			}
+		}
+	}
+}
+
+func loadSignKey(path string) (ed25519.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	seed, err := hex.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return nil, errors.New("sign key must be a hex Ed25519 seed")
+	}
+	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// signList: {"v":1,"issued":<unix>,"hosts":[...],"sig":<base64>}. The
+// signature covers "relay-fallbacks-v1\n<issued>\n" and each host plus "\n";
+// RelayFallback.swift checks it with the public key.
+func signList(priv ed25519.PrivateKey, hosts []string, now time.Time) []byte {
+	issued := now.Unix()
+	msg := fmt.Sprintf("relay-fallbacks-v1\n%d\n", issued)
+	for _, h := range hosts {
+		msg += h + "\n"
+	}
+	out, _ := json.MarshalIndent(map[string]any{
+		"v":      1,
+		"issued": issued,
+		"hosts":  hosts,
+		"sig":    base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg))),
+	}, "", "  ")
+	return append(out, '\n')
+}
+
+func updateGist(ctx context.Context, id, token string, content []byte) error {
+	body, _ := json.Marshal(map[string]any{
+		"files": map[string]any{"fallbacks.json": map[string]string{"content": string(content)}},
+	})
+	req, err := http.NewRequestWithContext(ctx, "PATCH", "https://api.github.com/gists/"+id, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("github: status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func fail(what string, err error) {

@@ -12,6 +12,7 @@
 //  extensions follow along.
 //
 
+import CryptoKit
 import Foundation
 
 public enum RelayFallback {
@@ -28,6 +29,52 @@ public enum RelayFallback {
     /// yet (a new install on a network that already blocks the relay).
     /// cmd/fallbackrotate keeps it deployed (-anchor).
     static let builtIn = ["paperlantern.amberfield.workers.dev"]
+
+    // MARK: Published list
+
+    /// The same list, signed by the rotation (cmd/fallbackrotate), on GitHub:
+    /// where a device that can't reach the relay may still find the newest
+    /// addresses. Only a list signed with `listSigningKey` is used, so a fake
+    /// copy can't point the app anywhere else.
+    static let publishedListURL = URL(string: "https://gist.githubusercontent.com/CoderDude1232/02b29ce6632a4784f37e1902e11aea5b/raw/fallbacks.json")!
+    static let listSigningKey = "nyQLXvGVbFxNzCHPNen9oah2CHGlTUZV7LReGFqWM5k="
+    static let issuedKey = "relay.fallback.issued"
+    static let publishedCheckedKey = "relay.fallback.publishedChecked"
+
+    /// Fetches the published list and keeps it if it's genuine and newer than
+    /// what's saved. At most every few minutes.
+    static func refreshFromPublishedList(session: URLSession) async {
+        let now = Date().timeIntervalSince1970
+        guard now - (defaults?.double(forKey: publishedCheckedKey) ?? 0) > 5 * 60 else { return }
+        defaults?.set(now, forKey: publishedCheckedKey)
+        var request = URLRequest(url: publishedListURL, timeoutInterval: 6)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let list = verifiedList(data),
+              list.issued > Int64(defaults?.double(forKey: issuedKey) ?? 0)
+        else { return }
+        defaults?.set(Double(list.issued), forKey: issuedKey)
+        defaults?.set(list.hosts, forKey: hostsKey)
+    }
+
+    /// The hosts in a signed list, or nil unless the signature checks out.
+    static func verifiedList(_ data: Data) -> (issued: Int64, hosts: [String])? {
+        struct Signed: Decodable { let v: Int; let issued: Int64; let hosts: [String]; let sig: String }
+        guard let signed = try? JSONDecoder().decode(Signed.self, from: data), signed.v == 1,
+              let sig = Data(base64Encoded: signed.sig),
+              let keyData = Data(base64Encoded: listSigningKey),
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: keyData)
+        else { return nil }
+        let message = "relay-fallbacks-v1\n\(signed.issued)\n" + signed.hosts.map { $0 + "\n" }.joined()
+        guard key.isValidSignature(sig, for: Data(message.utf8)) else { return nil }
+        // Hostnames only: never a path, port or anything else.
+        let hosts = signed.hosts.filter { host in
+            host.count <= 253 && host.contains(".")
+                && host.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "." || $0 == "-") }
+        }
+        return (signed.issued, Array(hosts.prefix(10)))
+    }
 
     /// The backups the relay last sent, newest first, then the built-in one.
     public static var hosts: [String] {
@@ -123,6 +170,8 @@ public enum RelayFallback {
         func failover(primary: String, failedHost: String, session: URLSession) async -> String? {
             if let running { return await running.value }
             let task = Task<String?, Never> {
+                // The newest addresses first, if GitHub is reachable.
+                await RelayFallback.refreshFromPublishedList(session: session)
                 let candidates = ([primary] + RelayFallback.hosts).filter { $0 != failedHost }
                 for host in candidates where await RelayFallback.answers(host, session: session) {
                     RelayFallback.setActive(host == primary ? nil : host)
