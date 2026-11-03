@@ -153,7 +153,21 @@ public enum RelayFallback {
     /// Worth looking for another address, though the request may have arrived
     /// (a filter that silently drops the connection looks like a timeout).
     static func suggestsBlock(_ error: Error) -> Bool {
-        isUnreachable(error) || (error as? URLError)?.code == .timedOut
+        #if DEBUG
+        let ns = error as NSError
+        defaults?.set("\(ns.domain) \(ns.code) at \(Date())", forKey: "relay.fallback.lastError")
+        #endif
+        // Anything but "no internet at all" or a cancelled request is worth a
+        // check: if the main address still answers, nothing changes.
+        // The WebSocket reports low-level errors (connection refused, reset).
+        if (error as NSError).domain == NSPOSIXErrorDomain { return true }
+        guard let code = (error as? URLError)?.code else { return false }
+        switch code {
+        case .cancelled, .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .callIsActive:
+            return false
+        default:
+            return true
+        }
     }
 
     /// After `failedHost` couldn't be reached: picks the first address (the main

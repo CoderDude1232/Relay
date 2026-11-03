@@ -244,13 +244,15 @@ struct LinkPreviewView: View {
         .accessibilityAddTraits(.isLink)
     }
 
+    /// Part of the bubble, not a card inside it: the image, then the title
+    /// and site as plain lines.
     private func largeCard(_ image: UIImage) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             Color.clear
-                .frame(height: 140)
+                .frame(height: 150)
                 .overlay { Image(uiImage: image).resizable().scaledToFill() }
-                .clipped()
-            VStack(alignment: .leading, spacing: 3) {
+                .clipShape(.rect(cornerRadius: 14))
+            VStack(alignment: .leading, spacing: 2) {
                 if let title {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
@@ -262,49 +264,42 @@ struct LinkPreviewView: View {
                     .opacity(0.7)
                     .lineLimit(1)
             }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: 280)
-        .background(cardFill, in: .rect(cornerRadius: 12))
-        .clipShape(.rect(cornerRadius: 12))
+        .contentShape(.rect)
     }
 
     private var compactCard: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "safari")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(isOutgoing ? AnyShapeStyle(.white.opacity(0.9)) : AnyShapeStyle(.tint))
-                .frame(width: 34, height: 34)
-                .background(
-                    isOutgoing ? AnyShapeStyle(.white.opacity(0.18)) : AnyShapeStyle(.tint.opacity(0.12)),
-                    in: .rect(cornerRadius: 8)
-                )
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title ?? domain)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                if title != nil {
-                    Text(domain)
-                        .font(.caption2)
-                        .lineLimit(1)
-                        .opacity(0.7)
+        VStack(alignment: .leading, spacing: 8) {
+            Rectangle()
+                .fill(isOutgoing ? AnyShapeStyle(.white.opacity(0.3)) : AnyShapeStyle(.separator))
+                .frame(height: 0.5)
+            HStack(spacing: 8) {
+                Image(systemName: "safari")
+                    .font(.system(size: 15, weight: .medium))
+                    .opacity(0.8)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title ?? domain)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    if title != nil {
+                        Text(domain)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .opacity(0.7)
+                    }
                 }
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.up.right")
+                    .font(.caption2.weight(.semibold))
+                    .opacity(0.6)
             }
-            Spacer(minLength: 0)
-            Image(systemName: "arrow.up.right")
-                .font(.caption2.weight(.semibold))
-                .opacity(0.6)
         }
-        .padding(10)
         .frame(maxWidth: 280)
-        .background(cardFill, in: .rect(cornerRadius: 10))
-    }
-
-    private var cardFill: AnyShapeStyle {
-        isOutgoing ? AnyShapeStyle(.white.opacity(0.14)) : AnyShapeStyle(.fill.tertiary)
+        .contentShape(.rect)
     }
 }
 
