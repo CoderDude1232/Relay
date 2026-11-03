@@ -356,13 +356,68 @@ private struct WelcomeView: View {
     let onOAuthSession: (SupabaseSession, String?) -> Void
     let onLinkDevice: () -> Void
 
+    @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @State private var oauthLoading = false
     @State private var oauthError: String?
     @State private var showingProxy = false
+    /// The clipboard holds a link: maybe the invite the website copied.
+    @State private var clipboardHasLink = false
+    @State private var pastedNotInvite = false
     @State private var pendingCodeVerifier: String?
     @State private var googleWebSession: ASWebAuthenticationSession?
 
     private static let buttonHeight: CGFloat = 52
+
+    /// Who invited you, once known; otherwise a way to paste the invite the
+    /// website copied when you tapped Get Relay. The paste button reads the
+    /// clipboard only when tapped, so iOS doesn't ask.
+    @ViewBuilder private var invite: some View {
+        if let url = model.deferredInvite, let link = RelayLink(url) {
+            Label(Self.inviteTitle(link), systemImage: link.symbol)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(.white.opacity(0.15), in: .capsule)
+                .padding(.top, 6)
+                .transition(.scale.combined(with: .opacity))
+        } else if clipboardHasLink {
+            VStack(spacing: 6) {
+                PasteButton(payloadType: String.self) { strings in
+                    let url = strings.first.flatMap { URL(string: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                    withAnimation {
+                        pastedNotInvite = !(url.map { model.deferInvite($0) } ?? false)
+                    }
+                }
+                .buttonBorderShape(.capsule)
+                .labelStyle(.titleAndIcon)
+                .tint(.white.opacity(0.25))
+                Text(pastedNotInvite ? "That link isn't a Relay invite." : "Got an invite link? Paste it here.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    private static func inviteTitle(_ link: RelayLink) -> String {
+        switch link {
+        case .add(let username): "@\(username) invited you"
+        case .contactInvite: "You've been invited to chat"
+        case .group: "You've been invited to a group"
+        case .call: "You've been invited to a call"
+        case .proxy: ""
+        }
+    }
+
+    /// Pattern detection doesn't read the clipboard, so iOS doesn't ask.
+    private func checkClipboard() {
+        UIPasteboard.general.detectPatterns(for: [.probableWebURL]) { result in
+            let found = (try? result.get())?.contains(.probableWebURL) ?? false
+            Task { @MainActor in clipboardHasLink = found }
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -379,6 +434,7 @@ private struct WelcomeView: View {
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
+                invite
             }
 
             Spacer(minLength: 24)
@@ -482,6 +538,9 @@ private struct WelcomeView: View {
             .padding(.trailing, 20)
             .padding(.top, 8)
         }
+        .onAppear { checkClipboard() }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { checkClipboard() } }
+        .animation(.spring(duration: 0.35), value: model.deferredInvite)
         .sheet(isPresented: $showingProxy) {
             NavigationStack {
                 ProxySettingsView()

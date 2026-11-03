@@ -617,7 +617,9 @@ private struct AccountSettingsView: View {
 
 private struct ChatsSettingsView: View {
     let service: MessagingService
+    @Environment(AppModel.self) private var model
     @AppStorage(InChatSounds.enabledKey) private var inChatSounds = true
+    @State private var importingWhatsApp = false
 
     var body: some View {
         List {
@@ -638,6 +640,20 @@ private struct ChatsSettingsView: View {
                 }
             } footer: {
                 Text("Group chats into folders like Work or Family. Folders stay on this device.")
+            }
+
+            Section {
+                Button { importingWhatsApp = true } label: {
+                    SettingsNavRow(systemName: "square.and.arrow.down.on.square.fill", color: .green, title: "Import from WhatsApp")
+                }
+                .foregroundStyle(.primary)
+                .sheet(isPresented: $importingWhatsApp) {
+                    WhatsAppImportView(service: service) { conversationId in
+                        model.pendingNotificationConversationId = conversationId
+                    }
+                }
+            } footer: {
+                Text("Bring a chat's history over from WhatsApp. It stays on this iPhone.")
             }
 
             Section {

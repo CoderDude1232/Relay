@@ -27,6 +27,13 @@ struct ContentView: View {
     /// "Not Now" holds for the rest of this launch.
     @State private var backupUnlockDismissed = false
 
+    /// After sign-up the recovery key, phone number and notification screens
+    /// come first; the invite opens once they're out of the way.
+    private var deferredInviteCanOpen: Bool {
+        model.isReady && model.deferredInvite != nil && !isLocked && model.newRecoveryKey == nil
+            && !model.showPhoneOnboarding && !model.showNotificationPrimer && !model.removedFromAccount
+    }
+
     var body: some View {
         ZStack {
             switch model.phase {
@@ -39,6 +46,10 @@ struct ContentView: View {
                     .environment(\.relayAppLocked, isLocked)
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()
+                    }
+                    // An invite from before sign-up, once the new-account screens are done.
+                    .task(id: deferredInviteCanOpen) {
+                        if deferredInviteCanOpen { model.openDeferredInvite() }
                     }
                     // After the recovery key a passkey sign-up shows first.
                     .fullScreenCover(isPresented: Binding(
@@ -782,6 +793,15 @@ struct MainTabView: View {
             get: { model.showWhatsNew && !appLocked }, set: { if !$0 { model.showWhatsNew = false } }
         )) {
             WhatsNewSheet()
+        }
+        .sheet(isPresented: Binding(
+            get: { model.pendingWhatsAppImport && !appLocked },
+            set: { if !$0 { model.pendingWhatsAppImport = false } }
+        )) {
+            WhatsAppImportView(service: service, stagedFile: WhatsAppImportView.stagedExport()) { conversationId in
+                selectedTab = 0
+                model.pendingNotificationConversationId = conversationId
+            }
         }
         .sheet(isPresented: Binding(
             get: { model.showNotificationPrimer && !appLocked && !model.showWhatsNew && !model.showPhoneOnboarding },

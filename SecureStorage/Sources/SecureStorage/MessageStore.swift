@@ -887,6 +887,93 @@ public final class MessageStore: @unchecked Sendable {
         return inserted
     }
 
+    /// A message brought in from another app's chat export.
+    public struct ImportedMessage: Sendable {
+        public let id: String
+        public let isOutgoing: Bool
+        public let body: String
+        public let timestamp: Int64
+        public let senderAccount: String?
+        public let attachments: [StoredAttachment]
+
+        public init(id: String, isOutgoing: Bool, body: String, timestamp: Int64,
+                    senderAccount: String?, attachments: [StoredAttachment]) {
+            self.id = id
+            self.isOutgoing = isOutgoing
+            self.body = body
+            self.timestamp = timestamp
+            self.senderAccount = senderAccount
+            self.attachments = attachments
+        }
+    }
+
+    /// Adds imported history in one transaction and returns how many were new.
+    /// Unlike `insertMessage`, the chat's disappearing timer doesn't apply (the
+    /// history is old and was kept on purpose), and nothing becomes unread.
+    @discardableResult
+    public func importMessages(_ messages: [ImportedMessage], conversationId: String) throws -> Int {
+        try db.transaction {
+            let hadUnread = try !db.query(
+                """
+                SELECT 1 FROM messages m JOIN conversations c ON c.id = m.conversation_id
+                WHERE c.id = ? AND m.is_outgoing = 0 AND m.timestamp > c.read_at LIMIT 1
+                """, [.text(conversationId)]
+            ).isEmpty
+            let createdAt = Int64(Date().timeIntervalSince1970 * 1000)
+            var added = 0
+            var newest: Int64 = 0
+            for message in messages {
+                let exists = try !db.query("SELECT 1 FROM messages WHERE id = ?", [.text(message.id)]).isEmpty
+                if exists { continue }
+                try db.run(
+                    """
+                    INSERT INTO messages
+                        (id, conversation_id, is_outgoing, body, timestamp, status, created_at, sender_account)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        .text(message.id), .text(conversationId), .integer(message.isOutgoing ? 1 : 0),
+                        .text(message.body), .integer(message.timestamp),
+                        .text(message.isOutgoing ? MessageStatus.sent.rawValue : MessageStatus.received.rawValue),
+                        .integer(createdAt), message.senderAccount.map { .text($0) } ?? .null,
+                    ]
+                )
+                for (ordinal, attachment) in message.attachments.enumerated() {
+                    try db.run(
+                        """
+                        INSERT INTO attachments
+                            (id, message_id, key, digest, content_type, size, filename, width, height, downloaded, ordinal)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            .text(attachment.id), .text(message.id), .blob(attachment.key), .blob(attachment.digest),
+                            .text(attachment.contentType), .integer(attachment.size),
+                            attachment.filename.map { .text($0) } ?? .null,
+                            .integer(Int64(attachment.width)), .integer(Int64(attachment.height)),
+                            .integer(1), .integer(Int64(ordinal)),
+                        ]
+                    )
+                }
+                added += 1
+                newest = max(newest, message.timestamp)
+            }
+            guard added > 0 else { return 0 }
+            try db.run(
+                "UPDATE conversations SET last_message_at = MAX(COALESCE(last_message_at, 0), ?) WHERE id = ?",
+                [.integer(newest), .text(conversationId)]
+            )
+            // Old history isn't news. If something real was already waiting,
+            // leave the chat unread as it was.
+            if !hadUnread {
+                try db.run(
+                    "UPDATE conversations SET read_at = MAX(read_at, ?) WHERE id = ?",
+                    [.integer(newest), .text(conversationId)]
+                )
+            }
+            return added
+        }
+    }
+
     /// Inserts or updates a live-location message keyed by a stable id (one row
     /// per sharer per conversation), so a moving share updates a single bubble.
     /// Returns true if a row was created. Never expires mid-share.

@@ -14,6 +14,12 @@ final class ShareViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = UIColor.systemBackground
 
+        // A WhatsApp chat export goes to the app's importer instead of a chat.
+        if let provider = whatsAppExportProvider() {
+            importWhatsAppExport(provider)
+            return
+        }
+
         var preselectedAccount: String?
         if let intent = extensionContext?.intent as? INSendMessageIntent {
             preselectedAccount = intent.recipients?.first?.customIdentifier
@@ -58,6 +64,54 @@ final class ShareViewController: UIViewController {
     }
 
     private var previewModel: SharePreviewModel?
+
+    // MARK: - WhatsApp import
+
+    /// "WhatsApp Chat - Morgan.zip" from WhatsApp's Export Chat. Judged by the
+    /// file name the sharing app gives it.
+    private func whatsAppExportProvider() -> NSItemProvider? {
+        let items = extensionContext?.inputItems as? [NSExtensionItem] ?? []
+        let providers = items.flatMap { $0.attachments ?? [] }
+        guard providers.count == 1, let provider = providers.first,
+              let name = provider.suggestedName?.lowercased(),
+              name.hasPrefix("whatsapp chat")
+        else { return nil }
+        return provider
+    }
+
+    /// Copies the export into the App Group inbox and opens the app on it.
+    private func importWhatsAppExport(_ provider: NSItemProvider) {
+        let label = UILabel()
+        label.text = "Opening Relay…"
+        label.textColor = .secondaryLabel
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+        let ctx = extensionContext
+        let type = provider.hasItemConformingToTypeIdentifier(UTType.zip.identifier)
+            ? UTType.zip.identifier : UTType.data.identifier
+        provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
+            // The file is only valid inside this callback: copy it now.
+            var staged = false
+            if let url, let inbox = ShareBridge.whatsAppImportInbox() {
+                let fm = FileManager.default
+                try? fm.removeItem(at: inbox)
+                try? fm.createDirectory(at: inbox, withIntermediateDirectories: true)
+                var name = provider.suggestedName ?? url.lastPathComponent
+                if (name as NSString).pathExtension.isEmpty { name += "." + url.pathExtension }
+                staged = (try? fm.copyItem(at: url, to: inbox.appendingPathComponent(name))) != nil
+            }
+            Task { @MainActor in
+                if staged, let open = URL(string: "relay://import-whatsapp") {
+                    await ctx?.open(open)
+                }
+                ctx?.completeRequest(returningItems: [], completionHandler: nil)
+            }
+        }
+    }
 
     private func submit(conversationId: String, caption: String) {
         guard let items = extensionContext?.inputItems as? [NSExtensionItem] else {
@@ -129,7 +183,8 @@ final class ShareViewController: UIViewController {
                     }
                 }
                 if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                    if let url = await loadURL(provider) {
+                    // A shared file also arrives as a file:// URL; send the file, not its path.
+                    if let url = await loadURL(provider), !url.isFileURL {
                         return PendingShare(conversationId: conversationId, text: url.absoluteString,
                                            imageData: nil, imageUTI: nil, fileData: nil, filename: nil)
                     }

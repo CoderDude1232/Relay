@@ -49,6 +49,7 @@ struct ChatView: View {
     /// This chat's own theme if it has one, otherwise the app's.
     private var appearance: ChatAppearance { appAppearance.theme(forChat: conversationId) ?? appAppearance }
     @Environment(CallManager.self) private var callManager
+    @Environment(AppModel.self) private var model
     @State private var isOnScreen = false
     @State private var confirmingBulkDelete = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -480,7 +481,13 @@ struct ChatView: View {
 
     private var linkOpener: OpenURLAction {
         OpenURLAction { url in
-            guard url.scheme == "https" || url.scheme == "http" else { return .systemAction }
+            let scheme = url.scheme?.lowercased()
+            guard scheme == "https" || scheme == "http" else { return .systemAction }
+            // Relay's own links (invites, call links) open here, not as a web page.
+            if let link = RelayLink(url) {
+                model.open(link, url: url)
+                return .handled
+            }
             safariURL = url
             return .handled
         }
@@ -2490,6 +2497,10 @@ struct ChatView: View {
     private static func dayLabel(_ date: Date) -> String {
         if Calendar.current.isDateInToday(date) { return "Today" }
         if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        // Older years (imported history, long-running chats) show the year.
+        if !Calendar.current.isDate(date, equalTo: .now, toGranularity: .year) {
+            return date.formatted(.dateTime.weekday(.wide).day().month(.wide).year())
+        }
         return date.formatted(.dateTime.weekday(.wide).day().month(.wide))
     }
 }
@@ -2858,7 +2869,9 @@ private struct MessageRow: View {
         }
             // Checked once per incoming message, on the device (ScamCheck.swift).
             .task(id: message.id) {
-                guard !message.isOutgoing, !message.isDeleted else { return }
+                // Imported history was already read in another app.
+                guard !message.isOutgoing, !message.isDeleted,
+                      !message.id.hasPrefix(MessagingService.importedIdPrefix) else { return }
                 if let known = service.scamWarning(for: message.id) {
                     scamKind = known
                 } else if let found = await service.checkForScam(message, in: conversationId) {
@@ -3118,6 +3131,11 @@ private struct MessageBubble: View {
         .environment(\.openURL, OpenURLAction { url in
             if url.scheme == Self.spoilerScheme {
                 onRevealSpoilers()
+                return .handled
+            }
+            // Relay links open in the app and ask for confirmation in their own flow.
+            if RelayLink(url) != nil {
+                parentOpenURL(url)
                 return .handled
             }
             guard !message.isOutgoing else { return .systemAction }

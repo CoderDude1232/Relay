@@ -79,6 +79,8 @@ struct RelayApp: App {
                 }
                 .onOpenURL { url in
                     guard url.scheme == "relay" else { return }
+                    // Before there's an account, an invite waits for sign-up.
+                    if !model.isReady, model.deferInvite(url) { return }
                     if url.host == "add" {
                         // relay://add/<username>
                         let username = url.pathComponents.dropFirst().first ?? ""
@@ -107,6 +109,9 @@ struct RelayApp: App {
                     } else if url.host == "compose" {
                         // relay://compose, from the New Message control.
                         model.pendingCompose = true
+                    } else if url.host == "import-whatsapp" {
+                        // relay://import-whatsapp: the share extension staged an export.
+                        model.pendingWhatsAppImport = true
                     } else if url.host == "note-to-self" {
                         // relay://note-to-self, from the Note to Self control.
                         guard case .ready(let service) = model.phase else { return }
@@ -150,6 +155,7 @@ struct RelayApp: App {
                         model.pendingProxy = RelayProxy.parse(url.absoluteString)
                         return
                     }
+                    if let url = activity.webpageURL, !model.isReady, model.deferInvite(url) { return }
                     guard let url = activity.webpageURL,
                           url.host == "relaymsg.app",
                           url.pathComponents.count >= 3

@@ -77,6 +77,10 @@ final class AppModel {
     var pendingScanQR = false
     /// relay://compose (New Message control or shortcut): open the new-chat sheet.
     var pendingCompose = false
+    /// Bumped when `deferredInvite` (stored in UserDefaults) changes.
+    var deferredInviteVersion = 0
+    /// relay://import-whatsapp, from the share extension: open the importer.
+    var pendingWhatsAppImport = false
     /// What's New after an update; the notification explanation after sign-in.
     var showWhatsNew = false
     var showNotificationPrimer = false

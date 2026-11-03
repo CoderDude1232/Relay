@@ -275,4 +275,13 @@ nonisolated enum ShareBridge {
             return false
         }
     }
+
+    // MARK: - WhatsApp import inbox
+
+    /// One WhatsApp export handed over by the share extension; the app's
+    /// importer reads it and deletes it.
+    static func whatsAppImportInbox() -> URL? {
+        container?.appendingPathComponent(shareDirName, isDirectory: true)
+            .appendingPathComponent("whatsapp-import", isDirectory: true)
+    }
 }

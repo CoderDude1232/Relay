@@ -1234,7 +1234,7 @@ final class MessagingService {
 
     /// Prefix for attachment ids that exist only on this device: sealed and
     /// cached, not yet uploaded. `uploadAttachments` swaps in the relay's id.
-    private static let localAttachmentPrefix = "local-"
+    nonisolated static let localAttachmentPrefix = "local-"
 
     private func sealLocally(_ pending: [PendingAttachment]) throws -> [StoredAttachment] {
         // The relay's caps (ciphertext adds 28 bytes): 25 MiB, or 95 MiB for
@@ -1515,6 +1515,7 @@ final class MessagingService {
     func displayName(forAccount account: String) -> String {
         if account == Self.relayOfficialAccount { return "Relay" }
         if account == credentials.accountId { return "You" }
+        if account.hasPrefix(Self.importedSenderPrefix) { return String(account.dropFirst(Self.importedSenderPrefix.count)) }
         if let cached = nameCache[account] { return cached }
         let name = resolveDisplayName(forAccount: account)
         if nameCache.count >= 500 { nameCache.removeAll() }
@@ -5521,7 +5522,7 @@ final class MessagingService {
         refreshActiveMessages(ifShowing: conversationId)
     }
 
-    private func refreshActiveMessages(ifShowing conversationId: String) {
+    func refreshActiveMessages(ifShowing conversationId: String) {
         guard activeConversationId == conversationId else { return }
         let messageStore = storage.messages
         let limit = activeMessageLimit

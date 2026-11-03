@@ -9,7 +9,7 @@
 
 import Foundation
 
-struct AttachmentBlobStore {
+nonisolated struct AttachmentBlobStore {
     private let directory: URL
 
     init(appGroupId: String) {

@@ -15,6 +15,53 @@ import SecureStorage
 import SwiftUI
 import UIKit
 
+extension AppModel {
+    private static let deferredInviteKey = "relay.deferredInvite"
+
+    /// An invite opened or pasted before there was an account here. Kept
+    /// across launches, so it survives sign-up, then opened like any invite.
+    var deferredInvite: URL? {
+        get {
+            access(keyPath: \.deferredInviteVersion)
+            return UserDefaults.standard.string(forKey: Self.deferredInviteKey).flatMap(URL.init(string:))
+        }
+        set {
+            withMutation(keyPath: \.deferredInviteVersion) {
+                UserDefaults.standard.set(newValue?.absoluteString, forKey: Self.deferredInviteKey)
+            }
+        }
+    }
+
+    /// Keeps an invite (https://relaymsg.app/… or relay://…) for after sign-up.
+    /// False if it isn't an invite.
+    @discardableResult
+    func deferInvite(_ url: URL) -> Bool {
+        guard let canonical = RelayLink.canonicalURL(url), RelayLink(canonical)?.isInvite == true else { return false }
+        deferredInvite = canonical
+        return true
+    }
+
+    /// Opens the kept invite once there's an account.
+    func openDeferredInvite() {
+        guard isReady, let url = deferredInvite else { return }
+        deferredInvite = nil
+        if let link = RelayLink(url) { open(link, url: url) }
+    }
+
+    /// The same confirmation flow as opening the link from outside Relay.
+    func open(_ link: RelayLink, url: URL) {
+        switch link {
+        case .add(let username): pendingDeepLinkUsername = username
+        case .contactInvite(let token): pendingContactInviteToken = token
+        case .group(let token, let fragment):
+            pendingGroupInviteToken = fragment.isEmpty ? token : "\(token)#\(fragment)"
+        case .call:
+            if let parsed = CallManager.parseCallLink(url) { pendingCallLink = parsed }
+        case .proxy(let address): pendingProxy = address
+        }
+    }
+}
+
 enum RelayLink: Equatable {
     case add(username: String)
     case contactInvite(token: String)
@@ -23,7 +70,7 @@ enum RelayLink: Equatable {
     case proxy(RelayProxy.Address)
 
     init?(_ url: URL) {
-        guard url.host() == "relaymsg.app" else { return nil }
+        guard ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host()?.lowercased() == "relaymsg.app" else { return nil }
         let parts = url.pathComponents.filter { $0 != "/" }
         if parts.first == "proxy" {
             guard let address = RelayProxy.parse(url.absoluteString) else { return nil }
@@ -40,6 +87,33 @@ enum RelayLink: Equatable {
             self = .call(callId: parts[1])
         default: return nil
         }
+    }
+
+    /// Invites lead to a person, group or call; proxy links are settings.
+    var isInvite: Bool {
+        if case .proxy = self { return false }
+        return true
+    }
+
+    /// The https form of a relay:// link (relay://add/x → https://relaymsg.app/add/x).
+    static func canonicalURL(_ url: URL) -> URL? {
+        if url.scheme?.lowercased() == "https", url.host()?.lowercased() == "relaymsg.app" { return url }
+        guard url.scheme == "relay", let host = url.host() else { return nil }
+        let path: String
+        switch host {
+        case "add": path = "add"
+        case "contact": path = "c"
+        case "join": path = "g"
+        case "call": path = "call"
+        default: return nil
+        }
+        guard let value = url.pathComponents.dropFirst().first, !value.isEmpty else { return nil }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "relaymsg.app"
+        components.path = "/\(path)/\(value)"
+        components.fragment = url.fragment
+        return components.url
     }
 
     var symbol: String {
@@ -211,18 +285,7 @@ struct RelayLinkCard: View {
         }
     }
 
-    /// The same confirmation flow as opening the link from outside Relay.
-    private func open() {
-        switch link {
-        case .add(let username): model.pendingDeepLinkUsername = username
-        case .contactInvite(let token): model.pendingContactInviteToken = token
-        case .group(let token, let fragment):
-            model.pendingGroupInviteToken = fragment.isEmpty ? token : "\(token)#\(fragment)"
-        case .call:
-            if let parsed = CallManager.parseCallLink(url) { model.pendingCallLink = parsed }
-        case .proxy(let address): model.pendingProxy = address
-        }
-    }
+    private func open() { model.open(link, url: url) }
 
     private struct KindLabelStyle: LabelStyle {
         func makeBody(configuration: Configuration) -> some View {
