@@ -82,16 +82,16 @@ Not yet verified: everything marked ☐ below.
 - ☐ WhatsApp → chat → Export Chat → Attach Media → Relay: the importer opens,
   guesses who you are and the chat; photos, videos and voice notes arrive;
   nothing is unread; importing the same export again adds nothing.
-- ☐ Import a group export into a Relay group: WhatsApp names show on messages
+- ✅ Import a group export into a Relay group (simulator, 2026-11-03): WhatsApp names show on messages
   from people who aren't in the Relay group.
 - ☐ Settings → Chats → Import from WhatsApp with an export saved to Files.
-- ☐ An invite link tapped inside a Relay chat opens the invite, not the web page.
+- ✅ An invite link tapped inside a Relay chat opens the invite, not the web page.
 - ☐ Without Relay installed: open relaymsg.app/add/<you> in Safari → Get Relay
   shows "Invite copied"; install, open Relay → Paste → "@you invited you";
   finish sign-up → the chat with you opens after the welcome screens.
-- ☐ Invite link opened before signing in survives quitting the app mid-sign-up.
-- ☐ Safari: tap "Open it" once on an invite page; the next invite page opens
-  Relay by itself.
+- ✅ Invite link opened before signing in survives quitting the app mid-sign-up.
+- ✅ Safari: tap "Open it" once on an invite page; the next invite page opens
+  Relay by itself (iOS still asks "Open this page in Relay?").
 
 ## Regression sweep (after any transport or crypto change)
 - 1:1 send/reply/receipts, group send, photo send, push wake with the app
