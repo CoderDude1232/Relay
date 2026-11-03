@@ -21,6 +21,22 @@ public enum KeyTransparency {
     /// RSA VRF key, PKCS#1.
     public static let vrfPublicKey = Data(base64Encoded: liveVRFPKCS1)!
 
+    /// The relay also publishes its latest head here, outside its own servers,
+    /// so every app can check it's being shown the same directory as everyone.
+    public static let witnessURL = URL(string: "https://gist.githubusercontent.com/CoderDude1232/02b29ce6632a4784f37e1902e11aea5b/raw/kt-head.json")!
+
+    /// The head published at `witnessURL`, if it's there and validly signed.
+    public static func fetchWitnessHead(session: URLSession = .shared) async -> Head? {
+        var request = URLRequest(url: witnessURL, timeoutInterval: 10)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let head = try? JSONDecoder().decode(Head.self, from: data),
+              verifySignature(head)
+        else { return nil }
+        return head
+    }
+
     // MARK: Wire types
 
     public struct Head: Codable, Equatable, Sendable {

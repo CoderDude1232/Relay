@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -175,4 +179,54 @@ func (s *Server) handleKTMonitor(w http.ResponseWriter, r *http.Request, dev *st
 			"proof": ktProofJSON(res.Proof), "head": ktHeadJSON(res.Head),
 		},
 	})
+}
+
+// MARK: Witness
+
+// SetKeyTransparencyWitness publishes the latest head to a public GitHub Gist
+// (file kt-head.json) at most every `every`. Every app compares the head it
+// was shown with this one, so the relay can't show people different
+// directories without it being noticed.
+func (s *Server) SetKeyTransparencyWitness(gistID, token string, every time.Duration) {
+	go func() {
+		var published uint64
+		delay := 30 * time.Second // soon after start, then every `every`
+		for {
+			time.Sleep(delay)
+			delay = every
+			head, ok := s.kt.Head()
+			if !ok || head.Epoch == published {
+				continue
+			}
+			if err := publishWitness(gistID, token, head); err != nil {
+				slog.Error("kt: publish witness", "err", err)
+				continue
+			}
+			published = head.Epoch
+		}
+	}()
+}
+
+func publishWitness(gistID, token string, head kt.Head) error {
+	content, _ := json.MarshalIndent(ktHeadJSON(head), "", "  ")
+	body, _ := json.Marshal(map[string]any{
+		"files": map[string]any{"kt-head.json": map[string]string{"content": string(content) + "\n"}},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "PATCH", "https://api.github.com/gists/"+gistID, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("github: status %d", resp.StatusCode)
+	}
+	return nil
 }

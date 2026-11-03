@@ -514,7 +514,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
     }
 }
 
-/// What the relay's public key directory says about this contact's key.
+/// Whether this contact's public key is the one everyone else sees.
 private struct TransparencyRow: View {
     let status: MessagingService.TransparencyStatus
     let peerName: String
@@ -536,17 +536,17 @@ private struct TransparencyRow: View {
 
     private var title: String {
         switch status {
-        case .verified: "Matches Relay's key directory"
-        case .mismatch: "Doesn't match Relay's key directory"
-        case .unavailable: "Key directory not checked"
+        case .verified: "Key confirmed"
+        case .mismatch: "Key couldn't be confirmed"
+        case .unavailable: "Key not checked yet"
         }
     }
 
     private var detail: String {
         switch status {
-        case .verified: "Checked automatically: \(peerName)'s key is the one Relay publishes for them, in a directory anyone can audit. Comparing numbers in person is still the strongest check."
-        case .mismatch: "The key your messages use isn't the one Relay publishes for \(peerName). Someone may be intercepting. Compare safety numbers in person before trusting this chat."
-        case .unavailable: "Relay's key directory couldn't be reached. It's checked again next time you open the chat."
+        case .verified: "Relay checked automatically that \(peerName)'s public key is the same one everyone else sees, so it hasn't been swapped. A public key only lets people send them messages; it can't open anything. Comparing numbers in person is still the strongest check."
+        case .mismatch: "The key your messages use for \(peerName) isn't the one everyone else sees. Someone may be intercepting. Compare safety numbers in person before trusting this chat."
+        case .unavailable: "Relay couldn't check \(peerName)'s key right now. It tries again next time you open the chat."
         }
     }
 

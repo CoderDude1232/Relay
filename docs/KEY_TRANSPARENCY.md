@@ -85,4 +85,7 @@ NwIDAQAB
    the Go test `TestWriteVectors` writes vectors the Swift side is checked
    against). A mismatch is re-checked after 75 s, since a key changed in the
    last minute isn't published yet, then shows as a changed safety number.
-4. Witness: publish heads to the Gist; clients compare.
+4. Witness: publish heads to the Gist; clients compare. ← done: relayd
+   `-kt-witness-gist` writes the latest head to `kt-head.json` in the public
+   Gist (at most every 10 minutes); about hourly the app fetches it, checks the
+   signature, and requires it to be consistent with the head it last saw.

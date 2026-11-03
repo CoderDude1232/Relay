@@ -694,7 +694,10 @@ final class MessagingService {
                     isDrainingQueue = false
                     connectionState = .connected
                     noteConnected()
-                    Task { await self.monitorOwnKeysIfDue() }
+                    Task {
+                        await self.monitorOwnKeysIfDue()
+                        await self.checkWitnessIfDue()
+                    }
                     backoffSeconds = 1.0
                     // Includes the open chat: envelopes the NSE already stored are
                     // skipped as duplicates and wouldn't refresh it themselves.

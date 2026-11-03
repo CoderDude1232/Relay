@@ -26,6 +26,7 @@ extension MessagingService {
     private static let monitorAtKey = "kt.monitor.at"
     private static let monitorBaselineKey = "kt.monitor.baseline"
     private static let historyAlarmKey = "kt.history.alarmed"
+    private static let witnessAtKey = "kt.witness.at"
 
     /// The identity key the safety number is computed from: the newest device's.
     private func currentIdentityKey(of peer: String) -> Data? {
@@ -110,7 +111,22 @@ extension MessagingService {
     private func alarmHistory() {
         guard readKVFlag(Self.historyAlarmKey) == false else { return }
         writeKVFlag(Self.historyAlarmKey)
-        postRelayNotice("Relay's key directory showed this iPhone a history that doesn't match what it showed before. Someone may be trying to show you fake keys. Compare safety numbers in person with anyone you need to trust before sharing anything sensitive.")
+        postRelayNotice("Relay's public record of keys showed this iPhone a history that doesn't match what it showed before or what everyone else sees. Someone may be trying to show you fake keys. Compare safety numbers in person with anyone you need to trust before sharing anything sensitive.")
+    }
+
+    // MARK: Witness
+
+    /// About hourly: the head published outside Relay's servers must be part of
+    /// the same history this device was shown. If the relay showed us a
+    /// different directory from everyone else, the two can't be reconciled.
+    func checkWitnessIfDue() async {
+        let now = Int64(Date().timeIntervalSince1970)
+        guard now - readKVTimestamp(Self.witnessAtKey) > 3600 else { return }
+        guard let witness = await KeyTransparency.fetchWitnessHead() else { return }
+        // A failed consistency check raises the alarm inside acceptHead.
+        if await acceptHead(witness) {
+            writeKVTimestamp(Self.witnessAtKey, now)
+        }
     }
 
     // MARK: Watching our own account
@@ -145,7 +161,7 @@ extension MessagingService {
                 let alarmKey = "kt.own.alarmed.\(index + 1)"
                 guard !readKVFlag(alarmKey) else { continue }
                 writeKVFlag(alarmKey)
-                postRelayNotice("Relay's key directory listed a key for your account that this iPhone didn't make. If you didn't sign in on a new device around then, someone may have been shown a fake key for you. Ask your contacts to compare safety numbers with you.")
+                postRelayNotice("Relay's public record of keys listed a key for your account that this iPhone didn't make. If you didn't sign in on a new device around then, someone may have been shown a fake key for you. Ask your contacts to compare safety numbers with you.")
             }
         }
     }

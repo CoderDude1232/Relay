@@ -199,6 +199,15 @@ public enum RelayFallback {
                 await RelayFallback.refreshFromPublishedList(session: session)
                 let candidates = ([primary] + RelayFallback.hosts).filter { $0 != failedHost }
                 for host in candidates where await RelayFallback.answers(host, session: session) {
+                    // A backup answering while the main address didn't can just
+                    // mean the relay was restarting: give the main one another go.
+                    if host != primary {
+                        try? await Task.sleep(for: .seconds(2))
+                        if await RelayFallback.answers(primary, session: session) {
+                            RelayFallback.setActive(nil)
+                            return primary
+                        }
+                    }
                     RelayFallback.setActive(host == primary ? nil : host)
                     return host
                 }
