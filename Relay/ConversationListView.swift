@@ -940,6 +940,27 @@ struct ConversationListView: View {
                 .accessibilityElement(children: .combine)
             }
 
+            if model.fallbackHost != nil, RelayProxy.active == nil, !isEditing {
+                Button { showingProxySettings = true } label: {
+                    HStack(spacing: 12) {
+                        Label {
+                            Text("Using a backup connection").font(.subheadline)
+                        } icon: {
+                            Image(systemName: "arrow.triangle.branch").foregroundStyle(.orange)
+                        }
+                        Spacer(minLength: 0)
+                        Text("Details").font(.subheadline.weight(.semibold))
+                    }
+                    .padding(12)
+                    .background(Color.orange.opacity(0.12), in: .rect(cornerRadius: 14, style: .continuous))
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .selectionDisabled()
+                .listRowSeparator(.hidden)
+                .accessibilityHint("This network blocks Relay. Opens proxy settings.")
+            }
+
             if let status = model.proxyStatus, status.isProblem, !isEditing {
                 Button { showingProxySettings = true } label: {
                     HStack(spacing: 12) {

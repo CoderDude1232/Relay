@@ -36,66 +36,109 @@ struct ProxySettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                Toggle("Use a Proxy", isOn: $enabled)
-                TextField("proxy.example.com", text: $address)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .textContentType(.URL)
-                    .disabled(!enabled)
-                    .onChange(of: address) { _, _ in checkResult = nil }
-                if let status = checkResult ?? liveStatus {
-                    ProxyStatusRow(status: status)
-                }
-            } footer: {
-                Text(errorMessage ?? "If Relay is blocked where you are, connect through a proxy someone has shared with you. While a proxy is on, Relay never connects directly, and it keeps checking the proxy in the background. Calls still connect directly.")
-                    .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
-            }
+        ZStack {
+            BackgroundGradient().ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 16) {
+                    OnboardingHeader(
+                        title: "Proxy",
+                        subtitle: "If Relay is blocked where you are, connect through a proxy someone has shared with you."
+                    )
 
-            Section {
-                Label {
-                    Text("**Only use a proxy run by someone you trust.** Whoever runs it can see your IP address and when you use Relay, and could keep a record of it. They can't read your messages or see who you talk to.")
-                        .font(.footnote)
-                } icon: {
-                    Image(systemName: "exclamationmark.shield.fill").foregroundStyle(.orange)
-                }
-            }
-
-            if let link = RelayProxy.savedAddress?.shareLink, RelayProxy.isEnabled {
-                Section {
-                    ShareLink(item: link) {
-                        Label("Share This Proxy", systemImage: "square.and.arrow.up")
+                    if let backup = model.fallbackHost, !RelayProxy.isEnabled {
+                        backupNotice(backup)
                     }
-                }
-            }
 
-            Section {
-                Button {
-                    Task { await save() }
-                } label: {
-                    HStack {
-                        Text(enabled ? "Check and Save" : "Save")
-                        if checking { Spacer(); ProgressView() }
-                    }
-                }
-                .disabled(!changed || checking || (enabled && parsed == nil))
-                if RelayProxy.isEnabled, !changed, let saved = RelayProxy.savedAddress {
-                    Button("Check Again") {
-                        Task {
-                            checking = true
-                            checkResult = await RelayProxy.check(saved, relay: RelayConfig.serverURL)
-                            model.proxyStatus = checkResult
-                            checking = false
+                    VStack(spacing: 0) {
+                        OnboardingRow(icon: "network") {
+                            Toggle("Use a Proxy", isOn: $enabled)
+                                .foregroundStyle(.white)
+                                .tint(Color(red: 0.965, green: 0.231, blue: 1.0))
+                        }
+                        Rectangle().fill(.white.opacity(0.12)).frame(height: 0.5).padding(.leading, 52).padding(.trailing, 16)
+                        OnboardingRow(icon: "link") {
+                            TextField("", text: $address, prompt: Text("proxy.example.com").foregroundStyle(.white.opacity(0.35)))
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                                .textContentType(.URL)
+                                .foregroundStyle(.white)
+                                .tint(.white)
+                                .disabled(!enabled)
+                                .onChange(of: address) { _, _ in checkResult = nil }
+                        }
+                        .opacity(enabled ? 1 : 0.45)
+                        if let status = checkResult ?? liveStatus {
+                            Rectangle().fill(.white.opacity(0.12)).frame(height: 0.5).padding(.leading, 52).padding(.trailing, 16)
+                            ProxyStatusRow(status: status)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
-                    .disabled(checking)
+                    .onboardingCard()
+
+                    if let errorMessage {
+                        InlineErrorBanner(errorMessage)
+                    }
+
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .foregroundStyle(.orange)
+                            .font(.system(size: 17))
+                        Text("**Only use a proxy run by someone you trust.** Whoever runs it can see your IP address and when you use Relay, and could keep a record of it. They can't read your messages or see who you talk to.")
+                            .font(.footnote)
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onboardingCard()
+
+                    OnboardingPrimaryButton(title: enabled ? "Check and Save" : "Save",
+                                            enabled: changed && (!enabled || parsed != nil),
+                                            working: checking) {
+                        Task { await save() }
+                    }
+
+                    if RelayProxy.isEnabled, !changed, let saved = RelayProxy.savedAddress {
+                        textButton("Check Again") {
+                            Task {
+                                checking = true
+                                checkResult = await RelayProxy.check(saved, relay: RelayConfig.serverURL)
+                                model.proxyStatus = checkResult
+                                checking = false
+                            }
+                        }
+                        .disabled(checking)
+                    }
+                    if let link = RelayProxy.savedAddress?.shareLink, RelayProxy.isEnabled {
+                        ShareLink(item: link) {
+                            Label("Share This Proxy", systemImage: "square.and.arrow.up")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .frame(minHeight: 44)
+                        }
+                    }
+
+                    Text("While a proxy is on, Relay never connects directly, keeps checking the proxy in the background, and doesn't fetch link previews. Calls still connect directly.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 8)
                 }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 120)  // clear of the tab bar
+                .frame(maxWidth: 480)
+                .frame(maxWidth: .infinity)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
-        .modifier(ThemedPageBackground())
-        .navigationTitle("Proxy")
+        .environment(\.colorScheme, .dark)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Do you trust whoever runs this proxy?", isPresented: $confirmingTrust, titleVisibility: .visible) {
             Button("I Trust This Proxy") { Task { await apply() } }
@@ -103,6 +146,34 @@ struct ProxySettingsView: View {
         } message: {
             Text("\(parsed?.display ?? "This proxy") will see your IP address and when you use Relay, and could log it. A proxy run by an authority that blocks Relay could use that to find people who use it. Your messages stay end-to-end encrypted.")
         }
+    }
+
+    /// Relay switched to one of its own backup addresses because this network
+    /// blocks the main one: it works like a proxy, run by Relay.
+    private func backupNotice(_ host: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.orange)
+                .font(.system(size: 17))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Using a backup connection")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text("This network seems to block Relay, so Relay is connecting through one of its own backup addresses on Cloudflare. It works like a proxy: Cloudflare sees your IP address, as it does for Relay's main address, and link previews are off until the main address works again. Your messages stay end-to-end encrypted.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.75))
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onboardingCard()
+    }
+
+    private func textButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.85))
+            .frame(minHeight: 44)
     }
 
     private func save() async {

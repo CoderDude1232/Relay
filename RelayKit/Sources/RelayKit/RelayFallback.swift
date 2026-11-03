@@ -99,8 +99,19 @@ public enum RelayFallback {
     static var activeHost: String? { defaults?.string(forKey: activeKey) }
 
     static func setActive(_ host: String?) {
+        let changed = host != activeHost
         defaults?.set(host, forKey: activeKey)
         defaults?.set(Date().timeIntervalSince1970, forKey: activeAtKey)
+        if changed { NotificationCenter.default.post(name: didChange, object: nil) }
+    }
+
+    /// Posted when the app moves to a backup address or back to the main one.
+    public static let didChange = Notification.Name("RelayFallbackDidChange")
+
+    /// The backup address requests go to instead of `primary` right now, if
+    /// any. While one is in use the app treats it like a proxy.
+    public static func hostInUse(primary: URL) -> String? {
+        primary.host().flatMap { currentHost(primary: $0) }
     }
 
     /// The host requests should go to right now in place of `primary`.

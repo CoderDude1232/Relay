@@ -90,6 +90,20 @@ final class AppModel {
     var pendingProxy: RelayProxy.Address?
     /// The latest check of the proxy in use; nil when there's no proxy.
     var proxyStatus: ProxyStatus?
+    /// The backup address in use because the main one is blocked, if any
+    /// (RelayFallback). Treated like a proxy.
+    var fallbackHost: String? = RelayFallback.hostInUse(primary: RelayConfig.serverURL)
+    @ObservationIgnored private lazy var fallbackObserver: NSObjectProtocol = NotificationCenter.default.addObserver(
+        forName: RelayFallback.didChange, object: nil, queue: .main
+    ) { [weak self] _ in
+        Task { @MainActor in self?.refreshFallbackHost() }
+    }
+
+    func refreshFallbackHost() {
+        _ = fallbackObserver
+        let host = RelayFallback.hostInUse(primary: RelayConfig.serverURL)
+        if host != fallbackHost { fallbackHost = host }
+    }
     @ObservationIgnored private var proxyMonitorTask: Task<Void, Never>?
 
     /// Reconnects through the current proxy setting: the running service is
@@ -148,6 +162,7 @@ final class AppModel {
     }
 
     func boot() async {
+        refreshFallbackHost()  // also starts listening for switches
         Self.removeRetiredICloudBackup()
         if proxyMonitorTask == nil { startProxyMonitor() }
         do {
@@ -277,6 +292,7 @@ final class AppModel {
 
     func enterForeground() {
         startProxyMonitor()
+        refreshFallbackHost()
         // The socket may still be alive.
         backgroundDisconnectTask?.cancel()
         backgroundDisconnectTask = nil

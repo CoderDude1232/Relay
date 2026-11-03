@@ -46,10 +46,12 @@ extension String {
 
 enum LinkPreviewBuilder {
     /// Fetches the page's title and image for a message being written. Off
-    /// when link previews are turned off or a proxy hides our IP (the fetch
-    /// would go straight to the site).
+    /// when link previews are turned off or a proxy or backup address is in
+    /// use (the fetch would go straight to the site, around it).
     static func build(for urlText: String) async -> MessageStore.LinkPreview? {
-        guard PrivacyPreferences.linkPreviewsEnabled, RelayProxy.active == nil else { return nil }
+        // A backup address counts as a proxy too: the network blocks Relay.
+        guard PrivacyPreferences.linkPreviewsEnabled, RelayProxy.active == nil,
+              RelayFallback.hostInUse(primary: RelayConfig.serverURL) == nil else { return nil }
         var normalized = urlText.lowercased().hasPrefix("http") ? urlText : "https://" + urlText
         // The scheme in lower case: "Https://" from the keyboard isn't fetchable.
         if let colon = normalized.firstIndex(of: ":") {

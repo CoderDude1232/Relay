@@ -793,6 +793,7 @@ private struct HistoryBackupStatusRow: View {
 struct PrivacySettingsView: View {
     let service: MessagingService
     @Environment(CallManager.self) private var callManager
+    @Environment(AppModel.self) private var model
     @State private var privateCallMode = CallManager.isPrivateCallModeEnabled
     @State private var showDirectCallsWarning = false
     @AppStorage(CallManager.callsInRecentsKey) private var callsInRecents = false
@@ -851,7 +852,7 @@ struct PrivacySettingsView: View {
                         SettingsIcon(systemName: "network.badge.shield.half.filled", color: .accentColor)
                         Text("Proxy")
                         Spacer(minLength: 0)
-                        Text(RelayProxy.isEnabled ? "On" : "Off").foregroundStyle(.secondary)
+                        Text(RelayProxy.isEnabled ? "On" : model.fallbackHost != nil ? "Backup" : "Off").foregroundStyle(.secondary)
                     }
                 }
             }
