@@ -167,6 +167,12 @@ final class MessagingService {
     /// Lets ChatView distinguish "still loading" from "genuinely empty".
     private(set) var messagesLoadedConversationId: String? = nil
     private(set) var connectionState: ConnectionState = .disconnected
+    /// The phone is online but the relay hasn't answered for a while at any of
+    /// its addresses: likely a network that blocks Relay. The chat list shows a
+    /// warning instead of an endless spinner.
+    private(set) var relayUnreachable = false
+    @ObservationIgnored private var connectingSince: Date?
+    @ObservationIgnored private var hasNetwork = true
     private(set) var authenticationExpired = false
     /// Per-conversation so the chat list can show typing for chats that aren't open.
     private(set) var typingConversations: Set<String> = []
@@ -571,7 +577,14 @@ final class MessagingService {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let wifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
-            Task { @MainActor [weak self] in self?.isOnWifi = wifi }
+            let online = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                self?.isOnWifi = wifi
+                self?.hasNetwork = online
+                // A different network may not block the relay: start over.
+                self?.connectingSince = nil
+                if !online { self?.relayUnreachable = false }
+            }
         }
         monitor.start(queue: DispatchQueue.global(qos: .utility))
         pathMonitor = monitor
@@ -609,6 +622,33 @@ final class MessagingService {
         }
     }
 
+    /// How long connecting may fail, with a working network, before the app
+    /// says it can't reach Relay.
+    private static let unreachableAfter: TimeInterval = 20
+
+    private func noteConnectAttemptFailed() {
+        guard hasNetwork else { return }
+        let since = connectingSince ?? Date()
+        connectingSince = since
+        if Date().timeIntervalSince(since) >= Self.unreachableAfter, !relayUnreachable {
+            relayUnreachable = true
+        }
+    }
+
+    private func noteConnected() {
+        connectingSince = nil
+        if relayUnreachable { relayUnreachable = false }
+    }
+
+    /// Try Again: reconnect straight away rather than after the back-off.
+    func retryConnection() {
+        connectingSince = nil
+        relayUnreachable = false
+        connectionTask?.cancel()
+        connectionTask = nil
+        start()
+    }
+
     private func runConnectionLoop() async {
         var backoffSeconds = 1.0
         while !Task.isCancelled {
@@ -621,6 +661,7 @@ final class MessagingService {
                 _ = try await api.listDevices()
                 authenticationExpired = false
                 connectionState = .connected
+                noteConnected()
                 isDrainingQueue = false
                 // Warm the sealed-sender certificate (cached ~7 days).
                 Task { _ = try? await self.senderCertificate() }
@@ -634,6 +675,7 @@ final class MessagingService {
             } catch {
                 log.warning("relay auth/connectivity preflight failed: \(PrivacyRedactor.localizedError(error))")
                 connectionState = .connecting
+                noteConnectAttemptFailed()
             }
             // Apply NSE-stored control messages before newer queued envelopes.
             await drainPendingControlMessages(sendReceipts: false)
@@ -646,6 +688,7 @@ final class MessagingService {
                     socketLive = true
                     isDrainingQueue = false
                     connectionState = .connected
+                    noteConnected()
                     backoffSeconds = 1.0
                     // Includes the open chat: envelopes the NSE already stored are
                     // skipped as duplicates and wouldn't refresh it themselves.

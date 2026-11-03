@@ -91,6 +91,14 @@ public actor RelayWebSocket {
         }
         log.info("connecting to websocket endpoint")
 
+        #if DEBUG
+        if RelayFallback.simulatesBlocked(url.host()) {
+            let (stream, continuation) = AsyncStream.makeStream(of: RelayEvent.self)
+            continuation.yield(.disconnected)
+            continuation.finish()
+            return stream
+        }
+        #endif
         let task = session.webSocketTask(with: request)
         self.task = task
         task.resume()

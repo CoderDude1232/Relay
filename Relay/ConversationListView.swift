@@ -55,6 +55,7 @@ struct ConversationListView: View {
     @State private var showingFolderManager = false
     @State private var showingRequests = false
     @State private var showingProxySettings = false
+    @State private var showingUnreachable = false
     /// Chat waiting to go into a folder created from its context menu.
     @State private var newFolderForConversation: String?
     @State private var newFolderName = ""
@@ -171,8 +172,21 @@ struct ConversationListView: View {
                         }
                         .accessibilityLabel(panicMode.isActive ? "Lock chats" : "Unlock chats")
                     }
-                    ConnectionBadge(state: service.connectionState)
+                    ConnectionBadge(state: service.connectionState, unreachable: service.relayUnreachable) {
+                        showingUnreachable = true
+                    }
                 }
+            }
+            // Once per episode: the badge brings it back.
+            .onChange(of: service.relayUnreachable) { _, unreachable in
+                if unreachable { showingUnreachable = true }
+            }
+            .alert("Can't Reach Relay", isPresented: $showingUnreachable) {
+                Button("Use a Proxy") { showingProxySettings = true }
+                Button("Try Again") { service.retryConnection() }
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("You're online, but Relay isn't answering. This network may be blocking it. Relay keeps trying, and messages send as soon as it gets through. A proxy or another network (like mobile data) may get around the block.")
             }
             .confirmationDialog("Mute notifications for…", isPresented: Binding(
                 get: { mutingConversationId != nil },
@@ -2220,11 +2234,20 @@ private struct ArchivedChatsView: View {
 
 struct ConnectionBadge: View {
     let state: MessagingService.ConnectionState
+    /// Online but the relay isn't answering: a warning instead of a spinner.
+    var unreachable = false
+    var onUnreachableTap: () -> Void = {}
 
     var body: some View {
         switch state {
         case .connected:
             EmptyView()
+        case .connecting where unreachable:
+            Button(action: onUnreachableTap) {
+                Image(systemName: "exclamationmark.icloud.fill")
+                    .foregroundStyle(.orange)
+            }
+            .accessibilityLabel("Can't reach Relay")
         case .connecting:
             ProgressView()
                 .accessibilityLabel("Connecting…")

@@ -1136,7 +1136,7 @@ public struct RelayAPIClient: Sendable {
         routed.url = RelayFallback.route(url)
         do {
             #if DEBUG
-            if RelayFallback.simulatesBlockedPrimary, routed.url?.host() == primary { throw URLError(.cannotFindHost) }
+            if RelayFallback.simulatesBlocked(routed.url?.host()) { throw URLError(.cannotFindHost) }
             #endif
             return try await session.data(for: routed)
         } catch where RelayProxy.active == nil && RelayFallback.suggestsBlock(error) {

@@ -77,8 +77,14 @@ public enum RelayFallback {
 
     #if DEBUG
     /// Debug builds launched with `-relaySimulateBlockedAPI YES` act as if a
-    /// network filter blocked the main address, to test the fallback.
-    static var simulatesBlockedPrimary: Bool { UserDefaults.standard.bool(forKey: "relaySimulateBlockedAPI") }
+    /// network filter blocked the main address, to test the fallback;
+    /// `-relaySimulateBlockedAPI all` blocks the backups too.
+    static var simulatesBlockedPrimary: Bool { UserDefaults.standard.string(forKey: "relaySimulateBlockedAPI") != nil }
+    static var simulatesBlockedEverything: Bool { UserDefaults.standard.string(forKey: "relaySimulateBlockedAPI") == "all" }
+
+    static func simulatesBlocked(_ host: String?) -> Bool {
+        simulatesBlockedEverything || (simulatesBlockedPrimary && host == "api.relaymsg.app")
+    }
     #endif
 
     /// A failure that means this address couldn't be reached at all (not a
@@ -134,7 +140,7 @@ public enum RelayFallback {
     /// The relay answers `/v1/ping` with 204 and X-Relay: 1; a block page doesn't.
     static func answers(_ host: String, session: URLSession) async -> Bool {
         #if DEBUG
-        if simulatesBlockedPrimary, host == "api.relaymsg.app" { return false }
+        if simulatesBlocked(host) { return false }
         #endif
         guard let url = URL(string: "https://\(host)/v1/ping") else { return false }
         var request = URLRequest(url: url, timeoutInterval: 8)
