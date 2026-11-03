@@ -53,6 +53,8 @@ struct ChatView: View {
     @State private var isOnScreen = false
     /// Height of the tip floating above the composer (0 when none).
     @State private var floatingTipHeight: CGFloat = 0
+    /// How far the messages extend under the composer (and home indicator).
+    @State private var underComposer: CGFloat = 0
     @State private var confirmingBulkDelete = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.openURL) private var openURL
@@ -315,7 +317,14 @@ struct ChatView: View {
                 .padding(.top, 8)
             }
             // Room for the floating tip under the newest message.
-            .contentMargins(.bottom, floatingTipHeight, for: .scrollContent)
+            // The messages run on under the composer (see `body`); leave room
+            // for it, and for the floating tip, under the newest message.
+            .contentMargins(.bottom, underComposer + floatingTipHeight, for: .scrollContent)
+            .contentMargins(.bottom, underComposer, for: .scrollIndicators)
+            // Keep the newest message in view when that room grows.
+            .onChange(of: underComposer + floatingTipHeight) { old, new in
+                if new > old, isAtBottom { scrollToBottom(proxy, animated: false) }
+            }
             .scrollDismissesKeyboard(.interactively)
             // Lays out from the bottom on first show, so the jump there is
             // already done when the messages appear.
@@ -506,6 +515,11 @@ struct ChatView: View {
         .environment(callManager)
         .environment(\.openURL, linkOpener)
         .hiddenInScreenshots(service.effectiveScreenHidden(conversationId), fillsProposal: true)
+        // Down to the screen's (or keyboard's) edge, so messages scroll behind
+        // the glass composer instead of stopping in a straight line above it.
+        .ignoresSafeArea(.container, edges: .bottom)
+        // How far it runs under the composer: the bottom inset it now ignores.
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { underComposer = $0 }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
             // Only the chat on screen reports a screenshot; ChatViews alive under
             // a sheet or in another tab stay quiet.
@@ -747,13 +761,8 @@ struct ChatView: View {
                         .padding(.horizontal, 12)
                         .padding(.bottom, 6)
                         // Opaque: messages scroll behind it.
-                        .tipBackground(.thickMaterial)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                            let grew = height > floatingTipHeight
-                            floatingTipHeight = height
-                            // Keep the newest message above the tip.
-                            if grew, isAtBottom, let p = scrollViewProxy { scrollToBottom(p) }
-                        }
+                        .tipBackground(.background.secondary)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { floatingTipHeight = $0 }
                         .onDisappear { floatingTipHeight = 0 }
                 }
                 if !unseenMentionIds.isEmpty {
@@ -879,6 +888,19 @@ struct ChatView: View {
             }
             .animation(.spring(duration: 0.2), value: isAtBottom)
             .animation(.spring(duration: 0.3), value: newMessageBanner != nil)
+            // Messages scroll behind the composer; blur them in gradually, so
+            // there's no hard edge and the glass stays readable.
+            .background(alignment: .top) {
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .mask {
+                        LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.45)],
+                                       startPoint: .top, endPoint: .bottom)
+                    }
+                    .padding(.top, -16)
+                    .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
+            }
         }
         .alert(
             "Message Not Sent",
