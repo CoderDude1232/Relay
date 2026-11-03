@@ -446,6 +446,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/turn-credentials", s.auth(s.handleTurnCredentials))
 	mux.HandleFunc("GET /v1/fallbacks", s.auth(s.handleFallbacks))
 	mux.HandleFunc("GET /v1/ping", s.handlePing)
+	mux.HandleFunc("GET /v1/speedtest", s.handleSpeedTest)
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
 	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability

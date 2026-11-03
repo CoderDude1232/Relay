@@ -17,6 +17,8 @@ struct ProxySettingsView: View {
     @State private var address: String
     @State private var checking = false
     @State private var checkResult: ProxyStatus?
+    /// The full look at the proxy from the last check.
+    @State private var report: ProxyReport?
     @State private var confirmingTrust = false
     @State private var errorMessage: String?
 
@@ -65,7 +67,7 @@ struct ProxySettingsView: View {
                                 .foregroundStyle(.white)
                                 .tint(.white)
                                 .disabled(!enabled)
-                                .onChange(of: address) { _, _ in checkResult = nil }
+                                .onChange(of: address) { _, _ in checkResult = nil; report = nil }
                         }
                         .opacity(enabled ? 1 : 0.45)
                         if let status = checkResult ?? liveStatus {
@@ -81,6 +83,10 @@ struct ProxySettingsView: View {
 
                     if let errorMessage {
                         InlineErrorBanner(errorMessage)
+                    }
+
+                    if let report, report.isUsable {
+                        ProxyReportCard(report: report)
                     }
 
                     HStack(alignment: .top, spacing: 12) {
@@ -105,8 +111,10 @@ struct ProxySettingsView: View {
                         textButton("Check Again") {
                             Task {
                                 checking = true
-                                checkResult = await RelayProxy.check(saved, relay: RelayConfig.serverURL)
-                                model.proxyStatus = checkResult
+                                let analysis = await RelayProxy.analyze(saved, relay: RelayConfig.serverURL)
+                                report = analysis
+                                checkResult = analysis.status
+                                model.proxyStatus = analysis.status
                                 checking = false
                             }
                         }
@@ -144,8 +152,16 @@ struct ProxySettingsView: View {
             Button("I Trust This Proxy") { Task { await apply() } }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\(parsed?.display ?? "This proxy") will see your IP address and when you use Relay, and could log it. A proxy run by an authority that blocks Relay could use that to find people who use it. Your messages stay end-to-end encrypted.")
+            Text(trustMessage)
         }
+    }
+
+    private var trustMessage: String {
+        var text = "\(parsed?.display ?? "This proxy") will see your IP address and when you use Relay, and could log it. A proxy run by an authority that blocks Relay could use that to find people who use it. Your messages stay end-to-end encrypted."
+        if let warnings = report?.warnings, !warnings.isEmpty {
+            text += "\n\nThe check also found:\n" + warnings.map { "• " + ProxyReportCard.title($0) }.joined(separator: "\n")
+        }
+        return text
     }
 
     /// Relay switched to one of its own backup addresses because this network
@@ -188,9 +204,11 @@ struct ProxySettingsView: View {
             return
         }
         checking = true
-        let status = await RelayProxy.check(parsed, relay: RelayConfig.serverURL)
+        let analysis = await RelayProxy.analyze(parsed, relay: RelayConfig.serverURL)
+        let status = analysis.status
         checking = false
         checkResult = status
+        report = analysis
         switch status {
         case .ok, .slow:
             confirmingTrust = true
@@ -247,6 +265,134 @@ struct ProxyStatusRow: View {
         case .ok: .green
         case .slow: .orange
         case .unreachable, .refused, .securityFailure: .red
+        }
+    }
+}
+
+/// What the check found about a proxy: speed, steadiness, where it reaches the
+/// internet, and anything that looks off. Warnings inform; they don't block.
+struct ProxyReportCard: View {
+    let report: ProxyReport
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Proxy check")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 6)
+            row("speedometer", "Response", latencyText)
+            row("arrow.down.circle", "Download", speedText)
+            row("waveform.path.ecg", "Steadiness", steadinessText)
+            row("globe", "Connects from", locationText)
+            if !report.warnings.isEmpty {
+                Rectangle().fill(.white.opacity(0.12)).frame(height: 0.5).padding(.horizontal, 16).padding(.vertical, 6)
+                ForEach(report.warnings, id: \.self) { warning in
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.footnote)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(Self.title(warning)).font(.footnote.weight(.semibold)).foregroundStyle(.white)
+                            Text(Self.detail(warning)).font(.caption).foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                }
+                Text("You can still use this proxy. These are things to weigh, not proof it's unsafe.")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+            } else {
+                Label("Nothing unusual found", systemImage: "checkmark.seal.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+            }
+        }
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onboardingCard()
+        .accessibilityElement(children: .combine)
+    }
+
+    private func row(_ icon: String, _ label: String, _ value: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.footnote).foregroundStyle(.white.opacity(0.5)).frame(width: 20)
+            Text(label).font(.footnote).foregroundStyle(.white.opacity(0.7))
+            Spacer(minLength: 8)
+            Text(value).font(.footnote.weight(.medium)).foregroundStyle(.white).multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 5)
+    }
+
+    private var latencyText: String {
+        guard let ms = report.latencyMs else { return "—" }
+        if let direct = report.directLatencyMs { return "\(ms) ms (direct \(direct) ms)" }
+        return "\(ms) ms"
+    }
+
+    private var speedText: String {
+        guard let kbps = report.downloadKBps else { return "—" }
+        let text = Self.speed(kbps)
+        if let direct = report.directDownloadKBps { return "\(text) (direct \(Self.speed(direct)))" }
+        return text
+    }
+
+    private var steadinessText: String {
+        if report.failedRequests > 0 { return "\(report.failedRequests) requests failed" }
+        guard let jitter = report.jitterMs else { return "—" }
+        return jitter > RelayProxy.unstableJitterMs ? "Uneven (±\(jitter) ms)" : "Steady (±\(jitter) ms)"
+    }
+
+    private var locationText: String {
+        guard let code = report.exitCountry else { return "Unknown" }
+        if code == "T1" { return "Tor network" }
+        let name = Locale.current.localizedString(forRegionCode: code) ?? code
+        return Self.flag(code) + " " + name
+    }
+
+    static func speed(_ kbps: Int) -> String {
+        kbps >= 1024 ? String(format: "%.1f MB/s", Double(kbps) / 1024) : "\(kbps) KB/s"
+    }
+
+    static func flag(_ code: String) -> String {
+        guard code.count == 2 else { return "" }
+        return code.uppercased().unicodeScalars.compactMap { UnicodeScalar(127397 + $0.value) }
+            .map { String($0) }.joined()
+    }
+
+    static func title(_ warning: ProxyReport.Warning) -> String {
+        switch warning {
+        case .slow: "Slow to respond"
+        case .throttled: "Very slow downloads"
+        case .unstable: "Unsteady connection"
+        case .exitsElsewhere: "Passes your connection on"
+        case .localNetwork: "On this local network"
+        case .tor: "Connects through Tor"
+        }
+    }
+
+    static func detail(_ warning: ProxyReport.Warning) -> String {
+        switch warning {
+        case .slow(let ms):
+            "Requests take about \(String(format: "%.1f", Double(ms) / 1000)) s. Messages will feel slow."
+        case .throttled(let kbps):
+            "Downloads ran at \(speed(kbps)). The proxy may be overloaded, or limiting speed on purpose."
+        case .unstable:
+            "Some requests failed or took much longer than others. Messages may be delayed."
+        case .exitsElsewhere:
+            "It reaches the internet from a different address than the one you connect to, so another server may see your traffic too."
+        case .localNetwork:
+            "It's on the network you're connected to, so whoever runs this network may run the proxy, and may be the one blocking Relay."
+        case .tor:
+            "Its traffic comes out of the Tor network. That hides it well but is often slow and sometimes blocked."
         }
     }
 }

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -81,5 +82,21 @@ func TestPing(t *testing.T) {
 	(&Server{}).handlePing(w, httptest.NewRequest("GET", "/v1/ping", nil))
 	if w.Code != http.StatusNoContent || w.Header().Get("X-Relay") != "1" {
 		t.Fatalf("ping: %d %q", w.Code, w.Header().Get("X-Relay"))
+	}
+}
+
+func TestSpeedTestSizeAndCap(t *testing.T) {
+	s := &Server{}
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{{"", 256 * 1024}, {"?kb=4", 4096}, {"?kb=99999", maxSpeedTestKB * 1024}} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", "/v1/speedtest"+tc.query, nil)
+		r.RemoteAddr = "192.0.2." + strconv.Itoa(len(tc.query)) + ":1"
+		s.handleSpeedTest(w, r)
+		if w.Code != 200 || w.Body.Len() != tc.want {
+			t.Fatalf("%q: status %d, %d bytes, want %d", tc.query, w.Code, w.Body.Len(), tc.want)
+		}
 	}
 }

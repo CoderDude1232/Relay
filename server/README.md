@@ -747,6 +747,14 @@ sudo ./relayproxy -cert fullchain.pem -key privkey.pem
 | `-allow` | relay API + Supabase, port 443 | comma-separated `host:port` targets |
 | `-max-conns` | 4000 | concurrent tunnels before new ones get 503 |
 
+`GET /v1/speedtest?kb=N` (unauthenticated, 20 a minute per address) returns N
+KB of random bytes (default 256, at most 512) so the app can measure a proxy's
+download speed. The app's proxy check (RelayKit `ProxyAnalysis.swift`) also
+times small requests, compares with a direct connection when the relay is
+reachable, and reads Cloudflare's `/cdn-cgi/trace` on the relay's domain through
+the proxy for the country it connects from. Findings are warnings; the user can
+still turn the proxy on.
+
 ## Fallback addresses (`cmd/fallbackrotate`)
 
 For networks (schools, workplaces) that block `api.relaymsg.app` by name.

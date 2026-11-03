@@ -1,10 +1,12 @@
 package api
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -121,4 +123,33 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Relay", "1")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// speedTestLimiter: a proxy check downloads a few hundred KB; 20 a minute per
+// address is plenty and keeps the endpoint from being a bandwidth sink.
+var speedTestLimiter = newSlidingWindowLimiter(20, time.Minute)
+
+const maxSpeedTestKB = 512
+
+// GET /v1/speedtest?kb=N → N KB of random bytes (default 256, at most 512),
+// uncompressible and uncached, so the app can measure a proxy's throughput.
+func (s *Server) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
+	if !speedTestLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "slow down")
+		return
+	}
+	kb := 256
+	if v, err := strconv.Atoi(r.URL.Query().Get("kb")); err == nil && v > 0 {
+		kb = min(v, maxSpeedTestKB)
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(kb*1024))
+	chunk := make([]byte, 1024)
+	for i := 0; i < kb; i++ {
+		_, _ = rand.Read(chunk)
+		if _, err := w.Write(chunk); err != nil {
+			return
+		}
+	}
 }
