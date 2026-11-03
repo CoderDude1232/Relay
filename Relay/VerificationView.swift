@@ -179,18 +179,28 @@ struct VerificationView: View {
                         "To verify, compare these numbers with \(peerName) or scan their code.")
             }
         }()
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol)
-                .font(.title2)
-                .foregroundStyle(tint)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
-                Text(detail).font(.subheadline).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
+        return VStack(spacing: 6) {
+            Label(title, systemImage: symbol)
+                .font(.headline)
+                .labelStyle(StatusLabelStyle(tint: tint))
+            Text(detail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal)
         .accessibilityElement(children: .combine)
+    }
+
+    private struct StatusLabelStyle: LabelStyle {
+        let tint: Color
+        func makeBody(configuration: Configuration) -> some View {
+            HStack(spacing: 6) {
+                configuration.icon.foregroundStyle(tint)
+                configuration.title
+            }
+        }
     }
 
     @ViewBuilder
@@ -199,7 +209,8 @@ struct VerificationView: View {
             Text("\(peerName) has a device with a different key, so this number can't be verified. Ask them to check their linked devices and remove any they don't recognise.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
         } else {
             VStack(spacing: 12) {
                 Button {
