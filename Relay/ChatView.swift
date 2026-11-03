@@ -51,6 +51,8 @@ struct ChatView: View {
     @Environment(CallManager.self) private var callManager
     @Environment(AppModel.self) private var model
     @State private var isOnScreen = false
+    /// Height of the tip floating above the composer (0 when none).
+    @State private var floatingTipHeight: CGFloat = 0
     @State private var confirmingBulkDelete = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.openURL) private var openURL
@@ -312,6 +314,8 @@ struct ChatView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
             }
+            // Room for the floating tip under the newest message.
+            .contentMargins(.bottom, floatingTipHeight, for: .scrollContent)
             .scrollDismissesKeyboard(.interactively)
             // Lays out from the bottom on first show, so the jump there is
             // already done when the messages appear.
@@ -730,7 +734,10 @@ struct ChatView: View {
             }
         }
         .environment(\.relayIsMessageRequest, isRequest)
-        .safeAreaInset(edge: .bottom) {
+        // Floats over the messages just above the composer. In the bottom
+        // inset these sat on a blank band: the messages are hosted in the
+        // screenshot-hidden container and don't draw behind the inset.
+        .overlay(alignment: .bottom) {
             VStack(spacing: 0) {
                 if !isRequest, initialScrollDone, service.activeMessages.count >= 3,
                    !recorder.isRecording, editingMessage == nil {
@@ -739,6 +746,15 @@ struct ChatView: View {
                         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                         .padding(.horizontal, 12)
                         .padding(.bottom, 6)
+                        // Opaque: messages scroll behind it.
+                        .tipBackground(.thickMaterial)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            let grew = height > floatingTipHeight
+                            floatingTipHeight = height
+                            // Keep the newest message above the tip.
+                            if grew, isAtBottom, let p = scrollViewProxy { scrollToBottom(p) }
+                        }
+                        .onDisappear { floatingTipHeight = 0 }
                 }
                 if !unseenMentionIds.isEmpty {
                     HStack {
@@ -790,12 +806,6 @@ struct ChatView: View {
                     .padding(.bottom, 6)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                if !mentionSuggestions.isEmpty {
-                    mentionPicker
-                }
-                if !smartReplies.isEmpty && !isRequest {
-                    smartReplyStrip
-                }
                 if let sender = newMessageBanner {
                     Button {
                         withAnimation(.spring(duration: 0.3)) { newMessageBanner = nil }
@@ -813,6 +823,18 @@ struct ChatView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, 4)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(duration: 0.2), value: isAtBottom)
+            .animation(.spring(duration: 0.3), value: newMessageBanner != nil)
+        }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                if !mentionSuggestions.isEmpty {
+                    mentionPicker
+                }
+                if !smartReplies.isEmpty && !isRequest {
+                    smartReplyStrip
                 }
                 if isRelayOfficial {
                     // A capsule rather than a full-width strip: a material

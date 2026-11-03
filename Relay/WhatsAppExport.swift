@@ -22,6 +22,9 @@ nonisolated struct WhatsAppExport: Sendable {
         var omittedMedia = false
         /// "This message was deleted" / "You deleted this message".
         var deleted = false
+        /// Written by WhatsApp rather than a person ("Morgan added you", the
+        /// encryption notice), on iPhone exports.
+        var isNotice = false
     }
 
     /// The chat's name from the file name ("WhatsApp Chat - Morgan"), if any.
@@ -64,7 +67,8 @@ nonisolated struct WhatsAppExport: Sendable {
     }
 
     private static func make(text: String, title: String?, archive: ZipArchive?) throws -> WhatsAppExport {
-        let messages = WhatsAppChatParser.parse(text)
+        // Group events ("Morgan added Sam") come from the group's name.
+        let messages = WhatsAppChatParser.parse(text).filter { !($0.isNotice && $0.sender == title) }
         guard !messages.isEmpty else { throw ReadError.notAnExport }
         var counts: [String: Int] = [:]
         for m in messages { counts[m.sender, default: 0] += 1 }
@@ -139,8 +143,10 @@ nonisolated enum WhatsAppChatParser {
             if message.text.isEmpty, message.attachment == nil, !message.omittedMedia, !message.deleted { continue }
             messages.append(message)
         }
-        // The notice WhatsApp puts at the top of every chat.
-        if let first = messages.first, first.text.contains("end-to-end encrypted"), first.attachment == nil {
+        // The encryption notice WhatsApp puts at the top of every chat, in
+        // whatever language the phone uses.
+        if let first = messages.first, first.attachment == nil,
+           first.isNotice || first.text.contains("end-to-end encrypted") {
             messages.removeFirst()
         }
         return messages
@@ -236,22 +242,85 @@ nonisolated enum WhatsAppChatParser {
             message.text = String(body[range.upperBound...])
             return message
         }
-        let lower = body.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        if lower == "this message was deleted" || lower == "you deleted this message" {
+        let lower = body.lowercased().precomposedStringWithCanonicalMapping
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".。!！ "))
+        if deletedNotices.contains(lower) {
             message.deleted = true
             message.text = ""
             return message
         }
-        if lower == "<media omitted>" || (isNotice && lower.hasSuffix(" omitted")) {
+        // Android: "<Media omitted>" in any language is the whole message in
+        // angle brackets. iPhone: a short notice like "image omitted".
+        let isBracketed = lower.hasPrefix("<") && lower.hasSuffix(">") && !lower.dropFirst().contains("<")
+        if isBracketed || (isNotice && lower.split(separator: " ").count <= 4
+                           && omittedStems.contains(where: { lower.contains($0) })) {
             message.omittedMedia = true
             message.text = ""
             return message
         }
+        message.isNotice = isNotice
         return message
     }
 
+    /// "This message was deleted" and "You deleted this message" as WhatsApp
+    /// writes them in its most used languages (lowercased, no final period).
+    private static let deletedNotices: Set<String> = [
+        // English
+        "this message was deleted", "you deleted this message",
+        // Spanish
+        "se eliminó este mensaje", "este mensaje fue eliminado", "eliminaste este mensaje",
+        // Portuguese
+        "esta mensagem foi apagada", "mensagem apagada", "você apagou esta mensagem", "apagou esta mensagem",
+        "esta mensagem foi eliminada", "eliminou esta mensagem",
+        // French
+        "ce message a été supprimé", "vous avez supprimé ce message",
+        // German
+        "diese nachricht wurde gelöscht", "du hast diese nachricht gelöscht",
+        // Italian
+        "questo messaggio è stato eliminato", "hai eliminato questo messaggio",
+        // Dutch
+        "dit bericht is verwijderd", "je hebt dit bericht verwijderd",
+        // Indonesian, Malay
+        "pesan ini telah dihapus", "anda menghapus pesan ini", "mesej ini telah dipadam", "anda telah memadam mesej ini",
+        // Turkish
+        "bu mesaj silindi", "bu mesajı sildiniz",
+        // Russian, Ukrainian
+        "данное сообщение удалено", "это сообщение удалено", "вы удалили данное сообщение", "вы удалили это сообщение",
+        "це повідомлення видалено", "ви видалили це повідомлення",
+        // Polish
+        "ta wiadomość została usunięta", "usunięto tę wiadomość", "usunąłeś tę wiadomość",
+        // Swedish
+        "det här meddelandet raderades", "du raderade det här meddelandet",
+        // Arabic
+        "تم حذف هذه الرسالة", "لقد حذفت هذه الرسالة", "حذفت هذه الرسالة",
+        // Hindi
+        "यह मैसेज हटा दिया गया था", "आपने यह मैसेज हटा दिया", "यह संदेश हटा दिया गया", "आपने यह संदेश हटा दिया",
+        // Chinese
+        "此消息已删除", "你删除了此消息", "此訊息已刪除", "你已刪除此訊息", "你刪除了此訊息",
+        // Japanese
+        "このメッセージは削除されました", "このメッセージを削除しました",
+        // Korean
+        "삭제된 메시지입니다", "메시지를 삭제했습니다",
+        // Vietnamese, Thai
+        "tin nhắn này đã bị xóa", "bạn đã xóa tin nhắn này", "ข้อความนี้ถูกลบแล้ว", "คุณลบข้อความนี้แล้ว",
+    ].reduce(into: Set<String>()) { $0.insert($1.precomposedStringWithCanonicalMapping) }
+
+    /// "omitted" in WhatsApp's iPhone media notices ("image omitted",
+    /// "imagen omitida", "Bild weggelassen", …).
+    private static let omittedStems = [
+        "omitted", "omitid", "omis", "omess", "weggelassen", "ausgelassen", "ocultad", "oculto",
+        "absent", "weggelaten", "dihilangkan", "atlandı", "пропущен", "pominięt", "utelämnad",
+        "省略", "생략", "bỏ qua", "ถูกละไว้", "محذوف", "छोड़",
+    ]
+
     private static func clean(_ text: String) -> String {
-        text.replacingOccurrences(of: "\u{200E}", with: "")
+        var text = text
+        // "‎<This message was edited>" at the end, in any language.
+        if text.hasSuffix(">"), let open = text.range(of: "\u{200E}<", options: .backwards),
+           text.distance(from: open.upperBound, to: text.endIndex) <= 60 {
+            text = String(text[..<open.lowerBound])
+        }
+        return text.replacingOccurrences(of: "\u{200E}", with: "")
             .replacingOccurrences(of: "<This message was edited>", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
