@@ -102,6 +102,7 @@ private struct ChoiceButton: View {
     let title: String
     let subtitle: String
     let icon: String
+    var working = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -115,14 +116,19 @@ private struct ChoiceButton: View {
                     Text(subtitle).font(.footnote).foregroundStyle(.white.opacity(0.55))
                 }
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.4))
+                if working {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
             }
             .padding(16)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .disabled(working)
     }
 }
 
@@ -147,9 +153,10 @@ struct SignInOptionsView: View {
                 OnboardingBackButton(action: onBack)
                 OnboardingHeader(title: "Sign in", subtitle: "Signing in here signs your other devices out.")
 
-                OnboardingPrimaryButton(title: "Sign In with a Passkey", working: working) { passkey() }
-
                 VStack(spacing: 0) {
+                    ChoiceButton(title: "Passkey", subtitle: "Face ID or Touch ID, no code needed", icon: "person.badge.key",
+                                 working: working) { passkey() }
+                    Divider().background(.white.opacity(0.12))
                     ChoiceButton(title: "Phone number", subtitle: "We'll text you a code", icon: "phone", action: onPhone)
                     Divider().background(.white.opacity(0.12))
                     ChoiceButton(title: "Email", subtitle: "We'll email you a code", icon: "envelope", action: onEmail)
