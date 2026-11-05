@@ -255,7 +255,9 @@ func TestStepUp(t *testing.T) {
 	if none.Method != "" {
 		t.Fatalf("method %q", none.Method)
 	}
-	recoveryAuth := "recovery-auth-key-0123456789"
+	// Unique per run: recovery keys are unique across accounts, and the test
+	// database outlives a run.
+	recoveryAuth := "recovery-auth-key-0123456789" + sfx
 	h := sha256.Sum256([]byte(recoveryKeyAuthHashPrefix + recoveryAuth))
 	env.doJSON("PUT", "/v1/accounts/me/recovery-key", c.authUser(), c.password, map[string]string{"hash": b64URL(h[:])}, http.StatusNoContent, nil)
 	env.doJSON("PUT", "/v1/accounts/me/account-password", c.authUser(), c.password,
