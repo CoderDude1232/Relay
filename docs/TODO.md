@@ -64,13 +64,11 @@ Actions:
       `discoverContacts` map `503` to `DiscoveryError.unavailable` with a user-facing
       message. Stopgap; the real fix is the redeploy above.
 
-## Website copy (non-app, keeps marketing claims honest)
-- [ ] Contacts claim → "hashed & blinded on-device; server never learns contacts"
-      (don't say "never reads your contacts" — the app reads the address book locally).
-- [ ] Location claim → "only if you share live location; off by default; E2E" (drop
-      "no location permission of any kind").
-- [ ] Push claim → the strong "content-free wake" wording is now TRUE by default; keep
-      it, optionally note the opt-in "Include Message in Push" toggle.
+## Website copy (done 2026-11-05)
+- [x] Contacts: "checked hashed and blinded, on your phone" (home page, security page).
+- [x] Location: only shared if you turn on live location, off by default, E2E.
+- [x] Push: the security page describes Faster Alerts (on by default) and the
+      empty wake-up when it's off.
 
 ## DONE: Relay-Sig request signatures replaced Basic-auth device passwords
 
