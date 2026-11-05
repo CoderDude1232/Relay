@@ -50,10 +50,7 @@ extension MessagingService {
             try? await Task.sleep(for: .seconds(75))
             if currentIdentityKey(of: peer) == key { status = await lookUp(peer: peer, key: key) }
         }
-        if keyTransparencyStatus[peer] != status {
-            keyTransparencyStatus[peer] = status
-            refreshConversations()
-        }
+        record(status, peer: peer, key: key)
         return status
     }
 
@@ -94,23 +91,32 @@ extension MessagingService {
             try? await Task.sleep(for: .seconds(75))
             status = currentIdentityKey(of: peer) == key ? await lookUp(peer: peer, key: key) : .unavailable
         }
-        if keyTransparencyStatus[peer] != status {
-            keyTransparencyStatus[peer] = status
-            refreshConversations()
-        }
+        record(status, peer: peer, key: key)
         return status != .mismatch
     }
 
-    /// Group members not checked in the last few hours.
-    func refreshTransparency(groupMembers members: [String]) {
+    /// Keeps the result and, when the directory confirmed the key we use, clears
+    /// a pending safety-number-changed warning for it (a new phone or reinstall
+    /// whose key everyone is shown the same).
+    private func record(_ status: TransparencyStatus, peer: String, key: Data) {
+        var changed = keyTransparencyStatus[peer] != status
+        keyTransparencyStatus[peer] = status
+        if status == .verified, currentIdentityKey(of: peer) == key,
+           acknowledgeIdentityConfirmedByDirectory(peer: peer, key: key) {
+            changed = true
+        }
+        if changed { refreshConversations() }
+    }
+
+    /// Group members not checked in the last few hours, and any whose safety
+    /// number changed (the directory may confirm the new key).
+    func refreshTransparency(groupMembers members: [String]) async {
         let due = members.filter { member in
             member != credentials.accountId
-                && (keyTransparencyCheckedAt[member].map { Date().timeIntervalSince($0) > 6 * 3600 } ?? true)
+                && ((keyTransparencyCheckedAt[member].map { Date().timeIntervalSince($0) > 6 * 3600 } ?? true)
+                    || hasUnacknowledgedSafetyNumberChange(member))
         }
-        guard !due.isEmpty else { return }
-        Task {
-            for member in due { await refreshTransparency(peer: member) }
-        }
+        for member in due { await refreshTransparency(peer: member) }
     }
 
     // MARK: What this device accepted before

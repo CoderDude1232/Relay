@@ -1227,7 +1227,10 @@ struct ChatView: View {
         }
         if isGroup, !didCheckTransparency, let group = service.group(for: conversationId) {
             didCheckTransparency = true
-            service.refreshTransparency(groupMembers: group.members)
+            Task {
+                await service.refreshTransparency(groupMembers: group.members)
+                changedGroupMembers = service.groupMembersWithChangedSafetyNumbers(conversationId)
+            }
         }
         // Checked against the key directory once per visit.
         if !isGroup, !didCheckTransparency, let peer = service.verificationPeer(for: conversationId) {

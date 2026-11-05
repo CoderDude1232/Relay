@@ -4964,7 +4964,7 @@ final class MessagingService {
 
     /// What peerVerification reports as `.changed`, without computing the
     /// safety number (cheap enough to run for every group member).
-    private func hasUnacknowledgedSafetyNumberChange(_ peer: String) -> Bool {
+    func hasUnacknowledgedSafetyNumberChange(_ peer: String) -> Bool {
         if hasConflictingIdentityKeys(peer) { return true }
         if keyTransparencyStatus[peer] == .mismatch { return true }
         switch try? storage.signalStore.verificationState(address: peer) {
@@ -5098,6 +5098,28 @@ final class MessagingService {
         let current = Set(try storage.signalStore.identityKeys(address: peer))
         guard !current.isEmpty else { return }
         try acknowledgeIdentities(current, forPeer: peer)
+    }
+
+    /// The key directory just confirmed `key` as `peer`'s published key. If
+    /// that's their only key and a change to it is still waiting to be
+    /// acknowledged, acknowledge it: everyone else is shown the same key, which
+    /// is what automatic verification means. Not for a contact verified in
+    /// person (`.changed`): a key they compared by hand changing still needs
+    /// comparing again. Returns whether a warning was cleared.
+    @discardableResult
+    func acknowledgeIdentityConfirmedByDirectory(peer: String, key: Data) -> Bool {
+        do {
+            let current = Set(try storage.signalStore.identityKeys(address: peer))
+            guard current == [key],
+                  try storage.signalStore.verificationState(address: peer) == .unverified,
+                  try isIdentityChangeAwaitingAcknowledgement(forPeer: peer)
+            else { return false }
+            try acknowledgeIdentities(current, forPeer: peer)
+            return true
+        } catch {
+            log.error("directory acknowledgement failed: \(PrivacyRedactor.error(error))")
+            return false
+        }
     }
 
     private func acknowledgeIdentities(_ identities: Set<Data>, forPeer peer: String) throws {

@@ -124,6 +124,10 @@ NwIDAQAB
    the Go test `TestWriteVectors` writes vectors the Swift side is checked
    against). A mismatch is re-checked after 75 s, since a key changed in the
    last minute isn't published yet, then shows as a changed safety number.
+   A changed key the directory confirms (a contact's new phone or reinstall)
+   is acknowledged automatically, so it shows as verified instead of
+   changed, unless that contact was verified in person: then the new key
+   still has to be compared again.
 4. Witness: publish heads to the Gist; clients compare. ← done
 5. Remember accepted state per contact and for ourselves (above). ← done
 6. Independent co-signing witness and signing-key rotation (above). ← done
