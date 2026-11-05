@@ -41,6 +41,10 @@ public actor RelayWebSocket {
     private let signer: (any RelayRequestSigner)?
 
     private var task: URLSessionWebSocketTask?
+    /// The tunnel's frame ciphers, set once the relay accepts the opening
+    /// request; sends wait for it.
+    private var frames: RelayTunnel.Frames?
+    private var opened: Task<Void, any Error>?
     private var receiveLoop: Task<Void, Never>?
     private var pingLoop: Task<Void, Never>?
     private var nextRequestId: UInt64 = 1
@@ -76,18 +80,26 @@ public actor RelayWebSocket {
             continuation.finish()
             return stream
         }
-        let url = RelayFallback.route(wsBaseURL.appending(path: "v1/ws"))
-        var request = URLRequest(url: url)
+        // The socket itself is an unauthenticated /v1/t/ws; the signed
+        // GET /v1/ws goes inside it, encrypted (RelayTunnel).
+        let url = RelayFallback.route(wsBaseURL.appending(path: "v1/t/ws"))
         // Don't set assumesHTTP3Capable. On a device it makes iOS try the
         // WebSocket over QUIC, which the server doesn't support; the connection
         // stalls and is reset (POSIX 57). The handshake must go over TCP.
+        let request = URLRequest(url: url)
+        var inner = URLRequest(url: baseURL.appending(path: "v1/ws"))
         if let signer {
-            // Sign the upgrade as the server sees it: GET /v1/ws, empty body.
-            if !RelaySignature.sign(&request, credentials: credentials, signer: signer) {
+            // Signed as the server sees it: GET /v1/ws, empty body.
+            if !RelaySignature.sign(&inner, credentials: credentials, signer: signer) {
                 log.warning("websocket upgrade signing failed")
             }
         } else {
-            request.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
+            inner.setValue(credentials.authorizationHeader, forHTTPHeaderField: "Authorization")
+        }
+        guard let (opening, pending) = try? RelayTunnel.seal(inner) else {
+            let (stream, continuation) = AsyncStream.makeStream(of: RelayEvent.self)
+            continuation.finish()
+            return stream
         }
         log.info("connecting to websocket endpoint")
 
@@ -106,7 +118,17 @@ public actor RelayWebSocket {
         let (stream, continuation) = AsyncStream.makeStream(of: RelayEvent.self)
         eventContinuation = continuation
 
+        let opened = Task { [weak self] in
+            guard let self else { throw RelayWebSocketError.connectionClosed }
+            try await self.open(task, opening: opening, pending: pending)
+        }
+        self.opened = opened
         receiveLoop = Task { [weak self] in
+            guard (try? await opened.value) != nil else {
+                // Cancelled means a newer connection replaced this one.
+                if !Task.isCancelled { await self?.handleDisconnect() }
+                return
+            }
             await self?.runReceiveLoop(task)
         }
         pingLoop = Task { [weak self] in
@@ -119,6 +141,30 @@ public actor RelayWebSocket {
         disconnectInternal()
     }
 
+    /// Sends the encrypted opening request and checks the relay's answer.
+    private func open(_ task: URLSessionWebSocketTask, opening: Data,
+                      pending: RelayTunnel.Pending) async throws {
+        try await task.send(.data(opening))
+        guard case .data(let answer) = try await task.receive() else { throw RelayWebSocketError.connectionClosed }
+        let response = try pending.open(answer)
+        guard response.status == 200 else {
+            log.warning("websocket refused: \(response.status)")
+            throw RelayWebSocketError.connectionClosed
+        }
+        guard self.task === task else { throw RelayWebSocketError.connectionClosed }
+        frames = try pending.frames()
+    }
+
+    /// Encrypts a frame and hands it to the socket in this same actor turn,
+    /// so frames go out in counter order.
+    private func sendFrame(_ data: Data, on task: URLSessionWebSocketTask,
+                           completion: @escaping @Sendable ((any Error)?) -> Void) throws {
+        guard var cipher = frames else { throw RelayWebSocketError.notConnected }
+        let sealed = try cipher.seal(data)
+        frames = cipher
+        task.send(.data(sealed), completionHandler: completion)
+    }
+
     /// Sends encrypted payloads to a destination mailbox. The proto field is
     /// named `destinationAccount` but the server treats it as an opaque mailbox id.
     public func send(
@@ -128,7 +174,9 @@ public actor RelayWebSocket {
         ephemeral: Bool = false,
         silent: Bool = false
     ) async throws -> SendOutcome {
-        guard let task else { throw RelayWebSocketError.notConnected }
+        guard let task, let opened else { throw RelayWebSocketError.notConnected }
+        do { try await opened.value } catch { throw RelayWebSocketError.notConnected }
+        guard self.task === task else { throw RelayWebSocketError.notConnected }
 
         var frame = Relay_V1_ClientFrame()
         let requestId = nextRequestId
@@ -145,9 +193,13 @@ public actor RelayWebSocket {
         let data = try frame.serializedData()
         let response = try await withCheckedThrowingContinuation { continuation in
             pendingSends[requestId] = continuation
-            task.send(.data(data)) { [weak self] error in
-                guard let error else { return }
-                Task { await self?.failPendingSend(requestId, error: error) }
+            do {
+                try sendFrame(data, on: task) { [weak self] error in
+                    guard let error else { return }
+                    Task { await self?.failPendingSend(requestId, error: error) }
+                }
+            } catch {
+                failPendingSend(requestId, error: error)
             }
         }
         return SendOutcome(response)
@@ -156,12 +208,23 @@ public actor RelayWebSocket {
     /// Confirms durable receipt so the relay drops the envelope from this
     /// device's queue.
     public func ack(envelopeId: String) async throws {
-        guard let task else { throw RelayWebSocketError.notConnected }
+        guard let task, let opened else { throw RelayWebSocketError.notConnected }
+        do { try await opened.value } catch { throw RelayWebSocketError.notConnected }
+        guard self.task === task else { throw RelayWebSocketError.notConnected }
         var frame = Relay_V1_ClientFrame()
         var ack = Relay_V1_AckRequest()
         ack.envelopeID = envelopeId
         frame.ack = ack
-        try await task.send(.data(frame.serializedData()))
+        let data = try frame.serializedData()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            do {
+                try sendFrame(data, on: task) { error in
+                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+                }
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
     }
 
     // MARK: - Internals
@@ -183,9 +246,15 @@ public actor RelayWebSocket {
                 }
                 return
             }
-            guard case .data(let data) = message,
-                  let frame = try? Relay_V1_ServerFrame(serializedBytes: data)
-            else { continue }
+            guard case .data(let sealed) = message else { continue }
+            // A frame that doesn't open breaks the counter: reconnect.
+            guard var cipher = frames, let data = try? cipher.open(sealed) else {
+                log.warning("websocket frame didn't decrypt; reconnecting")
+                task.cancel(with: .protocolError, reason: nil)
+                return
+            }
+            frames = cipher
+            guard let frame = try? Relay_V1_ServerFrame(serializedBytes: data) else { continue }
 
             switch frame.payload {
             case .sendResponse(let response):
@@ -242,6 +311,9 @@ public actor RelayWebSocket {
         eventContinuation?.finish()
         eventContinuation = nil
         task = nil
+        frames = nil
+        opened?.cancel()
+        opened = nil
     }
 
     private func disconnectInternal() {

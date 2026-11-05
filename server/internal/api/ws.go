@@ -44,9 +44,22 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(*http.Request) bool { return true },
 }
 
+// sessionConn is the part of *websocket.Conn a session uses; tunnelConn
+// (tunnel.go) is the encrypted variant.
+type sessionConn interface {
+	ReadMessage() (int, []byte, error)
+	WriteMessage(messageType int, data []byte) error
+	WriteControl(messageType int, data []byte, deadline time.Time) error
+	SetReadLimit(limit int64)
+	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
+	SetPongHandler(h func(string) error)
+	Close() error
+}
+
 // wsSession implements hub.Session over one WebSocket connection.
 type wsSession struct {
-	conn *websocket.Conn
+	conn sessionConn
 	out  chan *relaypb.ServerFrame
 	done chan struct{}
 	// writerDone is closed when writePump exits (write error / timeout), so a
@@ -104,6 +117,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, dev *st
 	if err != nil {
 		return // Upgrade already wrote the error response
 	}
+	s.serveWebSocket(conn, dev)
+}
+
+// serveWebSocket runs an authenticated device's session until it disconnects.
+func (s *Server) serveWebSocket(conn sessionConn, dev *store.Device) {
 	sess := &wsSession{
 		conn:       conn,
 		out:        make(chan *relaypb.ServerFrame, sendBufferSize),

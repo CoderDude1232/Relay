@@ -10,7 +10,7 @@ let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().pat
 let package = Package(
     name: "RelayCore",
     platforms: [
-        .iOS(.v17)
+        .iOS("26.0")
     ],
     products: [
         .library(name: "RelayCore", targets: ["RelayCore"])

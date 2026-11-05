@@ -756,6 +756,18 @@ reachable, and reads Cloudflare's `/cdn-cgi/trace` on the relay's domain through
 the proxy for the country it connects from. Findings are warnings; the user can
 still turn the proxy on.
 
+## Encrypted tunnel (`internal/tunnel`)
+
+Design: `docs/TUNNEL.md`. With `-tunnel-key`, relayd accepts every request as
+`POST /v1/t` (an Oblivious HTTP message to its X-Wing key holding a Binary HTTP
+request) and the WebSocket as `GET /v1/t/ws` (an encrypted, signed `GET /v1/ws`
+first, then encrypted frames), so Cloudflare sees padded sizes and timing but no
+paths, signatures, account ids or mailboxes. The inner request goes through the
+same handlers and rate limits as a direct one. Bodies up to 8 MiB; larger
+attachments go direct. `GET /v1/t/key` → `{keyId, publicKey}` for checking only
+(the app builds the key in). `relayd -tunnel-key FILE -tunnel-public-key` prints
+it. Never replace the key file. The direct routes stay for older app versions.
+
 ## Key transparency (`internal/kt`)
 
 Design: `docs/KEY_TRANSPARENCY.md`. With `-kt-key-dir`, relayd keeps a

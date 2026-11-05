@@ -1038,17 +1038,15 @@ public struct RelayAPIClient: Sendable {
     public func downloadAttachment(id: String) async throws -> Data {
         var request = makeRequest("GET", "v1/attachments/\(id)")
         request.setValue(nil, forHTTPHeaderField: "Authorization")
-        // Download to a temp file and check the size before loading it.
-        let (file, response) = try await anonymousSession.download(for: request)
-        defer { try? FileManager.default.removeItem(at: file) }
+        let (data, response) = try await fetch(request, on: anonymousSession)
         guard let http = response as? HTTPURLResponse else { throw RelayAPIError.malformedResponse }
         guard (200..<300).contains(http.statusCode) else {
             throw RelayAPIError.http(status: http.statusCode, message: "")
         }
-        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
-        guard size <= Self.maxAttachmentDownloadBytes else { throw RelayAPIError.malformedResponse }
-        return try Data(contentsOf: file)
+        guard data.count <= Self.maxAttachmentDownloadBytes else { throw RelayAPIError.malformedResponse }
+        return data
     }
+
 
     // MARK: - Request plumbing
 
@@ -1158,13 +1156,41 @@ public struct RelayAPIClient: Sendable {
         return (data, http.statusCode)
     }
 
-    /// Sends to the relay's current address (the main one or a backup; see
-    /// RelayFallback). If that address can't be reached at all, the request
-    /// never arrived, so it's sent once more to whichever address answers.
+    /// Sends a request for the relay through the encrypted tunnel
+    /// (RelayTunnel), so Cloudflare sees neither its path nor its headers. Only
+    /// bodies over RelayTunnel.maxBody, and responses relayd says are too large
+    /// to carry, go direct.
     private func fetch(_ request: URLRequest, on session: URLSession) async throws -> (Data, URLResponse) {
         guard let url = request.url, let primary = baseURL.host(), url.host() == primary else {
             return try await session.data(for: request)
         }
+        guard (request.httpBody?.count ?? 0) <= RelayTunnel.maxBody else {
+            return try await route(request, on: session, primary: primary)
+        }
+        let (message, pending) = try RelayTunnel.seal(request)
+        var outer = URLRequest(url: baseURL.appending(path: "v1/t"), timeoutInterval: request.timeoutInterval)
+        outer.httpMethod = "POST"
+        outer.assumesHTTP3Capable = request.assumesHTTP3Capable
+        outer.setValue("message/ohttp-req", forHTTPHeaderField: "Content-Type")
+        outer.httpBody = message
+        let (data, response) = try await route(outer, on: session, primary: primary)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw RelayAPIError.http(status: (response as? HTTPURLResponse)?.statusCode ?? 0, message: "")
+        }
+        let inner: RelayTunnel.Response
+        do { inner = try pending.open(data) } catch { throw RelayAPIError.malformedResponse }
+        if inner.tooLarge { return try await route(request, on: session, primary: primary) }
+        guard let answer = HTTPURLResponse(url: url, statusCode: inner.status, httpVersion: nil,
+                                           headerFields: inner.headers)
+        else { throw RelayAPIError.malformedResponse }
+        return (inner.body, answer)
+    }
+
+    /// Sends to the relay's current address (the main one or a backup; see
+    /// RelayFallback). If that address can't be reached at all, the request
+    /// never arrived, so it's sent once more to whichever address answers.
+    private func route(_ request: URLRequest, on session: URLSession, primary: String) async throws -> (Data, URLResponse) {
+        guard let url = request.url else { throw RelayAPIError.malformedResponse }
         var routed = request
         routed.url = RelayFallback.route(url)
         do {
@@ -1536,7 +1562,7 @@ extension RelayAPIClient {
         request.setValue(nil, forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONEncoder().encode(["phone": phone, "code": code, "password": devicePassword])
         // A 404 carries the signup ticket, which `perform` would drop.
-        let (data, response) = try await anonymousSession.data(for: request)
+        let (data, response) = try await fetch(request, on: anonymousSession)
         if (response as? HTTPURLResponse)?.statusCode == 404,
            let noAccount = try? JSONDecoder().decode(NoAccount.self, from: data) {
             return .noAccount(signupTicket: noAccount.signupTicket)

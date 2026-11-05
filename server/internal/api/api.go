@@ -39,6 +39,7 @@ import (
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
 	"github.com/relayapp/relay-server/internal/store"
+	"github.com/relayapp/relay-server/internal/tunnel"
 )
 
 type Server struct {
@@ -60,6 +61,7 @@ type Server struct {
 	turnHealth   *TURNHealth      // nil = no failover
 	cfTURN       *CloudflareTURN  // nil = no failover
 	history      *history.Storage // nil = history backup unavailable
+	tunnelKey    *tunnel.Key      // nil = no encrypted tunnel (/v1/t)
 
 	// Supabase social login. When supabaseURL is set, access tokens are
 	// verified server-to-server via GET /auth/v1/user and the returned
@@ -468,7 +470,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/supporter/redeem", s.auth(s.handleSupporterRedeem))
 	mux.HandleFunc("GET /v1/accounts/me/supporter", s.auth(s.handleGetSupporter))
 	mux.HandleFunc("GET /v1/ws", s.auth(s.handleWebSocket))
-	return stripVisitorIPHeaders(requestDeadlines(limitRequestBody(mux)))
+	return stripVisitorIPHeaders(s.tunnelRoutes(requestDeadlines(limitRequestBody(mux))))
 }
 
 // ---------------------------------------------------------------------------

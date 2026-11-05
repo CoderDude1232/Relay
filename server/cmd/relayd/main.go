@@ -34,6 +34,7 @@ import (
 	"github.com/relayapp/relay-server/internal/siwa"
 	"github.com/relayapp/relay-server/internal/store"
 	"github.com/relayapp/relay-server/internal/supporter"
+	"github.com/relayapp/relay-server/internal/tunnel"
 )
 
 // runBlobGC periodically reaps attachment blobs older than ttl.
@@ -194,6 +195,8 @@ func main() {
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
 	passkeyRPID := flag.String("passkey-rp-id", api.DefaultPasskeyRPID, "WebAuthn relying party ID for passkey sign-in")
 	passkeyOrigins := flag.String("passkey-origins", api.DefaultPasskeyOrigin, "comma-separated origins accepted in passkey clientDataJSON")
+	tunnelKey := flag.String("tunnel-key", "", "path to the encrypted tunnel's private key (created on first run; the app builds in its public half, so never replace it); empty = no /v1/t")
+	tunnelPublic := flag.Bool("tunnel-public-key", false, "print the tunnel key's public half (base64) and exit")
 	supporterKey := flag.String("supporter-key", "", "path to the Relay Supporter credential master secret (hex, 32 bytes); generated if absent, enables /v1/supporter/*")
 	supporterAttachment := flag.Int64("max-supporter-attachment", 95<<20+1024, "max attachment blob size in bytes for Relay Supporter accounts (Cloudflare caps one request at 100 MB)")
 	supporterSandbox := flag.Bool("supporter-allow-sandbox", false, "accept App Store sandbox (TestFlight) purchases for Relay Supporter; their credentials last an hour")
@@ -202,6 +205,15 @@ func main() {
 	historyRemoteURL := flag.String("history-remote-url", "", "historyd base URL for segments when local disk is low (e.g. https://turn.example:9479)")
 	historyRemoteSecretFile := flag.String("history-remote-secret-file", "", "path to the secret shared with historyd")
 	flag.Parse()
+	if *tunnelPublic {
+		key, err := tunnel.LoadOrCreateKey(*tunnelKey)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(base64.StdEncoding.EncodeToString(key.PublicKey()))
+		return
+	}
 	if *ktRotate {
 		pub, err := kt.RotateSignKey(*ktKeyDir)
 		if err != nil {
@@ -435,6 +447,15 @@ func main() {
 		apiServer.SetSupporter(issuer, verifier)
 		apiServer.SetSupporterAttachmentMax(*supporterAttachment)
 		slog.Info("relay supporter enabled", "sandbox", *supporterSandbox)
+	}
+	if *tunnelKey != "" {
+		key, err := tunnel.LoadOrCreateKey(*tunnelKey)
+		if err != nil {
+			slog.Error("failed to load tunnel key", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		apiServer.SetTunnel(key)
+		slog.Info("encrypted tunnel enabled")
 	}
 	if *oprfKey != "" {
 		key, err := oprf.LoadOrCreateKey(*oprfKey)
