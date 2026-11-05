@@ -25,7 +25,7 @@ struct SignInSession: Sendable {
 /// The app's Google OAuth client (an iOS client in Google Cloud Console). The
 /// relay's -google-client-id must be the same id.
 enum GoogleSignInConfig {
-    static let clientID = ""
+    static let clientID = "447181060647-3dad9o89v72fvrip8ir9e5a1rl2o6tlb.apps.googleusercontent.com"
     static var isConfigured: Bool { !clientID.isEmpty }
     /// The reversed client id, Google's redirect scheme for iOS clients.
     static var redirectScheme: String {
