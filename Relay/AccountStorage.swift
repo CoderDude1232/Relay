@@ -472,15 +472,25 @@ extension MessagingService {
         }
     }
 
+    private static let accountPasswordUpdateNotice = "Please enter your account password again in Settings → Account → Account Password. Relay now stores it differently, and until you do it can't be used to sign in on a new device."
+
     /// Tells the user, once, when their account password was stored by an
     /// older build: until they enter it again it can't be used to sign in on
-    /// a new device. Settings keeps showing it until they do.
+    /// a new device. Settings keeps showing it until they do; once they have
+    /// (or the password is gone), the notice is taken back.
     func noteAccountPasswordNeedsUpdateIfNeeded() async {
-        guard !isDemoAccount, kvData(Self.accountPasswordUpdateNoticeKV) == nil,
-              let methods = try? await apiClient.signInMethods(), methods.accountPasswordNeedsUpdate
-        else { return }
+        // [1] posted, [2] resolved (nothing left to check).
+        let state = kvData(Self.accountPasswordUpdateNoticeKV)
+        guard !isDemoAccount, state != Data([2]),
+              let methods = try? await apiClient.signInMethods() else { return }
+        guard methods.accountPasswordNeedsUpdate else {
+            retractRelayNotice(Self.accountPasswordUpdateNotice)
+            setKV(Self.accountPasswordUpdateNoticeKV, Data([2]))
+            return
+        }
+        guard state == nil else { return }
         setKV(Self.accountPasswordUpdateNoticeKV, Data([1]))
-        postRelayNotice("Please enter your account password again in Settings → Account → Account Password. Relay now stores it differently, and until you do it can't be used to sign in on a new device.")
+        postRelayNotice(Self.accountPasswordUpdateNotice)
     }
 
     /// Makes a new recovery key (replacing any old one), registers its hash,

@@ -568,11 +568,8 @@ struct ChatView: View {
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 4) {
-                                if let symbol = verification?.state.titleSymbol {
-                                    Image(systemName: symbol.name)
-                                        .foregroundStyle(symbol.tint)
-                                        .font(.caption2)
-                                }
+                                // A changed safety number shows as the banner
+                                // under the bar, not a badge here too.
                                 Text(peerName)
                                     .font(.subheadline.weight(.semibold))
                                 if isRelayOfficial {
@@ -2800,14 +2797,6 @@ enum BubblePosition {
     case single, first, middle, last
 
     var closesGroup: Bool { self == .single || self == .last }
-}
-
-/// Badge next to the peer's name in the title: only a warning when their
-/// safety number changed.
-private extension VerificationState {
-    var titleSymbol: (name: String, tint: Color)? {
-        self == .changed ? ("exclamationmark.shield.fill", .orange) : nil
-    }
 }
 
 // MARK: - Message row (gestures)

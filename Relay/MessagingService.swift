@@ -491,6 +491,33 @@ final class MessagingService {
         stop()
     }
 
+    /// Older builds put the "imported from WhatsApp" line after the imported
+    /// history, at the time of the import, so the chat list showed it instead
+    /// of the last message. Moves those lines above the history, once.
+    private func moveWhatsAppImportNoticesOnce() {
+        let key = "relay.whatsAppNoticesMoved"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        do {
+            try storage.database.run(
+                """
+                UPDATE messages SET timestamp = (
+                    SELECT MIN(i.timestamp) - 1 FROM messages i
+                     WHERE i.conversation_id = messages.conversation_id AND i.id LIKE ?)
+                 WHERE sender_account = ? AND body LIKE ?
+                   AND EXISTS (SELECT 1 FROM messages i
+                                WHERE i.conversation_id = messages.conversation_id AND i.id LIKE ?)
+                """,
+                [.text(Self.importedIdPrefix + "%"), .text(Self.systemSender),
+                 .text("% imported from WhatsApp. They're only on this device."),
+                 .text(Self.importedIdPrefix + "%")]
+            )
+            UserDefaults.standard.set(true, forKey: key)
+            refreshConversations()
+        } catch {
+            // Tried again next launch.
+        }
+    }
+
     func start() {
         guard connectionTask == nil, !isShutDown else { return }
         isStopped = false
@@ -502,6 +529,7 @@ final class MessagingService {
             failInterruptedSends()
             // Older builds donated every chat; suggestions are now opt-in.
             if !PrivacyPreferences.shareSuggestionsEnabled { INInteraction.deleteAll(completion: nil) }
+            moveWhatsAppImportNoticesOnce()
         }
         loadDirectoryDecoySeed()
         connectionTask = Task { await runConnectionLoop() }
@@ -4784,6 +4812,19 @@ final class MessagingService {
         let id = ensureRelayAccount()
         guard !id.isEmpty else { return }
         insertRelayMessage(text, conversationId: id)
+    }
+
+    /// Removes a notice that no longer applies (it asked for something that
+    /// has since been done), so the Relay chat doesn't keep nagging.
+    func retractRelayNotice(_ text: String) {
+        guard let id = try? storage.messages.conversation(
+            withPeer: relayOfficialAccount, username: Self.relayOfficialUsername
+        ), let messages = try? allMessages(in: id) else { return }
+        let stale = messages.filter { $0.senderAccount == relayOfficialAccount && $0.body == text }
+        guard !stale.isEmpty else { return }
+        for m in stale { try? storage.messages.deleteMessage(id: m.id) }
+        refreshConversations()
+        refreshActiveMessages(ifShowing: id)
     }
 
     private func insertRelayMessage(_ text: String, conversationId: String) {

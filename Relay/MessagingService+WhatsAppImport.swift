@@ -63,7 +63,7 @@ extension MessagingService {
         // doesn't apply; this just keeps one file from exhausting memory.
         let maxMediaBytes: UInt64 = 100 * 1024 * 1024
 
-        let added = try await Task.detached(priority: .userInitiated) {
+        let (added, earliest) = try await Task.detached(priority: .userInitiated) {
             var rows: [MessageStore.ImportedMessage] = []
             var seen: [String: Int] = [:]
             var lastSecond: Int64 = .min
@@ -114,15 +114,18 @@ extension MessagingService {
                     senderAccount: sender, attachments: attachments, isDeleted: message.deleted
                 ))
             }
-            return try messages.importMessages(rows, conversationId: conversationId)
+            let added = try messages.importMessages(rows, conversationId: conversationId)
+            return (added, rows.map(\.timestamp).min())
         }.value
         progress(1)
         if added > 0 {
-            // A notice under the history, added the same way so it isn't unread.
+            // A notice heading the imported history, added the same way so it
+            // isn't unread. Above it rather than after it, so the chat list
+            // still shows the last real message.
             let notice = MessageStore.ImportedMessage(
                 id: UUID().uuidString, isOutgoing: false,
                 body: "\(added.formatted()) \(added == 1 ? "message" : "messages") imported from WhatsApp. They're only on this device.",
-                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                timestamp: (earliest ?? Int64(Date().timeIntervalSince1970 * 1000)) - 1,
                 senderAccount: Self.systemSender, attachments: []
             )
             _ = try? storage.messages.importMessages([notice], conversationId: conversationId)

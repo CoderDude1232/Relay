@@ -38,7 +38,7 @@ struct ContentView: View {
         ZStack {
             switch model.phase {
             case .loading:
-                ProgressView()
+                LaunchContinuation()
             case .onboarding:
                 OnboardingView()
             case .ready(let service):
@@ -1152,5 +1152,35 @@ private struct VoiceMiniPlayer: View {
         .glassCompat(in: .capsule)
         .shadow(color: .black.opacity(0.1), radius: 10, y: 3)
         .padding(.horizontal, 12)
+    }
+}
+
+/// The launch screen's logo, held while the app opens its database, so
+/// launching doesn't flash to a bare spinner. A spinner shows only if it takes
+/// a while.
+private struct LaunchContinuation: View {
+    @State private var slow = false
+
+    var body: some View {
+        ZStack {
+            Color("LaunchBackground")
+            Image("LaunchLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 200, height: 200)
+                .accessibilityLabel("Relay")
+            if slow {
+                ProgressView()
+                    .offset(y: 150)
+                    .transition(.opacity)
+            }
+        }
+        // Centred on the whole screen, as the launch screen is, so the logo
+        // doesn't jump.
+        .ignoresSafeArea()
+        .task {
+            try? await Task.sleep(for: .seconds(1.5))
+            withAnimation { slow = true }
+        }
     }
 }

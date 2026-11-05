@@ -1332,7 +1332,7 @@ private struct NewChatSheet: View {
                                     DispatchQueue.main.async { onConversationStarted(conversationId) }
                                 }
                             } label: {
-                                actionLabel("New Group", icon: "person.2.fill", color: .accentColor)
+                                actionLabel("New Group", icon: "person.2.fill", color: .orange)
                             }
                             NavigationLink {
                                 UsernameSearchSheet(embedded: true, service: service) { convId in
@@ -1526,7 +1526,7 @@ private struct NewChatSheet: View {
     }
 
     private func actionLabel(_ title: String, icon: String, color: Color) -> some View {
-        // The same grey tiles as Settings.
+        // The same tiles as Settings.
         HStack(spacing: 14) {
             SettingsIcon(systemName: icon, color: color)
             Text(title).foregroundStyle(.primary)
