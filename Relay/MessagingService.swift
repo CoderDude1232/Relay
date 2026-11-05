@@ -159,6 +159,9 @@ final class MessagingService {
     var historyBackupError: String?
     /// Bumped when a backup finishes, so Settings re-reads its date and size.
     var historyBackupRevision = 0
+    /// Backup was turned off but the relay hasn't confirmed deleting it yet;
+    /// retried on reconnect until it does.
+    var historyDeletionPending = false
     /// Bumped whenever a scam check stores a result, so request banners and
     /// list labels refresh (see ScamCheck.swift).
     var scamFlagsRevision = 0
@@ -738,6 +741,7 @@ final class MessagingService {
                         await self.noteAccountPasswordNeedsUpdateIfNeeded()
                         await self.ensureICloudBackupUnlock()
                         await self.restoreHistoryIfNeeded()
+                        await self.retryHistoryDeletionIfPending()
                         await self.backUpHistoryIfDue()
                     }
                     if !didRepublishKeysThisLaunch {
@@ -4040,7 +4044,7 @@ final class MessagingService {
         }
     }
 
-    private func knownAccessKey(_ account: String) -> Data? {
+    func knownAccessKey(_ account: String) -> Data? {
         if let key = peerAccessKeys[account] { return key }
         guard let data = (try? storage.database.query(
             "SELECT value FROM kv WHERE key = ?", [.text("ak:\(account)")]
@@ -4142,6 +4146,12 @@ final class MessagingService {
             try storage.signalStore.pruneIdentities(address: account, keepingDeviceIds: Set(devices.map(\.id)))
         }
         if firstContact {
+            // Trusting a key for the first time waits for the key directory, so
+            // a fake key the relay hands out is refused before anything is
+            // encrypted to it. No answer (offline) still trusts on first use.
+            guard await confirmFirstContactKey(peer: account) else {
+                throw SafetyNumberChangedError(peer: account)
+            }
             try acknowledgeCurrentIdentity(forPeer: account)
         }
     }
@@ -5061,6 +5071,12 @@ final class MessagingService {
 
     private func requireAcknowledgedIdentity(forPeer peer: String) throws {
         if try isIdentityChangeAwaitingAcknowledgement(forPeer: peer) {
+            throw SafetyNumberChangedError(peer: peer)
+        }
+        // The key directory contradicts the key we'd encrypt to: refuse unless
+        // the safety number was compared in person.
+        if keyTransparencyStatus[peer] == .mismatch,
+           (try? storage.signalStore.verificationState(address: peer)) != .verified {
             throw SafetyNumberChangedError(peer: peer)
         }
     }

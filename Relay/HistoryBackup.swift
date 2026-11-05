@@ -45,6 +45,8 @@ extension MessagingService {
     private static let historyDigestKV = "history:lastDigest"
     private static let historyLastSizeKV = "history:lastSize"
     private static let historyLastMessagesKV = "history:lastMessages"
+    /// Set when backup is turned off, cleared once the relay confirms the delete.
+    private static let historyDeletePendingKV = "history:deletePending"
     /// How often an unchanged-or-changed history is considered for upload.
     private static let historyUploadInterval: TimeInterval = 6 * 3600
     /// Data per segment, leaving room for the nonce and tag under the relay's 2 MiB cap.
@@ -87,6 +89,10 @@ extension MessagingService {
 
     private func setHistoryKV(_ key: String, _ value: Data) {
         try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)", [.text(key), .blob(value)])
+    }
+
+    private func removeHistoryKV(_ key: String) {
+        try? storage.database.run("DELETE FROM kv WHERE key = ?", [.text(key)])
     }
 
     private static func historyAD(_ generation: Int64, _ part: String) -> Data {
@@ -174,6 +180,7 @@ extension MessagingService {
             let eligible = Set(historySnapshot(keepingEmpty: true).conversations.flatMap { $0.messages.map(\.id) })
             attachments = await backUpAttachments(existing: existing, eligible: eligible, key: key)
         }
+        guard Self.isHistoryBackupEnabled else { return }
         let snapshot = historySnapshot(attachments: attachments)
         guard let json = try? JSONEncoder().encode(snapshot),
               let compressed = try? (json as NSData).compressed(using: .lzfse) as Data
@@ -195,11 +202,15 @@ extension MessagingService {
         }
         let steps = Double(chunks.count + 1)
         do {
-            // Seconds since 1970, so two devices backing up at once don't
-            // write into the same generation; the newest complete one wins.
+            // Seconds since 1970 spread over 256 random slots, so two devices
+            // backing up in the same second (almost) never write into the same
+            // generation; the newest complete one wins. generation × 1000 stays
+            // below historyAttachmentSeqBase until about 2109.
             let generation = max((existing.filter { Self.isSnapshotSegment($0.seq) }.map { $0.seq / 1000 }.max() ?? 0) + 1,
-                                 Int64(now))
+                                 Int64(now) * 256 + Int64.random(in: 0..<256))
             for (index, chunk) in chunks.enumerated() {
+                // Turned off meanwhile: stop; the delete takes what was written.
+                guard Self.isHistoryBackupEnabled else { return }
                 let part = "\(index + 1)/\(chunks.count)"
                 let sealed = try AES.GCM.seal(chunk, using: key, authenticating: Self.historyAD(generation, part))
                 guard let combined = sealed.combined else { return }
@@ -210,7 +221,7 @@ extension MessagingService {
                                            createdAt: Int64(now * 1000))
             let sealedManifest = try AES.GCM.seal(try JSONEncoder().encode(manifest), using: key,
                                                   authenticating: Self.historyAD(generation, "manifest"))
-            guard let manifestData = sealedManifest.combined else { return }
+            guard let manifestData = sealedManifest.combined, Self.isHistoryBackupEnabled else { return }
             // The manifest goes last: a generation without one is incomplete.
             try await apiClient.putHistorySegment(generation * 1000, manifestData)
             for segment in existing where Self.isSnapshotSegment(segment.seq) && segment.seq / 1000 < generation {
@@ -427,15 +438,41 @@ extension MessagingService {
         return data
     }
 
-    /// Turning the backup off deletes what the relay holds.
+    /// Turning the backup off deletes what the relay holds. The delete is
+    /// remembered until the relay confirms it, and retried on reconnect.
     func setHistoryBackupEnabled(_ enabled: Bool) async {
         UserDefaults.standard.set(enabled, forKey: Self.historyBackupEnabledKey)
         if enabled {
+            removeHistoryKV(Self.historyDeletePendingKV)
+            historyDeletionPending = false
             await backUpHistoryIfDue(force: true)
         } else {
-            try? await apiClient.deleteAllHistory()
             try? storage.database.run("DELETE FROM kv WHERE key IN (?, ?)",
                                       [.text(Self.historyDigestKV), .text(Self.historyLastUploadKV)])
+            setHistoryKV(Self.historyDeletePendingKV, Data([1]))
+            historyDeletionPending = true
+            // An upload already under way stops at its next segment; let it.
+            for _ in 0..<100 where historyBackupProgress != nil {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            await retryHistoryDeletionIfPending()
+        }
+    }
+
+    /// Deletes the relay's copy if backup was turned off and that hasn't been
+    /// confirmed yet.
+    func retryHistoryDeletionIfPending() async {
+        guard !Self.isHistoryBackupEnabled, historyKV(Self.historyDeletePendingKV) != nil else {
+            historyDeletionPending = false
+            return
+        }
+        historyDeletionPending = true
+        do {
+            try await apiClient.deleteAllHistory()
+            removeHistoryKV(Self.historyDeletePendingKV)
+            historyDeletionPending = false
+        } catch {
+            historyLog.warning("history delete failed; retried on reconnect: \(PrivacyRedactor.error(error))")
         }
     }
 }

@@ -455,6 +455,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/kt/keys", s.handleKTKeys)
 	mux.HandleFunc("GET /v1/kt/consistency", s.handleKTConsistency)
 	mux.HandleFunc("GET /v1/kt/lookup/{account}", s.auth(s.handleKTLookup))
+	mux.HandleFunc("GET /v1/kt/lookup/{account}/sealed", s.handleKTLookupSealed) // unauthenticated by design (access-key capability)
 	mux.HandleFunc("GET /v1/kt/monitor", s.auth(s.handleKTMonitor))
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"log/slog"
@@ -105,7 +106,40 @@ func (s *Server) handleKTHead(w http.ResponseWriter, r *http.Request) {
 // ktLookupLimiter: a device checks its contacts, not the whole directory.
 var ktLookupLimiter = newSlidingWindowLimiter(600, time.Hour)
 
+// ktSealedLookupIPLimiter bounds the anonymous lookup per address.
+var ktSealedLookupIPLimiter = newSlidingWindowLimiter(600, time.Hour)
+
 func (s *Server) handleKTLookup(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if !ktLookupLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many lookups; try again later")
+		return
+	}
+	s.writeKTLookup(w, r)
+}
+
+// GET /v1/kt/lookup/{account}/sealed with Relay-Access-Key: the same proof,
+// authorized by the account's access key instead of our signature (like the
+// sealed bundle fetch), so the relay can't record who checks whose keys.
+// Unknown account and wrong key get the same 403.
+func (s *Server) handleKTLookupSealed(w http.ResponseWriter, r *http.Request) {
+	if !ktSealedLookupIPLimiter.allow(clientIP(r)) {
+		httpError(w, http.StatusTooManyRequests, "too many lookups; try again later")
+		return
+	}
+	token, err := base64.StdEncoding.DecodeString(r.Header.Get("Relay-Access-Key"))
+	if err != nil || len(token) != 32 {
+		httpError(w, http.StatusForbidden, "not allowed")
+		return
+	}
+	stored, err := s.store.AccessKey(r.PathValue("account"))
+	if err != nil || len(stored) != 32 || subtle.ConstantTimeCompare(stored, token) != 1 {
+		httpError(w, http.StatusForbidden, "not allowed")
+		return
+	}
+	s.writeKTLookup(w, r)
+}
+
+func (s *Server) writeKTLookup(w http.ResponseWriter, r *http.Request) {
 	if s.kt == nil {
 		httpError(w, http.StatusServiceUnavailable, "key transparency not configured")
 		return
@@ -113,10 +147,6 @@ func (s *Server) handleKTLookup(w http.ResponseWriter, r *http.Request, dev *sto
 	account := r.PathValue("account")
 	if account == "" || len(account) > 64 {
 		httpError(w, http.StatusBadRequest, "account required")
-		return
-	}
-	if !ktLookupLimiter.allow(dev.AccountID) {
-		httpError(w, http.StatusTooManyRequests, "too many lookups; try again later")
 		return
 	}
 	var since uint32

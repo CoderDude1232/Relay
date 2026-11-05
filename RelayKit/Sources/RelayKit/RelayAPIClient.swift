@@ -1171,10 +1171,15 @@ public struct RelayAPIClient: Sendable {
     // MARK: Key transparency (docs/KEY_TRANSPARENCY.md)
 
     /// GET /v1/kt/lookup/{account}: proof of an account's current identity keys.
-    public func keyTransparencyLookup(account: String, since: UInt32 = 0) async throws -> KeyTransparency.Lookup {
-        var request = makeRequest("GET", "v1/kt/lookup/\(account)")
+    /// With the account's access key the lookup is anonymous (the `/sealed`
+    /// route, like the sealed bundle fetch), so the relay can't record who
+    /// checks whose keys; 403 means a wrong or rotated key. Without one it's
+    /// signed, which names us to the relay.
+    public func keyTransparencyLookup(account: String, since: UInt32 = 0, accessKey: Data? = nil) async throws -> KeyTransparency.Lookup {
+        var request = makeRequest("GET", accessKey == nil ? "v1/kt/lookup/\(account)" : "v1/kt/lookup/\(account)/sealed")
         if since > 0 { request.url?.append(queryItems: [URLQueryItem(name: "since", value: String(since))]) }
-        let (data, _) = try await send(request, authenticated: true)
+        if let accessKey { request.setValue(accessKey.base64EncodedString(), forHTTPHeaderField: "Relay-Access-Key") }
+        let (data, _) = try await send(request, authenticated: accessKey == nil)
         return try JSONDecoder().decode(KeyTransparency.Lookup.self, from: data)
     }
 

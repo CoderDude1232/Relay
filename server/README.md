@@ -768,6 +768,11 @@ start the restored tree must match the last head or relayd exits.
 - `GET /v1/kt/consistency?from=M&to=N` → `{proof}`: the log at N extends M.
 - `GET /v1/kt/lookup/{account}` (authenticated) → `{vrfProof, version,
   commitment, prevChain, nonce, keys, proof: {bitmap, siblings}, head}`.
+- `GET /v1/kt/lookup/{account}/sealed` (unauthenticated, `Relay-Access-Key`
+  header = the account's base64 access key) → the same body. The app uses this
+  whenever it holds the contact's access key, so the relay can't tie a lookup
+  to the device doing it. A wrong key and an unknown account both get 403;
+  600 an hour per IP.
 - `GET /v1/kt/monitor` (authenticated) → the caller's own `versions` (with
   nonces and keys) and the `latest` lookup they must chain to.
 

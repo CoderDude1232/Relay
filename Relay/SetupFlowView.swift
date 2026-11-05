@@ -228,7 +228,7 @@ private struct SetupPrivacyPage: View {
                 divider
                 toggle("Typing Indicators", detail: "Let people see when you're typing.", icon: "ellipsis.bubble", isOn: $sendTyping)
                 divider
-                toggle("Link Previews", detail: "Show a preview of links you send. Your iPhone fetches it, not Relay.", icon: "link", isOn: $linkPreviews)
+                toggle("Link Previews", detail: "Your iPhone fetches a preview of links you send from the website, which sees your IP address. Relay never sees the link.", icon: "link", isOn: $linkPreviews)
             }
             .onboardingCard()
 

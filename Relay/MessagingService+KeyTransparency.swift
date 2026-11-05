@@ -60,7 +60,10 @@ extension MessagingService {
     private func lookUp(peer: String, key: Data) async -> TransparencyStatus {
         let seen = seenState(Self.peerStateKey(peer))
         do {
-            let lookup = try await apiClient.keyTransparencyLookup(account: peer, since: seen?.version ?? 0)
+            // Anonymous when we hold their access key; a rejected key comes
+            // back as unavailable rather than falling back to a signed lookup.
+            let lookup = try await apiClient.keyTransparencyLookup(account: peer, since: seen?.version ?? 0,
+                                                                   accessKey: knownAccessKey(peer))
             guard await acceptHead(lookup.head) else { return .mismatch }
             try KeyTransparency.verify(lookup, account: peer, key: key, signPublicKeys: trustedSignKeys())
             // Their history must have grown from what we accepted before, so a
@@ -76,6 +79,26 @@ extension MessagingService {
         } catch {
             return .unavailable
         }
+    }
+
+    /// Before a contact's key is trusted for the first time: false only when
+    /// the directory still contradicts it after the publishing delay. Confirmed
+    /// and unreachable (offline) both pass; offline is trust on first use.
+    func confirmFirstContactKey(peer: String) async -> Bool {
+        guard peer != credentials.accountId, peer != Self.relayOfficialAccount,
+              let key = currentIdentityKey(of: peer)
+        else { return true }
+        var status = await lookUp(peer: peer, key: key)
+        if status == .mismatch {
+            // A key made in the last minute may not be published yet.
+            try? await Task.sleep(for: .seconds(75))
+            status = currentIdentityKey(of: peer) == key ? await lookUp(peer: peer, key: key) : .unavailable
+        }
+        if keyTransparencyStatus[peer] != status {
+            keyTransparencyStatus[peer] = status
+            refreshConversations()
+        }
+        return status != .mismatch
     }
 
     /// Group members not checked in the last few hours.

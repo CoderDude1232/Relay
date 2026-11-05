@@ -706,6 +706,11 @@ private struct DataStorageSettingsView: View {
                                       }))
                     if historyBackup {
                         HistoryBackupStatusRow(service: service)
+                    } else if service.historyDeletionPending {
+                        Label("Deleting your backup from Relay. It finishes next time you're online.",
+                              systemImage: "clock.arrow.circlepath")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 } else {
                     HStack(spacing: 14) {
@@ -884,7 +889,7 @@ struct PrivacySettingsView: View {
                                   info: "Relay checks incoming messages with links, money or code requests on your iPhone (with Apple Intelligence where available) and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
                                   isOn: $scamWarnings)
                 SettingsToggleRow(systemName: "link", title: "Generate Link Previews",
-                                  info: "When on, Relay fetches a preview for links you send, which connects your device to that website. Previews are never fetched for links you receive.",
+                                  info: "When on, your iPhone fetches a preview for links you type, straight from that website (or YouTube for videos). The site sees your IP address and the link, even if you don't send it. Relay's servers never see the link. Previews are never fetched for links you receive, or while a proxy or backup connection is on.",
                                   isOn: $linkPreviews)
             }
 

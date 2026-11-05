@@ -79,9 +79,17 @@ Live witness key (public half, built into the app):
 ## Privacy
 
 The tree shows only pseudonymous labels and commitments. Anyone fetching heads
-learns roughly how many entries change per epoch, nothing else. Lookups
-reveal who you look up only to the relay, which already learns that when it
-hands out the contact's prekey bundle.
+learns roughly how many entries change per epoch, nothing else. When the app
+holds a contact's access key (every contact who has shared their profile), it
+looks them up anonymously over `GET /v1/kt/lookup/{account}/sealed`, so the
+relay sees a lookup but not who made it. Without an access key the lookup is
+signed, which tells the relay who looked whom up; it learns that anyway when it
+hands out the contact's prekey bundle on that path.
+
+A first contact's key is checked before the first message is sent. If the
+lookup shows a different key, the app waits out the publish delay, checks once
+more, and refuses to send while the mismatch stands (unless the safety number
+was verified in person).
 
 ## Live keys (public halves; the app builds these in)
 
