@@ -12,7 +12,6 @@ import UIKit
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
-    @AppStorage(AppColorScheme.key) private var colorSchemeSetting = AppColorScheme.system.rawValue
     @State private var isObscured = false
     // Start locked on a cold launch so a launching link or notification can't
     // land before unlock.
@@ -59,10 +58,9 @@ struct ContentView: View {
                     }
                 }
                     .environment(\.relayAppLocked, isLocked)
-                    // The phone page is dark like sign-in; setup follows the
-                    // Light/Dark choice made on its first page.
-                    .preferredColorScheme(model.showPhoneOnboarding
-                                          ? .dark : AppColorScheme(rawValue: colorSchemeSetting)?.scheme)
+                    // The phone page is dark like sign-in; everything else
+                    // follows the system's Light/Dark setting.
+                    .preferredColorScheme(model.showPhoneOnboarding ? .dark : nil)
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()
                     }

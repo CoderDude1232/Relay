@@ -11,36 +11,6 @@
 import SwiftUI
 import UIKit
 
-/// Light, Dark or the system's, for the app (sign-in pages are always dark).
-enum AppColorScheme: String, CaseIterable, Identifiable {
-    case system, light, dark
-
-    static let key = "relay.colorScheme"
-
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .system: "Automatic"
-        case .light: "Light"
-        case .dark: "Dark"
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .system: "circle.lefthalf.filled"
-        case .light: "sun.max.fill"
-        case .dark: "moon.fill"
-        }
-    }
-    var scheme: ColorScheme? {
-        switch self {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
-        }
-    }
-}
-
 struct SetupFlowView: View {
     let service: MessagingService
     let onFinish: () -> Void
@@ -105,34 +75,17 @@ struct SetupFlowView: View {
 
 private struct SetupLookPage: View {
     @Environment(ChatAppearance.self) private var environmentAppearance
-    @AppStorage(AppColorScheme.key) private var colorScheme = AppColorScheme.system.rawValue
-
     private var app: ChatAppearance { ChatAppearance.app ?? environmentAppearance }
 
     var body: some View {
         DSHeadline(title: "Make it", accent: "yours",
-                   subtitle: "Pick how Relay looks. You can change this any time in Settings.")
+                   subtitle: "Pick a theme for your chats. You can change it any time in Settings, or give a chat its own.")
 
-        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            groupLabel("Appearance")
-            HStack(spacing: DS.Spacing.md) {
-                ForEach(AppColorScheme.allCases) { option in schemeButton(option) }
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: DS.Spacing.md)], spacing: DS.Spacing.lg) {
+            ThemeCard(theme: Self.relayTheme, isSelected: isSelected(Self.relayTheme)) { apply(Self.relayTheme) }
+            ForEach(ChatAppearance.themes) { theme in
+                ThemeCard(theme: theme, isSelected: isSelected(theme)) { apply(theme) }
             }
-        }
-
-        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            groupLabel("Chat Theme")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: DS.Spacing.md) {
-                    ThemeCard(theme: Self.relayTheme, isSelected: isSelected(Self.relayTheme)) { apply(Self.relayTheme) }
-                    ForEach(ChatAppearance.themes) { theme in
-                        ThemeCard(theme: theme, isSelected: isSelected(theme)) { apply(theme) }
-                    }
-                }
-                .padding(.vertical, DS.Spacing.xs)
-                .padding(.horizontal, 1)
-            }
-            .scrollClipDisabled()
         }
     }
 
@@ -145,29 +98,6 @@ private struct SetupLookPage: View {
 
     private func apply(_ theme: AppearanceTheme) {
         withAnimation(DS.Motion.snappy) { app.applyTheme(theme) }
-    }
-
-    private func schemeButton(_ option: AppColorScheme) -> some View {
-        let selected = colorScheme == option.rawValue
-        return Button {
-            withAnimation(DS.Motion.smooth) { colorScheme = option.rawValue }
-        } label: {
-            VStack(spacing: DS.Spacing.sm) {
-                Image(systemName: option.symbol).font(.title2)
-                Text(option.title).font(.subheadline.weight(.semibold))
-            }
-            .foregroundStyle(selected ? Color.accentColor : .primary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, DS.Spacing.lg)
-            .background(Color(.secondarySystemGroupedBackground),
-                        in: .rect(cornerRadius: DS.Radius.card, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
-                    .strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -396,13 +326,4 @@ private struct SetupDonePage: View {
         DSHeadline(title: "You're all", accent: "set",
                    subtitle: "Everything you send is end-to-end encrypted. Change any of this later in Settings.")
     }
-}
-
-// MARK: - Shared
-
-private func groupLabel(_ text: String) -> some View {
-    Text(text.uppercased())
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .padding(.leading, DS.Spacing.lg)
 }
