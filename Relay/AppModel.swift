@@ -85,7 +85,12 @@ final class AppModel {
     var showWhatsNew = false
     var showNotificationPrimer = false
     /// The optional phone-number step, once, right after a new account.
+    #if DEBUG
+    /// `-relayShowPhoneOnboarding YES` shows the new-account phone page, to try it.
+    var showPhoneOnboarding = UserDefaults.standard.bool(forKey: "relayShowPhoneOnboarding")
+    #else
     var showPhoneOnboarding = false
+    #endif
     /// The setup pages after a new account (SetupFlowView). Debug builds
     /// launched with `-relayShowSetup YES` show them to try.
     #if DEBUG

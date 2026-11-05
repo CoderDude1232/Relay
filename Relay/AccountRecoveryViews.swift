@@ -57,46 +57,32 @@ struct PasskeySignupIntroView: View {
             VStack(spacing: 24) {
                 HStack {
                     Button(action: onBack) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.ultraThinMaterial, in: .circle)
+                        Label("Back", systemImage: "chevron.left")
+                            .foregroundStyle(Color.accentColor)
+                            .frame(minHeight: 44)
                     }
                     .accessibilityLabel("Back")
                     Spacer()
                 }
                 .padding(.top, 16)
 
-                VStack(spacing: 6) {
-                    Text("No email")
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                    Text("Just a username and a passkey.")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.6))
-                }
+                OnboardingHeader(title: "Sign up with no email", subtitle: "Just a username and a passkey.")
 
                 NoEmailTradeoffs()
-                    .foregroundStyle(.white.opacity(0.9))
+                    .foregroundStyle(.primary)
                     .padding(20)
-                    .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+                    .onboardingCard()
 
-                Button(action: onContinue) {
-                    Text("I Understand, Continue")
-                        .font(.headline)
-                        .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(.white, in: .rect(cornerRadius: 16, style: .continuous))
-                }
+                Button("I Understand, Continue", action: onContinue)
+                    .buttonStyle(.dsPrimary)
 
                 Text("You'll pick a username, then create a passkey with Face ID. We'll show you your recovery key straight after.")
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Spacer().frame(height: 30)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .padding(.horizontal, 24)
         }
     }

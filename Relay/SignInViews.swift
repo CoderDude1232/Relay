@@ -11,43 +11,36 @@ import RelayKit
 import SwiftUI
 
 // MARK: - Shared pieces
-
-private let ink = Color(red: 0.06, green: 0.02, blue: 0.22)
+// The sign-in screens' building blocks, drawn with the DSComponents look.
 
 struct OnboardingBackButton: View {
     let action: () -> Void
     var body: some View {
         HStack {
             Button(action: action) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(.ultraThinMaterial, in: .circle)
+                Label("Back", systemImage: "chevron.left")
+                    .font(.body)
+                    .labelStyle(.titleAndIcon)
             }
-            .accessibilityLabel("Back")
+            .tint(.accentColor)
+            .frame(minHeight: 44)
             Spacer()
         }
-        .padding(.top, 16)
+        .padding(.top, DS.Spacing.sm)
     }
 }
 
+/// A page headline: the last word in pink, as `DSHeadline` draws it.
 struct OnboardingHeader: View {
     let title: String
     let subtitle: String
     var body: some View {
-        VStack(spacing: 6) {
-            Text(title)
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.6))
-                .multilineTextAlignment(.center)
-        }
-        .padding(.top, 24)
-        .padding(.bottom, 12)
+        let words = title.split(separator: " ")
+        DSHeadline(title: words.dropLast().joined(separator: " "),
+                   accent: words.last.map(String.init),
+                   subtitle: subtitle)
+            .padding(.top, DS.Spacing.sm)
+            .padding(.bottom, DS.Spacing.xs)
     }
 }
 
@@ -57,43 +50,34 @@ struct OnboardingPrimaryButton: View {
     var working = false
     let action: () -> Void
     var body: some View {
-        Button(action: action) {
-            ZStack {
-                if working {
-                    ProgressView().tint(ink)
-                } else {
-                    Text(title).font(.headline).foregroundStyle(ink)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(enabled && !working ? Color.white : Color.white.opacity(0.3),
-                        in: .rect(cornerRadius: 16, style: .continuous))
-        }
-        .disabled(!enabled || working)
+        Button(title, action: action)
+            .buttonStyle(.dsPrimary(working: working))
+            .disabled(!enabled || working)
     }
 }
 
-/// A row in a frosted card: an icon, then the field or label.
+/// A row in a card: an icon, then the field or label.
 struct OnboardingRow<Content: View>: View {
     let icon: String
     @ViewBuilder let content: () -> Content
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Spacing.md) {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(.secondary)
                 .frame(width: 24)
             content()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 16)
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.vertical, 14)
     }
 }
 
 extension View {
+    /// The grouped card behind a set of rows.
     func onboardingCard() -> some View {
-        background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+        background(Color(.secondarySystemGroupedBackground),
+                   in: .rect(cornerRadius: DS.Radius.card, style: .continuous))
     }
 }
 
@@ -102,29 +86,22 @@ private struct ChoiceButton: View {
     let title: String
     let subtitle: String
     let icon: String
+    var color: Color = .accentColor
     var working = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.white)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.headline).foregroundStyle(.white)
-                    Text(subtitle).font(.footnote).foregroundStyle(.white.opacity(0.55))
-                }
-                Spacer()
+            HStack(spacing: DS.Spacing.sm) {
+                DSRowLabel(title, subtitle: subtitle, icon: icon, color: color)
                 if working {
-                    ProgressView().tint(.white)
+                    ProgressView()
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(.tertiary)
                 }
             }
-            .padding(16)
+            .dsRowPadding()
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -153,31 +130,30 @@ struct SignInOptionsView: View {
                 OnboardingBackButton(action: onBack)
                 OnboardingHeader(title: "Sign in", subtitle: "Signing in here signs your other devices out.")
 
-                VStack(spacing: 0) {
-                    ChoiceButton(title: "Passkey", subtitle: "Face ID or Touch ID, no code needed", icon: "person.badge.key",
-                                 working: working) { passkey() }
-                    Divider().background(.white.opacity(0.12))
-                    ChoiceButton(title: "Phone number", subtitle: "We'll text you a code", icon: "phone", action: onPhone)
-                    Divider().background(.white.opacity(0.12))
-                    ChoiceButton(title: "Email", subtitle: "We'll email you a code", icon: "envelope", action: onEmail)
-                    Divider().background(.white.opacity(0.12))
-                    ChoiceButton(title: "Recovery key", subtitle: "The key you saved when you signed up", icon: "key") {
+                DSGroup {
+                    ChoiceButton(title: "Passkey", subtitle: "Face ID or Touch ID, no code needed", icon: "person.badge.key.fill",
+                                 color: .green, working: working) { passkey() }
+                    ChoiceButton(title: "Phone number", subtitle: "We'll text you a code", icon: "phone.fill",
+                                 color: .blue, action: onPhone)
+                    ChoiceButton(title: "Email", subtitle: "We'll email you a code", icon: "envelope.fill",
+                                 color: .orange, action: onEmail)
+                    ChoiceButton(title: "Recovery key", subtitle: "The key you saved when you signed up", icon: "key.horizontal.fill",
+                                 color: .gray) {
                         showingRecoveryKey = true
                     }
                 }
-                .onboardingCard()
 
                 if let errorMessage { InlineErrorBanner(errorMessage) }
 
                 Text("Signed up with Apple or Google? Go back and use the same button.")
                     .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 16)
 
                 Button("Review Code") { showingReviewCode = true }
                     .font(.footnote.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(.secondary)
                     .frame(minHeight: 44)
             }
             .padding(.horizontal, 24)
@@ -274,27 +250,27 @@ struct PhoneSignInView: View {
                         }
                     } label: {
                         HStack {
-                            Text("\(country.flag) \(country.name)").foregroundStyle(.white)
+                            Text("\(country.flag) \(country.name)").foregroundStyle(Color(.label))
                             Spacer()
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.5))
+                                .foregroundStyle(Color(.secondaryLabel))
                         }
                     }
                     .accessibilityLabel("Country, \(country.name)")
                 }
-                Divider().background(.white.opacity(0.12))
+                Divider()
                 OnboardingRow(icon: "phone") {
                     Text("+\(country.callingCode)")
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(.secondary)
                         .monospacedDigit()
                     TextField("Phone number", text: $number)
                         .focused($focused, equals: .number)
                         .keyboardType(.phonePad)
                         .textContentType(.telephoneNumber)
                         .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .tint(.white)
+                        .foregroundStyle(.primary)
+                        .tint(.accentColor)
                 }
                 .contentShape(.rect)
                 .onTapGesture { focused = .number }
@@ -307,7 +283,7 @@ struct PhoneSignInView: View {
 
             Text("Your number is never shown to anyone. Standard text rates may apply.")
                 .font(.footnote)
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 16)
             LegalFooter().padding(.horizontal, 16)
@@ -324,8 +300,8 @@ struct PhoneSignInView: View {
                     .focused($focused, equals: .code)
                     .keyboardType(.numberPad)
                     .textContentType(.oneTimeCode)
-                    .foregroundStyle(.white)
-                    .tint(.white)
+                    .foregroundStyle(.primary)
+                    .tint(.accentColor)
             }
             .contentShape(.rect)
             .onTapGesture { focused = .code }
@@ -338,10 +314,10 @@ struct PhoneSignInView: View {
 
             Button("Resend code") { sendCode(resending: true) }
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(Color.accentColor)
                 .disabled(working)
             if let resendNote {
-                Text(resendNote).font(.footnote).foregroundStyle(.white.opacity(0.6))
+                Text(resendNote).font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
@@ -461,8 +437,8 @@ struct TwoStepView: View {
                             .focused($focused)
                             .keyboardType(.numberPad)
                             .textContentType(.oneTimeCode)
-                            .foregroundStyle(.white)
-                            .tint(.white)
+                            .foregroundStyle(.primary)
+                            .tint(.accentColor)
                     }
                     .onboardingCard()
                     .onChange(of: answer) { _, new in
@@ -480,8 +456,8 @@ struct TwoStepView: View {
                             .focused($focused)
                             .keyboardType(pinHasLetters ? .default : .numberPad)
                             .textContentType(.password)
-                            .foregroundStyle(.white)
-                            .tint(.white)
+                            .foregroundStyle(.primary)
+                            .tint(.accentColor)
                             .onSubmit { submit(.pin(answer)) }
                             // A new keyboard type only shows on refocus.
                             .id(pinHasLetters)
@@ -499,7 +475,7 @@ struct TwoStepView: View {
                         Task { focused = true }
                     }
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(Color.accentColor)
                     .frame(minHeight: 44)
                     .disabled(working)
                 case .passkey:
@@ -518,7 +494,7 @@ struct TwoStepView: View {
                         Task { focused = true }
                     }
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(Color.accentColor)
                     .frame(minHeight: 44)
                     .disabled(working)
                 }
@@ -526,7 +502,7 @@ struct TwoStepView: View {
                 if method != .recovery, method != nil, needed.challenge.recoveryKey {
                     Button("Use your recovery key instead") { showingRecoveryKey = true }
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(Color.accentColor)
                         .frame(minHeight: 44)
                         .disabled(working)
                 }

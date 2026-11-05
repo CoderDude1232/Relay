@@ -37,7 +37,6 @@ struct PhoneNumberView: View {
     private enum Field: Hashable { case number, code }
 
     private static let codeLength = 6
-    private static let ink = Color(red: 0.06, green: 0.02, blue: 0.22)
 
     private var savedNumber: String? { UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey) }
     private var typedNumber: String? { PhoneNumbers.e164(number, country: country) }
@@ -52,7 +51,7 @@ struct PhoneNumberView: View {
                     Group {
                         switch step {
                         case .loading:
-                            ProgressView().tint(.white).padding(.top, 120)
+                            ProgressView().padding(.top, 120)
                         case .unavailable: unavailableStep
                         case .enterNumber: enterNumberStep
                         case .enterCode: enterCodeStep
@@ -70,6 +69,7 @@ struct PhoneNumberView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .animation(.spring(duration: 0.4), value: step)
+        // On the dark glow, like sign-in.
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
         .task { await load() }
@@ -108,7 +108,7 @@ struct PhoneNumberView: View {
             if context == .onboarding, step != .added {
                 Button("Skip", action: onDone)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(Color.accentColor)
                     .frame(minHeight: 40)
                     .disabled(working)
             }
@@ -120,35 +120,23 @@ struct PhoneNumberView: View {
     private func circleButton(_ systemName: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
-                .background(.ultraThinMaterial, in: .circle)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 44, height: 44)
         }
         .accessibilityLabel(label)
         .disabled(working)
     }
 
     private func header(_ title: String, _ subtitle: String) -> some View {
-        VStack(spacing: 6) {
-            Text(title)
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.6))
-                .multilineTextAlignment(.center)
-        }
-        .padding(.top, 24)
-        .padding(.bottom, 12)
+        OnboardingHeader(title: title, subtitle: subtitle)
     }
 
     private func row<Content: View>(_ icon: String, @ViewBuilder _ content: () -> Content) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(.secondary)
                 .frame(width: 24)
             content()
         }
@@ -158,29 +146,18 @@ struct PhoneNumberView: View {
 
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(spacing: 0, content: content)
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+            .onboardingCard()
     }
 
-    private var divider: some View { Divider().background(.white.opacity(0.12)) }
+    private var divider: some View { Divider() }
 
     private func primaryButton(_ title: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            ZStack {
-                if working {
-                    ProgressView().tint(Self.ink)
-                } else {
-                    Text(title).font(.headline).foregroundStyle(Self.ink)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(enabled && !working ? Color.white : Color.white.opacity(0.3),
-                        in: .rect(cornerRadius: 16, style: .continuous))
-        }
-        .disabled(!enabled || working)
+        Button(title, action: action)
+            .buttonStyle(.dsPrimary(working: working))
+            .disabled(!enabled || working)
     }
 
-    private func textButton(_ title: String, color: Color = .white.opacity(0.8), action: @escaping () -> Void) -> some View {
+    private func textButton(_ title: String, color: Color = .accentColor, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(color)
@@ -198,7 +175,7 @@ struct PhoneNumberView: View {
                     run(onError: { discoverable = previous }) { try await service.setPhoneDiscoverable(on) }
                 }
             ))
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .tint(.accentColor)
         }
     }
@@ -206,7 +183,7 @@ struct PhoneNumberView: View {
     private var footnote: some View {
         Text("Never shown to anyone.")
             .font(.footnote)
-            .foregroundStyle(.white.opacity(0.45))
+            .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 16)
     }
@@ -241,11 +218,11 @@ struct PhoneNumberView: View {
                             }
                         } label: {
                             HStack {
-                                Text("\(country.flag) \(country.name)").foregroundStyle(.white)
+                                Text("\(country.flag) \(country.name)").foregroundStyle(Color(.label))
                                 Spacer()
                                 Image(systemName: "chevron.up.chevron.down")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.white.opacity(0.5))
+                                    .foregroundStyle(Color(.secondaryLabel))
                             }
                         }
                         .accessibilityLabel("Country, \(country.name)")
@@ -254,15 +231,15 @@ struct PhoneNumberView: View {
                 }
                 row("phone") {
                     Text("\(countries.count > 1 ? "" : country.flag + " ")+\(country.callingCode)")
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(.secondary)
                         .monospacedDigit()
                     TextField("Phone number", text: $number)
                         .focused($focused, equals: .number)
                         .keyboardType(.phonePad)
                         .textContentType(.telephoneNumber)
                         .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .tint(.white)
+                        .foregroundStyle(.primary)
+                        .tint(.accentColor)
                 }
                 .contentShape(.rect)
                 .onTapGesture { focused = .number }
@@ -289,8 +266,8 @@ struct PhoneNumberView: View {
                         .focused($focused, equals: .code)
                         .keyboardType(.numberPad)
                         .textContentType(.oneTimeCode)
-                        .foregroundStyle(.white)
-                        .tint(.white)
+                        .foregroundStyle(.primary)
+                        .tint(.accentColor)
                 }
                 .contentShape(.rect)
                 .onTapGesture { focused = .code }
@@ -305,7 +282,7 @@ struct PhoneNumberView: View {
             if let resendNote {
                 Text(resendNote)
                     .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -318,7 +295,7 @@ struct PhoneNumberView: View {
             card {
                 row("phone") {
                     Text(savedNumber.map(PhoneNumbers.display) ?? "Added")
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .monospacedDigit()
                     Spacer()
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)

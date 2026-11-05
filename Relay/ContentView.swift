@@ -12,6 +12,14 @@ import UIKit
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+
+    /// Debug builds launched with `-relayPreviewSignIn YES` show the sign-in
+    /// screens over a signed-in account, to look at them.
+    #if DEBUG
+    private static let previewsSignIn = UserDefaults.standard.bool(forKey: "relayPreviewSignIn")
+    #else
+    private static let previewsSignIn = false
+    #endif
     @State private var isObscured = false
     // Start locked on a cold launch so a launching link or notification can't
     // land before unlock.
@@ -46,7 +54,9 @@ struct ContentView: View {
                 Group {
                     // A new account's phone and setup pages come before the
                     // chat list exists, so nothing pops up over it meanwhile.
-                    if model.showPhoneOnboarding && !model.removedFromAccount {
+                    if Self.previewsSignIn {
+                        OnboardingView()
+                    } else if model.showPhoneOnboarding && !model.removedFromAccount {
                         PhoneNumberView(service: service, context: .onboarding) { model.showPhoneOnboarding = false }
                     } else if model.showSetup && !model.removedFromAccount {
                         SetupFlowView(service: service) {
@@ -58,9 +68,8 @@ struct ContentView: View {
                     }
                 }
                     .environment(\.relayAppLocked, isLocked)
-                    // The phone page is dark like sign-in; everything else
-                    // follows the system's Light/Dark setting.
-                    .preferredColorScheme(model.showPhoneOnboarding ? .dark : nil)
+                    // The phone page sits on the sign-in screens' dark glow.
+                    .preferredColorScheme(model.showPhoneOnboarding || Self.previewsSignIn ? .dark : nil)
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()
                     }
