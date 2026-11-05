@@ -95,10 +95,16 @@ func TestTunnelRequests(t *testing.T) {
 		t.Fatalf("ping: %d", r.Status)
 	}
 	// No nesting, no WebSocket over POST.
-	for _, path := range []string{"/v1/t", "/v1/t/ws", "/elsewhere"} {
+	for _, path := range []string{"/v1/t", "/v1/t/ws", "/v1/t?x=1", "/elsewhere"} {
 		if r := env.tunnelDo(tc, &tunnel.Request{Method: "GET", Path: path}); r.Status != http.StatusBadRequest {
 			t.Errorf("%s: %d", path, r.Status)
 		}
+	}
+	// Routes that only start with "/v1/t" still go through: TURN credentials
+	// (404 here because the test relay has no TURN configured, not 400).
+	turn := c.signedRequest("GET", "/v1/turn-credentials", randomNonce(t), time.Now().UnixMilli())
+	if r := env.tunnelDo(tc, innerOf(turn, nil)); r.Status != http.StatusNotFound {
+		t.Fatalf("tunnelled turn-credentials: %d %s", r.Status, r.Body)
 	}
 	// Garbage outside gets a plain 400.
 	resp, err := http.Post(env.srv.URL+"/v1/t", "message/ohttp-req", strings.NewReader("not a message"))

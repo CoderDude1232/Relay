@@ -70,11 +70,16 @@ func (s *Server) tunnelRoutes(next http.Handler) http.Handler {
 
 // innerRequest rebuilds the decrypted request for the handlers.
 func innerRequest(ctx context.Context, outer *http.Request, in *tunnel.Request) (*http.Request, bool) {
-	if !strings.HasPrefix(in.Path, "/v1/") || strings.HasPrefix(in.Path, "/v1/t") || len(in.Body) > maxTunnelBody {
+	if !strings.HasPrefix(in.Path, "/v1/") || len(in.Body) > maxTunnelBody {
 		return nil, false
 	}
 	u, err := url.ParseRequestURI(in.Path)
 	if err != nil {
+		return nil, false
+	}
+	// No nesting: refuse the tunnel's own paths (/v1/t, /v1/t/...), but not
+	// routes that merely start with the letter t, like /v1/turn-credentials.
+	if u.Path == "/v1/t" || strings.HasPrefix(u.Path, "/v1/t/") {
 		return nil, false
 	}
 	switch in.Method {
