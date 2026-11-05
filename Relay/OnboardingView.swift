@@ -318,8 +318,8 @@ struct BackgroundGradient: View {
 // MARK: - Welcome
 
 /// Shared look for every sign-in button: same height, font, icon box and
-/// spacing, with icon and title centred as a unit. `.light` is filled (black
-/// in Light Mode, white in Dark), `.outlined` a plain card.
+/// spacing, with icon and title centred as a unit, each with a thin outline.
+/// `.light` is white, `.outlined` see-through over the glow.
 private struct SignInButtonLabel<Icon: View>: View {
     enum Style { case light, outlined }
     let title: String
@@ -334,10 +334,11 @@ private struct SignInButtonLabel<Icon: View>: View {
             Text(title)
         }
         .font(.headline)
-        .foregroundStyle(style == .light ? Color(.systemBackground) : Color.primary)
+        .foregroundStyle(style == .light ? Color.black : Color.white)
         .frame(maxWidth: .infinity)
         .frame(height: 52)
-        .background(style == .light ? Color.primary : Color(.secondarySystemGroupedBackground), in: Self.shape)
+        .background(style == .light ? Color.white : Color.white.opacity(0.08), in: Self.shape)
+        .overlay { Self.shape.strokeBorder(.white.opacity(0.22), lineWidth: 1) }
         .contentShape(Self.shape)
     }
 }
@@ -459,7 +460,7 @@ private struct WelcomeView: View {
                     .accessibilityLabel("Continue with Apple")
 
                     Button(action: startGoogleSignIn) {
-                        SignInButtonLabel(title: "Continue with Google", style: .outlined) {
+                        SignInButtonLabel(title: "Continue with Google", style: .light) {
                             GoogleGLogo()
                         }
                     }
