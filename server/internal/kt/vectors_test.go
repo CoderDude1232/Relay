@@ -84,8 +84,8 @@ func TestWriteVectors(t *testing.T) {
 	rotated := Head{Epoch: 99, LogSize: 99, Time: 1}
 	rotated.Sign(next)
 	out, _ := json.MarshalIndent(map[string]any{
-		"endorsement":   map[string]any{"key": b(endorsed.Key), "by": b(endorsed.By), "sig": b(endorsed.Sig)},
-		"rotatedHead":   head(rotated),
+		"endorsement":       map[string]any{"key": b(endorsed.Key), "by": b(endorsed.By), "sig": b(endorsed.Sig)},
+		"rotatedHead":       head(rotated),
 		"vrfPublicKeyPKCS1": b(x509.MarshalPKCS1PublicKey(&vrfKey.PublicKey)),
 		"signPublicKey":     b(signKey.Public().(ed25519.PublicKey)),
 		"first":             map[string]any{"account": "acct-7", "key": b([]byte("key-7")), "lookup": lookup(first)},
