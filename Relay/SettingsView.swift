@@ -1505,8 +1505,9 @@ private struct EditProfileSheet: View {
 
 // MARK: - Settings icon
 
-/// A settings row's icon on a Liquid Glass tile: tinted with its colour and a
-/// white symbol in Light Mode, dark glass with a coloured symbol in Dark Mode.
+/// A settings row's icon as iOS Settings draws it: a coloured tile with a
+/// white symbol in Light Mode, a dark tile with a coloured symbol in Dark Mode,
+/// each with a thin highlight around the edge.
 struct SettingsIcon: View {
     let systemName: String
     let color: Color
@@ -1518,7 +1519,15 @@ struct SettingsIcon: View {
             .font(.system(size: 16, weight: .semibold))
             .foregroundStyle(dark ? color : .white)
             .frame(width: 28, height: 28)
-            .glassEffect(dark ? .regular.tint(.black.opacity(0.3)) : .regular.tint(color), in: .rect(cornerRadius: 7))
+            .background(dark ? AnyShapeStyle(Color(white: 0.09)) : AnyShapeStyle(color.gradient),
+                        in: .rect(cornerRadius: 7))
+            // The thin light catch around the edge iOS Settings icons have.
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(LinearGradient(colors: [.white.opacity(dark ? 0.28 : 0.45), .white.opacity(0.04)],
+                                                 startPoint: .top, endPoint: .bottom),
+                                  lineWidth: 0.75)
+            }
     }
 }
 
