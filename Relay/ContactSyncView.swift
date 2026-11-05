@@ -17,34 +17,6 @@ import UIKit
 struct ContactSyncView: View {
     let service: MessagingService
 
-    /// `identifier` is an email (lowercased) or an E.164 phone number.
-    private struct AddressEntry: Sendable { let name: String; let identifier: String; let avatar: Data? }
-
-    private nonisolated static func readAddressBook() -> [AddressEntry] {
-        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactEmailAddressesKey,
-                    CNContactPhoneNumbersKey, CNContactThumbnailImageDataKey] as [CNKeyDescriptor]
-        let country = PhoneNumbers.defaultCountry
-        let request = CNContactFetchRequest(keysToFetch: keys)
-        var entries: [AddressEntry] = []
-        try? CNContactStore().enumerateContacts(with: request) { contact, _ in
-            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
-            for address in contact.emailAddresses {
-                let email = (address.value as String).lowercased()
-                entries.append(AddressEntry(name: name.isEmpty ? email : name,
-                                            identifier: email,
-                                            avatar: contact.thumbnailImageData))
-            }
-            // Numbers without a country code are read as the phone's own country.
-            for phone in contact.phoneNumbers {
-                guard let e164 = PhoneNumbers.e164(phone.value.stringValue, country: country) else { continue }
-                entries.append(AddressEntry(name: name.isEmpty ? PhoneNumbers.display(e164) : name,
-                                            identifier: e164,
-                                            avatar: contact.thumbnailImageData))
-            }
-        }
-        return entries
-    }
-
     @Environment(AppModel.self) private var model
     @State private var status: SyncStatus = .idle
     @State private var matches: [ContactMatch] = []
@@ -54,14 +26,6 @@ struct ContactSyncView: View {
     @State private var showingConsent = false
 
     enum SyncStatus: Equatable { case idle, loading, done, failed(String) }
-
-    struct ContactMatch: Identifiable {
-        let id: String          // accountId
-        let contactName: String
-        let username: String
-        let avatarData: Data?
-        var hasConversation: Bool
-    }
 
     var body: some View {
         List {
@@ -200,20 +164,75 @@ struct ContactSyncView: View {
     private func sync() async {
         status = .loading
         denied = false
+        switch await ContactFinder.find(service: service) {
+        case .denied:
+            denied = true
+            status = .done
+        case .failed(let message):
+            matches = []
+            status = .failed(message)
+        case .found(let found):
+            matches = found
+            status = .done
+        }
+    }
+}
 
+/// A contact from the address book who is on Relay.
+struct ContactMatch: Identifiable {
+    let id: String          // accountId
+    let contactName: String
+    let username: String
+    let avatarData: Data?
+    var hasConversation: Bool
+}
+
+/// Reads the address book (asking for access the first time) and finds which
+/// contacts are on Relay with one blinded check. The caller asks for consent
+/// first (ContactDiscoveryConsent).
+enum ContactFinder {
+    enum Outcome { case denied, failed(String), found([ContactMatch]) }
+
+    /// `identifier` is an email (lowercased) or an E.164 phone number.
+    struct AddressEntry: Sendable { let name: String; let identifier: String; let avatar: Data? }
+
+    nonisolated static func readAddressBook() -> [AddressEntry] {
+        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactEmailAddressesKey,
+                    CNContactPhoneNumbersKey, CNContactThumbnailImageDataKey] as [CNKeyDescriptor]
+        let country = PhoneNumbers.defaultCountry
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        var entries: [AddressEntry] = []
+        try? CNContactStore().enumerateContacts(with: request) { contact, _ in
+            let name = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces)
+            for address in contact.emailAddresses {
+                let email = (address.value as String).lowercased()
+                entries.append(AddressEntry(name: name.isEmpty ? email : name,
+                                            identifier: email,
+                                            avatar: contact.thumbnailImageData))
+            }
+            // Numbers without a country code are read as the phone's own country.
+            for phone in contact.phoneNumbers {
+                guard let e164 = PhoneNumbers.e164(phone.value.stringValue, country: country) else { continue }
+                entries.append(AddressEntry(name: name.isEmpty ? PhoneNumbers.display(e164) : name,
+                                            identifier: e164,
+                                            avatar: contact.thumbnailImageData))
+            }
+        }
+        return entries
+    }
+
+    @MainActor
+    static func find(service: MessagingService) async -> Outcome {
         let store = CNContactStore()
         let authStatus = CNContactStore.authorizationStatus(for: .contacts)
-
         if authStatus == .notDetermined {
-            guard (try? await store.requestAccess(for: .contacts)) == true else {
-                denied = true; status = .done; return
-            }
+            guard (try? await store.requestAccess(for: .contacts)) == true else { return .denied }
         } else if authStatus == .denied || authStatus == .restricted {
-            denied = true; status = .done; return
+            return .denied
         }
 
         // Enumeration is synchronous and slow, so do it off the main thread.
-        let entries = await Task.detached(priority: .userInitiated) { Self.readAddressBook() }.value
+        let entries = await Task.detached(priority: .userInitiated) { readAddressBook() }.value
 
         // Deduplicate (keep the first contact name seen for an email or number).
         var seen = Set<String>()
@@ -222,38 +241,29 @@ struct ContactSyncView: View {
         // One blinded pass: the relay never sees plaintext emails or numbers, and contacts
         // who aren't on Relay reveal nothing.
         let existingAccountIds = Set(service.conversations.map { $0.peerAccount })
-        var found: [ContactMatch] = []
         let entryByEmail = Dictionary(deduped.map { ($0.identifier, $0) }, uniquingKeysWith: { a, _ in a })
-
         let discovered: [(email: String, accountId: String, username: String)]
         do {
             discovered = try await service.discoverContacts(emails: deduped.map { $0.identifier })
         } catch {
             // A 503 or network failure is not an empty result; offer a retry.
-            matches = []
-            status = .failed(FriendlyError.message(for: error))
-            return
+            return .failed(FriendlyError.message(for: error))
         }
-        for match in discovered {
+        var found = discovered.map { match in
             let entry = entryByEmail[match.email]
-            found.append(ContactMatch(
+            return ContactMatch(
                 id: match.accountId,
                 contactName: entry?.name ?? match.username,
                 username: match.username,
                 avatarData: entry?.avatar,
                 hasConversation: existingAccountIds.contains(match.accountId)
-            ))
+            )
         }
-
         // Existing conversations first, then alphabetical.
         found.sort {
             if $0.hasConversation != $1.hasConversation { return $0.hasConversation }
             return $0.contactName < $1.contactName
         }
-
-        await MainActor.run {
-            matches = found
-            status = .done
-        }
+        return .found(found)
     }
 }

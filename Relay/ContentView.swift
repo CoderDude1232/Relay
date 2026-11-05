@@ -59,8 +59,9 @@ struct ContentView: View {
                     }
                 }
                     .environment(\.relayAppLocked, isLocked)
-                    // The new-account pages are always dark, like sign-in.
-                    .preferredColorScheme(model.showPhoneOnboarding || model.showSetup
+                    // The phone page is dark like sign-in; setup follows the
+                    // Light/Dark choice made on its first page.
+                    .preferredColorScheme(model.showPhoneOnboarding
                                           ? .dark : AppColorScheme(rawValue: colorSchemeSetting)?.scheme)
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()

@@ -440,7 +440,7 @@ struct ThemeCard: View {
         if let gradient = theme.wallpaper.gradient {
             gradient
         } else {
-            Color(.secondarySystemGroupedBackground)
+            Color(.systemGray6)
         }
     }
 
