@@ -69,10 +69,6 @@ struct RelayApp: App {
                         // and notifications are explained before the system asks.
                         WhatsNew.markSeen()
                         ReviewPrompt.noteFirstUse()
-                        #if DEBUG
-                        // `-relayShowSetup YES`: the new-account setup pages, to try them.
-                        if UserDefaults.standard.bool(forKey: "relayShowSetup") { model.showSetup = true }
-                        #endif
                         Task {
                             let settings = await UNUserNotificationCenter.current().notificationSettings()
                             if settings.authorizationStatus == .notDetermined {

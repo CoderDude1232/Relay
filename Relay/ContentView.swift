@@ -31,7 +31,8 @@ struct ContentView: View {
     /// After sign-up the recovery key, phone number and notification screens
     /// come first; the invite opens once they're out of the way.
     private var deferredInviteCanOpen: Bool {
-        model.isReady && model.deferredInvite != nil && !isLocked && model.newRecoveryKey == nil && !model.showSetup
+        model.isReady && model.deferredInvite != nil && !isLocked && model.newRecoveryKey == nil
+            && !model.showSetup && !model.showPhoneOnboarding
             && !model.showPhoneOnboarding && !model.showNotificationPrimer && !model.removedFromAccount
     }
 
@@ -43,33 +44,30 @@ struct ContentView: View {
             case .onboarding:
                 OnboardingView()
             case .ready(let service):
-                MainTabView(service: service)
+                Group {
+                    // A new account's phone and setup pages come before the
+                    // chat list exists, so nothing pops up over it meanwhile.
+                    if model.showPhoneOnboarding && !model.removedFromAccount {
+                        PhoneNumberView(service: service, context: .onboarding) { model.showPhoneOnboarding = false }
+                    } else if model.showSetup && !model.removedFromAccount {
+                        SetupFlowView(service: service) {
+                            model.showNotificationPrimer = false
+                            model.showSetup = false
+                        }
+                    } else {
+                        MainTabView(service: service)
+                    }
+                }
                     .environment(\.relayAppLocked, isLocked)
-                    .preferredColorScheme(AppColorScheme(rawValue: colorSchemeSetting)?.scheme)
+                    // The new-account pages are always dark, like sign-in.
+                    .preferredColorScheme(model.showPhoneOnboarding || model.showSetup
+                                          ? .dark : AppColorScheme(rawValue: colorSchemeSetting)?.scheme)
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()
                     }
                     // An invite from before sign-up, once the new-account screens are done.
                     .task(id: deferredInviteCanOpen) {
                         if deferredInviteCanOpen { model.openDeferredInvite() }
-                    }
-                    // After the recovery key a passkey sign-up shows first.
-                    .fullScreenCover(isPresented: Binding(
-                        get: { model.showPhoneOnboarding && !isLocked && model.newRecoveryKey == nil && !model.removedFromAccount },
-                        set: { if !$0 { model.showPhoneOnboarding = false } }
-                    )) {
-                        PhoneNumberView(service: service, context: .onboarding) { model.showPhoneOnboarding = false }
-                    }
-                    // After a new account's phone and recovery key screens.
-                    .fullScreenCover(isPresented: Binding(
-                        get: { model.showSetup && !model.showPhoneOnboarding && !isLocked && model.newRecoveryKey == nil && !model.removedFromAccount },
-                        set: { if !$0 { model.showSetup = false } }
-                    )) {
-                        SetupFlowView(service: service) {
-                            model.showNotificationPrimer = false
-                            model.showSetup = false
-                        }
-                        .environment(model)
                     }
                     .task(id: model.shouldOfferPasskey && !model.showPhoneOnboarding && !model.showSetup) {
                         guard model.shouldOfferPasskey, !model.showPhoneOnboarding, !model.showSetup else { return }

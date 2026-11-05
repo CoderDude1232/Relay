@@ -86,8 +86,13 @@ final class AppModel {
     var showNotificationPrimer = false
     /// The optional phone-number step, once, right after a new account.
     var showPhoneOnboarding = false
-    /// The setup pages after a new account (SetupFlowView).
+    /// The setup pages after a new account (SetupFlowView). Debug builds
+    /// launched with `-relayShowSetup YES` show them to try.
+    #if DEBUG
+    var showSetup = UserDefaults.standard.bool(forKey: "relayShowSetup")
+    #else
     var showSetup = false
+    #endif
     /// A proxy link that was opened, waiting for the user to confirm it.
     var pendingProxy: RelayProxy.Address?
     /// The latest check of the proxy in use; nil when there's no proxy.
@@ -821,10 +826,10 @@ final class AppModel {
         } catch RelayAPIError.http(401, _) {
             throw TwoStepFailedError(expired: true)
         }
-        let service = try await startSignedIn(signedUp, password: password, email: nil, supabaseUserId: nil, displayName: displayName)
+        let service = try await startSignedIn(signedUp, password: password, email: nil, supabaseUserId: nil,
+                                              displayName: displayName, newAccount: true)
         UserDefaults.standard.set(phone, forKey: MessagingService.phoneNumberKey)
         service.noteAccountCreated(username: signedUp.username)
-        showSetup = true
         offerRecoveryKey(service)
         offerPasskeyIfNeeded(service)
     }
@@ -832,7 +837,7 @@ final class AppModel {
     /// Saves new device credentials and starts the service.
     private func startSignedIn(
         _ signedIn: (credentials: RelayCredentials, username: String), password: String,
-        email: String?, supabaseUserId: String?, displayName: String = ""
+        email: String?, supabaseUserId: String?, displayName: String = "", newAccount: Bool = false
     ) async throws -> MessagingService {
         let serverURL = RelayConfig.serverURL
         let service = try await makeService(credentials: signedIn.credentials, serverURL: serverURL, username: signedIn.username)
@@ -844,6 +849,8 @@ final class AppModel {
         )
         try keychain.storeSecret(JSONEncoder().encode(saved), for: Self.accountSecretName)
         service.start()
+        // Set with the phase so the chat list never draws first.
+        if newAccount { showSetup = true }
         phase = .ready(service)
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()

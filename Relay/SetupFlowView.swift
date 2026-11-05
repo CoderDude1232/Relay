@@ -2,8 +2,9 @@
 //  SetupFlowView.swift
 //  Relay
 //
-//  A few pages after a new account is made, in the sign-in style: how Relay
-//  looks, notifications, privacy, and a way to get the first chat going.
+//  A few pages after a new account is made, in the sign-in style, shown in
+//  place of the chat list until they're done: how Relay looks, notifications,
+//  privacy, and finding people to talk to.
 //  Every choice is one Settings also has, and each page can be skipped.
 //
 
@@ -37,7 +38,7 @@ struct SetupFlowView: View {
     let service: MessagingService
     let onFinish: () -> Void
 
-    private enum Page: Int, CaseIterable { case look, notifications, privacy, start }
+    private enum Page: Int, CaseIterable { case look, notifications, privacy, people, done }
 
     @State private var page = Page.look
     @State private var forward = true
@@ -53,7 +54,8 @@ struct SetupFlowView: View {
                         case .look: SetupLookPage()
                         case .notifications: SetupNotificationsPage()
                         case .privacy: SetupPrivacyPage(service: service)
-                        case .start: SetupStartPage(service: service, onFinish: onFinish)
+                        case .people: SetupPeoplePage(service: service)
+                        case .done: SetupDonePage(onFinish: onFinish)
                         }
                     }
                     .id(page)
@@ -66,7 +68,7 @@ struct SetupFlowView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .scrollBounceBehavior(.basedOnSize)
-                if page != .start {
+                if page != .done {
                     OnboardingPrimaryButton(title: "Continue") { go(+1) }
                         .padding(.horizontal, 24)
                         .padding(.bottom, 16)
@@ -108,6 +110,8 @@ struct SetupFlowView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.7))
                 .frame(width: 40, height: 40)
+                .opacity(page == .done ? 0 : 1)
+                .disabled(page == .done)
         }
         .padding(.horizontal, 24)
         .padding(.top, 12)
@@ -328,37 +332,47 @@ private struct SetupPrivacyPage: View {
     }
 }
 
-// MARK: - Get started
+// MARK: - People
 
-private struct SetupStartPage: View {
+private struct SetupPeoplePage: View {
     let service: MessagingService
-    let onFinish: () -> Void
-    @Environment(AppModel.self) private var model
+    @State private var showingContacts = false
+    @State private var showingImport = false
     @State private var showingInvite = false
 
     var body: some View {
         VStack(spacing: 16) {
-            OnboardingHeader(title: "You're All Set", subtitle: "Bring your people over and start your first chat.")
+            OnboardingHeader(title: "Find Your People", subtitle: "See who's already here, bring your chats over, and invite everyone else.")
 
             VStack(spacing: 0) {
-                action("Invite Friends", detail: "Send your link to people you talk to.", icon: "person.badge.plus") {
-                    showingInvite = true
+                action("Find Contacts on Relay", detail: "Check which of your contacts use Relay. They're blinded on your iPhone first.", icon: "person.crop.circle.badge.checkmark") {
+                    showingContacts = true
                 }
                 divider
                 action("Import WhatsApp Chats", detail: "Keep your history: export a chat from WhatsApp to Relay.", icon: "square.and.arrow.down.on.square") {
-                    onFinish()
-                    model.pendingWhatsAppImport = true
+                    showingImport = true
                 }
                 divider
-                action("Find People on Relay", detail: "Search by username or scan a QR code.", icon: "magnifyingglass") {
-                    onFinish()
-                    model.pendingCompose = true
+                action("Invite Friends", detail: "Send your link to people you talk to.", icon: "person.badge.plus") {
+                    showingInvite = true
                 }
             }
             .onboardingCard()
-
-            OnboardingPrimaryButton(title: "Start Using Relay", action: onFinish)
-                .padding(.top, 8)
+        }
+        .sheet(isPresented: $showingContacts) {
+            NavigationStack {
+                ContactSyncView(service: service)
+                    .navigationTitle("Find Contacts")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingContacts = false }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showingImport) {
+            WhatsAppImportView(service: service)
         }
         .sheet(isPresented: $showingInvite) {
             InviteShareSheet(username: service.username)
@@ -386,6 +400,25 @@ private struct SetupStartPage: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Done
+
+private struct SetupDonePage: View {
+    let onFinish: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 64))
+                .foregroundStyle(.white)
+                .symbolRenderingMode(.hierarchical)
+                .padding(.top, 48)
+                .accessibilityHidden(true)
+            OnboardingHeader(title: "You're All Set", subtitle: "Everything you send is end-to-end encrypted. Change any of this later in Settings.")
+            OnboardingPrimaryButton(title: "Start Using Relay", action: onFinish)
+        }
     }
 }
 
