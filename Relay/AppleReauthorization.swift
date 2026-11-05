@@ -86,7 +86,7 @@ final class AppleSignInFlow: NSObject, ASAuthorizationControllerDelegate,
     private var continuation: CheckedContinuation<Result<ASAuthorization, Error>, Never>?
 
     /// `nonce` is the raw value; Apple puts its SHA-256 in the identity token
-    /// and Supabase checks it, so a token from another sign-in can't be replayed.
+    /// and the relay checks it, so a token from another sign-in can't be replayed.
     static func run(scopes: [ASAuthorization.Scope], nonce: String) async -> Result<ASAuthorization, Error> {
         let flow = AppleSignInFlow()
         return await withCheckedContinuation { continuation in

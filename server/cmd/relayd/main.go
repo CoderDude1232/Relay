@@ -27,7 +27,9 @@ import (
 	"github.com/relayapp/relay-server/internal/fcm"
 	"github.com/relayapp/relay-server/internal/history"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/idtoken"
 	"github.com/relayapp/relay-server/internal/kt"
+	"github.com/relayapp/relay-server/internal/mail"
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
@@ -195,6 +197,12 @@ func main() {
 	oprfKey := flag.String("oprf-key", "", "path to the blinded-discovery OPRF secret key (hex ristretto255 scalar); generated if absent, enables /v1/directory/*")
 	passkeyRPID := flag.String("passkey-rp-id", api.DefaultPasskeyRPID, "WebAuthn relying party ID for passkey sign-in")
 	passkeyOrigins := flag.String("passkey-origins", api.DefaultPasskeyOrigin, "comma-separated origins accepted in passkey clientDataJSON")
+	resendKeyFile := flag.String("resend-key-file", "", "path to a file holding the Resend API key; enables email codes (POST /v1/email/code)")
+	emailFrom := flag.String("email-from", "Relay <codes@relaymsg.app>", "From address for code emails (its domain must be verified with Resend)")
+	emailDailyCap := flag.Int("email-daily-cap", 90, "code emails sent per day across everyone (Resend's free plan allows 100)")
+	appleSignIn := flag.Bool("apple-sign-in", false, "verify Sign in with Apple tokens for -apns-topic (POST /v1/identity/apple); needs -oprf-key")
+	googleClientID := flag.String("google-client-id", "", "the app's Google OAuth client id; enables POST /v1/identity/google (needs -oprf-key)")
+	migrateSupabase := flag.Bool("migrate-supabase", false, "give Supabase-linked accounts the relay's own Apple/Google links and email tokens, then exit")
 	tunnelKey := flag.String("tunnel-key", "", "path to the encrypted tunnel's private key (created on first run; the app builds in its public half, so never replace it); empty = no /v1/t")
 	tunnelPublic := flag.Bool("tunnel-public-key", false, "print the tunnel key's public half (base64) and exit")
 	supporterKey := flag.String("supporter-key", "", "path to the Relay Supporter credential master secret (hex, 32 bytes); generated if absent, enables /v1/supporter/*")
@@ -448,6 +456,15 @@ func main() {
 		apiServer.SetSupporterAttachmentMax(*supporterAttachment)
 		slog.Info("relay supporter enabled", "sandbox", *supporterSandbox)
 	}
+	if *resendKeyFile != "" {
+		key, err := os.ReadFile(*resendKeyFile)
+		if err != nil {
+			slog.Error("read resend key", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		apiServer.SetEmailCodes(mail.NewResend(strings.TrimSpace(string(key)), *emailFrom), *emailDailyCap)
+		slog.Info("email codes enabled")
+	}
 	if *tunnelKey != "" {
 		key, err := tunnel.LoadOrCreateKey(*tunnelKey)
 		if err != nil {
@@ -468,6 +485,15 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("blinded discovery enabled")
+		// Apple and Google links are keyed from the OPRF key too.
+		var apple, google *idtoken.Verifier
+		if *appleSignIn {
+			apple = idtoken.NewVerifier(idtoken.Apple(*apnsTopic))
+		}
+		if *googleClientID != "" {
+			google = idtoken.NewVerifier(idtoken.Google(*googleClientID))
+		}
+		apiServer.SetIdentityProviders(apple, google)
 		// Blob names are keyed from the OPRF key: no new secret to keep, and
 		// the names stay findable across restarts. Never sent to historyd.
 		if hs := openHistory(key.DeriveKey("history-blob-names"), *historyDir, *historyMinFree,
@@ -505,6 +531,16 @@ func main() {
 				slog.Warn("http/3 server stopped", "err", err)
 			}
 		}()
+	}
+
+	if *migrateSupabase {
+		linked, emails, skipped, err := apiServer.MigrateSupabaseIdentities(context.Background())
+		fmt.Printf("migrated: %d Apple/Google links, %d email tokens, %d Supabase users gone\n", linked, emails, skipped)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "migration stopped:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	srv := &http.Server{

@@ -322,6 +322,9 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// Links an account to its Supabase user so a returning OAuth user can
 		// sign back in with a verified Supabase token.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS supabase_user_id TEXT`,
+		// Apple/Google sign-in, verified by relayd itself (store/identity.go).
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS identity_link TEXT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_identity_link ON accounts (identity_link) WHERE identity_link IS NOT NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_supabase_user_id ON accounts (supabase_user_id) WHERE supabase_user_id IS NOT NULL AND supabase_user_id <> ''`,
 		// Single-use contact invite tokens.
 		`CREATE TABLE IF NOT EXISTS contact_invites (
@@ -563,8 +566,8 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		// Demo accounts (App Review) were made from the owner's email
 		// accounts; they keep no email, so nothing can show or use it.
 		`DELETE FROM directory WHERE kind = 1 AND account_id IN (SELECT id FROM accounts WHERE is_demo)`,
-		`UPDATE accounts SET email_token = NULL, supabase_user_id = NULL, email_discoverable = FALSE
-		   WHERE is_demo AND (email_token IS NOT NULL OR supabase_user_id IS NOT NULL OR email_discoverable)`,
+		`UPDATE accounts SET email_token = NULL, supabase_user_id = NULL, identity_link = NULL, email_discoverable = FALSE
+		   WHERE is_demo AND (email_token IS NOT NULL OR supabase_user_id IS NOT NULL OR identity_link IS NOT NULL OR email_discoverable)`,
 	} {
 		if err := s.migrationExec(ctx, stmt); err != nil {
 			return err
@@ -667,7 +670,7 @@ type Device struct {
 // Usernames are unique case-insensitively. Returns ErrUsernameTaken when the
 // username is in use, ErrIdentityInUse when the email token or Supabase user id
 // already belongs to another account.
-func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID, devicePassword string, accountPassword AccountPassword) (accountID string, deviceID uint32, err error) {
+func (s *Store) CreateAccount(username string, emailToken []byte, id Identity, devicePassword string, accountPassword AccountPassword) (accountID string, deviceID uint32, err error) {
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
 		return "", 0, err
@@ -696,8 +699,8 @@ func (s *Store) CreateAccount(username string, emailToken []byte, supabaseUserID
 		return "", 0, ErrUsernameTaken
 	}
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, 1)`,
-		accountID, username, nullableBytes(emailToken), nullableString(supabaseUserID), accountHash, methodForNewAccount(accountHash), now); err != nil {
+		`INSERT INTO accounts (id, username, email_token, supabase_user_id, identity_link, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)`,
+		accountID, username, nullableBytes(emailToken), nullableString(id.SupabaseID), nullableString(id.Link), accountHash, methodForNewAccount(accountHash), now); err != nil {
 		return "", 0, accountInsertError(err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
@@ -719,7 +722,7 @@ func accountInsertError(err error) error {
 		return err
 	}
 	switch pgErr.ConstraintName {
-	case "idx_accounts_email_token", "idx_accounts_supabase_user_id":
+	case "idx_accounts_email_token", "idx_accounts_supabase_user_id", "idx_accounts_identity_link":
 		return ErrIdentityInUse
 	default:
 		return ErrUsernameTaken
@@ -1046,7 +1049,7 @@ func (s *Store) SetAccountPassword(accountID string, accountPassword AccountPass
 // It finds the account by Supabase user id, then by email token, sets the new
 // password and replaces the account's devices with one new device. Returns
 // ErrAccountNotFound if no account matches.
-func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, accountPassword AccountPassword, devicePassword string) (dev AddedDevice, err error) {
+func (s *Store) ResetAccountPassword(id Identity, emailToken []byte, accountPassword AccountPassword, devicePassword string) (dev AddedDevice, err error) {
 	ctx := context.Background()
 	accountHash, err := accountPassword.hash()
 	if err != nil {
@@ -1069,10 +1072,7 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	        recovery_key_hash IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.account_id = accounts.id)
 	        OR string_to_array(COALESCE(two_step_method, ''), ',') && ARRAY['totp', 'passkey', 'recovery']
 	   FROM accounts `
-	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1 FOR UPDATE`, supabaseUserID).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
-	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		err = tx.QueryRow(ctx, pick+`WHERE email_token = $1 FOR UPDATE`, emailToken).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
-	}
+	_, err = findByIdentityTx(ctx, tx, pick, ` FOR UPDATE`, id, emailToken, &dev.AccountID, &dev.Username, &demo, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AddedDevice{}, ErrAccountNotFound
 	}
@@ -1102,10 +1102,10 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	if locked {
 		return AddedDevice{}, ErrRegistrationLockActive
 	}
-	if _, err = tx.Exec(ctx,
-		`UPDATE accounts SET account_password_hash = $1,
-		        supabase_user_id = CASE WHEN supabase_user_id IS NULL OR supabase_user_id = '' THEN $2 ELSE supabase_user_id END
-		 WHERE id = $3`, accountHash, supabaseUserID, dev.AccountID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE accounts SET account_password_hash = $1 WHERE id = $2`, accountHash, dev.AccountID); err != nil {
+		return AddedDevice{}, err
+	}
+	if err = linkIdentityTx(ctx, tx, dev.AccountID, id); err != nil {
 		return AddedDevice{}, accountInsertError(err)
 	}
 	if dev.ReplacedDevices, err = replaceDevicesTx(ctx, tx, dev.AccountID); err != nil {
@@ -1170,7 +1170,7 @@ func (s *Store) SetAccountEmailToken(accountID string, emailToken []byte) error 
 // whether a lock is set.
 //
 // created reports whether a new account was made.
-func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, requestedUsername, devicePassword string, accountPassword AccountPassword, lockPermit func(accountID string) bool) (dev AddedDevice, created bool, err error) {
+func (s *Store) ProvisionOAuthAccount(id Identity, emailToken []byte, requestedUsername, devicePassword string, accountPassword AccountPassword, lockPermit func(accountID string) bool) (dev AddedDevice, created bool, err error) {
 	ctx := context.Background()
 	deviceHash, err := bcrypt.GenerateFromPassword([]byte(devicePassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -1185,13 +1185,12 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 	// Find an existing account by Supabase user id, then by verified email.
 	var lockHash []byte
 	var twoStep TwoStep
-	adoptedByEmail := false
 	const pick = `SELECT ` + twoStepColumns + `, totp_secret, totp_last_step, id, username, account_password_hash
 	   FROM accounts `
-	twoStep, err = scanTwoStep(tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1`, supabaseUserID), &dev.AccountID, &dev.Username, &lockHash)
-	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
-		twoStep, err = scanTwoStep(tx.QueryRow(ctx, pick+`WHERE email_token = $1`, emailToken), &dev.AccountID, &dev.Username, &lockHash)
-		adoptedByEmail = err == nil
+	var found twoStepRow
+	_, err = findByIdentityTx(ctx, tx, pick, "", id, emailToken, found.dest(&dev.AccountID, &dev.Username, &lockHash)...)
+	if err == nil {
+		twoStep, err = found.twoStep()
 	}
 
 	if err == nil {
@@ -1232,14 +1231,9 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		} else if !accountPassword.Empty() {
 			accountPassword.burn()
 		}
-		if adoptedByEmail {
-			// Back-fill only an empty link; never overwrite another Supabase
-			// user's link.
-			if _, e := tx.Exec(ctx,
-				`UPDATE accounts SET supabase_user_id = $1 WHERE id = $2 AND (supabase_user_id IS NULL OR supabase_user_id = '')`,
-				supabaseUserID, dev.AccountID); e != nil {
-				return AddedDevice{}, false, e
-			}
+		// Back-fill only empty links; never overwrite another identity's.
+		if e := linkIdentityTx(ctx, tx, dev.AccountID, id); e != nil {
+			return AddedDevice{}, false, e
 		}
 	}
 
@@ -1271,8 +1265,8 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		}
 		now := coarseDayMillis()
 		if _, e := tx.Exec(ctx,
-			`INSERT INTO accounts (id, username, email_token, supabase_user_id, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, 1)`,
-			dev.AccountID, dev.Username, nullableBytes(emailToken), supabaseUserID, accountHash, methodForNewAccount(accountHash), now); e != nil {
+			`INSERT INTO accounts (id, username, email_token, supabase_user_id, identity_link, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)`,
+			dev.AccountID, dev.Username, nullableBytes(emailToken), nullableString(id.SupabaseID), nullableString(id.Link), accountHash, methodForNewAccount(accountHash), now); e != nil {
 			return AddedDevice{}, false, accountInsertError(e)
 		}
 		if dev.MailboxID, err = newMailboxID(); err != nil {

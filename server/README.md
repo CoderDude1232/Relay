@@ -510,6 +510,39 @@ Flags:
 - FCM: `-fcm-service-account` (path to a Firebase service-account JSON key). The
   sender uses FCM HTTP v1 with a service-account-signed OAuth2 token.
 
+## Sign-in identities (email codes, Apple, Google)
+
+relayd verifies these itself; no sign-in service holds the address or the
+account. Each ends in a ticket (`rit_…`, 15 minutes, usable until it expires)
+that `POST /v1/accounts`, `/v1/accounts/oauth`, `/v1/accounts/password-reset`
+and `PUT /v1/accounts/me/email` accept in their Supabase token field. Older
+apps still send Supabase access tokens, which are checked as before; their
+Apple or Google identity links the same way (`providerIdentity`), so either
+path finds the same account.
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/email/code` | none | `{email, purpose?}` (`signin`, the default, or `reset`) → `204` once the code is sent, the same whether or not an account uses the address. `400` not an address; `429` 5 codes per address and 20 per IP an hour; `503` daily cap (`-email-daily-cap`) or unconfigured; `502` the provider refused. |
+| `POST /v1/accounts/me/email/code` | sig (step-up) | `{email}` → `204`: a code to confirm a new address; its ticket only works for this account's `PUT /v1/accounts/me/email`. |
+| `POST /v1/email/verify` | none | `{email, code}` → `200 {token, email}`. Codes are 6 digits, last 10 minutes, work once, and allow 5 wrong tries. `401` wrong or expired. 60/IP/hour. A `reset` code's ticket counts as a fresh password recovery. |
+| `POST /v1/identity/apple` | none | `{identityToken, nonce}` → `200 {token, email}`. The token is checked against Apple's keys: issuer `https://appleid.apple.com`, audience `-apns-topic`, and nonce = hex SHA-256 of `nonce`. `401` otherwise. 60/IP/hour. |
+| `POST /v1/identity/google` | none | `{idToken}` → `200 {token, email}`, checked against Google's keys with audience `-google-client-id`. |
+
+Codes are kept in memory, keyed by a salted hash of the address, and never
+logged. An Apple or Google account is stored only as `accounts.identity_link`:
+`<provider>:` + hex HMAC-SHA256(DeriveKey("identity-links"), provider + "\n" +
+subject), with the key derived from the OPRF key. `email` in the answer is the
+verified address (Apple's may be a private relay address), or `""`.
+
+Flags: `-resend-key-file` (Resend API key; enables email codes), `-email-from`
+(default `Relay <codes@relaymsg.app>`; the domain must be verified with Resend),
+`-email-daily-cap` (default 90), `-apple-sign-in`, `-google-client-id` (the app's
+iOS OAuth client). The last two need `-oprf-key`. `relayd -migrate-supabase`
+(with `-supabase-url`, `-supabase-service-key-file` and `-oprf-key`) gives every
+Supabase-linked account its `identity_link` and, if missing, its email token,
+then exits; it's safe to run again. `accounts.supabase_user_id` stays only so
+deleting an account deletes its Supabase user, until Supabase is switched off.
+
 ## Sign in with Apple
 
 Apple requires apps offering Sign in with Apple to revoke the user's tokens when

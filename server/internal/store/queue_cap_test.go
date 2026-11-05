@@ -12,7 +12,7 @@ import (
 // under the device row lock), and a vanished device gets ErrNotFound.
 func TestEnqueueCapIsAtomic(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("qcap"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("qcap"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}

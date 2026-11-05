@@ -285,7 +285,7 @@ func (s *Server) handlePhoneSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if twoStep.Method != store.TwoStepNone {
-		s.writeTwoStepRequired(w, accountID, twoStep.Joined(), "")
+		s.writeTwoStepRequired(w, accountID, twoStep.Joined(), store.Identity{})
 		return
 	}
 	s.finishSignIn(w, accountID, req.Password)

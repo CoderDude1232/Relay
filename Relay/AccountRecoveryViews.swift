@@ -392,7 +392,7 @@ private struct EmailCodeConfirmSheet: View {
         working = true
         defer { working = false }
         do {
-            try await SupabaseAuth.shared.requestSignInCode(email: email)
+            try await SignInAuth.shared.requestSignInCode(email: email)
             sent = true
             errorMessage = nil
         } catch {
@@ -404,7 +404,7 @@ private struct EmailCodeConfirmSheet: View {
         working = true
         defer { working = false }
         do {
-            _ = try await SupabaseAuth.shared.verifySignInCode(email: email, code: code)
+            _ = try await SignInAuth.shared.verifySignInCode(email: email, code: code)
             dismiss()
             onConfirmed()
         } catch {

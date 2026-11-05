@@ -9,7 +9,7 @@ import (
 
 func TestSupporterBooks(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("supporter"), nil, "", "pw", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("supporter"), nil, Identity{}, "pw", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}

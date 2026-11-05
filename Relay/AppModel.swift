@@ -248,10 +248,11 @@ final class AppModel {
         await boot()
     }
 
-    /// Returns true if the keychain already holds relay credentials for this Supabase user ID.
+    /// Returns true if the keychain already holds relay credentials for this sign-in's user ID.
     /// Used by onboarding to decide whether to show the setup screen after OAuth.
     func hasExistingRelayAccount(forUserId userId: String) -> Bool {
-        guard let data = try? keychain.loadSecret(for: Self.accountSecretName),
+        guard !userId.isEmpty,
+              let data = try? keychain.loadSecret(for: Self.accountSecretName),
               let saved = try? JSONDecoder().decode(SavedAccount.self, from: data)
         else { return false }
         return saved.supabaseUserId == userId
@@ -450,12 +451,12 @@ final class AppModel {
     /// on first use. The relay verifies the Supabase access token itself, so this
     /// works for passwordless social-login accounts on any device. When `username`
     /// is nil and no account exists yet, throws `NeedsUsernameError`.
-    func registerWithSupabase(serverURL: URL, accessToken: String, email: String, supabaseUserId: String, username: String?, displayName: String, accountPassword: String? = nil) async throws {
+    func registerWithSignIn(serverURL: URL, accessToken: String, email: String, supabaseUserId: String, username: String?, displayName: String, accountPassword: String? = nil) async throws {
         // This device already holds credentials for this Supabase user. Resume
         // without hitting the server, which would provision a new device each time.
         if let data = try? keychain.loadSecret(for: Self.accountSecretName),
            let saved = try? JSONDecoder().decode(SavedAccount.self, from: data),
-           saved.supabaseUserId == supabaseUserId
+           (!supabaseUserId.isEmpty && saved.supabaseUserId == supabaseUserId)
              || (!email.isEmpty && saved.email == email)
              || saved.username == email {
             if case .ready = phase { return }
@@ -909,7 +910,7 @@ final class AppModel {
             authenticatorData: assertion.authenticatorData, signature: assertion.signature,
             userHandle: assertion.userHandle
         )
-        SupabaseAuth.shared.signOut()
+        await SignInAuth.shared.signOut()
         UserDefaults.standard.set(false, forKey: MessagingService.emailDiscoverableKey)
         if let data = try? keychain.loadSecret(for: Self.accountSecretName),
            let saved = try? JSONDecoder().decode(SavedAccount.self, from: data) {
@@ -1116,20 +1117,19 @@ final class AppModel {
         return saved.email
     }
 
-    /// Email change, step 1: Supabase emails a code to the new address.
+    /// Email change, step 1: the relay emails a code to the new address.
     func requestEmailChange(to newEmail: String) async throws {
-        try await SupabaseAuth.shared.requestEmailChange(to: newEmail)
+        guard case .ready(let service) = phase else { return }
+        try await service.apiClient.requestEmailChangeCode(newEmail)
     }
 
     /// Step 2: confirms the code, then re-keys the relay's email lookup (used for
     /// recovery and, if enabled, discovery by email).
     func confirmEmailChange(newEmail: String, code: String) async throws {
         guard case .ready(let service) = phase else { return }
-        let supabase: SupabaseSession
+        let ticket: RelayAPIClient.SignInTicket
         do {
-            supabase = try await SupabaseAuth.shared.verifyEmailChange(newEmail: newEmail, code: code)
-        } catch let error as SupabaseError where error.isNoSession {
-            throw error
+            ticket = try await service.apiClient.verifyEmailCode(newEmail, code: code)
         } catch {
             struct CodeError: LocalizedError {
                 var errorDescription: String? { "That code is wrong or has expired. Check the latest email, or request a new code." }
@@ -1137,7 +1137,7 @@ final class AppModel {
             throw CodeError()
         }
         do {
-            try await service.apiClient.updateEmail(supabaseAccessToken: supabase.accessToken)
+            try await service.apiClient.updateEmail(supabaseAccessToken: ticket.token)
         } catch RelayAPIError.http(status: 409, _) {
             struct InUseError: LocalizedError {
                 var errorDescription: String? { "That email address belongs to another Relay account." }
@@ -1145,7 +1145,7 @@ final class AppModel {
             throw InUseError()
         } catch RelayAPIError.http(status: 403, _) {
             struct OwnerError: LocalizedError {
-                var errorDescription: String? { "This device's email sign-in doesn't match this Relay account. Make this change from the device you signed up on." }
+                var errorDescription: String? { "That code was for a different account. Request a new code and try again." }
             }
             throw OwnerError()
         }
@@ -1154,8 +1154,8 @@ final class AppModel {
             let updated = SavedAccount(
                 accountId: saved.accountId, deviceId: saved.deviceId,
                 password: saved.password, serverURL: saved.serverURL,
-                username: saved.username, email: supabase.email.isEmpty ? newEmail : supabase.email,
-                supabaseUserId: saved.supabaseUserId ?? supabase.userId
+                username: saved.username, email: ticket.email.isEmpty ? newEmail : ticket.email,
+                supabaseUserId: saved.supabaseUserId
             )
             try? keychain.storeSecret(JSONEncoder().encode(updated), for: Self.accountSecretName)
         }
@@ -1349,11 +1349,11 @@ final class AppModel {
         // Clear App Group share state so the next account doesn't inherit
         // conversations, avatars or badge count in the share sheet, widgets and Siri.
         ShareBridge.clearAll()
-        // The Supabase session goes before the sign-in screen appears: that
+        // The sign-in session goes before the sign-in screen appears: that
         // screen reuses a stored session to sign straight back in, which
         // after a sign-out failed with a confusing "Sign In Failed".
         Task {
-            await SupabaseAuth.shared.signOut()
+            await SignInAuth.shared.signOut()
             phase = .onboarding
         }
     }

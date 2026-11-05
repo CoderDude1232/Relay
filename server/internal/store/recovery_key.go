@@ -69,7 +69,7 @@ type SignInMethods struct {
 // the account is gone).
 func (s *Store) AccountSignInMethods(accountID string) (m SignInMethods, err error) {
 	err = s.db.QueryRow(context.Background(), `
-		SELECT COALESCE(length(a.email_token), 0) > 0 OR COALESCE(a.supabase_user_id, '') <> '',
+		SELECT COALESCE(length(a.email_token), 0) > 0 OR COALESCE(a.supabase_user_id, '') <> '' OR a.identity_link IS NOT NULL,
 		       (SELECT count(*) FROM passkeys p WHERE p.account_id = a.id),
 		       COALESCE(length(a.account_password_hash), 0) > 0,
 		       a.recovery_key_hash IS NOT NULL,
@@ -94,7 +94,7 @@ func (s *Store) RemoveAccountEmail(accountID string) error {
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx,
-		`UPDATE accounts SET email_token = NULL, supabase_user_id = NULL, email_discoverable = FALSE WHERE id = $1`, accountID)
+		`UPDATE accounts SET email_token = NULL, supabase_user_id = NULL, identity_link = NULL, email_discoverable = FALSE WHERE id = $1`, accountID)
 	if err != nil {
 		return err
 	}

@@ -89,7 +89,7 @@ func (s *Server) handleStepUpChallenge(w http.ResponseWriter, r *http.Request, d
 		writeJSON(w, http.StatusOK, map[string]any{"method": ""})
 		return
 	}
-	ticket, err := s.twoStep.issue(dev.AccountID, ts.Joined(), "")
+	ticket, err := s.twoStep.issue(dev.AccountID, ts.Joined(), store.Identity{})
 	if err != nil {
 		httpError(w, http.StatusTooManyRequests, err.Error())
 		return

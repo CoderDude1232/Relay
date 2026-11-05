@@ -24,7 +24,7 @@ In scope:
 
 Out of scope: denial of service or load testing against the production service,
 social engineering, physical attacks, and issues in third-party services
-(Apple, Cloudflare, Supabase) that aren't caused by how Relay uses them.
+(Apple, Cloudflare, Resend, Twilio) that aren't caused by how Relay uses them.
 
 ## Testing safely
 

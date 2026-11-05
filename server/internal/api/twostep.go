@@ -45,11 +45,11 @@ type twoStepTicket struct {
 	accountID string
 	// method lists the methods (comma joined) any one of which passes.
 	method string
-	// supabaseUserID back-fills the account's link once the step passes (an
-	// email sign-in that found the account by its verified email).
-	supabaseUserID string
-	failures       int
-	expires        time.Time
+	// identity back-fills the account's links once the step passes (a
+	// sign-in that found the account by its verified email).
+	identity store.Identity
+	failures int
+	expires  time.Time
 }
 
 type twoStepTickets struct {
@@ -59,7 +59,7 @@ type twoStepTickets struct {
 
 func newTwoStepTickets() *twoStepTickets { return &twoStepTickets{m: map[string]*twoStepTicket{}} }
 
-func (t *twoStepTickets) issue(accountID, method, supabaseUserID string) (string, error) {
+func (t *twoStepTickets) issue(accountID, method string, identity store.Identity) (string, error) {
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
@@ -73,7 +73,7 @@ func (t *twoStepTickets) issue(accountID, method, supabaseUserID string) (string
 			return "", errors.New("too many pending sign-ins; try again later")
 		}
 	}
-	t.m[id] = &twoStepTicket{accountID: accountID, method: method, supabaseUserID: supabaseUserID,
+	t.m[id] = &twoStepTicket{accountID: accountID, method: method, identity: identity,
 		expires: time.Now().Add(twoStepTicketTTL)}
 	return id, nil
 }
@@ -122,12 +122,12 @@ func (t *twoStepTickets) pruneLocked(now time.Time) {
 
 // writeTwoStepRequired answers a code sign-in that needs its second step.
 // methods is comma joined; "method" names the first, for older clients.
-func (s *Server) writeTwoStepRequired(w http.ResponseWriter, accountID, methods, supabaseUserID string) {
+func (s *Server) writeTwoStepRequired(w http.ResponseWriter, accountID, methods string, identity store.Identity) {
 	list := store.ParseTwoStepMethods(methods)
 	if len(list) == 0 {
 		list = []string{methods}
 	}
-	ticket, err := s.twoStep.issue(accountID, store.JoinTwoStepMethods(list), supabaseUserID)
+	ticket, err := s.twoStep.issue(accountID, store.JoinTwoStepMethods(list), identity)
 	if err != nil {
 		httpError(w, http.StatusTooManyRequests, err.Error())
 		return
@@ -472,8 +472,8 @@ func (s *Server) handleCompleteTwoStep(w http.ResponseWriter, r *http.Request) {
 	}
 	recoveryLockout.succeed(lockKey)
 	s.twoStep.consume(req.Ticket)
-	if t.supabaseUserID != "" {
-		if err := s.store.LinkSupabaseUserIfUnlinked(t.accountID, t.supabaseUserID); err != nil {
+	if t.identity != (store.Identity{}) {
+		if err := s.store.LinkIdentityIfUnlinked(t.accountID, t.identity); err != nil {
 			internalError(w, err)
 			return
 		}

@@ -765,7 +765,7 @@ struct MainTabView: View {
 
             if service.authenticationExpired {
                 // 401: clear only the relay account so the user can re-register,
-                // keeping the Supabase session so no password is needed.
+                // keeping this run's sign-in so no password is needed.
                 ExpiredSessionView {
                     model.signOutRelayOnly()
                 }

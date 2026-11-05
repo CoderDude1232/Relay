@@ -33,8 +33,10 @@ import (
 	"github.com/relayapp/relay-server/internal/blob"
 	"github.com/relayapp/relay-server/internal/history"
 	"github.com/relayapp/relay-server/internal/hub"
+	"github.com/relayapp/relay-server/internal/idtoken"
 	"github.com/relayapp/relay-server/internal/kt"
 	"github.com/relayapp/relay-server/internal/limitkey"
+	"github.com/relayapp/relay-server/internal/mail"
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
@@ -72,6 +74,14 @@ type Server struct {
 	// user's Supabase auth record (which holds their email) on account deletion.
 	supabaseServiceKey  string
 	verifySupabaseToken func(ctx context.Context, accessToken string) (supabaseUser, error)
+
+	// Sign-in identities verified by relayd itself (identity.go).
+	identityTickets *identityTickets
+	emailCodes      *emailCodes
+	mailer          mail.Sender // nil = no email codes
+	emailDailyCap   int
+	appleIDs        *idtoken.Verifier // nil = no Sign in with Apple
+	googleIDs       *idtoken.Verifier // nil = no Google sign-in
 
 	// sealed, when set, enables GET /v1/certificate/delivery.
 	sealed *sealedIssuer
@@ -159,7 +169,8 @@ func New(st *store.Store, h *hub.Hub, blobs *blob.Store, turnURLs, turnSecret st
 		attachDiskCap: DefaultAttachmentDiskCap,
 		passkeyReg:    newPasskeySessions(), passkeyLogin: newPasskeySessions(),
 		passkeySignup: newPasskeySessions(), passkeyEmailRemove: newPasskeySessions(),
-		passkeyTwoStep: newPasskeySessions(), twoStep: newTwoStepTickets(), stepUps: newStepUps(), phoneSignup: newPhoneSignups()}
+		passkeyTwoStep: newPasskeySessions(), twoStep: newTwoStepTickets(), stepUps: newStepUps(), phoneSignup: newPhoneSignups(),
+		identityTickets: newIdentityTickets(), emailCodes: newEmailCodes()}
 	s.verifySupabaseToken = s.verifySupabaseTokenHTTP
 	if err := s.SetPasskeyRP(DefaultPasskeyRPID, []string{DefaultPasskeyOrigin}); err != nil {
 		panic("api: default passkey config: " + err.Error())
@@ -412,6 +423,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/accounts/me/username", s.auth(s.handleUpdateUsername))
 	mux.HandleFunc("POST /v1/accounts/password-reset", s.handlePasswordReset) // unauthenticated; proof = fresh Supabase recovery session
 	mux.HandleFunc("PUT /v1/accounts/me/email", s.auth(s.stepUp(s.handleUpdateEmail)))
+	mux.HandleFunc("POST /v1/accounts/me/email/code", s.auth(s.stepUp(s.handleAccountEmailCode)))
+	mux.HandleFunc("POST /v1/email/code", s.handleEmailCode)           // unauthenticated: signs in or up
+	mux.HandleFunc("POST /v1/email/verify", s.handleEmailVerify)       // unauthenticated: the code is the proof
+	mux.HandleFunc("POST /v1/identity/apple", s.handleAppleIdentity)   // unauthenticated: Apple's signature is the proof
+	mux.HandleFunc("POST /v1/identity/google", s.handleGoogleIdentity) // unauthenticated: Google's signature is the proof
 	mux.HandleFunc("PUT /v1/accounts/me/discoverability", s.auth(s.handleSetDiscoverability))
 	mux.HandleFunc("GET /v1/accounts/me/phone", s.auth(s.handleGetPhone))
 	mux.HandleFunc("POST /v1/accounts/me/phone/start", s.auth(s.stepUp(s.handleStartPhone)))
@@ -626,23 +642,23 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var emailToken []byte
-	var supabaseUserID string
+	var identity store.Identity
 	if req.SupabaseAccessToken != "" {
-		if s.supabaseURL == "" {
+		user, err := s.verifySignIn(r.Context(), req.SupabaseAccessToken)
+		if errors.Is(err, errSignInUnavailable) {
 			httpError(w, http.StatusServiceUnavailable, "social login not configured")
 			return
 		}
-		user, err := s.verifySupabaseToken(r.Context(), req.SupabaseAccessToken)
 		if err != nil {
 			httpError(w, http.StatusUnauthorized, "invalid or expired sign-in token")
 			return
 		}
-		supabaseUserID = user.ID
+		identity = user.store()
 		if user.EmailConfirmed {
 			emailToken = s.emailToken(user.Email)
 		}
 	}
-	accountID, deviceID, err := s.store.CreateAccount(req.Username, emailToken, supabaseUserID, req.Password, accountPassword)
+	accountID, deviceID, err := s.store.CreateAccount(req.Username, emailToken, identity, req.Password, accountPassword)
 	if errors.Is(err, store.ErrUsernameTaken) {
 		httpError(w, http.StatusConflict, "username already taken")
 		return
@@ -684,10 +700,6 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusTooManyRequests, "registration rate limit exceeded; try again later")
 		return
 	}
-	if s.supabaseURL == "" {
-		httpError(w, http.StatusServiceUnavailable, "social login not configured")
-		return
-	}
 	var req struct {
 		AccessToken        string `json:"accessToken"`
 		Username           string `json:"username"`
@@ -710,7 +722,11 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
+	user, err := s.verifySignIn(r.Context(), req.AccessToken)
+	if errors.Is(err, errSignInUnavailable) {
+		httpError(w, http.StatusServiceUnavailable, "social login not configured")
+		return
+	}
 	if err != nil {
 		httpError(w, http.StatusUnauthorized, "invalid or expired social login token")
 		return
@@ -724,7 +740,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 	// an account password must present it (it replaces every device). Wrong
 	// guesses back off exponentially per account (recoveryLockout).
 	dev, created, err := s.store.ProvisionOAuthAccount(
-		user.ID, emailToken, req.Username, req.Password, accountPassword,
+		user.store(), emailToken, req.Username, req.Password, accountPassword,
 		func(accountID string) bool { return recoveryLockout.attempt(registrationLockKey(accountID)) })
 	switch {
 	case errors.Is(err, store.ErrAccountPasswordLocked):
@@ -737,7 +753,7 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusLocked, "account password required")
 			return
 		}
-		s.writeTwoStepRequired(w, dev.AccountID, dev.TwoStepMethod, user.ID)
+		s.writeTwoStepRequired(w, dev.AccountID, dev.TwoStepMethod, user.store())
 		return
 	case errors.Is(err, store.ErrStrongerSignInRequired):
 		httpError(w, http.StatusForbidden, "This account has a passkey or recovery key. Sign in with one of those instead.")
@@ -797,6 +813,10 @@ type supabaseUser struct {
 	ID             string
 	Email          string
 	EmailConfirmed bool
+	// Provider and ProviderSubject name the Apple or Google account behind
+	// it, so it links like a relay-verified one (identityLink).
+	Provider        string
+	ProviderSubject string
 	// RecoveredAt is when this session was created by a password-recovery
 	// code (the token's amr "recovery" entry); zero if it wasn't.
 	RecoveredAt time.Time
@@ -860,11 +880,12 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 		return supabaseUser{}, fmt.Errorf("supabase user lookup failed: HTTP %d", resp.StatusCode)
 	}
 	var body struct {
-		ID               string  `json:"id"`
-		Email            string  `json:"email"`
-		Phone            string  `json:"phone"`
-		EmailConfirmedAt *string `json:"email_confirmed_at"`
-		ConfirmedAt      *string `json:"confirmed_at"`
+		ID               string             `json:"id"`
+		Email            string             `json:"email"`
+		Phone            string             `json:"phone"`
+		EmailConfirmedAt *string            `json:"email_confirmed_at"`
+		ConfirmedAt      *string            `json:"confirmed_at"`
+		Identities       []supabaseIdentity `json:"identities"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
 		return supabaseUser{}, err
@@ -875,8 +896,41 @@ func (s *Server) verifySupabaseTokenHTTP(ctx context.Context, accessToken string
 	set := func(p *string) bool { return p != nil && *p != "" }
 	confirmed := body.Email != "" &&
 		(set(body.EmailConfirmedAt) || (set(body.ConfirmedAt) && body.Phone == ""))
+	provider, subject := providerIdentity(body.Identities)
 	return supabaseUser{ID: body.ID, Email: body.Email, EmailConfirmed: confirmed,
+		Provider: provider, ProviderSubject: subject,
 		RecoveredAt: recoveryAuthTime(accessToken)}, nil
+}
+
+// supabaseIdentity is one of a Supabase user's linked sign-ins.
+type supabaseIdentity struct {
+	Provider     string `json:"provider"`
+	ID           string `json:"id"`
+	ProviderID   string `json:"provider_id"`
+	IdentityData struct {
+		Sub string `json:"sub"`
+	} `json:"identity_data"`
+}
+
+// providerIdentity picks the Apple or Google account among a Supabase user's
+// identities, and its subject (the provider's user id).
+func providerIdentity(ids []supabaseIdentity) (provider, subject string) {
+	for _, id := range ids {
+		if id.Provider != "apple" && id.Provider != "google" {
+			continue
+		}
+		sub := id.IdentityData.Sub
+		if sub == "" {
+			sub = id.ProviderID
+		}
+		if sub == "" {
+			sub = id.ID
+		}
+		if sub != "" {
+			return id.Provider, sub
+		}
+	}
+	return "", ""
 }
 
 // sealedDummyAccessKey is compared against when a sealed send names an unknown
@@ -1322,11 +1376,11 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "accessToken, accountPassword (8–1024) and password (8–1024) required")
 		return
 	}
-	if s.supabaseURL == "" {
+	user, err := s.verifySignIn(r.Context(), req.AccessToken)
+	if errors.Is(err, errSignInUnavailable) {
 		httpError(w, http.StatusServiceUnavailable, "password reset not configured")
 		return
 	}
-	user, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
 	if err != nil || !user.EmailConfirmed {
 		httpError(w, http.StatusUnauthorized, "invalid or expired reset session")
 		return
@@ -1335,7 +1389,7 @@ func (s *Server) handlePasswordReset(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "a fresh password-recovery code is required")
 		return
 	}
-	dev, err := s.store.ResetAccountPassword(user.ID, s.emailToken(user.Email), newPassword, req.Password)
+	dev, err := s.store.ResetAccountPassword(user.store(), s.emailToken(user.Email), newPassword, req.Password)
 	switch {
 	case errors.Is(err, store.ErrAccountNotFound):
 		httpError(w, http.StatusNotFound, "no Relay account for this email")
@@ -1405,23 +1459,31 @@ func (s *Server) handleUpdateEmail(w http.ResponseWriter, r *http.Request, dev *
 		httpError(w, http.StatusBadRequest, "accessToken required")
 		return
 	}
-	if s.supabaseURL == "" {
+	user, err := s.verifySignIn(r.Context(), req.AccessToken)
+	if errors.Is(err, errSignInUnavailable) {
 		httpError(w, http.StatusServiceUnavailable, "email change not configured")
 		return
 	}
-	user, err := s.verifySupabaseToken(r.Context(), req.AccessToken)
 	if err != nil || !user.EmailConfirmed {
 		httpError(w, http.StatusUnauthorized, "invalid session or unconfirmed email")
 		return
 	}
-	linked, err := s.store.SupabaseUserID(dev.AccountID)
-	if err != nil {
-		internalError(w, err)
-		return
-	}
-	if linked == "" || linked != user.ID {
-		httpError(w, http.StatusForbidden, "this sign-in doesn't belong to your account")
-		return
+	if strings.HasPrefix(req.AccessToken, identityTicketPrefix) {
+		// A relay ticket: the code must have been asked for by this account.
+		if user.ForAccount != dev.AccountID {
+			httpError(w, http.StatusForbidden, "this sign-in doesn't belong to your account")
+			return
+		}
+	} else {
+		linked, err := s.store.SupabaseUserID(dev.AccountID)
+		if err != nil {
+			internalError(w, err)
+			return
+		}
+		if linked == "" || linked != user.SupabaseID {
+			httpError(w, http.StatusForbidden, "this sign-in doesn't belong to your account")
+			return
+		}
 	}
 	token := s.emailToken(user.Email)
 	if token == nil {

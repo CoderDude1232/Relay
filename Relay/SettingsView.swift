@@ -2114,7 +2114,7 @@ private struct DeleteAccountSheet: View {
     }
 }
 
-/// Supabase emails a code to the new address, then the relay re-keys its
+/// The relay emails a code to the new address, then re-keys its
 /// email lookup (recovery and find-by-email).
 private struct ChangeEmailSheet: View {
     /// Removing the email needs a passkey to confirm with.

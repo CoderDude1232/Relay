@@ -26,7 +26,7 @@ struct OnboardingView: View {
     enum Step { case welcome, signIn, emailCode, phone, phoneSetup, setup, passkeyIntro, passkeySetup, twoStep }
 
     @State private var step: Step = .welcome
-    @State private var supabaseSession: SupabaseSession?
+    @State private var signInSession: SignInSession?
     /// Accounts on a relay from before two-step verification answer a
     /// registration lock with a plain account-password prompt.
     @State private var showingLockPrompt = false
@@ -136,13 +136,13 @@ struct OnboardingView: View {
                     username: $username,
                     checkAvailability: { u in await model.checkUsername(u) },
                     onComplete: {
-                        guard let session = supabaseSession else { return }
+                        guard let session = signInSession else { return }
                         try await finish(session: session)
                     },
                     onBack: {
                         // Forget the half-finished sign-up so the user can pick another sign-in
                         // method.
-                        supabaseSession = nil
+                        signInSession = nil
                         go(.welcome)
                     }
                 )
@@ -151,7 +151,7 @@ struct OnboardingView: View {
                 if let twoStep {
                     TwoStepView(needed: twoStep, onRestart: {
                         self.twoStep = nil
-                        supabaseSession = nil
+                        signInSession = nil
                         go(.welcome)
                     })
                     .transition(Self.forward)
@@ -164,25 +164,17 @@ struct OnboardingView: View {
         // material stays dark in Light Mode.
         .preferredColorScheme(.dark)
         .task {
-            // Reuse a stored Supabase session (e.g. after a relay-only sign-out) instead
-            // of prompting for OAuth again. If it has expired the refresh fails and the
+            // Reuse this run's sign-in (e.g. after a relay-only sign-out) instead of
+            // asking again. If its ticket has expired the relay says so and the
             // normal flow takes over.
-            let stored = await SupabaseAuth.shared.session
+            let stored = await SignInAuth.shared.session
             guard let stored else { return }
             // Existing relay credentials: boot already handled this.
             guard !model.hasExistingRelayAccount(forUserId: stored.userId) else { return }
             isAutoRestoring = true
             do {
-                let session: SupabaseSession
-                do {
-                    session = try await SupabaseAuth.shared.refresh()
-                } catch {
-                    // Refresh failed (e.g. revoked token); use the stored session as-is. If
-                    // the access token is still valid registration succeeds, otherwise the
-                    // error surfaces as registrationError.
-                    session = stored
-                }
-                supabaseSession = session
+                let session = stored
+                signInSession = session
                 try await finish(session: session)
             } catch is AppModel.NeedsUsernameError {
                 // Valid session but no relay account yet: pick a username.
@@ -208,7 +200,7 @@ struct OnboardingView: View {
         .alert("Account Password", isPresented: $showingLockPrompt) {
             SecureField("Account password", text: $lockPassword)
             Button("Sign In") {
-                if let session = supabaseSession {
+                if let session = signInSession {
                     handleOAuth(session: session, accountPassword: lockPassword)
                 }
             }
@@ -224,12 +216,12 @@ struct OnboardingView: View {
         }
     }
 
-    private func handleOAuth(session: SupabaseSession, accountPassword: String = "", suggestedName: String? = nil) {
-        supabaseSession = session
+    private func handleOAuth(session: SignInSession, accountPassword: String = "", suggestedName: String? = nil) {
+        signInSession = session
         Task {
             do {
                 // Returning users, even on a new device with no local credentials, are
-                // recovered by the relay via their verified Supabase token, so no
+                // recovered by the relay via their verified sign-in, so no
                 // username is needed.
                 try await finish(session: session, password: accountPassword)
             } catch let needed as AppModel.TwoStepNeededError {
@@ -266,10 +258,10 @@ struct OnboardingView: View {
             .joined(separator: " ")
     }
 
-    private func finish(session: SupabaseSession, password: String = "") async throws {
+    private func finish(session: SignInSession, password: String = "") async throws {
         let name = displayName.trimmingCharacters(in: .whitespaces)
         let handle = username.trimmingCharacters(in: .whitespaces)
-        try await model.registerWithSupabase(
+        try await model.registerWithSignIn(
             serverURL: RelayConfig.serverURL,
             accessToken: session.accessToken,
             email: session.email,
@@ -353,7 +345,7 @@ private struct WelcomeView: View {
     let onSignIn: () -> Void
     /// The session, plus the person's name when the provider gave one (Apple
     /// shares it only on the first sign-in).
-    let onOAuthSession: (SupabaseSession, String?) -> Void
+    let onOAuthSession: (SignInSession, String?) -> Void
     let onLinkDevice: () -> Void
 
     @Environment(AppModel.self) private var model
@@ -573,7 +565,7 @@ private struct WelcomeView: View {
             oauthError = nil
             Task {
                 do {
-                    let session = try await SupabaseAuth.shared.signInWithApple(identityToken: token, nonce: nonce)
+                    let session = try await SignInAuth.shared.signInWithApple(identityToken: token, nonce: nonce)
                     AppleSignInRecord.used = true
                     onOAuthSession(session, appleName)
                 } catch {
@@ -597,17 +589,19 @@ private struct WelcomeView: View {
         let challenge = codeChallenge(from: verifier)
         pendingCodeVerifier = verifier
 
-        let redirect = "app.relaymsg://auth-callback"
-        guard let encodedRedirect = redirect.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let authURL = URL(string: "\(SupabaseConfig.projectURL)/auth/v1/authorize?provider=google&redirect_to=\(encodedRedirect)&code_challenge=\(challenge)&code_challenge_method=s256")
-        else { return }
+        guard GoogleSignInConfig.isConfigured,
+              let authURL = SignInAuth.googleAuthorizeURL(codeChallenge: challenge)
+        else {
+            oauthError = "Google sign-in isn't available yet. Use your email address instead."
+            return
+        }
 
         oauthLoading = true
         oauthError = nil
 
         let ws = ASWebAuthenticationSession(
             url: authURL,
-            callbackURLScheme: "app.relaymsg"
+            callbackURLScheme: GoogleSignInConfig.redirectScheme
         ) { callbackURL, error in
             googleWebSession = nil
             if let error {
@@ -643,7 +637,7 @@ private struct WelcomeView: View {
         }
         pendingCodeVerifier = nil
         do {
-            let session = try await SupabaseAuth.shared.exchangeOAuthCode(code, verifier: verifier)
+            let session = try await SignInAuth.shared.signInWithGoogle(code: code, verifier: verifier)
             onOAuthSession(session, nil)
         } catch {
             oauthError = FriendlyError.message(for: error)
@@ -691,18 +685,17 @@ private final class OAuthWindowContext: NSObject, ASWebAuthenticationPresentatio
 enum AuthView {
     enum Field: Hashable { case email, code }
 
-    /// Supabase's email code length is a project setting (6-10 digits), so accept
-    /// any of them.
-    static let validCodeLength = 6...10
+    /// The relay's codes are 6 digits.
+    static let validCodeLength = 6...6
 }
 
 // MARK: - One-time code sign-in
 
-/// Email, then an emailed one-time code, then a Supabase session that follows
+/// Email, then an emailed one-time code, then a sign-in that follows
 /// the Apple/Google path: new emails pick a username; existing accounts sign
 /// in, asking for the account password if set.
 private struct EmailCodeView: View {
-    let onSession: (SupabaseSession) -> Void
+    let onSession: (SignInSession) -> Void
     let onBack: () -> Void
 
     @State private var email = ""
@@ -827,7 +820,7 @@ private struct EmailCodeView: View {
         let resending = codeSent
         Task {
             do {
-                try await SupabaseAuth.shared.requestSignInCode(email: normalizedEmail)
+                try await SignInAuth.shared.requestSignInCode(email: normalizedEmail)
                 code = ""
                 codeSent = true
                 focused = .code
@@ -844,7 +837,7 @@ private struct EmailCodeView: View {
         isLoading = true
         Task {
             do {
-                let session = try await SupabaseAuth.shared.verifySignInCode(email: normalizedEmail, code: code)
+                let session = try await SignInAuth.shared.verifySignInCode(email: normalizedEmail, code: code)
                 onSession(session)
             } catch {
                 errorMessage = "That code didn't work. Check it, or tap Resend code."
@@ -1290,31 +1283,6 @@ enum FriendlyError {
             case .malformedResponse:
                 return "Relay sent an unexpected response. Please try again."
             }
-        }
-        if let supa = error as? SupabaseError, case .server(let raw) = supa {
-            let m = raw.lowercased()
-            if m.contains("no internet") || m.contains("offline") { return offline }
-            if m.contains("cannot reach") || m.contains("timed out") { return unreachable }
-            if m.contains("already registered") || m.contains("already exists")
-                || m.contains("user_already_exists") || m.contains("email_exists") {
-                return "An account with this email already exists. Sign in instead."
-            }
-            if m.contains("invalid login credentials") || m.contains("invalid_credentials") {
-                return "Incorrect email or password."
-            }
-            if m.contains("email not confirmed") {
-                return "Please confirm your email address first — check your inbox."
-            }
-            if m.contains("password should") || m.contains("weak_password") || m.contains("weak password") {
-                return "Please choose a stronger password (at least 8 characters)."
-            }
-            if m.contains("rate limit") || m.contains("http 429") { return tooMany }
-            if m.contains("invalid") && m.contains("email") { return "Please enter a valid email address." }
-            // Strip the "HTTP 400: " transport prefix from anything else.
-            if raw.hasPrefix("HTTP "), let colon = raw.firstIndex(of: ":") {
-                return String(raw[raw.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
-            }
-            return raw
         }
         if let described = (error as? LocalizedError)?.errorDescription, !described.isEmpty {
             return described

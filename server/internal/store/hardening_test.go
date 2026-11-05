@@ -29,7 +29,7 @@ func testKeys(t *testing.T, s *Store, account string, device uint32) {
 // with it, and its id is never handed out again.
 func TestRemoveDeviceWithPrekeysAndNoIDReuse(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("rm"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("rm"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestRemoveDeviceWithPrekeysAndNoIDReuse(t *testing.T) {
 
 func TestDeviceCapOnEveryAddPath(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("cap"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("cap"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestDeviceCapOnEveryAddPath(t *testing.T) {
 
 func TestQueuePaging(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("page"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("page"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestQueuePaging(t *testing.T) {
 
 func TestPurgeExpiredAndCoarseTimestamps(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("purge"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("purge"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestPurgeExpiredAndCoarseTimestamps(t *testing.T) {
 // device specifically, or an account with no keyed device at all, is still 404.
 func TestBundlesSkipKeylessDevice(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("keyless"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("keyless"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestBundlesSkipKeylessDevice(t *testing.T) {
 // sign-out removes itself, whichever id it has).
 func TestRemoveDeviceOne(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("rm1"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("rm1"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,23 +207,23 @@ func TestRemoveDeviceOne(t *testing.T) {
 func TestResetAccountPassword(t *testing.T) {
 	s := openTestStore(t)
 	token := []byte(uniqueName("tok"))
-	acct, _, err := s.CreateAccount(uniqueName("reset"), token, "", "device-pw-1", LegacyPassword("old-account-pw"))
+	acct, _, err := s.CreateAccount(uniqueName("reset"), token, Identity{}, "device-pw-1", LegacyPassword("old-account-pw"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResetAccountPassword("nobody-"+uniqueName("x"), []byte("unknown"), LegacyPassword("new-account-pw"), "dpw"); !errors.Is(err, ErrAccountNotFound) {
+	if _, err := s.ResetAccountPassword(Identity{SupabaseID: "nobody-" + uniqueName("x")}, []byte("unknown"), LegacyPassword("new-account-pw"), "dpw"); !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("unknown account: err = %v", err)
 	}
 	// Registration lock: an account password plus a device used this week
 	// means the inbox alone can't reset it.
-	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("new-account-pw"), "device-pw-2"); !errors.Is(err, ErrRegistrationLockActive) {
+	if _, err := s.ResetAccountPassword(Identity{SupabaseID: "sb-" + uniqueName("u")}, token, LegacyPassword("new-account-pw"), "device-pw-2"); !errors.Is(err, ErrRegistrationLockActive) {
 		t.Fatalf("reset of an active locked account: err = %v, want ErrRegistrationLockActive", err)
 	}
 	// Activity today keeps it locked.
 	if err := s.TouchDeviceActive(acct, 1, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("new-account-pw"), "device-pw-2"); !errors.Is(err, ErrRegistrationLockActive) {
+	if _, err := s.ResetAccountPassword(Identity{SupabaseID: "sb-" + uniqueName("u")}, token, LegacyPassword("new-account-pw"), "device-pw-2"); !errors.Is(err, ErrRegistrationLockActive) {
 		t.Fatalf("reset after activity: err = %v, want ErrRegistrationLockActive", err)
 	}
 	// Once every device has gone unused past the window, the reset works.
@@ -231,7 +231,7 @@ func TestResetAccountPassword(t *testing.T) {
 	if _, err := s.db.Exec(context.Background(), `UPDATE devices SET last_active_day = $2 WHERE account_id = $1`, acct, stale); err != nil {
 		t.Fatal(err)
 	}
-	dev, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("new-account-pw"), "device-pw-2")
+	dev, err := s.ResetAccountPassword(Identity{SupabaseID: "sb-" + uniqueName("u")}, token, LegacyPassword("new-account-pw"), "device-pw-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,14 +246,14 @@ func TestResetAccountPassword(t *testing.T) {
 		t.Fatalf("new password rejected: %v", err)
 	}
 	// A new device is created active, so the lock holds again straight away.
-	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("another-pw-0"), "device-pw-9"); !errors.Is(err, ErrRegistrationLockActive) {
+	if _, err := s.ResetAccountPassword(Identity{SupabaseID: "sb-" + uniqueName("u")}, token, LegacyPassword("another-pw-0"), "device-pw-9"); !errors.Is(err, ErrRegistrationLockActive) {
 		t.Fatalf("reset right after a reset: err = %v, want ErrRegistrationLockActive", err)
 	}
 	// With a recovery key, the email inbox alone can't reset the account.
 	if err := s.SetRecoveryKeyHash(acct, []byte(uniqueName("rk-hash-32-bytes-long-enough!!"))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResetAccountPassword("sb-"+uniqueName("u"), token, LegacyPassword("another-pw-1"), "device-pw-3"); !errors.Is(err, ErrStrongerSignInRequired) {
+	if _, err := s.ResetAccountPassword(Identity{SupabaseID: "sb-" + uniqueName("u")}, token, LegacyPassword("another-pw-1"), "device-pw-3"); !errors.Is(err, ErrStrongerSignInRequired) {
 		t.Fatalf("reset with a recovery key: err = %v, want ErrStrongerSignInRequired", err)
 	}
 }
@@ -263,7 +263,7 @@ func TestResetAccountPassword(t *testing.T) {
 func TestRecoverAccountUpgradesToKey(t *testing.T) {
 	s := openTestStore(t)
 	token := []byte(uniqueName("tok"))
-	acct, _, err := s.CreateAccount(uniqueName("up"), token, "", "device-pw-1", LegacyPassword("old-account-pw"))
+	acct, _, err := s.CreateAccount(uniqueName("up"), token, Identity{}, "device-pw-1", LegacyPassword("old-account-pw"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,12 +293,12 @@ func TestRecoverAccountUpgradesToKey(t *testing.T) {
 // Email change: the token moves; a token another account holds is refused.
 func TestSetAccountEmailToken(t *testing.T) {
 	s := openTestStore(t)
-	a, _, err := s.CreateAccount(uniqueName("ea"), []byte(uniqueName("ta")), "", "pw-a-123456", AccountPassword{})
+	a, _, err := s.CreateAccount(uniqueName("ea"), []byte(uniqueName("ta")), Identity{}, "pw-a-123456", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	taken := []byte(uniqueName("tb"))
-	if _, _, err := s.CreateAccount(uniqueName("eb"), taken, "", "pw-b-123456", AccountPassword{}); err != nil {
+	if _, _, err := s.CreateAccount(uniqueName("eb"), taken, Identity{}, "pw-b-123456", AccountPassword{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetAccountEmailToken(a, []byte(uniqueName("tc"))); err != nil {
@@ -314,7 +314,7 @@ func TestSetAccountEmailToken(t *testing.T) {
 // links and accounts with no keyed device at all are left alone.
 func TestReapUnfinishedDevices(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("reap"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("reap"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestReapUnfinishedDevices(t *testing.T) {
 	mustExec(t, s, `UPDATE devices SET created_at = $1 WHERE account_id = $2 AND device_id IN ($3, $4)`, old, acct, orphan, keyed)
 
 	// A sign-up that never uploaded keys has no other device to fall back on.
-	lone, _, err := s.CreateAccount(uniqueName("reap-lone"), nil, "", "device-pw-1", AccountPassword{})
+	lone, _, err := s.CreateAccount(uniqueName("reap-lone"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}

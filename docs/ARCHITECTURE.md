@@ -71,13 +71,14 @@ must agree on. The wire contract itself is `proto/` plus `server/README.md`.
   device's auth key), for REST and the WebSocket upgrade. HTTP Basic
   (`<accountUUID>.<deviceId>` / device password) is only used to register that
   auth key.
-- Signing in on a new device: an email code or Apple/Google (through Supabase,
-  plus the account password if one is set), a passkey (WebAuthn, verified by the
+- Signing in on a new device: an email code or Apple/Google (verified by the
+  relay itself, plus the account password if one is set), a passkey (WebAuthn, verified by the
   relay, RP id `relaymsg.app`), or the recovery key. A passkey or the recovery
   key satisfies registration lock. Any sign-in replaces the account's devices.
 - Email is optional. An account can be created with only a username and a
   passkey, and an existing account can drop its email once it has a passkey;
-  the relay then deletes the Supabase user and the email token.
+  the relay then deletes the email token (and any leftover Supabase user from
+  older app versions).
 - The recovery key is generated on the device; the relay stores only
   SHA-256("relay-recovery-key-v1|" + normalised key).
 - The account password never goes to the relay: the client sends an Argon2id

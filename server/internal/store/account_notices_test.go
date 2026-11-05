@@ -4,7 +4,7 @@ import "testing"
 
 func TestAccountNotices(t *testing.T) {
 	s := openTestStore(t)
-	acct, _, err := s.CreateAccount(uniqueName("notice"), nil, "", "device-pw-1", AccountPassword{})
+	acct, _, err := s.CreateAccount(uniqueName("notice"), nil, Identity{}, "device-pw-1", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}

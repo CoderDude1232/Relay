@@ -327,6 +327,45 @@ public struct RelayAPIClient: Sendable {
                                  password: devicePassword), response.username)
     }
 
+    // MARK: Sign-in identities (verified by the relay; server identity.go)
+
+    /// A short-lived ticket from the relay for a verified email, Apple or
+    /// Google account, accepted wherever a sign-in token is (`accessToken`).
+    public struct SignInTicket: Decodable, Sendable {
+        public let token: String
+        /// The verified email, or "" when there isn't one.
+        public let email: String
+    }
+
+    /// Emails a 6-digit code. `reset` is for a forgotten account password.
+    public func requestEmailCode(_ email: String, reset: Bool = false) async throws {
+        try await requestExpectingNoContent(
+            "POST", "v1/email/code", body: ["email": email, "purpose": reset ? "reset" : "signin"], authenticated: false)
+    }
+
+    /// Checks an emailed code. 401 means wrong or expired.
+    public func verifyEmailCode(_ email: String, code: String) async throws -> SignInTicket {
+        try await request("POST", "v1/email/verify", body: ["email": email, "code": code], authenticated: false)
+    }
+
+    /// Checks a Sign in with Apple identity token; `nonce` is the raw nonce
+    /// whose SHA-256 the app gave Apple.
+    public func signInTicket(appleIdentityToken: String, nonce: String) async throws -> SignInTicket {
+        try await request("POST", "v1/identity/apple",
+                          body: ["identityToken": appleIdentityToken, "nonce": nonce], authenticated: false)
+    }
+
+    /// Checks a Google ID token issued to the app's OAuth client.
+    public func signInTicket(googleIDToken: String) async throws -> SignInTicket {
+        try await request("POST", "v1/identity/google", body: ["idToken": googleIDToken], authenticated: false)
+    }
+
+    /// Emails a code to confirm a new address for this account; confirm it
+    /// with `verifyEmailCode`, then `updateEmail` with the ticket.
+    public func requestEmailChangeCode(_ email: String) async throws {
+        try await requestExpectingNoContent("POST", "v1/accounts/me/email/code", body: ["email": email])
+    }
+
     /// Re-keys the account's email token after a confirmed Supabase email change
     /// (`PUT /v1/accounts/me/email`).
     public func updateEmail(supabaseAccessToken: String) async throws {
@@ -1263,12 +1302,12 @@ public struct RelayAPIClient: Sendable {
     }
 
     private func requestExpectingNoContent<Body: Encodable>(
-        _ method: String, _ path: String, body: Body
+        _ method: String, _ path: String, body: Body, authenticated: Bool = true
     ) async throws {
         var request = makeRequest(method, path)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        _ = try await send(request, authenticated: true)
+        _ = try await send(request, authenticated: authenticated)
     }
 }
 

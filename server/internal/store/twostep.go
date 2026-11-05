@@ -109,12 +109,27 @@ type TwoStep struct {
 }
 
 func scanTwoStep(row pgx.Row, extra ...any) (TwoStep, error) {
-	var t TwoStep
-	var stored *string
-	if err := row.Scan(append([]any{&stored, &t.HasPIN, &t.HasPasskey, &t.HasRecoveryKey, &t.TOTPSecret, &t.TOTPLastStep}, extra...)...); err != nil {
+	var r twoStepRow
+	if err := row.Scan(r.dest(extra...)...); err != nil {
 		return TwoStep{}, err
 	}
-	t.Methods = ParseTwoStepMethods(effectiveMethod(stored, t.HasPIN, t.HasPasskey, t.HasRecoveryKey))
+	return r.twoStep()
+}
+
+// twoStepRow receives twoStepColumns, totp_secret, totp_last_step from a scan
+// done elsewhere (findByIdentityTx).
+type twoStepRow struct {
+	t      TwoStep
+	stored *string
+}
+
+func (r *twoStepRow) dest(extra ...any) []any {
+	return append([]any{&r.stored, &r.t.HasPIN, &r.t.HasPasskey, &r.t.HasRecoveryKey, &r.t.TOTPSecret, &r.t.TOTPLastStep}, extra...)
+}
+
+func (r *twoStepRow) twoStep() (TwoStep, error) {
+	t := r.t
+	t.Methods = ParseTwoStepMethods(effectiveMethod(r.stored, t.HasPIN, t.HasPasskey, t.HasRecoveryKey))
 	if len(t.Methods) > 0 {
 		t.Method = t.Methods[0]
 	}
@@ -343,15 +358,6 @@ func (s *Store) clearIfNotTwoStep(accountID, method, update string) error {
 		return err
 	}
 	return tx.Commit(ctx)
-}
-
-// LinkSupabaseUserIfUnlinked back-fills an account's empty Supabase link
-// (an email sign-in that adopted the account by its verified email).
-func (s *Store) LinkSupabaseUserIfUnlinked(accountID, supabaseUserID string) error {
-	_, err := s.db.Exec(context.Background(),
-		`UPDATE accounts SET supabase_user_id = $1 WHERE id = $2 AND (supabase_user_id IS NULL OR supabase_user_id = '')`,
-		supabaseUserID, accountID)
-	return err
 }
 
 // MARK: Phone sign-in

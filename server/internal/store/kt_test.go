@@ -14,7 +14,7 @@ import (
 // stored head and still proves the account's keys.
 func TestKTSaveAndRestore(t *testing.T) {
 	s := openTestStore(t)
-	account, _, err := s.CreateAccount(uniqueName("kt"), nil, "", "device-pw", AccountPassword{})
+	account, _, err := s.CreateAccount(uniqueName("kt"), nil, Identity{}, "device-pw", AccountPassword{})
 	if err != nil {
 		t.Fatal(err)
 	}

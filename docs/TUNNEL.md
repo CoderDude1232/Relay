@@ -79,7 +79,7 @@ relayd currently holds one key.
   both ends could still try to correlate by timing.
 - From relayd: everything it saw before. The tunnel hides things from the
   network in front of the relay, not from the relay.
-- Requests that never go to the relay: Supabase sign-in, APNs, TURN media
+- Requests that never go to the relay: Google's sign-in page, APNs, TURN media
   (already end-to-end encrypted), link previews, the witness and fallback Gist
   fetches.
 - Replays by Cloudflare of a whole unauthenticated tunnel request (for example
