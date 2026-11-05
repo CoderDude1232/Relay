@@ -86,6 +86,8 @@ final class AppModel {
     var showNotificationPrimer = false
     /// The optional phone-number step, once, right after a new account.
     var showPhoneOnboarding = false
+    /// The setup pages after a new account (SetupFlowView).
+    var showSetup = false
     /// A proxy link that was opened, waiting for the user to confirm it.
     var pendingProxy: RelayProxy.Address?
     /// The latest check of the proxy in use; nil when there's no proxy.
@@ -537,6 +539,7 @@ final class AppModel {
             }
             if created {
                 service.noteAccountCreated(username: resolvedUsername)
+                showSetup = true
                 showPhoneOnboarding = true
                 offerRecoveryKey(service)
             } else {
@@ -637,6 +640,7 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountCreated(username: signedUp.username)
+        showSetup = true
         showPhoneOnboarding = true
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
@@ -820,6 +824,7 @@ final class AppModel {
         let service = try await startSignedIn(signedUp, password: password, email: nil, supabaseUserId: nil, displayName: displayName)
         UserDefaults.standard.set(phone, forKey: MessagingService.phoneNumberKey)
         service.noteAccountCreated(username: signedUp.username)
+        showSetup = true
         offerRecoveryKey(service)
         offerPasskeyIfNeeded(service)
     }
@@ -1044,6 +1049,7 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountCreated(username: username)
+        showSetup = true
         showPhoneOnboarding = true
         if let accountPassword, !accountPassword.isEmpty {
             UserDefaults.standard.set(true, forKey: MessagingService.hasAccountPasswordKey)

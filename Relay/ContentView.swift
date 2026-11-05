@@ -12,6 +12,7 @@ import UIKit
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(AppColorScheme.key) private var colorSchemeSetting = AppColorScheme.system.rawValue
     @State private var isObscured = false
     // Start locked on a cold launch so a launching link or notification can't
     // land before unlock.
@@ -30,7 +31,7 @@ struct ContentView: View {
     /// After sign-up the recovery key, phone number and notification screens
     /// come first; the invite opens once they're out of the way.
     private var deferredInviteCanOpen: Bool {
-        model.isReady && model.deferredInvite != nil && !isLocked && model.newRecoveryKey == nil
+        model.isReady && model.deferredInvite != nil && !isLocked && model.newRecoveryKey == nil && !model.showSetup
             && !model.showPhoneOnboarding && !model.showNotificationPrimer && !model.removedFromAccount
     }
 
@@ -44,6 +45,7 @@ struct ContentView: View {
             case .ready(let service):
                 MainTabView(service: service)
                     .environment(\.relayAppLocked, isLocked)
+                    .preferredColorScheme(AppColorScheme(rawValue: colorSchemeSetting)?.scheme)
                     .fullScreenCover(isPresented: Binding(get: { model.removedFromAccount }, set: { _ in })) {
                         RemovedFromAccountView()
                     }
@@ -58,8 +60,19 @@ struct ContentView: View {
                     )) {
                         PhoneNumberView(service: service, context: .onboarding) { model.showPhoneOnboarding = false }
                     }
-                    .task(id: model.shouldOfferPasskey && !model.showPhoneOnboarding) {
-                        guard model.shouldOfferPasskey, !model.showPhoneOnboarding else { return }
+                    // After a new account's phone and recovery key screens.
+                    .fullScreenCover(isPresented: Binding(
+                        get: { model.showSetup && !model.showPhoneOnboarding && !isLocked && model.newRecoveryKey == nil && !model.removedFromAccount },
+                        set: { if !$0 { model.showSetup = false } }
+                    )) {
+                        SetupFlowView(service: service) {
+                            model.showNotificationPrimer = false
+                            model.showSetup = false
+                        }
+                        .environment(model)
+                    }
+                    .task(id: model.shouldOfferPasskey && !model.showPhoneOnboarding && !model.showSetup) {
+                        guard model.shouldOfferPasskey, !model.showPhoneOnboarding, !model.showSetup else { return }
                         try? await Task.sleep(for: .seconds(3))
                         showingPasskeyOffer = model.shouldOfferPasskey
                     }
@@ -812,7 +825,7 @@ struct MainTabView: View {
             }
         }
         .sheet(isPresented: Binding(
-            get: { model.showNotificationPrimer && !appLocked && !model.showWhatsNew && !model.showPhoneOnboarding },
+            get: { model.showNotificationPrimer && !appLocked && !model.showWhatsNew && !model.showPhoneOnboarding && !model.showSetup },
             set: { if !$0 { model.showNotificationPrimer = false } }
         )) {
             NotificationPrimerSheet {

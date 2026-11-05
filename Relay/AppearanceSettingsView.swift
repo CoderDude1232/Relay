@@ -13,6 +13,7 @@ struct AppearanceSettingsView: View {
 
     @Environment(ChatAppearance.self) private var environmentAppearance
     @State private var wallpaperPhoto: PhotosPickerItem?
+    @AppStorage(AppColorScheme.key) private var colorScheme = AppColorScheme.system.rawValue
     @State private var showingSupporter = false
     private var supporter = Supporter.shared
 
@@ -40,6 +41,7 @@ struct AppearanceSettingsView: View {
             VStack(spacing: 24) {
                 if chatId != nil { chatThemeHeader }
                 previewCard
+                if chatId == nil { colorSchemeSection }
                 themesSection
                 wallpaperSection
                 bubbleSection
@@ -112,6 +114,16 @@ struct AppearanceSettingsView: View {
     }
 
     // MARK: - Themes
+
+    private var colorSchemeSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Appearance")
+            Picker("Appearance", selection: $colorScheme) {
+                ForEach(AppColorScheme.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            .pickerStyle(.segmented)
+        }
+    }
 
     private var themesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -382,7 +394,7 @@ private struct AppIconSection: View {
 
 // MARK: - Theme card
 
-private struct ThemeCard: View {
+struct ThemeCard: View {
     let theme: AppearanceTheme
     let isSelected: Bool
     let onTap: () -> Void
