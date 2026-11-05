@@ -436,9 +436,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/accounts/me/phone", s.auth(s.stepUp(s.handleDeletePhone)))
 	mux.HandleFunc("PUT /v1/accounts/me/account-password", s.auth(s.stepUp(s.handleSetAccountPassword)))
 	mux.HandleFunc("DELETE /v1/accounts/me/account-password", s.auth(s.stepUp(s.handleDeleteAccountPassword)))
-	mux.HandleFunc("POST /v1/accounts/me/totp/setup", s.auth(s.stepUp(s.handleTOTPSetup)))
+	mux.HandleFunc("POST /v1/accounts/me/totp/setup", s.auth(s.handleTOTPSetup)) // step-up only to replace one
 	mux.HandleFunc("POST /v1/accounts/me/totp/confirm", s.auth(s.handleTOTPConfirm))
-	mux.HandleFunc("PUT /v1/accounts/me/two-step", s.auth(s.stepUp(s.handleSetTwoStep)))
+	mux.HandleFunc("PUT /v1/accounts/me/two-step", s.auth(s.handleSetTwoStep)) // step-up except to turn a method on
 	mux.HandleFunc("POST /v1/accounts/me/two-step/challenge", s.auth(s.handleStepUpChallenge))
 	mux.HandleFunc("POST /v1/accounts/me/two-step/verify", s.auth(s.handleStepUpVerify))
 	mux.HandleFunc("POST /v1/accounts/two-step/passkey-options", s.handleTwoStepPasskeyOptions) // unauthenticated: the ticket is the capability
@@ -802,6 +802,11 @@ func (s *Server) handleOAuthAccount(w http.ResponseWriter, r *http.Request) {
 // that it was removed, so a running app signs itself out, then drops its
 // socket. Its rows are already gone, so its credentials no longer work.
 func (s *Server) retireReplacedDevices(dev store.AddedDevice) {
+	// Signing in to an account with a second step just passed it (or something
+	// stronger), so the new device needn't answer it again right away.
+	if ts, err := s.store.TwoStepFor(dev.AccountID); err == nil && ts.Method != "" {
+		s.stepUps.mark(&store.Device{AccountID: dev.AccountID, DeviceID: dev.DeviceID})
+	}
 	for _, old := range dev.ReplacedDevices {
 		s.hub.BroadcastDeviceListChanged(dev.AccountID, dev.DeviceID, relaypb.DeviceListChanged_DEVICE_REMOVED, old)
 		s.hub.DisconnectDevice(dev.AccountID, old, "replaced by a new sign-in")

@@ -245,6 +245,14 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, _ *http.Request, dev *st
 	if s.twoStepUnavailable(w, dev.AccountID) {
 		return
 	}
+	// A first authenticator only adds protection; replacing one confirms it's
+	// you first.
+	if ts, err := s.store.TwoStepFor(dev.AccountID); err != nil {
+		internalError(w, err)
+		return
+	} else if ts.Has(store.TwoStepTOTP) && s.needsStepUp(w, dev) {
+		return
+	}
 	secret := make([]byte, 20)
 	if _, err := rand.Read(secret); err != nil {
 		internalError(w, err)
@@ -334,6 +342,12 @@ func (s *Server) handleSetTwoStep(w http.ResponseWriter, r *http.Request, dev *s
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Method == nil {
 		httpError(w, http.StatusBadRequest, `method ("", "passkey", "pin" or "recovery") required`)
+		return
+	}
+	// Turning a method on only adds protection; turning one off, or recovery
+	// only (which replaces the others), confirms it's you first.
+	adding := req.Enabled != nil && *req.Enabled && *req.Method != store.TwoStepRecovery
+	if !adding && s.needsStepUp(w, dev) {
 		return
 	}
 	if !twoStepSettingLimiter.allow(dev.AccountID) {

@@ -18,9 +18,11 @@ import (
 // answers the second step again before changing how the account is signed in
 // to or which devices it has. Someone with a few minutes on an unlocked phone
 // can't link their own device, add their own passkey or number, or switch
-// two-step off. One answer covers this device for stepUpTTL.
+// two-step off. One answer covers this device for stepUpTTL, and so does
+// signing in (the new device just passed the account's second step). Adding
+// protection (turning a method on) never asks.
 
-const stepUpTTL = 5 * time.Minute
+const stepUpTTL = 15 * time.Minute
 
 type stepUps struct {
 	mu sync.Mutex
@@ -56,24 +58,32 @@ func (s *stepUps) fresh(dev *store.Device) bool {
 // answer from this device, it answers 403 {error, stepUp: {method}}.
 func (s *Server) stepUp(next authedHandler) authedHandler {
 	return func(w http.ResponseWriter, r *http.Request, dev *store.Device) {
-		if s.twoStep == nil || s.stepUps.fresh(dev) {
+		if !s.needsStepUp(w, dev) {
 			next(w, r, dev)
-			return
 		}
-		ts, err := s.store.TwoStepFor(dev.AccountID)
-		if err != nil && !errors.Is(err, store.ErrAccountNotFound) {
-			internalError(w, err)
-			return
-		}
-		if ts.Method == "" {
-			next(w, r, dev)
-			return
-		}
-		writeJSON(w, http.StatusForbidden, map[string]any{
-			"error":  "confirm it's you with two-step verification",
-			"stepUp": map[string]any{"method": ts.Method, "methods": ts.Methods},
-		})
 	}
+}
+
+// needsStepUp answers the step-up 403 (true) unless the account has no second
+// step or this device answered it recently, for handlers that ask only for
+// some changes.
+func (s *Server) needsStepUp(w http.ResponseWriter, dev *store.Device) bool {
+	if s.twoStep == nil || s.stepUps.fresh(dev) {
+		return false
+	}
+	ts, err := s.store.TwoStepFor(dev.AccountID)
+	if err != nil && !errors.Is(err, store.ErrAccountNotFound) {
+		internalError(w, err)
+		return true
+	}
+	if ts.Method == "" {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error":  "confirm it's you with two-step verification",
+		"stepUp": map[string]any{"method": ts.Method, "methods": ts.Methods},
+	})
+	return true
 }
 
 // POST /v1/accounts/me/two-step/challenge → 200 {ticket, method, challenge?,
@@ -124,7 +134,7 @@ func (s *Server) handleStepUpChallenge(w http.ResponseWriter, r *http.Request, d
 
 // POST /v1/accounts/me/two-step/verify {ticket, code? | accountPasswordKey? |
 // passkey assertion | recoveryAuthKey?} → 204: this device may make sensitive
-// changes for the next 5 minutes. 401 wrong answer; 429 locked out.
+// changes for the next 15 minutes. 401 wrong answer; 429 locked out.
 func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req struct {
 		Ticket             string `json:"ticket"`

@@ -204,10 +204,8 @@ func TestTwoStepPIN(t *testing.T) {
 	env.clients[c.authUser()] = c
 	c.uploadDeviceAuthKey()
 
-	// Turned off (a new device answers the step first): the email code alone
-	// works again, and the PIN can go.
-	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]string{"method": ""}, http.StatusForbidden, nil)
-	stepUp(t, c, map[string]string{"accountPasswordKey": "pin-key-0123456789abcdefghijklmnopqrstuv"}, http.StatusNoContent)
+	// Turned off (the device just passed the step to sign in, so it isn't
+	// asked again): the email code alone works again, and the PIN can go.
 	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]string{"method": ""}, http.StatusNoContent, nil)
 	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]string{"method": "passkey"}, http.StatusConflict, nil)
 	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusNoContent, nil)
@@ -474,4 +472,55 @@ func TestTwoStepSeveralMethods(t *testing.T) {
 	if ts, err := env.api.store.TwoStepFor(c.accountID); err != nil || ts.Joined() != "pin" || len(ts.TOTPSecret) != 0 {
 		t.Fatalf("totp off %+v %v", ts, err)
 	}
+}
+
+// Step-up asks before removing protection, not before adding it, and a
+// device that just signed in through two-step doesn't have to answer again.
+func TestStepUpOnlyToRemove(t *testing.T) {
+	env := twoStepEnv(t)
+	sfx := uniqueUsername("")
+	token := "su" + sfx + "|su" + sfx + "@x.com"
+	var first twoStepReply
+	env.doJSON("POST", "/v1/accounts/oauth", "", "", map[string]string{
+		"accessToken": token, "username": "su" + sfx, "password": "device-pw-123",
+	}, http.StatusCreated, &first)
+	c := &client{env: env, accountID: first.AccountID, deviceID: first.DeviceID, password: "device-pw-123"}
+	env.clients[c.authUser()] = c
+	c.uploadDeviceAuthKey()
+	const pin = "pin-key-0123456789abcdefghijklmnopqrstuv"
+	env.doJSON("PUT", "/v1/accounts/me/account-password", c.authUser(), c.password,
+		map[string]string{"accountPasswordKey": pin}, http.StatusNoContent, nil)
+
+	// Adding an authenticator alongside the PIN doesn't ask.
+	var setup struct {
+		Secret string `json:"secret"`
+	}
+	env.doJSON("POST", "/v1/accounts/me/totp/setup", c.authUser(), c.password, nil, http.StatusOK, &setup)
+	secret, _ := totpBase32.DecodeString(setup.Secret)
+	code := func(offset int64) string { return totpCode(secret, time.Now().Unix()/totpPeriod+offset) }
+	env.doJSON("POST", "/v1/accounts/me/totp/confirm", c.authUser(), c.password, map[string]string{"code": code(-1)}, http.StatusNoContent, nil)
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]any{"method": "pin", "enabled": true}, http.StatusNoContent, nil)
+
+	// Removing one, replacing the authenticator, or recovery-only does.
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]any{"method": "pin", "enabled": false}, http.StatusForbidden, nil)
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]any{"method": "recovery", "enabled": true}, http.StatusForbidden, nil)
+	env.doJSON("POST", "/v1/accounts/me/totp/setup", c.authUser(), c.password, nil, http.StatusForbidden, nil)
+
+	// A new device that signed in through two-step can make changes straight away.
+	var locked struct {
+		TwoStep struct {
+			Ticket string `json:"ticket"`
+		} `json:"twoStep"`
+	}
+	if s := env.postJSON("/v1/accounts/oauth", map[string]string{"accessToken": token, "password": "device-pw-456"}, &locked); s != http.StatusLocked {
+		t.Fatalf("sign-in %d", s)
+	}
+	var out twoStepReply
+	if s := env.postJSON("/v1/accounts/two-step", map[string]string{"ticket": locked.TwoStep.Ticket, "password": "device-pw-456", "code": code(0)}, &out); s != http.StatusOK {
+		t.Fatalf("two-step %d %q", s, out.Error)
+	}
+	d := &client{env: env, accountID: out.AccountID, deviceID: out.DeviceID, password: "device-pw-456"}
+	env.clients[d.authUser()] = d
+	d.uploadDeviceAuthKey()
+	env.doJSON("PUT", "/v1/accounts/me/two-step", d.authUser(), d.password, map[string]any{"method": "pin", "enabled": false}, http.StatusNoContent, nil)
 }

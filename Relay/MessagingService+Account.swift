@@ -46,8 +46,9 @@ extension MessagingService {
 
     /// Turns one method on or off (the authenticator is turned on through
     /// its setup, and a new PIN through `setPIN`).
+    /// Turning a method on adds protection, so nothing asks; turning one off
+    /// asks for the second step (the relay's step-up).
     func setTwoStep(_ method: TwoStepRequired.Method, enabled: Bool) async throws {
-        try await confirmOwner(enabled ? "Confirm it's you to change two-step verification." : "Confirm it's you to turn this off.")
         try await apiClient.setTwoStep(method, enabled: enabled)
     }
 

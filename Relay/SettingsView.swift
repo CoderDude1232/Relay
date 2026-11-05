@@ -494,14 +494,6 @@ private struct AccountSettingsView: View {
                             }
                         }
                     }
-                } header: {
-                    Text("Sign-In")
-                } footer: {
-                    Text("Sign in on a new device with any of these. A passkey is the strongest: it can't be phished or intercepted.")
-                }
-                .tint(.primary)
-
-                Section {
                     NavigationLink(destination: TwoStepSettingsView(service: service)) {
                         HStack(spacing: 14) {
                             SettingsIcon(systemName: "lock.shield.fill", color: .indigo)
@@ -514,10 +506,11 @@ private struct AccountSettingsView: View {
                         SettingsNavRow(systemName: "key.horizontal.fill", color: .blue, title: "Recovery Key")
                     }
                 } header: {
-                    Text("Security")
+                    Text("Sign-In & Security")
                 } footer: {
-                    Text("Two-step verification asks for one more thing when someone signs in with an email or phone code. Your recovery key signs you in when nothing else can, so keep it somewhere safe.")
+                    Text("Sign in on a new device with any of these. Your recovery key works when nothing else does.")
                 }
+                .tint(.primary)
             }
 
             Section {

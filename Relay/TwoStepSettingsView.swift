@@ -43,11 +43,18 @@ struct TwoStepSettingsView: View {
                             showingPIN = true
                         }
                     }
-                } header: {
-                    Text("Ask for any one of")
+                    if on.contains(.pin) {
+                        Button("Change PIN") { showingPIN = true }
+                    }
                 } footer: {
-                    Text(errorMessage ?? footer)
-                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+                    if let errorMessage {
+                        Text(errorMessage).foregroundStyle(.red)
+                    } else if on.contains(.pin) && methods.accountPasswordNeedsUpdate {
+                        Text("Enter your PIN again with Change PIN. It was saved by an older version of Relay and can't be checked on a new device until you do.")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(footer)
+                    }
                 }
 
                 if on == [.recovery] {
@@ -60,16 +67,6 @@ struct TwoStepSettingsView: View {
                     }
                 }
 
-                if on.contains(.pin) {
-                    Section {
-                        Button("Change PIN") { showingPIN = true }
-                    } footer: {
-                        if methods.accountPasswordNeedsUpdate {
-                            Text("Enter your PIN again here. It was saved by an older version of Relay and can't be checked on a new device until you do.")
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                }
             } else {
                 HStack { Spacer(); ProgressView(); Spacer() }
                     .listRowBackground(Color.clear)
@@ -101,22 +98,13 @@ struct TwoStepSettingsView: View {
     }
 
     private var footer: String {
-        let names = on.compactMap { method -> String? in
-            switch method {
-            case .authenticator: "a code from your authenticator app"
-            case .passkey: "one of your passkeys"
-            case .pin: "your PIN"
-            case .recovery: nil
-            }
-        }
         if on == [.recovery] {
             return "Signing in with an email or phone code on a new device needs your recovery key."
         }
-        guard !names.isEmpty else {
-            return "Anyone with your email or phone number's code can sign in on a new device. Turn on one or more of these to also ask for one of them. Your recovery key always works instead."
+        if on.isEmpty {
+            return "Turn one on to also ask for it when someone signs in with an email or phone code."
         }
-        let list = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " or " + names.last!
-        return "Signing in with an email or phone code also asks for \(list). Your recovery key always works instead."
+        return "Signing in with an email or phone code also asks for one of these. Your recovery key always works instead."
     }
 
     private func toggle(_ title: String, icon: String, color: Color, method: TwoStepRequired.Method,
@@ -232,7 +220,6 @@ private struct AuthenticatorSetupView: View {
         .navigationBarBackButtonHidden(working)
         .task {
             do {
-                try await service.confirmOwner("Confirm it's you to set up an authenticator app.")
                 setup = try await service.apiClient.setUpAuthenticator()
             } catch {
                 errorMessage = FriendlyError.message(for: error)

@@ -979,10 +979,13 @@ email sign-in still pass a `pin` step inline when `pin` is the only method.
 On an account with a two-step method, a signed-in device answers the second
 step again before it can: link or add a device, unlink one, change the email
 or phone number, add or delete a passkey, set or delete the recovery key, set
-or delete the account password (PIN), set up an authenticator, change the
-two-step method, or delete the account. Without a fresh answer those routes
-answer **`403`** `{error, stepUp: {method, methods[]}}`. One answer covers the device for
-5 minutes (kept in memory; a restart asks again). The recovery key always
+or delete the account password (PIN), replace an authenticator, turn a
+two-step method off (or switch to recovery-key only), or delete the account.
+Turning a method on, or setting up a first authenticator, only adds protection
+and never asks. Without a fresh answer those routes answer **`403`**
+`{error, stepUp: {method, methods[]}}`. One answer covers the device for 15
+minutes (kept in memory; a restart asks again), and signing in to an account
+with a second step counts as one for the new device. The recovery key always
 works instead. Clients also ask before changes only the devices know about
 (turning device regions off, showing the recovery key).
 
