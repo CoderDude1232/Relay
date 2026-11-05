@@ -1506,8 +1506,7 @@ private struct EditProfileSheet: View {
 // MARK: - Settings icon
 
 /// A settings row's icon as iOS Settings draws it: a coloured tile with a
-/// white symbol in Light Mode, a dark tile with a coloured symbol in Dark Mode,
-/// each with a thin highlight around the edge.
+/// white symbol in Light Mode, a dark tile with a coloured symbol in Dark Mode.
 struct SettingsIcon: View {
     let systemName: String
     let color: Color
@@ -1521,13 +1520,6 @@ struct SettingsIcon: View {
             .frame(width: 28, height: 28)
             .background(dark ? AnyShapeStyle(Color(white: 0.09)) : AnyShapeStyle(color.gradient),
                         in: .rect(cornerRadius: 7))
-            // The thin light catch around the edge iOS Settings icons have.
-            .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .strokeBorder(LinearGradient(colors: [.white.opacity(dark ? 0.28 : 0.45), .white.opacity(0.04)],
-                                                 startPoint: .top, endPoint: .bottom),
-                                  lineWidth: 0.75)
-            }
     }
 }
 
