@@ -47,7 +47,8 @@ func parseHistorySeq(r *http.Request) (int64, bool) {
 	return n, true
 }
 
-// GET /v1/history → {segments:[{seq,size}], usedBytes, maxBytes}.
+// GET /v1/history → {segments:[{seq,size}], usedBytes, maxBytes, enabled}.
+// enabled is the account-wide setting, null until a device has set it.
 func (s *Server) handleListHistory(w http.ResponseWriter, _ *http.Request, dev *store.Device) {
 	if !historyGetLimiter.allow(dev.AccountID) {
 		httpError(w, http.StatusTooManyRequests, "too many requests; try again later")
@@ -64,6 +65,11 @@ func (s *Server) handleListHistory(w http.ResponseWriter, _ *http.Request, dev *
 		return
 	}
 	maxBytes, _ := store.HistoryLimits(supporterUntil)
+	enabled, err := s.store.HistoryBackupEnabled(dev.AccountID)
+	if err != nil {
+		internalError(w, err)
+		return
+	}
 	type entry struct {
 		Seq  int64 `json:"seq"`
 		Size int   `json:"size"`
@@ -73,7 +79,7 @@ func (s *Server) handleListHistory(w http.ResponseWriter, _ *http.Request, dev *
 		out[i] = entry{Seq: h.Seq, Size: h.Size}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"segments": out, "usedBytes": used, "maxBytes": maxBytes,
+		"segments": out, "usedBytes": used, "maxBytes": maxBytes, "enabled": enabled,
 	})
 }
 
@@ -108,6 +114,13 @@ func (s *Server) handlePutHistory(w http.ResponseWriter, r *http.Request, dev *s
 		httpError(w, http.StatusInsufficientStorage, "history storage unavailable")
 		return
 	}
+	if enabled, err := s.store.HistoryBackupEnabled(dev.AccountID); err != nil {
+		internalError(w, err)
+		return
+	} else if enabled != nil && !*enabled {
+		httpError(w, http.StatusConflict, "history backup is off")
+		return
+	}
 	if err := s.store.CheckHistoryQuota(dev.AccountID, seq, len(body)); errors.Is(err, store.ErrHistoryQuota) {
 		httpError(w, http.StatusInsufficientStorage, "history quota exceeded")
 		return
@@ -131,6 +144,8 @@ func (s *Server) handlePutHistory(w http.ResponseWriter, r *http.Request, dev *s
 		switch {
 		case errors.Is(err, store.ErrHistoryQuota):
 			httpError(w, http.StatusInsufficientStorage, "history quota exceeded")
+		case errors.Is(err, store.ErrHistoryBackupOff):
+			httpError(w, http.StatusConflict, "history backup is off")
 		case errors.Is(err, store.ErrNotFound):
 			httpError(w, http.StatusNotFound, "no such account")
 		default:
@@ -218,6 +233,33 @@ func (s *Server) handleDeleteHistory(w http.ResponseWriter, _ *http.Request, dev
 		return
 	}
 	s.dropHistoryBlobs(dev.AccountID, segs)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// PUT /v1/accounts/me/history-backup {enabled} → 204. The setting is
+// account-wide: off deletes every segment and refuses uploads (409) from all
+// of the account's devices until one turns it back on.
+func (s *Server) handleSetHistoryBackup(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	if !historyDeleteLimiter.allow(dev.AccountID) {
+		httpError(w, http.StatusTooManyRequests, "too many requests; try again later")
+		return
+	}
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Enabled == nil {
+		httpError(w, http.StatusBadRequest, "enabled is required")
+		return
+	}
+	removed, err := s.store.SetHistoryBackupEnabled(dev.AccountID, *req.Enabled)
+	if errors.Is(err, store.ErrNotFound) {
+		httpError(w, http.StatusNotFound, "no such account")
+		return
+	} else if err != nil {
+		internalError(w, err)
+		return
+	}
+	s.dropHistoryBlobs(dev.AccountID, removed)
 	w.WriteHeader(http.StatusNoContent)
 }
 

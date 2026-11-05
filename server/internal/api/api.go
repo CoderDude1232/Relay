@@ -373,6 +373,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/history/{seq}", s.auth(s.handlePutHistory))
 	mux.HandleFunc("GET /v1/history/{seq}", s.auth(s.handleGetHistory))
 	mux.HandleFunc("DELETE /v1/history/{seq}", s.auth(s.handleDeleteHistorySegment))
+	mux.HandleFunc("PUT /v1/accounts/me/history-backup", s.auth(s.handleSetHistoryBackup))
 	mux.HandleFunc("GET /v1/certificate/delivery", s.auth(s.handleDeliveryCertificate))
 	mux.HandleFunc("PUT /v1/accounts/me/access-key", s.auth(s.handleSetAccessKey))
 	mux.HandleFunc("POST /v1/devices/me/mailbox/rotate", s.auth(s.handleRotateMailbox))

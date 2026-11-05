@@ -398,11 +398,12 @@ numbered blobs per account.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `GET /v1/history` | sig | → `200 {segments: [{seq, size}], usedBytes, maxBytes}`, sorted by `seq`. `maxBytes` is the per-account quota: 64 MiB and 512 segments, or 2 GiB and 8192 segments while the account has Relay Supporter perks (supporters also back up photos and files). |
-| `PUT /v1/history/{seq}` | sig | raw `application/octet-stream` body, 1 byte to 2 MiB → `204`. Replaces an existing segment with that `seq`. `400` bad seq or empty body; `413` over 2 MiB (refused before authentication when `Content-Length` says so); `403` for demo accounts; `507` when the account would go over its quota (64 MiB total, the replaced segment's size not counted, and at most 512 segments) or when no storage is available. |
+| `GET /v1/history` | sig | → `200 {segments: [{seq, size}], usedBytes, maxBytes, enabled}`, sorted by `seq`. `enabled` is the account-wide setting below, `null` until a device has set it. `maxBytes` is the per-account quota: 64 MiB and 512 segments, or 2 GiB and 8192 segments while the account has Relay Supporter perks (supporters also back up photos and files). |
+| `PUT /v1/history/{seq}` | sig | raw `application/octet-stream` body, 1 byte to 2 MiB → `204`. Replaces an existing segment with that `seq`. `400` bad seq or empty body; `409` while the account has history backup off; `413` over 2 MiB (refused before authentication when `Content-Length` says so); `403` for demo accounts; `507` when the account would go over its quota (64 MiB total, the replaced segment's size not counted, and at most 512 segments) or when no storage is available. |
 | `GET /v1/history/{seq}` | sig | → `200` raw bytes (`Cache-Control: no-store`), or `404`. `503` when the store holding it can't be reached (retry later). |
 | `DELETE /v1/history/{seq}` | sig | → `204`, whether or not it existed. |
 | `DELETE /v1/history` | sig | → `204`; removes all of the account's segments. |
+| `PUT /v1/accounts/me/history-backup` | sig | `{enabled}` → `204`. Account-wide (`accounts.history_backup_enabled`). `false` deletes every segment in the same transaction and makes every device's `PUT /v1/history/{seq}` `409` until a device sends `true`; an upload committing at the same moment is either removed or refused. Counts against the `DELETE` limit. |
 
 Rate limits, per account per hour (`429` beyond): 600 `PUT`s, 600 `GET`s (list
 and segment reads together) and 600 `DELETE`s. Deleting the account removes its

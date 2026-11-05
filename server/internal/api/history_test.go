@@ -392,3 +392,49 @@ func TestHistoryFailoverToRemote(t *testing.T) {
 	remote.Failed()
 	c.putSegment(3002, []byte("nowhere"), http.StatusInsufficientStorage)
 }
+
+func TestHistoryBackupSetting(t *testing.T) {
+	env := newTestEnv(t)
+	_, dir := enableHistory(env, nil)
+	c := env.register("hist-setting", "password-setting")
+	enabled := func() *bool {
+		var l struct {
+			Enabled *bool `json:"enabled"`
+		}
+		env.doJSON("GET", "/v1/history", c.authUser(), c.password, nil, http.StatusOK, &l)
+		return l.Enabled
+	}
+	set := func(on bool) {
+		env.doJSON("PUT", "/v1/accounts/me/history-backup", c.authUser(), c.password,
+			map[string]any{"enabled": on}, http.StatusNoContent, nil)
+	}
+
+	if e := enabled(); e != nil {
+		t.Fatalf("enabled before any device set it: %v", *e)
+	}
+	c.putSegment(1001, []byte("one"), http.StatusNoContent)
+	c.putSegment(1000, []byte("manifest"), http.StatusNoContent)
+
+	// Off deletes everything and refuses uploads from every device.
+	set(false)
+	if e := enabled(); e == nil || *e {
+		t.Fatalf("enabled after turning off: %v", e)
+	}
+	if l := c.listHistory(); len(l.Segments) != 0 {
+		t.Fatalf("segments left after turning off: %+v", l)
+	}
+	waitFor(t, "blobs removed", func() bool { return blobFiles(t, dir) == 0 })
+	c.putSegment(2001, []byte("late upload"), http.StatusConflict)
+	if n := blobFiles(t, dir); n != 0 {
+		t.Fatalf("refused upload left %d blob files", n)
+	}
+
+	set(true)
+	if e := enabled(); e == nil || !*e {
+		t.Fatalf("enabled after turning on: %v", e)
+	}
+	c.putSegment(2001, []byte("after on"), http.StatusNoContent)
+
+	env.doJSON("PUT", "/v1/accounts/me/history-backup", c.authUser(), c.password,
+		map[string]any{}, http.StatusBadRequest, nil)
+}

@@ -45,8 +45,9 @@ extension MessagingService {
     private static let historyDigestKV = "history:lastDigest"
     private static let historyLastSizeKV = "history:lastSize"
     private static let historyLastMessagesKV = "history:lastMessages"
-    /// Set when backup is turned off, cleared once the relay confirms the delete.
-    private static let historyDeletePendingKV = "history:deletePending"
+    /// Set when this device changes the setting, cleared once the relay has it
+    /// (for off, that includes deleting the backup).
+    private static let historySettingPendingKV = "history:settingPending"
     /// How often an unchanged-or-changed history is considered for upload.
     private static let historyUploadInterval: TimeInterval = 6 * 3600
     /// Data per segment, leaving room for the nonce and tag under the relay's 2 MiB cap.
@@ -169,7 +170,13 @@ extension MessagingService {
         guard historyBackupProgress == nil else { return } // one at a time
         let existing: [RelayAPIClient.HistorySegment]
         do {
-            existing = try await apiClient.historySegments()
+            let listing = try await apiClient.historyListing()
+            // Another device turned it off for the account.
+            if listing.enabled == false, historyKV(Self.historySettingPendingKV) == nil {
+                adoptHistoryBackupOff()
+                return
+            }
+            existing = listing.segments
         } catch {
             historyBackupError = Self.backupErrorMessage(error)
             return
@@ -236,6 +243,10 @@ extension MessagingService {
             setHistoryKV(Self.historyLastMessagesKV, Data(String(messageCount).utf8))
             historyBackupError = nil
         } catch {
+            if let api = error as? RelayAPIError, case .http(409, _) = api {
+                adoptHistoryBackupOff() // turned off on another device mid-upload
+                return
+            }
             historyLog.warning("history backup upload failed: \(PrivacyRedactor.error(error))")
             historyBackupError = Self.backupErrorMessage(error)
         }
@@ -438,41 +449,69 @@ extension MessagingService {
         return data
     }
 
-    /// Turning the backup off deletes what the relay holds. The delete is
-    /// remembered until the relay confirms it, and retried on reconnect.
+    /// The setting is account-wide: the relay keeps it, and turning it off
+    /// there deletes the backup and stops every device uploading. A change is
+    /// remembered until the relay has it, and retried on reconnect.
     func setHistoryBackupEnabled(_ enabled: Bool) async {
         UserDefaults.standard.set(enabled, forKey: Self.historyBackupEnabledKey)
+        setHistoryKV(Self.historySettingPendingKV, Data([1]))
         if enabled {
-            removeHistoryKV(Self.historyDeletePendingKV)
             historyDeletionPending = false
+            await syncHistoryBackupSetting()
             await backUpHistoryIfDue(force: true)
         } else {
-            try? storage.database.run("DELETE FROM kv WHERE key IN (?, ?)",
-                                      [.text(Self.historyDigestKV), .text(Self.historyLastUploadKV)])
-            setHistoryKV(Self.historyDeletePendingKV, Data([1]))
+            clearHistoryUploadState()
             historyDeletionPending = true
             // An upload already under way stops at its next segment; let it.
             for _ in 0..<100 where historyBackupProgress != nil {
                 try? await Task.sleep(for: .milliseconds(200))
             }
-            await retryHistoryDeletionIfPending()
+            await syncHistoryBackupSetting()
         }
     }
 
-    /// Deletes the relay's copy if backup was turned off and that hasn't been
-    /// confirmed yet.
-    func retryHistoryDeletionIfPending() async {
-        guard !Self.isHistoryBackupEnabled, historyKV(Self.historyDeletePendingKV) != nil else {
-            historyDeletionPending = false
-            return
-        }
-        historyDeletionPending = true
+    /// Run on connect: sends this device's unsent change, or else takes the
+    /// account's setting from the relay.
+    func syncHistoryBackupSetting() async {
+        let local = Self.isHistoryBackupEnabled
         do {
-            try await apiClient.deleteAllHistory()
-            removeHistoryKV(Self.historyDeletePendingKV)
-            historyDeletionPending = false
+            if historyKV(Self.historySettingPendingKV) != nil {
+                try await apiClient.setHistoryBackupEnabled(local)
+                removeHistoryKV(Self.historySettingPendingKV)
+                historyDeletionPending = false
+                return
+            }
+            guard !isDemoAccount, keepsChatListWithAccount else { return }
+            switch try await apiClient.historyListing().enabled {
+            case nil:
+                // No device has said yet: an earlier "off" here becomes the
+                // account's, so the other devices stop too.
+                if !local { try await apiClient.setHistoryBackupEnabled(false) }
+            case false? where local:
+                adoptHistoryBackupOff()
+            case true? where !local:
+                UserDefaults.standard.set(true, forKey: Self.historyBackupEnabledKey)
+                historyBackupRevision += 1
+            default:
+                break
+            }
         } catch {
-            historyLog.warning("history delete failed; retried on reconnect: \(PrivacyRedactor.error(error))")
+            historyLog.warning("history backup setting not synced; retried on reconnect: \(PrivacyRedactor.error(error))")
         }
+    }
+
+    /// Another device turned backup off for the account; the relay has
+    /// already deleted the backup.
+    private func adoptHistoryBackupOff() {
+        UserDefaults.standard.set(false, forKey: Self.historyBackupEnabledKey)
+        clearHistoryUploadState()
+        historyDeletionPending = false
+        historyBackupError = nil
+        historyBackupRevision += 1
+    }
+
+    private func clearHistoryUploadState() {
+        try? storage.database.run("DELETE FROM kv WHERE key IN (?, ?)",
+                                  [.text(Self.historyDigestKV), .text(Self.historyLastUploadKV)])
     }
 }

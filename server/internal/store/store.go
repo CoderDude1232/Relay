@@ -530,6 +530,10 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`ALTER TABLE accounts ALTER COLUMN two_step_method SET DEFAULT ''`,
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS totp_secret BYTEA`,
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS totp_last_step BIGINT NOT NULL DEFAULT 0`,
+		// Whether the account keeps a history backup (store/history.go): NULL
+		// until a device first says, so each device's older local choice can
+		// still be adopted account-wide.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS history_backup_enabled BOOLEAN`,
 		// App Attest keys (store/twostep.go), not tied to any account.
 		`CREATE TABLE IF NOT EXISTS app_attest_keys (
     key_id     BYTEA PRIMARY KEY,

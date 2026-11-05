@@ -741,7 +741,7 @@ final class MessagingService {
                         await self.noteAccountPasswordNeedsUpdateIfNeeded()
                         await self.ensureICloudBackupUnlock()
                         await self.restoreHistoryIfNeeded()
-                        await self.retryHistoryDeletionIfPending()
+                        await self.syncHistoryBackupSetting()
                         await self.backUpHistoryIfDue()
                     }
                     if !didRepublishKeysThisLaunch {

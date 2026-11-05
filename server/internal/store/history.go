@@ -37,6 +37,10 @@ func HistoryLimits(supporterUntil int64) (maxBytes, maxSegments int64) {
 // MaxHistorySegments.
 var ErrHistoryQuota = errors.New("store: history quota exceeded")
 
+// ErrHistoryBackupOff: the account has turned history backup off, so no
+// device may store segments until one turns it back on.
+var ErrHistoryBackupOff = errors.New("store: history backup is off")
+
 // HistorySegment is one stored segment.
 type HistorySegment struct {
 	Seq      int64
@@ -125,11 +129,14 @@ func (s *Store) PutHistorySegment(accountID string, seq int64, size int, locatio
 	defer tx.Rollback(ctx)
 	// Serializes this account's writes (the quota check) and conflicts with
 	// DeleteAccount's FOR UPDATE.
-	var one int
-	if err := tx.QueryRow(ctx, `SELECT 1 FROM accounts WHERE id = $1 FOR NO KEY UPDATE`, accountID).Scan(&one); errors.Is(err, pgx.ErrNoRows) {
+	var enabled *bool
+	if err := tx.QueryRow(ctx, `SELECT history_backup_enabled FROM accounts WHERE id = $1 FOR NO KEY UPDATE`, accountID).Scan(&enabled); errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
+	}
+	if enabled != nil && !*enabled {
+		return nil, ErrHistoryBackupOff
 	}
 	if err := checkHistoryQuota(ctx, tx, accountID, seq, size); err != nil {
 		return nil, err
@@ -167,6 +174,45 @@ func (s *Store) DeleteHistorySegment(accountID string, seq int64) (*HistorySegme
 		return nil, err
 	}
 	return &h, nil
+}
+
+// HistoryBackupEnabled reports the account's setting; nil if no device has
+// set it yet.
+func (s *Store) HistoryBackupEnabled(accountID string) (*bool, error) {
+	var enabled *bool
+	err := s.db.QueryRow(context.Background(),
+		`SELECT history_backup_enabled FROM accounts WHERE id = $1`, accountID).Scan(&enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return enabled, err
+}
+
+// SetHistoryBackupEnabled records the account's setting. Turning it off also
+// removes every segment row in the same transaction, returning them so the
+// caller can delete their blobs; an upload committing at the same time either
+// lands first (and is removed here) or sees the setting and is refused.
+func (s *Store) SetHistoryBackupEnabled(accountID string, enabled bool) ([]HistorySegment, error) {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE accounts SET history_backup_enabled = $2 WHERE id = $1`, accountID, enabled)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrNotFound
+	}
+	var removed []HistorySegment
+	if !enabled {
+		if removed, err = deleteHistoryTx(ctx, tx, accountID); err != nil {
+			return nil, err
+		}
+	}
+	return removed, tx.Commit(ctx)
 }
 
 // DeleteHistory removes all of an account's segment rows and returns them.

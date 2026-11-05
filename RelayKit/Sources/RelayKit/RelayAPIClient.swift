@@ -237,11 +237,28 @@ public struct RelayAPIClient: Sendable {
         public let size: Int
     }
 
+    /// The account's history segments and its account-wide backup setting.
+    public struct HistoryListing: Decodable, Sendable {
+        public let segments: [HistorySegment]
+        /// nil until one of the account's devices has set it.
+        public let enabled: Bool?
+    }
+
     /// The account's history segments (opaque ciphertext numbered by the client).
+    public func historyListing() async throws -> HistoryListing {
+        try await request("GET", "v1/history", body: nil as String?)
+    }
+
     public func historySegments() async throws -> [HistorySegment] {
-        struct Response: Decodable { let segments: [HistorySegment] }
-        let r: Response = try await request("GET", "v1/history", body: nil as String?)
-        return r.segments
+        try await historyListing().segments
+    }
+
+    /// Sets history backup on or off for every device on the account. Off also
+    /// deletes everything stored, and the relay refuses uploads (409) until a
+    /// device turns it back on.
+    public func setHistoryBackupEnabled(_ enabled: Bool) async throws {
+        struct Body: Encodable { let enabled: Bool }
+        try await requestExpectingNoContent("PUT", "v1/accounts/me/history-backup", body: Body(enabled: enabled))
     }
 
     public func putHistorySegment(_ seq: Int64, _ data: Data) async throws {
