@@ -1506,7 +1506,7 @@ private struct EditProfileSheet: View {
 // MARK: - Settings icon
 
 /// A settings row's icon on a Liquid Glass tile: tinted with its colour and a
-/// white symbol in Light Mode, clear glass with a coloured symbol in Dark Mode.
+/// white symbol in Light Mode, dark glass with a coloured symbol in Dark Mode.
 struct SettingsIcon: View {
     let systemName: String
     let color: Color
@@ -1518,7 +1518,7 @@ struct SettingsIcon: View {
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(dark ? color : .white)
             .frame(width: 28, height: 28)
-            .glassEffect(dark ? .regular : .regular.tint(color), in: .rect(cornerRadius: 7))
+            .glassEffect(dark ? .regular.tint(.black.opacity(0.6)) : .regular.tint(color), in: .rect(cornerRadius: 7))
     }
 }
 
