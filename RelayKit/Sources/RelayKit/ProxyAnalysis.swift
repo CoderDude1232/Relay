@@ -44,6 +44,8 @@ public struct ProxyReport: Equatable, Sendable {
     public var exitAddress: String?
     /// The addresses the proxy's name points to.
     public var proxyAddresses: [String] = []
+    /// A Cloudflare Workers address: requests reach the relay from Cloudflare.
+    public var viaCloudflareWorker = false
     public var warnings: [Warning] = []
 
     public var isUsable: Bool {
@@ -63,6 +65,7 @@ extension RelayProxy {
     /// reachable) without it, and lists anything worth a second look.
     public static func analyze(_ address: Address, relay: URL) async -> ProxyReport {
         var report = ProxyReport(status: await check(address, relay: relay))
+        report.viaCloudflareWorker = address.isPassThrough
         guard report.isUsable else { return report }
 
         let proxied = proxiedSession(address)
@@ -75,8 +78,9 @@ extension RelayProxy {
         }())
         defer { direct.invalidateAndCancel() }
 
-        async let resolved = resolve(address.host)
-        async let proxiedTimings = pingTimings(relay: relay, session: proxied, count: 6)
+        // A Worker is Cloudflare itself: there's no separate exit to find.
+        async let resolved = address.isPassThrough ? [] : resolve(address.host)
+        async let proxiedTimings = pingTimings(relay: address.target(relay), session: proxied, count: 6)
         async let directTimings = pingTimings(relay: relay, session: direct, count: 3)
         let (proxyAddresses, pings, directPings) = await (resolved, proxiedTimings, directTimings)
         report.proxyAddresses = proxyAddresses
@@ -91,11 +95,11 @@ extension RelayProxy {
         let directOk = directPings.compactMap { $0 }.sorted()
         if !directOk.isEmpty { report.directLatencyMs = directOk[directOk.count / 2] }
 
-        report.downloadKBps = await downloadSpeed(relay: relay, session: proxied)
+        report.downloadKBps = await downloadSpeed(relay: address.target(relay), session: proxied)
         if report.directLatencyMs != nil {
             report.directDownloadKBps = await downloadSpeed(relay: relay, session: direct)
         }
-        if let trace = await cloudflareTrace(relay: relay, session: proxied) {
+        if !address.isPassThrough, let trace = await cloudflareTrace(relay: relay, session: proxied) {
             report.exitCountry = trace["loc"]
             report.exitAddress = trace["ip"]
         }

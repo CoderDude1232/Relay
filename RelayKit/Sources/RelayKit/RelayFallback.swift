@@ -116,7 +116,9 @@ public enum RelayFallback {
 
     /// The host requests should go to right now in place of `primary`.
     static func currentHost(primary: String) -> String? {
-        guard RelayProxy.active == nil, let active = activeHost else { return nil }
+        // A Workers address chosen as the proxy takes every request.
+        if let proxy = RelayProxy.active { return proxy.isPassThrough ? proxy.host : nil }
+        guard let active = activeHost else { return nil }
         let since = defaults?.double(forKey: activeAtKey) ?? 0
         // Due for another try of the main address: the next failure moves back.
         if Date().timeIntervalSince1970 - since > retryPrimaryAfter { return nil }

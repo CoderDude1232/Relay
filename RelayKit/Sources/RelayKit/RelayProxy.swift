@@ -5,9 +5,11 @@
 //  Optional proxy for places that block Relay. Traffic to the relay goes to a
 //  volunteer-run relayproxy (server/cmd/relayproxy) as an HTTP CONNECT inside
 //  TLS, so the network sees an ordinary HTTPS connection to the proxy's domain
-//  and the relay connection inside it stays end-to-end TLS. Stored in the App
-//  Group so the extensions use it too. There's no fallback to a direct
-//  connection while it's on.
+//  and the relay connection inside it stays end-to-end TLS. A Cloudflare
+//  Workers address (*.workers.dev, like Relay's own backup addresses) works
+//  too: it passes requests through to the relay, so they go straight to it
+//  instead of through a tunnel. Stored in the App Group so the extensions use
+//  it too. There's no fallback to a direct connection while it's on.
 //
 
 import Foundation
@@ -24,6 +26,17 @@ public enum RelayProxy {
 
         public var display: String { port == 443 ? host : "\(host):\(port)" }
         public var shareLink: URL? { URL(string: "https://relaymsg.app/proxy#\(display)") }
+        /// A Cloudflare Worker that passes requests through to the relay:
+        /// requests are sent to it directly rather than tunnelled.
+        public var isPassThrough: Bool { host.hasSuffix(".workers.dev") && port == 443 }
+
+        /// `relay` as reached through this address.
+        func target(_ relay: URL) -> URL {
+            guard isPassThrough, var components = URLComponents(url: relay, resolvingAgainstBaseURL: false) else { return relay }
+            components.host = host
+            components.port = nil
+            return components.url ?? relay
+        }
     }
 
     private static var defaults: UserDefaults? { UserDefaults(suiteName: appGroupId) }
@@ -73,7 +86,8 @@ public enum RelayProxy {
     }
 
     static func apply(_ address: Address, to config: URLSessionConfiguration) {
-        guard let port = NWEndpoint.Port(rawValue: address.port) else { return }
+        // A pass-through is reached by address (RelayFallback.route), not as a proxy.
+        guard !address.isPassThrough, let port = NWEndpoint.Port(rawValue: address.port) else { return }
         var proxy = ProxyConfiguration(
             httpCONNECTProxy: .hostPort(host: NWEndpoint.Host(address.host), port: port),
             tlsOptions: NWProtocolTLS.Options()
@@ -119,6 +133,7 @@ extension RelayProxy {
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
 
+        let relay = address.target(relay)
         var timings: [Int] = []
         for _ in 0..<3 {
             var request = URLRequest(url: relay.appending(path: "v1/passkeys"))

@@ -129,7 +129,7 @@ struct ProxySettingsView: View {
                         }
                     }
 
-                    Text("While a proxy is on, Relay never connects directly, keeps checking the proxy in the background, and doesn't fetch link previews. Calls still connect directly.")
+                    Text("A Cloudflare Workers address (….workers.dev), like Relay's own backup addresses, works here too. While a proxy is on, Relay never connects directly, keeps checking the proxy in the background, and doesn't fetch link previews. Calls still connect directly.")
                         .font(.footnote)
                         .foregroundStyle(.white.opacity(0.5))
                         .multilineTextAlignment(.center)
@@ -352,6 +352,7 @@ struct ProxyReportCard: View {
     }
 
     private var locationText: String {
+        if report.viaCloudflareWorker { return "Cloudflare" }
         guard let code = report.exitCountry else { return "Unknown" }
         if code == "T1" { return "Tor network" }
         let name = Locale.current.localizedString(forRegionCode: code) ?? code
