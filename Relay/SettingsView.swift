@@ -1515,10 +1515,10 @@ struct SettingsIcon: View {
     var body: some View {
         let dark = colorScheme == .dark
         Image(systemName: systemName)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 16, weight: .semibold))
             .foregroundStyle(dark ? color : .white)
             .frame(width: 28, height: 28)
-            .glassEffect(dark ? .regular.tint(.black.opacity(0.6)) : .regular.tint(color), in: .rect(cornerRadius: 7))
+            .glassEffect(dark ? .regular.tint(.black.opacity(0.3)) : .regular.tint(color), in: .rect(cornerRadius: 7))
     }
 }
 
