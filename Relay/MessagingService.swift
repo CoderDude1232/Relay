@@ -3484,17 +3484,20 @@ final class MessagingService {
     }
 
     private func systemLine(for info: GroupUpdateInfo) -> String? {
-        let actor = displayName(forAccount: info.actor)
+        // "You" and "you" for this account, so an invite reads "Sam added you".
+        let me = credentials.accountId
+        let actor = info.actor == me ? "You" : displayName(forAccount: info.actor)
+        let target = info.target == me ? "you" : displayName(forAccount: info.target)
         switch info.action {
         case .create: return "\(actor) created the group"
-        case .add: return "\(actor) added \(displayName(forAccount: info.target))"
-        case .remove: return "\(actor) removed \(displayName(forAccount: info.target))"
+        case .add: return "\(actor) added \(target)"
+        case .remove: return "\(actor) removed \(target)"
         case .leave: return "\(actor) left"
         case .rename: return "\(actor) renamed the group to \"\(info.name)\""
         case .describe: return "\(actor) updated the group description"
         case .avatar: return "\(actor) updated the group photo"
-        case .promoteAdmin: return "\(actor) made \(displayName(forAccount: info.target)) an admin"
-        case .demoteAdmin: return "\(actor) removed \(displayName(forAccount: info.target)) as admin"
+        case .promoteAdmin: return "\(actor) made \(target) an admin"
+        case .demoteAdmin: return "\(actor) removed \(target) as admin"
         case .setAnnounceOnly: return info.announceOnly
             ? "\(actor) turned on announce-only mode"
             : "\(actor) turned off announce-only mode"

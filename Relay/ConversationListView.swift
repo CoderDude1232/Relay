@@ -94,13 +94,14 @@ struct ConversationListView: View {
     }
 
     /// Filter chips: the user's folders that hold chats (in their order), then
-    /// the built-in Unread and Groups filters when they'd match anything.
+    /// the built-in Unread filter (always, so the chips don't shift as chats are
+    /// read) and Groups when there are any.
     private var usedLabels: [String] {
         let all = service.conversations.filter { !$0.archived && !panicMode.isHidden($0.id) }
         var result = folderStore.folders.filter { folder in
             folder == activeLabel || all.contains { $0.label == folder }
         }
-        if all.contains(where: { $0.unreadCount > 0 }) || activeLabel == "Unread" { result.append("Unread") }
+        if !all.isEmpty || activeLabel == "Unread" { result.append("Unread") }
         if all.contains(where: { $0.isGroup }) { result.append("Groups") }
         return result
     }
@@ -983,7 +984,7 @@ struct ConversationListView: View {
             let requests = service.messageRequests.filter { !panicMode.isHidden($0.id) }
             if activeLabel == nil, !isEditing, !requests.isEmpty {
                 Button { showingRequests = true } label: {
-                    HStack(spacing: 14) {
+                    HStack(spacing: 13) {
                         Image(systemName: "tray.full.fill")
                             .font(.title3)
                             .foregroundStyle(.white)
@@ -1005,6 +1006,9 @@ struct ConversationListView: View {
                             .background(Color.accentColor, in: .capsule)
                             .accessibilityHidden(true)
                     }
+                    // Lines up with the chat rows below.
+                    .padding(.vertical, 5)
+                    .padding(.horizontal, 4)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
@@ -1279,6 +1283,7 @@ private struct NewChatSheet: View {
     /// The user tapped "Find contacts on Relay" (and has consented).
     @State private var discoveryStarted = false
     @State private var showingDiscoveryConsent = false
+    @State private var showingInvite = false
     @State private var searchText = ""
     @State private var startingContactEmail: String?
     @State private var invitePayload: InvitePayload?
@@ -1354,6 +1359,19 @@ private struct NewChatSheet: View {
                                     actionLabel("Find Contacts on Relay", icon: "person.crop.circle.badge.checkmark", color: .green)
                                 }
                                 .tint(.primary)
+                            }
+                            // Someone you want to talk to who isn't on Relay yet.
+                            if !service.isDemoAccount {
+                                Button {
+                                    showingInvite = true
+                                } label: {
+                                    actionLabel("Invite to Relay", icon: "person.badge.plus", color: .accentColor)
+                                }
+                                .tint(.primary)
+                                .sheet(isPresented: $showingInvite) {
+                                    InviteShareSheet(username: service.username)
+                                        .ignoresSafeArea()
+                                }
                             }
                         } footer: {
                             if !service.isDemoAccount && !discoveryStarted {

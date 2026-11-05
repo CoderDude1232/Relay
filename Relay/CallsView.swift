@@ -98,7 +98,12 @@ struct CallsView: View {
                     ContentUnavailableView {
                         Label("No Calls Yet", systemImage: "phone.badge.waveform.fill")
                     } description: {
-                        Text("Your voice and video calls will appear here. Start one from any chat or a contact's card.")
+                        Text("Your voice and video calls will appear here. Start one from any chat, or share a call link to start a group call.")
+                    } actions: {
+                        if !service.isDemoAccount {
+                            Button("Create a Call Link") { showingCallLinks = true }
+                                .buttonStyle(.borderedProminent)
+                        }
                     }
                 } else {
                     List {

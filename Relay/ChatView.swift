@@ -3661,11 +3661,17 @@ private struct MessageBubble: View {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(message.isOutgoing && onBubble ? Color.white.opacity(0.72) : Color.accentColor)
         case .failed:
+            // Red text is unreadable on a coloured bubble: white text there,
+            // with the red kept in the icon.
+            let onColour = message.isOutgoing && onBubble
             HStack(spacing: 3) {
                 Image(systemName: "exclamationmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(onColour ? Color.red : Color.white, onColour ? Color.white : Color.red)
                 Text("Not Delivered · Tap to Retry")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(onColour ? Color.white : Color.red)
             }
-            .foregroundStyle(.red)
             .contentShape(.rect)
             .onTapGesture { Task { await service.retrySend(message) } }
             .accessibilityAddTraits(.isButton)
