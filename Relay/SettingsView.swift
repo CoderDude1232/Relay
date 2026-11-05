@@ -82,7 +82,7 @@ struct SettingsView: View {
                     if !service.isDemoAccount, service.username != nil {
                         Button { showingQR = true } label: {
                             HStack(spacing: 14) {
-                                SettingsIcon(systemName: "qrcode", color: .accentColor)
+                                SettingsIcon(systemName: "qrcode", color: .gray)
                                 Text("My QR Code").foregroundStyle(.primary)
                             }
                         }
@@ -96,28 +96,28 @@ struct SettingsView: View {
                 Section {
                     if service.username != nil {
                         NavigationLink(destination: AccountSettingsView(service: service).markOpen("account", in: $openPage)) {
-                            SettingsNavRow(systemName: "person.crop.circle.fill", color: .accentColor, title: "Account")
+                            SettingsNavRow(systemName: "person.crop.circle.fill", color: .blue, title: "Account")
                         }
                         .listRowBackground(rowHighlight("account"))
                     }
                     NavigationLink(destination: AppearanceSettingsView().markOpen("appearance", in: $openPage)) {
-                        SettingsNavRow(systemName: "paintbrush.fill", color: .accentColor, title: "Appearance")
+                        SettingsNavRow(systemName: "paintbrush.fill", color: .purple, title: "Appearance")
                     }
                     .listRowBackground(rowHighlight("appearance"))
                     NavigationLink(destination: ChatsSettingsView(service: service).markOpen("chats", in: $openPage)) {
-                        SettingsNavRow(systemName: "bubble.left.and.bubble.right.fill", color: .accentColor, title: "Chats")
+                        SettingsNavRow(systemName: "bubble.left.and.bubble.right.fill", color: .green, title: "Chats")
                     }
                     .listRowBackground(rowHighlight("chats"))
                     NavigationLink(destination: PrivacySettingsView(service: service).markOpen("privacy", in: $openPage)) {
-                        SettingsNavRow(systemName: "hand.raised.fill", color: .accentColor, title: "Privacy")
+                        SettingsNavRow(systemName: "hand.raised.fill", color: .indigo, title: "Privacy")
                     }
                     .listRowBackground(rowHighlight("privacy"))
                     NavigationLink(destination: SecuritySettingsView(service: service).markOpen("security", in: $openPage)) {
-                        SettingsNavRow(systemName: "lock.shield.fill", color: .accentColor, title: "Security")
+                        SettingsNavRow(systemName: "lock.shield.fill", color: .teal, title: "Security")
                     }
                     .listRowBackground(rowHighlight("security"))
                     NavigationLink(destination: DataStorageSettingsView(service: service).markOpen("data", in: $openPage)) {
-                        SettingsNavRow(systemName: "internaldrive.fill", color: .accentColor, title: "Data & Storage")
+                        SettingsNavRow(systemName: "internaldrive.fill", color: .orange, title: "Data & Storage")
                     }
                     .listRowBackground(rowHighlight("data"))
                 }
@@ -170,7 +170,7 @@ struct SettingsView: View {
                         confirmingSignOut = true
                     } label: {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "rectangle.portrait.and.arrow.right", color: .red, useColor: true)
+                            SettingsIcon(systemName: "rectangle.portrait.and.arrow.right", color: .red)
                             Text("Sign Out").foregroundStyle(.red)
                         }
                     }
@@ -400,6 +400,11 @@ private struct AccountSettingsView: View {
     /// Until the relay answers, go by the email this device signed in with.
     private var hasEmail: Bool { methods?.email ?? (accountEmail != nil) }
 
+    /// "Off", the one method, or how many are on.
+    static func twoStepLabel(_ methods: [TwoStepRequired.Method]) -> String {
+        methods.count > 1 ? "\(methods.count) Methods" : twoStepLabel(methods.first)
+    }
+
     static func twoStepLabel(_ method: TwoStepRequired.Method?) -> String {
         switch method {
         case nil: "Off"
@@ -469,7 +474,7 @@ private struct AccountSettingsView: View {
                             Task { methods = try? await service.apiClient.signInMethods() }
                         }) {
                             HStack(spacing: 14) {
-                                SettingsIcon(systemName: "envelope.fill", color: .accentColor)
+                                SettingsIcon(systemName: "envelope.fill", color: .blue)
                                 Text("Email")
                                 Spacer(minLength: 0)
                                 Text(accountEmail ?? "Change")
@@ -502,7 +507,7 @@ private struct AccountSettingsView: View {
                             SettingsIcon(systemName: "lock.shield.fill", color: .indigo)
                             Text("Two-Step Verification")
                             Spacer(minLength: 0)
-                            Text(Self.twoStepLabel(methods?.twoStepMethod)).foregroundStyle(.secondary)
+                            Text(Self.twoStepLabel(methods?.twoStepMethods ?? [])).foregroundStyle(.secondary)
                         }
                     }
                     NavigationLink(destination: RecoveryKeyView(service: service, methods: methods)) {
@@ -517,7 +522,7 @@ private struct AccountSettingsView: View {
 
             Section {
                 NavigationLink(destination: LinkedDevicesView(service: service)) {
-                    SettingsNavRow(systemName: "laptopcomputer.and.iphone", color: .accentColor, title: "Linked Devices")
+                    SettingsNavRow(systemName: "laptopcomputer.and.iphone", color: .orange, title: "Linked Devices")
                 }
             }
 
@@ -528,7 +533,7 @@ private struct AccountSettingsView: View {
                         confirmingNuke = true
                     } label: {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "flame.fill", color: .red, useColor: true)
+                            SettingsIcon(systemName: "flame.fill", color: .red)
                             Text("Emergency Wipe All Devices").foregroundStyle(.red)
                             Spacer(minLength: 0)
                             if nukeInProgress { ProgressView() }
@@ -541,7 +546,7 @@ private struct AccountSettingsView: View {
                     showingDeleteAccount = true
                 } label: {
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "person.crop.circle.badge.xmark", color: .red, useColor: true)
+                        SettingsIcon(systemName: "person.crop.circle.badge.xmark", color: .red)
                         Text(service.isDemoAccount ? "Reset Demo Account" : "Delete Account").foregroundStyle(.red)
                     }
                 }
@@ -636,7 +641,7 @@ private struct ChatsSettingsView: View {
 
             Section {
                 NavigationLink(destination: ChatFoldersView(service: service)) {
-                    SettingsNavRow(systemName: "folder.fill", color: .accentColor, title: "Chat Folders")
+                    SettingsNavRow(systemName: "folder.fill", color: .blue, title: "Chat Folders")
                 }
             } footer: {
                 Text("Group chats into folders like Work or Family. Folders stay on this device.")
@@ -658,7 +663,7 @@ private struct ChatsSettingsView: View {
 
             Section {
                 NavigationLink(destination: ScheduledMessagesView(service: service)) {
-                    SettingsNavRow(systemName: "clock.badge.checkmark", color: .accentColor, title: "Scheduled Messages")
+                    SettingsNavRow(systemName: "clock.badge.checkmark", color: .orange, title: "Scheduled Messages")
                 }
             } footer: {
                 Text("Messages you've queued to send automatically at a later time.")
@@ -666,7 +671,7 @@ private struct ChatsSettingsView: View {
 
             Section {
                 NavigationLink(destination: BlockedContactsView(service: service)) {
-                    SettingsNavRow(systemName: "person.crop.circle.badge.minus", color: .accentColor, title: "Blocked Contacts")
+                    SettingsNavRow(systemName: "person.crop.circle.badge.minus", color: .red, title: "Blocked Contacts")
                 }
             } footer: {
                 Text("Blocked accounts can't message or call you.")
@@ -688,7 +693,7 @@ private struct DataStorageSettingsView: View {
         List {
             Section {
                 NavigationLink(destination: StorageSettingsView(service: service)) {
-                    SettingsNavRow(systemName: "internaldrive.fill", color: .accentColor, title: "Storage")
+                    SettingsNavRow(systemName: "internaldrive.fill", color: .gray, title: "Storage")
                 }
                 if service.isDemoAccount {
                     EmptyView()
@@ -715,7 +720,7 @@ private struct DataStorageSettingsView: View {
                 }
                 if !service.isDemoAccount {
                     NavigationLink(destination: ContactSyncView(service: service)) {
-                        SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .accentColor, title: "Contact Syncing")
+                        SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .green, title: "Contact Syncing")
                     }
                 }
             }
@@ -849,7 +854,7 @@ struct PrivacySettingsView: View {
             Section {
                 NavigationLink(destination: ProxySettingsView()) {
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "network.badge.shield.half.filled", color: .accentColor)
+                        SettingsIcon(systemName: "network.badge.shield.half.filled", color: .blue)
                         Text("Proxy")
                         Spacer(minLength: 0)
                         Text(RelayProxy.isEnabled ? "On" : model.fallbackHost != nil ? "Backup" : "Off").foregroundStyle(.secondary)
@@ -974,7 +979,7 @@ struct PrivacySettingsView: View {
                     SettingsExternalRow(systemName: "doc.text.fill", title: "Terms of Service")
                 }
                 NavigationLink(destination: AcknowledgementsView()) {
-                    SettingsNavRow(systemName: "heart.text.square.fill", color: .accentColor, title: "Acknowledgements")
+                    SettingsNavRow(systemName: "heart.text.square.fill", color: .gray, title: "Acknowledgements")
                 }
             } header: {
                 Text("Policies & Legal")
@@ -1500,19 +1505,21 @@ private struct EditProfileSheet: View {
 
 // MARK: - Settings icon
 
+/// A settings row's icon, as iOS Settings draws it: a coloured tile with a
+/// white symbol in Light Mode, a dark tile with a coloured symbol in Dark Mode.
 struct SettingsIcon: View {
     let systemName: String
     let color: Color
-    /// Use `color` instead of neutral gray. Reserved for rows that signal danger
-    /// (e.g. Emergency Wipe).
-    var useColor: Bool = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let dark = colorScheme == .dark
         Image(systemName: systemName)
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(dark ? color : .white)
             .frame(width: 28, height: 28)
-            .background((useColor ? color : Color(.systemGray)).gradient, in: .rect(cornerRadius: 7))
+            .background(dark ? AnyShapeStyle(Color(white: 0.17)) : AnyShapeStyle(color.gradient),
+                        in: .rect(cornerRadius: 7))
     }
 }
 

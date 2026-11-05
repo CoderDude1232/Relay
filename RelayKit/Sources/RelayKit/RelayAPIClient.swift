@@ -100,16 +100,32 @@ public struct TwoStepRequired: Error, Decodable, Sendable, Equatable {
     }
     public let ticket: String
     public let rawMethod: String
+    /// Every method the account has on; an answer to any one passes.
+    public let rawMethods: [String]
     /// Whether the account has a recovery key, which always works instead.
     public let recoveryKey: Bool
 
     public var method: Method? { Method(rawValue: rawMethod) }
+    /// The methods on, the account's first one first.
+    public var methods: [Method] {
+        let all = rawMethods.compactMap(Method.init(rawValue:))
+        return all.isEmpty ? [method].compactMap { $0 } : all
+    }
 
-    enum CodingKeys: String, CodingKey { case ticket, rawMethod = "method", recoveryKey }
+    enum CodingKeys: String, CodingKey { case ticket, rawMethod = "method", rawMethods = "methods", recoveryKey }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ticket = try c.decode(String.self, forKey: .ticket)
+        rawMethod = try c.decode(String.self, forKey: .rawMethod)
+        rawMethods = try c.decodeIfPresent([String].self, forKey: .rawMethods) ?? []
+        recoveryKey = try c.decodeIfPresent(Bool.self, forKey: .recoveryKey) ?? false
+    }
 
     public init(ticket: String, method: Method, recoveryKey: Bool) {
         self.ticket = ticket
         self.rawMethod = method.rawValue
+        self.rawMethods = [method.rawValue]
         self.recoveryKey = recoveryKey
     }
 }
@@ -1312,12 +1328,14 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
     public let accountPasswordNeedsUpdate: Bool
     /// A verified phone number, which signs in by text code.
     public let phone: Bool
-    /// The two-step method: "" (off), "totp", "passkey", "pin" or "recovery".
+    /// The first two-step method: "" (off), "totp", "passkey", "pin" or "recovery".
     public let twoStep: String
+    /// Every two-step method on (older relays send only `twoStep`).
+    public let twoStepMethods: [TwoStepRequired.Method]
 
     public var twoStepMethod: TwoStepRequired.Method? { TwoStepRequired.Method(rawValue: twoStep) }
 
-    enum CodingKeys: String, CodingKey { case email, passkeys, accountPassword, recoveryKey, accountPasswordNeedsUpdate, phone, twoStep }
+    enum CodingKeys: String, CodingKey { case email, passkeys, accountPassword, recoveryKey, accountPasswordNeedsUpdate, phone, twoStep, twoStepMethods }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1328,6 +1346,9 @@ public struct SignInMethods: Decodable, Sendable, Equatable {
         accountPasswordNeedsUpdate = try c.decodeIfPresent(Bool.self, forKey: .accountPasswordNeedsUpdate) ?? false
         phone = try c.decodeIfPresent(Bool.self, forKey: .phone) ?? false
         twoStep = try c.decodeIfPresent(String.self, forKey: .twoStep) ?? ""
+        let listed = (try c.decodeIfPresent([String].self, forKey: .twoStepMethods) ?? [])
+            .compactMap(TwoStepRequired.Method.init(rawValue:))
+        twoStepMethods = listed.isEmpty ? [TwoStepRequired.Method(rawValue: twoStep)].compactMap { $0 } : listed
     }
 }
 
@@ -1429,6 +1450,8 @@ public struct StepUpRequired: Error, LocalizedError, Decodable, Sendable {
 public struct StepUpChallenge: Sendable, Identifiable {
     public let ticket: String
     public let method: TwoStepRequired.Method?
+    /// Every method on; an answer to any one passes.
+    public let methods: [TwoStepRequired.Method]
     /// For a passkey step.
     public let challenge: Data?
     public let credentialIds: [Data]
@@ -1551,7 +1574,7 @@ extension RelayAPIClient {
         return (r.secret, r.uri)
     }
 
-    /// Confirms the authenticator with a code from it; it's then the two-step method.
+    /// Confirms the authenticator with a code from it; it's then on, alongside any other two-step methods.
     public func confirmAuthenticator(code: String) async throws {
         try await requestExpectingNoContent("POST", "v1/accounts/me/totp/confirm", body: ["code": code])
     }
@@ -1561,12 +1584,21 @@ extension RelayAPIClient {
         try await requestExpectingNoContent("PUT", "v1/accounts/me/two-step", body: ["method": method?.rawValue ?? ""])
     }
 
+    /// Turns one two-step method on or off, keeping the others (the
+    /// authenticator is turned on with `confirmAuthenticator`). 409: the
+    /// account lacks what it needs.
+    public func setTwoStep(_ method: TwoStepRequired.Method, enabled: Bool) async throws {
+        struct Body: Encodable { let method: String; let enabled: Bool }
+        try await requestExpectingNoContent("PUT", "v1/accounts/me/two-step", body: Body(method: method.rawValue, enabled: enabled))
+    }
+
     /// A challenge for this device to answer the account's second step; nil
     /// when the account has none.
     public func stepUpChallenge() async throws -> StepUpChallenge? {
         struct Response: Decodable {
             let ticket: String?
             let method: String
+            let methods: [String]?
             let challenge: String?
             let credentialIds: [String]?
         }
@@ -1574,6 +1606,10 @@ extension RelayAPIClient {
         guard !r.method.isEmpty, let ticket = r.ticket else { return nil }
         return StepUpChallenge(
             ticket: ticket, method: TwoStepRequired.Method(rawValue: r.method),
+            methods: {
+                let listed = (r.methods ?? []).compactMap(TwoStepRequired.Method.init(rawValue:))
+                return listed.isEmpty ? [TwoStepRequired.Method(rawValue: r.method)].compactMap { $0 } : listed
+            }(),
             challenge: r.challenge.flatMap { Data(base64URL: $0) },
             credentialIds: (r.credentialIds ?? []).compactMap { Data(base64URL: $0) }
         )

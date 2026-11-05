@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,9 +13,11 @@ import (
 
 // Two-step verification: a sign-in by email or phone code (which proves only
 // the inbox or the number) to an account that has turned it on must also pass
-// one second step. The account picks one method; the recovery key always
-// works instead, through its own sign-in. Passkey and recovery-key sign-ins
-// are strong on their own and never need it.
+// one second step. The account turns on one or more methods (an answer to any
+// of them passes); the recovery key always works instead, through its own
+// sign-in. Passkey and recovery-key sign-ins are strong on their own and
+// never need it. two_step_method holds the methods comma-joined in
+// methodOrder; "recovery" (older accounts) is only ever on its own.
 const (
 	TwoStepNone     = ""
 	TwoStepTOTP     = "totp"     // an authenticator app code
@@ -21,6 +25,34 @@ const (
 	TwoStepPIN      = "pin"      // the account password (a PIN or password)
 	TwoStepRecovery = "recovery" // only the recovery key (older accounts)
 )
+
+// methodOrder is the stored order; the first is the one older clients ask for.
+var methodOrder = []string{TwoStepPasskey, TwoStepTOTP, TwoStepPIN, TwoStepRecovery}
+
+// ParseTwoStepMethods splits a stored or ticket method list.
+func ParseTwoStepMethods(joined string) []string {
+	var out []string
+	for _, m := range methodOrder {
+		for _, part := range strings.Split(joined, ",") {
+			if part == m {
+				out = append(out, m)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// JoinTwoStepMethods is the stored form of a method set.
+func JoinTwoStepMethods(methods []string) string {
+	var out []string
+	for _, m := range methodOrder {
+		if slices.Contains(methods, m) {
+			out = append(out, m)
+		}
+	}
+	return strings.Join(out, ",")
+}
 
 var (
 	ErrTwoStepRequired = errors.New("store: two-step verification required")
@@ -66,7 +98,9 @@ const twoStepColumns = `two_step_method, COALESCE(length(account_password_hash),
 
 // TwoStep is an account's two-step setting and what it could use.
 type TwoStep struct {
+	// Method is the first of Methods ("" when off), for older clients.
 	Method         string
+	Methods        []string
 	HasPIN         bool
 	HasPasskey     bool
 	HasRecoveryKey bool
@@ -80,9 +114,18 @@ func scanTwoStep(row pgx.Row, extra ...any) (TwoStep, error) {
 	if err := row.Scan(append([]any{&stored, &t.HasPIN, &t.HasPasskey, &t.HasRecoveryKey, &t.TOTPSecret, &t.TOTPLastStep}, extra...)...); err != nil {
 		return TwoStep{}, err
 	}
-	t.Method = effectiveMethod(stored, t.HasPIN, t.HasPasskey, t.HasRecoveryKey)
+	t.Methods = ParseTwoStepMethods(effectiveMethod(stored, t.HasPIN, t.HasPasskey, t.HasRecoveryKey))
+	if len(t.Methods) > 0 {
+		t.Method = t.Methods[0]
+	}
 	return t, nil
 }
+
+// Has reports whether method is one of the account's.
+func (t TwoStep) Has(method string) bool { return slices.Contains(t.Methods, method) }
+
+// Joined is the method set as stored and as carried in tickets.
+func (t TwoStep) Joined() string { return JoinTwoStepMethods(t.Methods) }
 
 // TwoStepFor reads the account's setting.
 func (s *Store) TwoStepFor(accountID string) (TwoStep, error) {
@@ -137,19 +180,84 @@ func (s *Store) SetTwoStepMethod(accountID, method string) error {
 	return tx.Commit(ctx)
 }
 
-// SetTOTP turns on the authenticator method with a sealed secret, having
-// accepted a code at step (which can't be used again).
-func (s *Store) SetTOTP(accountID string, sealedSecret []byte, step int64) error {
-	tag, err := s.db.Exec(context.Background(),
-		`UPDATE accounts SET two_step_method = $2, totp_secret = $3, totp_last_step = $4 WHERE id = $1`,
-		accountID, TwoStepTOTP, sealedSecret, step)
+// SetTwoStepEnabled turns one method on or off, keeping the others. The
+// authenticator is turned on with SetTOTP; turning it off clears its secret.
+// "recovery" only ever stands alone: turning it on replaces the others, and
+// turning another on replaces it.
+func (s *Store) SetTwoStepEnabled(accountID, method string, enabled bool) error {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	defer tx.Rollback(ctx)
+	t, err := scanTwoStep(tx.QueryRow(ctx,
+		`SELECT `+twoStepColumns+`, totp_secret, totp_last_step FROM accounts WHERE id = $1 FOR UPDATE`, accountID))
+	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrAccountNotFound
+	} else if err != nil {
+		return err
 	}
-	return nil
+	methods := slices.DeleteFunc(slices.Clone(t.Methods), func(m string) bool { return m == method })
+	if enabled {
+		switch method {
+		case TwoStepPasskey:
+			if !t.HasPasskey {
+				return ErrTwoStepUnavailable
+			}
+		case TwoStepPIN:
+			if !t.HasPIN {
+				return ErrTwoStepUnavailable
+			}
+		case TwoStepRecovery:
+			if !t.HasRecoveryKey {
+				return ErrTwoStepUnavailable
+			}
+			methods = nil
+		default: // the authenticator goes through SetTOTP
+			return ErrTwoStepUnavailable
+		}
+		if method != TwoStepRecovery {
+			methods = slices.DeleteFunc(methods, func(m string) bool { return m == TwoStepRecovery })
+		}
+		methods = append(methods, method)
+	}
+	clearTOTP := !slices.Contains(methods, TwoStepTOTP)
+	if _, err := tx.Exec(ctx,
+		`UPDATE accounts SET two_step_method = $2,
+		   totp_secret = CASE WHEN $3 THEN NULL ELSE totp_secret END,
+		   totp_last_step = CASE WHEN $3 THEN 0 ELSE totp_last_step END
+		 WHERE id = $1`,
+		accountID, JoinTwoStepMethods(methods), clearTOTP); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SetTOTP turns on the authenticator method (alongside the others) with a
+// sealed secret, having accepted a code at step (which can't be used again).
+func (s *Store) SetTOTP(accountID string, sealedSecret []byte, step int64) error {
+	ctx := context.Background()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	t, err := scanTwoStep(tx.QueryRow(ctx,
+		`SELECT `+twoStepColumns+`, totp_secret, totp_last_step FROM accounts WHERE id = $1 FOR UPDATE`, accountID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrAccountNotFound
+	} else if err != nil {
+		return err
+	}
+	methods := slices.DeleteFunc(slices.Clone(t.Methods), func(m string) bool { return m == TwoStepRecovery })
+	methods = append(methods, TwoStepTOTP)
+	if _, err := tx.Exec(ctx,
+		`UPDATE accounts SET two_step_method = $2, totp_secret = $3, totp_last_step = $4 WHERE id = $1`,
+		accountID, JoinTwoStepMethods(methods), sealedSecret, step); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // UseTOTPStep records an accepted code's time step, so neither it nor an
@@ -191,13 +299,13 @@ func (s *Store) CheckAccountPassword(accountID string, p AccountPassword) (bool,
 }
 
 // ClearAccountPassword removes the account password. ErrTwoStepInUse while
-// it is the two-step method.
+// it is a two-step method.
 func (s *Store) ClearAccountPassword(accountID string) error {
 	return s.clearIfNotTwoStep(accountID, TwoStepPIN, `UPDATE accounts SET account_password_hash = NULL WHERE id = $1`)
 }
 
-// RefuseIfTwoStep returns ErrTwoStepInUse when method is the account's
-// two-step method and removing the last passkey or the recovery key would
+// RefuseIfTwoStep returns ErrTwoStepInUse when method is one of the account's
+// two-step methods and removing the last passkey or the recovery key would
 // leave it unusable. lastOne says whether the thing being removed is the
 // only one of its kind.
 func (s *Store) RefuseIfTwoStep(accountID, method string, lastOne bool) error {
@@ -208,7 +316,7 @@ func (s *Store) RefuseIfTwoStep(accountID, method string, lastOne bool) error {
 	if err != nil {
 		return err
 	}
-	if t.Method == method {
+	if t.Has(method) {
 		return ErrTwoStepInUse
 	}
 	return nil
@@ -228,7 +336,7 @@ func (s *Store) clearIfNotTwoStep(accountID, method, update string) error {
 	} else if err != nil {
 		return err
 	}
-	if t.Method == method {
+	if t.Has(method) {
 		return ErrTwoStepInUse
 	}
 	if _, err := tx.Exec(ctx, update, accountID); err != nil {

@@ -404,6 +404,18 @@ struct PhoneSignInView: View {
 
 // MARK: - Second step
 
+extension TwoStepRequired.Method {
+    /// The link that switches a second-step screen to this method.
+    static func useInsteadTitle(_ method: Self) -> String {
+        switch method {
+        case .authenticator: "Use your authenticator app instead"
+        case .passkey: "Use a passkey instead"
+        case .pin: "Use your PIN instead"
+        case .recovery: "Use your recovery key instead"
+        }
+    }
+}
+
 /// The account asked for its second step after an email, Apple, Google or
 /// phone sign-in. The recovery key always works instead.
 struct TwoStepView: View {
@@ -417,25 +429,22 @@ struct TwoStepView: View {
     @State private var errorMessage: String?
     @State private var showingRecoveryKey = false
     @State private var pinHasLetters = false
+    /// Which of the account's methods is being answered.
+    @State private var chosen: TwoStepRequired.Method?
     @FocusState private var focused: Bool
 
-    private var method: TwoStepRequired.Method? { needed.challenge.method }
+    private var method: TwoStepRequired.Method? { chosen ?? needed.challenge.methods.first ?? needed.challenge.method }
 
     private var title: String {
-        switch method {
-        case .authenticator: "Authenticator code"
-        case .passkey: "Confirm with your passkey"
-        case .pin: "Enter your PIN"
-        case .recovery, nil: "Enter your recovery key"
-        }
+        method == .recovery || method == nil ? "Recovery key" : "Two-step verification"
     }
 
     private var subtitle: String {
         switch method {
-        case .authenticator: "Two-step verification is on. Enter the 6-digit code from your authenticator app."
-        case .passkey: "Two-step verification is on. Use a passkey saved for this account."
-        case .pin: "Two-step verification is on. Enter the PIN you set for this account."
-        case .recovery, nil: "This account signs in on a new device with its recovery key."
+        case .authenticator: "Enter the code from your authenticator app to finish signing in and restore your messages."
+        case .passkey: "Use your passkey to finish signing in and restore your messages."
+        case .pin: "Enter your PIN to finish signing in and restore your messages."
+        case .recovery, nil: "Enter your recovery key to finish signing in and restore your messages."
         }
     }
 
@@ -499,6 +508,19 @@ struct TwoStepView: View {
                 case .recovery, nil:
                     errorBanner
                     OnboardingPrimaryButton(title: "Enter Recovery Key") { showingRecoveryKey = true }
+                }
+
+                ForEach(needed.challenge.methods.filter { $0 != method && $0 != .recovery }, id: \.self) { other in
+                    Button(TwoStepRequired.Method.useInsteadTitle(other)) {
+                        chosen = other
+                        answer = ""
+                        errorMessage = nil
+                        Task { focused = true }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(minHeight: 44)
+                    .disabled(working)
                 }
 
                 if method != .recovery, method != nil, needed.challenge.recoveryKey {

@@ -264,7 +264,7 @@ password from a signed-in current client, or reset it.
 | `DELETE /v1/accounts/me/phone` | sig | → `204`. Removes the token and its directory entry; posts `phone_removed`. `409` when it's the account's only way to sign in. |
 | `PUT /v1/accounts/me/access-key` | sig | `{accessKey}` (base64, **exactly 32 bytes**) → `204`. Sealed-sender access key; returned to session-establishing peers in `GET /v1/keys/{account}`, presented on the unauthenticated delivery path. Rotating revokes old senders. |
 | `DELETE /v1/accounts/me` | sig | Optional body `{appleAuthorizationCode?}` (empty body allowed; malformed JSON → `400` and nothing is deleted) → `204`. When `appleAuthorizationCode` is present and the relay runs with `-siwa-key` (see *Sign in with Apple* below), the relay, after deleting the account, exchanges the code at Apple's `/auth/token` and revokes the resulting refresh token at `/auth/revoke` (App Store guideline 5.1.1(v)) — **best-effort**: Apple failing or timing out (10 s) never fails the deletion, and the code/tokens are never stored or logged. Unconfigured relays ignore the field. The client must obtain a **fresh** code (re-authenticate with Apple; codes expire after 5 minutes and are single-use) right before calling. **Permanently deletes the authenticated account** and everything keyed to it, in one DB transaction: devices (mailbox ids, auth keys, APNs/FCM/VoIP tokens), signed/Kyber/one-time prekeys, queued envelopes for its devices, contact invites it minted, blinded-directory rows, stored nuke commands, reports it **filed**, its passkeys, and the account row (username, email token, Supabase user id, access key, recovery hash, recovery key hash, passkey user handle). Then closes all of the account's live WebSockets (close code 1008, "account deleted"). A linked Supabase auth user is queued for deletion (`pending_supabase_deletions`, holding only its Supabase user id) in the same transaction, and with `-supabase-service-key-file` deleted right away via the admin API; if Supabase can't be reached the deletion still succeeds and relayd retries the queue at startup and hourly until Supabase confirms (`404` counts as done). A queued user that is linked to an account again before the retry (the person signed up anew) is dropped from the queue, not deleted. Afterwards its credentials get `401`; the username enters the 7-day reuse cooldown (claimable by **no one** until it ends) and is then free to register again. **Kept:** reports filed *against* the account (moderation records). **Not reachable:** anonymous `provisioning_sessions` / `encrypted_group_invites` (no account column; TTL-reaped), attachment blobs (ownership isn't tracked; reaped by blob GC), and envelopes it sent that sit in *other* accounts' queues (the recipients' data). No extra confirmation signature — clients must confirm with the user before calling. |
-| `GET /v1/accounts/me/sign-in-methods` | sig | → `200 {email: bool, passkeys: int, accountPassword: bool, recoveryKey: bool, accountPasswordNeedsUpdate: bool, phone: bool, twoStep: string}`. `twoStep` is the two-step method (`""`, `totp`, `passkey`, `pin`, `recovery`; see *Two-step verification*). `email` is true when the account has an email token **or** a Supabase link; `passkeys` is the passkey count; `accountPassword` / `recoveryKey` whether each is set. `accountPasswordNeedsUpdate` is true when the stored password hash predates key derivation (a hash of the raw password, which a current client's key never matches): the client asks the user to enter it again. Lets the client warn before removing the last way back in. |
+| `GET /v1/accounts/me/sign-in-methods` | sig | → `200 {email: bool, passkeys: int, accountPassword: bool, recoveryKey: bool, accountPasswordNeedsUpdate: bool, phone: bool, twoStep: string, twoStepMethods: [string]}`. `twoStepMethods` lists the two-step methods on (`totp`, `passkey`, `pin`, or `recovery` alone; see *Two-step verification*) and `twoStep` is the first, `""` when off. `email` is true when the account has an email token **or** a Supabase link; `passkeys` is the passkey count; `accountPassword` / `recoveryKey` whether each is set. `accountPasswordNeedsUpdate` is true when the stored password hash predates key derivation (a hash of the raw password, which a current client's key never matches): the client asks the user to enter it again. Lets the client warn before removing the last way back in. |
 | `POST /v1/accounts/me/nuke` | sig | `{commandId, creationTimeMs, initiatingDeviceId, signature}` → `204`. Signed remote wipe; broadcasts a `Nuke` frame to all live sessions. Signature over `relay-nuke-v1\n…`; rejects >5 min old / >30 s future / duplicate `commandId`. |
 
 **Reserved usernames.** Nobody can take a name the app uses for you or its own
@@ -878,7 +878,9 @@ alert or spending limit on the account.
 An email or phone code proves only the inbox or the number. An account can
 require one second step on top, for a sign-in by email code, Apple/Google or
 phone code. Passkey and recovery-key sign-ins are strong on their own and never
-need it. The account chooses one method (`accounts.two_step_method`):
+need it. The account turns on one or more methods, and an answer to any one
+of them passes (`accounts.two_step_method`, the methods comma-joined in the
+order `passkey,totp,pin`; `recovery` only ever stands alone):
 
 - `totp` — a code from an authenticator app (RFC 6238, SHA-1, 30 s, 6 digits,
   ±1 step). The secret is AES-GCM-sealed at rest under a key derived from the
@@ -894,29 +896,31 @@ need it. The account chooses one method (`accounts.two_step_method`):
 The recovery key always works instead, through its own sign-in. Accounts from
 before two-step verification (`two_step_method` NULL) keep their old
 protection: the account password as the PIN step, else a passkey, else the
-recovery key. New accounts start with none. While the method is
+recovery key. New accounts start with none. While any method is
 `totp`/`passkey`/`recovery`, email password reset and email + password
 recovery are refused. Removing the account password, the last passkey or the
-recovery key is `409` while it is the method.
+recovery key is `409` while it is one of the methods.
 
 A sign-in that needs the step answers **`423`** `{error: "two-step
-verification required", twoStep: {ticket, method, recoveryKey}}`. The ticket
+verification required", twoStep: {ticket, method, methods[], recoveryKey}}`:
+`methods` lists every method on, `method` is the first (for older clients). The
+answer's fields say which one it is for. The ticket
 lasts 10 minutes and ends after 5 wrong answers; every answer also goes
 through the per-account lockout (5 free, then exponential backoff to 24 h).
 Older clients that send `accountPassword`/`accountPasswordKey` with the
-email sign-in still pass a `pin` step inline.
+email sign-in still pass a `pin` step inline when `pin` is the only method.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
 | `POST /v1/accounts/two-step/passkey-options` | none (ticket) | `{ticket}` → `200 {challenge, credentialIds[]}` for a `passkey` step. |
 | `POST /v1/accounts/two-step` | none (ticket) | `{ticket, password, code? \| accountPasswordKey? \| credentialId, clientDataJSON, authenticatorData, signature, userHandle}` → `200 {accountId, deviceId, username, mailboxId, created:false}`, replacing the account's devices. `401` wrong answer or expired ticket; `429` locked out. 60/IP/hour. |
 | `POST /v1/accounts/me/totp/setup` | sig | → `200 {secret, uri}` (base32 secret and `otpauth://` URI for the authenticator). Nothing changes until it's confirmed (10 min). |
-| `POST /v1/accounts/me/totp/confirm` | sig | `{code}` → `204`: the authenticator is now the method. `401` wrong code; `409` set up again. |
-| `PUT /v1/accounts/me/two-step` | sig | `{method}` (`""` off, `passkey`, `pin`, `recovery`) → `204`. `409` the account lacks what the method needs. Leaving `totp` deletes its secret. 20 changes/account/hour. |
-| `DELETE /v1/accounts/me/account-password` | sig | → `204`; `409` while it is the method. |
+| `POST /v1/accounts/me/totp/confirm` | sig | `{code}` → `204`: the authenticator is now on, alongside the other methods (replacing `recovery`). `401` wrong code; `409` set up again. |
+| `PUT /v1/accounts/me/two-step` | sig | `{method, enabled}` turns one method (`passkey`, `pin`, `recovery`; `totp` only off) on or off and keeps the others; turning `recovery` on replaces them, and turning another on drops `recovery`. Without `enabled` (older clients), `{method}` replaces them all (`""` off). → `204`. `409` the account lacks what the method needs. Turning `totp` off deletes its secret. 20 changes/account/hour. |
+| `DELETE /v1/accounts/me/account-password` | sig | → `204`; `409` while it is one of the methods. |
 
 `GET /v1/accounts/me/sign-in-methods` also reports `phone` (bool) and
-`twoStep` (the method). Changes post the `two_step_changed` and
+`twoStep` (the first method) and `twoStepMethods` (all of them). Changes post the `two_step_changed` and
 `account_password_removed` notices.
 
 ### Confirming a sensitive change (step-up)
@@ -926,14 +930,14 @@ step again before it can: link or add a device, unlink one, change the email
 or phone number, add or delete a passkey, set or delete the recovery key, set
 or delete the account password (PIN), set up an authenticator, change the
 two-step method, or delete the account. Without a fresh answer those routes
-answer **`403`** `{error, stepUp: {method}}`. One answer covers the device for
+answer **`403`** `{error, stepUp: {method, methods[]}}`. One answer covers the device for
 5 minutes (kept in memory; a restart asks again). The recovery key always
 works instead. Clients also ask before changes only the devices know about
 (turning device regions off, showing the recovery key).
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `POST /v1/accounts/me/two-step/challenge` | sig | → `200 {ticket, method, challenge?, credentialIds?}` (`challenge` for a passkey), or `{method: ""}` when there is no second step. |
+| `POST /v1/accounts/me/two-step/challenge` | sig | → `200 {ticket, method, methods[], challenge?, credentialIds?}` (`challenge` when a passkey is one of them), or `{method: ""}` when there is no second step. |
 | `POST /v1/accounts/me/two-step/verify` | sig | `{ticket, code? \| accountPasswordKey? \| credentialId, clientDataJSON, authenticatorData, signature, userHandle}` or `{recoveryAuthKey}` → `204`. `401` wrong answer or expired ticket; `429` locked out (shared with sign-in's per-account lockout). |
 
 ## Relay Supporter (anonymous subscription credentials)

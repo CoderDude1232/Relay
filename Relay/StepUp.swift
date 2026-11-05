@@ -81,13 +81,17 @@ struct StepUpSheet: View {
     @State private var answer = ""
     @State private var recoveryKey = ""
     @State private var usingRecoveryKey = false
+    /// Which of the account's methods is being answered.
+    @State private var chosen: TwoStepRequired.Method?
     @State private var pinHasLetters = false
     @State private var working = false
     @State private var errorMessage: String?
     @State private var passkeys = PasskeyAuthenticator()
     @FocusState private var focused: Bool
 
-    private var method: TwoStepRequired.Method? { usingRecoveryKey ? .recovery : challenge.method }
+    private var method: TwoStepRequired.Method? {
+        usingRecoveryKey ? .recovery : (chosen ?? challenge.methods.first ?? challenge.method)
+    }
 
     var body: some View {
         ZStack {
@@ -163,6 +167,16 @@ struct StepUpSheet: View {
                             pinHasLetters.toggle()
                             answer = ""
                             Task { focused = true }
+                        }
+                    }
+                    if !usingRecoveryKey {
+                        ForEach(challenge.methods.filter { $0 != method && $0 != .recovery }, id: \.self) { other in
+                            textButton(TwoStepRequired.Method.useInsteadTitle(other)) {
+                                chosen = other
+                                answer = ""
+                                errorMessage = nil
+                                Task { focused = true }
+                            }
                         }
                     }
                     if !usingRecoveryKey, challenge.method != .recovery, challenge.method != nil {

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -42,7 +43,8 @@ const (
 
 type twoStepTicket struct {
 	accountID string
-	method    string
+	// method lists the methods (comma joined) any one of which passes.
+	method string
 	// supabaseUserID back-fills the account's link once the step passes (an
 	// email sign-in that found the account by its verified email).
 	supabaseUserID string
@@ -119,8 +121,13 @@ func (t *twoStepTickets) pruneLocked(now time.Time) {
 }
 
 // writeTwoStepRequired answers a code sign-in that needs its second step.
-func (s *Server) writeTwoStepRequired(w http.ResponseWriter, accountID, method, supabaseUserID string) {
-	ticket, err := s.twoStep.issue(accountID, method, supabaseUserID)
+// methods is comma joined; "method" names the first, for older clients.
+func (s *Server) writeTwoStepRequired(w http.ResponseWriter, accountID, methods, supabaseUserID string) {
+	list := store.ParseTwoStepMethods(methods)
+	if len(list) == 0 {
+		list = []string{methods}
+	}
+	ticket, err := s.twoStep.issue(accountID, store.JoinTwoStepMethods(list), supabaseUserID)
 	if err != nil {
 		httpError(w, http.StatusTooManyRequests, err.Error())
 		return
@@ -132,7 +139,7 @@ func (s *Server) writeTwoStepRequired(w http.ResponseWriter, accountID, method, 
 	writeJSON(w, http.StatusLocked, map[string]any{
 		"error": "two-step verification required",
 		"twoStep": map[string]any{
-			"ticket": ticket, "method": method,
+			"ticket": ticket, "method": list[0], "methods": list,
 			// The recovery key always works instead (POST /v1/accounts/recovery-key/signin).
 			"recoveryKey": hasRecovery,
 		},
@@ -312,14 +319,18 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request, dev *
 // confirmations per account.
 var twoStepSettingLimiter = newSlidingWindowLimiter(20, time.Hour)
 
-// PUT /v1/accounts/me/two-step {method} → 204. method: "" (off), "passkey",
-// "pin" or "recovery"; the authenticator is chosen through .../totp/confirm.
+// PUT /v1/accounts/me/two-step {method, enabled?} → 204. With enabled, turns
+// that one method ("passkey", "pin", "recovery", or "totp" off) on or off and
+// keeps the others; the authenticator is turned on through .../totp/confirm.
+// Without it (older clients), method replaces them all: "" (off), "passkey",
+// "pin" or "recovery".
 func (s *Server) handleSetTwoStep(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	if s.twoStepUnavailable(w, dev.AccountID) {
 		return
 	}
 	var req struct {
-		Method *string `json:"method"`
+		Method  *string `json:"method"`
+		Enabled *bool   `json:"enabled"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Method == nil {
 		httpError(w, http.StatusBadRequest, `method ("", "passkey", "pin" or "recovery") required`)
@@ -329,7 +340,11 @@ func (s *Server) handleSetTwoStep(w http.ResponseWriter, r *http.Request, dev *s
 		httpError(w, http.StatusTooManyRequests, "too many changes; try again later")
 		return
 	}
-	switch err := s.store.SetTwoStepMethod(dev.AccountID, *req.Method); {
+	set := func() error { return s.store.SetTwoStepMethod(dev.AccountID, *req.Method) }
+	if req.Enabled != nil {
+		set = func() error { return s.store.SetTwoStepEnabled(dev.AccountID, *req.Method, *req.Enabled) }
+	}
+	switch err := set(); {
 	case errors.Is(err, store.ErrTwoStepUnavailable):
 		httpError(w, http.StatusConflict, "add a passkey, PIN or recovery key for this method first")
 		return
@@ -370,7 +385,7 @@ func (s *Server) handleTwoStepPasskeyOptions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	t, ok := s.twoStep.get(req.Ticket)
-	if !ok || t.method != store.TwoStepPasskey {
+	if !ok || !slices.Contains(store.ParseTwoStepMethods(t.method), store.TwoStepPasskey) {
 		httpError(w, http.StatusUnauthorized, errTwoStepTicket)
 		return
 	}
@@ -466,16 +481,26 @@ func (s *Server) handleCompleteTwoStep(w http.ResponseWriter, r *http.Request) {
 	s.finishSignIn(w, t.accountID, req.Password)
 }
 
-// checkSecondStep verifies the answer for the ticket's method, which must
-// still be the account's.
+// checkSecondStep verifies the answer, for whichever method it's for: one the
+// ticket offered that is still one of the account's.
 func (s *Server) checkSecondStep(_ *http.Request, ticketID string, t twoStepTicket, code, pinKey, pinLegacy string, assertion [5]string) (bool, error) {
 	ts, err := s.store.TwoStepFor(t.accountID)
-	if errors.Is(err, store.ErrAccountNotFound) || (err == nil && ts.Method != t.method) {
+	if errors.Is(err, store.ErrAccountNotFound) {
 		return false, nil
 	} else if err != nil {
 		return false, err
 	}
-	switch t.method {
+	method := store.TwoStepPasskey
+	switch {
+	case code != "":
+		method = store.TwoStepTOTP
+	case pinKey != "" || pinLegacy != "":
+		method = store.TwoStepPIN
+	}
+	if !ts.Has(method) || !slices.Contains(store.ParseTwoStepMethods(t.method), method) {
+		return false, nil
+	}
+	switch method {
 	case store.TwoStepTOTP:
 		if len(ts.TOTPSecret) == 0 {
 			return false, nil

@@ -381,3 +381,97 @@ func TestPhoneSignIn(t *testing.T) {
 		t.Fatalf("locked %d %+v", s, locked)
 	}
 }
+
+// Several methods can be on at once; an answer to any of them passes, and
+// each can be turned off on its own.
+func TestTwoStepSeveralMethods(t *testing.T) {
+	env := twoStepEnv(t)
+	sfx := uniqueUsername("")
+	token := "multi" + sfx + "|multi" + sfx + "@x.com"
+	var first twoStepReply
+	env.doJSON("POST", "/v1/accounts/oauth", "", "", map[string]string{
+		"accessToken": token, "username": "multi" + sfx, "password": "device-pw-123",
+	}, http.StatusCreated, &first)
+	c := &client{env: env, accountID: first.AccountID, deviceID: first.DeviceID, password: "device-pw-123"}
+	env.clients[c.authUser()] = c
+	c.uploadDeviceAuthKey()
+	const pin = "pin-key-0123456789abcdefghijklmnopqrstuv"
+	env.doJSON("PUT", "/v1/accounts/me/account-password", c.authUser(), c.password,
+		map[string]string{"accountPasswordKey": pin}, http.StatusNoContent, nil)
+
+	// Add the authenticator alongside the PIN.
+	stepUp(t, c, map[string]string{"accountPasswordKey": pin}, http.StatusNoContent)
+	var setup struct {
+		Secret string `json:"secret"`
+	}
+	env.doJSON("POST", "/v1/accounts/me/totp/setup", c.authUser(), c.password, nil, http.StatusOK, &setup)
+	secret, err := totpBase32.DecodeString(setup.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := func(offset int64) string { return totpCode(secret, time.Now().Unix()/totpPeriod+offset) }
+	env.doJSON("POST", "/v1/accounts/me/totp/confirm", c.authUser(), c.password, map[string]string{"code": code(-1)}, http.StatusNoContent, nil)
+
+	var methods struct {
+		TwoStep        string   `json:"twoStep"`
+		TwoStepMethods []string `json:"twoStepMethods"`
+	}
+	env.doJSON("GET", "/v1/accounts/me/sign-in-methods", c.authUser(), c.password, nil, http.StatusOK, &methods)
+	if methods.TwoStep != "totp" || strings.Join(methods.TwoStepMethods, ",") != "totp,pin" {
+		t.Fatalf("methods %+v", methods)
+	}
+
+	signIn := func(devicePassword string) twoStepReply {
+		t.Helper()
+		var locked struct {
+			TwoStep struct {
+				Ticket  string   `json:"ticket"`
+				Method  string   `json:"method"`
+				Methods []string `json:"methods"`
+			} `json:"twoStep"`
+		}
+		if s := env.postJSON("/v1/accounts/oauth", map[string]string{"accessToken": token, "password": devicePassword}, &locked); s != http.StatusLocked ||
+			locked.TwoStep.Method != "totp" || strings.Join(locked.TwoStep.Methods, ",") != "totp,pin" {
+			t.Fatalf("locked %d %+v", s, locked)
+		}
+		var r twoStepReply
+		r.TwoStep.Ticket = locked.TwoStep.Ticket
+		return r
+	}
+	// Either answer passes.
+	l := signIn("device-pw-456")
+	var out twoStepReply
+	if s := env.postJSON("/v1/accounts/two-step", map[string]string{"ticket": l.TwoStep.Ticket, "password": "device-pw-456", "accountPasswordKey": pin}, &out); s != http.StatusOK {
+		t.Fatalf("pin answer %d %q", s, out.Error)
+	}
+	l = signIn("device-pw-789")
+	if s := env.postJSON("/v1/accounts/two-step", map[string]string{"ticket": l.TwoStep.Ticket, "password": "device-pw-789", "code": code(0)}, &out); s != http.StatusOK {
+		t.Fatalf("code answer %d %q", s, out.Error)
+	}
+	c = &client{env: env, accountID: out.AccountID, deviceID: out.DeviceID, password: "device-pw-789"}
+	env.clients[c.authUser()] = c
+	c.uploadDeviceAuthKey()
+
+	// The PIN can't be removed while it's on; turned off on its own, the
+	// authenticator stays.
+	stepUp(t, c, map[string]string{"code": code(1)}, http.StatusNoContent)
+	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusConflict, nil)
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]any{"method": "pin", "enabled": false}, http.StatusNoContent, nil)
+	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusNoContent, nil)
+	env.doJSON("GET", "/v1/accounts/me/sign-in-methods", c.authUser(), c.password, nil, http.StatusOK, &methods)
+	if strings.Join(methods.TwoStepMethods, ",") != "totp" {
+		t.Fatalf("after pin off %+v", methods)
+	}
+	// A password alone can't recover an account with an authenticator on.
+	env.doJSON("PUT", "/v1/accounts/me/account-password", c.authUser(), c.password,
+		map[string]string{"accountPasswordKey": pin}, http.StatusNoContent, nil)
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]any{"method": "pin", "enabled": true}, http.StatusNoContent, nil)
+	if ts, err := env.api.store.TwoStepFor(c.accountID); err != nil || ts.Joined() != "totp,pin" {
+		t.Fatalf("pin back on %+v %v", ts, err)
+	}
+	// Turning the authenticator off clears it and keeps the PIN.
+	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]any{"method": "totp", "enabled": false}, http.StatusNoContent, nil)
+	if ts, err := env.api.store.TwoStepFor(c.accountID); err != nil || ts.Joined() != "pin" || len(ts.TOTPSecret) != 0 {
+		t.Fatalf("totp off %+v %v", ts, err)
+	}
+}

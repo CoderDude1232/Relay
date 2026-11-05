@@ -27,7 +27,7 @@ extension MessagingService {
         try await confirmOwner("Confirm it's you to set your PIN.")
         try await apiClient.setAccountPassword(AccountPasswordKey.proof(for: pin))
         UserDefaults.standard.set(true, forKey: Self.hasAccountPasswordKey)
-        try await apiClient.setTwoStep(.pin)
+        try await apiClient.setTwoStep(.pin, enabled: true)
         // Pick up the latest list and passkey slots, then rewrap the password slot.
         await restoreAccountStorage()
         await setAccountStorageKey(password: pin)
@@ -44,15 +44,16 @@ extension MessagingService {
         }
     }
 
-    /// Passkey or off; the authenticator and PIN have their own setup.
-    func setTwoStep(_ method: TwoStepRequired.Method?) async throws {
-        try await confirmOwner(method == nil ? "Confirm it's you to turn off two-step verification." : "Confirm it's you to change two-step verification.")
-        try await apiClient.setTwoStep(method)
+    /// Turns one method on or off (the authenticator is turned on through
+    /// its setup, and a new PIN through `setPIN`).
+    func setTwoStep(_ method: TwoStepRequired.Method, enabled: Bool) async throws {
+        try await confirmOwner(enabled ? "Confirm it's you to change two-step verification." : "Confirm it's you to turn this off.")
+        try await apiClient.setTwoStep(method, enabled: enabled)
     }
 
     func confirmAuthenticator(code: String) async throws {
         try await apiClient.confirmAuthenticator(code: code)
-        postRelayNotice("Two-step verification now uses your authenticator app. Signing in on a new device with an email or phone code asks for a code from it.")
+        postRelayNotice("Your authenticator app is now on for two-step verification. Signing in on a new device with an email or phone code can ask for a code from it.")
     }
 
     struct OwnerConfirmationError: LocalizedError {

@@ -4,8 +4,9 @@
 //
 //  Settings → Account → Two-Step Verification. An email or phone code proves
 //  only the inbox or the number; with this on, signing in on a new device
-//  that way also needs one of: a code from an authenticator app, a passkey,
-//  or a PIN. Passkey and recovery-key sign-ins never ask.
+//  that way also needs one of the methods turned on: a code from an
+//  authenticator app, a passkey, or a PIN. Passkey and recovery-key sign-ins
+//  never ask.
 //
 
 import CoreImage.CIFilterBuiltins
@@ -23,33 +24,43 @@ struct TwoStepSettingsView: View {
     @State private var showingAddPasskeyFirst = false
     @State private var showingPasskeys = false
 
-    private var current: TwoStepRequired.Method? { methods?.twoStepMethod }
+    private var on: [TwoStepRequired.Method] { methods?.twoStepMethods ?? [] }
 
     var body: some View {
         List {
             if let methods {
                 Section {
-                    choice("Off", icon: "xmark.circle.fill", color: .gray, selected: current == nil) {
-                        change(to: nil)
-                    }
-                    choice("Authenticator App", icon: "lock.rotation", color: .indigo, selected: current == .authenticator) {
+                    toggle("Authenticator App", icon: "lock.rotation", color: .indigo, method: .authenticator) {
                         showingAuthenticator = true
                     }
-                    choice("Passkey", icon: "person.badge.key.fill", color: .green, selected: current == .passkey) {
-                        if methods.passkeys > 0 { change(to: .passkey) } else { showingAddPasskeyFirst = true }
+                    toggle("Passkey", icon: "person.badge.key.fill", color: .green, method: .passkey) {
+                        if methods.passkeys > 0 { set(.passkey, on: true) } else { showingAddPasskeyFirst = true }
                     }
-                    choice("PIN", icon: "circle.grid.3x3.fill", color: .orange, selected: current == .pin) {
-                        showingPIN = true
+                    toggle("PIN", icon: "circle.grid.3x3.fill", color: .orange, method: .pin) {
+                        if methods.accountPassword && !methods.accountPasswordNeedsUpdate {
+                            set(.pin, on: true)
+                        } else {
+                            showingPIN = true
+                        }
                     }
-                    if current == .recovery {
-                        choice("Recovery Key Only", icon: "key.horizontal.fill", color: .blue, selected: true) {}
-                    }
+                } header: {
+                    Text("Ask for any one of")
                 } footer: {
                     Text(errorMessage ?? footer)
                         .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
 
-                if current == .pin {
+                if on == [.recovery] {
+                    Section {
+                        LabeledContent("Recovery Key Only") {
+                            Button("Turn Off") { set(.recovery, on: false) }
+                        }
+                    } footer: {
+                        Text("Set before two-step verification had other options. Turning on one above replaces it.")
+                    }
+                }
+
+                if on.contains(.pin) {
                     Section {
                         Button("Change PIN") { showingPIN = true }
                     } footer: {
@@ -85,42 +96,48 @@ struct TwoStepSettingsView: View {
             Button("Add Passkey") { showingPasskeys = true }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Create a passkey for this account, then choose it here.")
+            Text("Create a passkey for this account, then turn it on here.")
         }
     }
 
     private var footer: String {
-        switch current {
-        case nil: "Anyone with your email or phone number's code can sign in on a new device. Turn this on to ask for one more thing. Your recovery key always works instead."
-        case .authenticator: "Signing in with an email or phone code also asks for a code from your authenticator app. Your recovery key always works instead."
-        case .passkey: "Signing in with an email or phone code also asks for one of your passkeys. Your recovery key always works instead."
-        case .pin: "Signing in with an email or phone code also asks for your PIN, which unlocks your backup too. Your recovery key always works instead."
-        case .recovery: "Signing in with an email or phone code on a new device needs your recovery key."
-        }
-    }
-
-    private func choice(_ title: String, icon: String, color: Color, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                SettingsIcon(systemName: icon, color: color)
-                Text(title).foregroundStyle(.primary)
-                Spacer(minLength: 0)
-                if selected {
-                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(Color.accentColor)
-                }
+        let names = on.compactMap { method -> String? in
+            switch method {
+            case .authenticator: "a code from your authenticator app"
+            case .passkey: "one of your passkeys"
+            case .pin: "your PIN"
+            case .recovery: nil
             }
         }
-        .tint(.primary)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        if on == [.recovery] {
+            return "Signing in with an email or phone code on a new device needs your recovery key."
+        }
+        guard !names.isEmpty else {
+            return "Anyone with your email or phone number's code can sign in on a new device. Turn on one or more of these to also ask for one of them. Your recovery key always works instead."
+        }
+        let list = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " or " + names.last!
+        return "Signing in with an email or phone code also asks for \(list). Your recovery key always works instead."
     }
 
-    private func change(to method: TwoStepRequired.Method?) {
-        guard method != current else { return }
+    private func toggle(_ title: String, icon: String, color: Color, method: TwoStepRequired.Method,
+                        turnOn: @escaping () -> Void) -> some View {
+        Toggle(isOn: Binding(
+            get: { on.contains(method) },
+            set: { newValue in newValue ? turnOn() : set(method, on: false) }
+        )) {
+            HStack(spacing: 14) {
+                SettingsIcon(systemName: icon, color: color)
+                Text(title)
+            }
+        }
+    }
+
+    private func set(_ method: TwoStepRequired.Method, on enabled: Bool) {
         working = true
         errorMessage = nil
         Task {
             do {
-                try await service.setTwoStep(method)
+                try await service.setTwoStep(method, enabled: enabled)
                 await reload()
             } catch {
                 errorMessage = FriendlyError.message(for: error)

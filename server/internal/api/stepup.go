@@ -71,7 +71,7 @@ func (s *Server) stepUp(next authedHandler) authedHandler {
 		}
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"error":  "confirm it's you with two-step verification",
-			"stepUp": map[string]any{"method": ts.Method},
+			"stepUp": map[string]any{"method": ts.Method, "methods": ts.Methods},
 		})
 	}
 }
@@ -89,13 +89,13 @@ func (s *Server) handleStepUpChallenge(w http.ResponseWriter, r *http.Request, d
 		writeJSON(w, http.StatusOK, map[string]any{"method": ""})
 		return
 	}
-	ticket, err := s.twoStep.issue(dev.AccountID, ts.Method, "")
+	ticket, err := s.twoStep.issue(dev.AccountID, ts.Joined(), "")
 	if err != nil {
 		httpError(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
-	resp := map[string]any{"ticket": ticket, "method": ts.Method}
-	if ts.Method == store.TwoStepPasskey && s.webauthn != nil {
+	resp := map[string]any{"ticket": ticket, "method": ts.Method, "methods": ts.Methods}
+	if ts.Has(store.TwoStepPasskey) && s.webauthn != nil {
 		user, err := s.accountPasskeyUser(dev.AccountID)
 		if err != nil {
 			internalError(w, err)

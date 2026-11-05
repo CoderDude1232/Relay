@@ -77,6 +77,7 @@ func (s *Server) handleSignInMethods(w http.ResponseWriter, _ *http.Request, dev
 		"accountPasswordNeedsUpdate": m.AccountPasswordNeedsUpdate,
 		"phone":                      m.Phone,
 		"twoStep":                    twoStep.Method,
+		"twoStepMethods":             twoStep.Methods,
 	})
 }
 

@@ -876,8 +876,8 @@ type AddedDevice struct {
 	// ReplacedDevices are the account's previous devices, removed because a
 	// fresh sign-in or recovery starts a new identity.
 	ReplacedDevices []uint32
-	// TwoStepMethod is set with ErrTwoStepRequired: the second step the
-	// sign-in must complete (see TwoStep).
+	// TwoStepMethod is set with ErrTwoStepRequired: the second steps (comma
+	// joined) the sign-in may complete, any one of them (see TwoStep).
 	TwoStepMethod string
 }
 
@@ -965,7 +965,7 @@ func (s *Store) RecoverAccount(emailToken []byte, accountPassword AccountPasswor
 	var accountHash []byte
 	var stronger bool
 	err = s.db.QueryRow(ctx,
-		`SELECT id, username, account_password_hash, COALESCE(two_step_method, '') IN ('totp', 'passkey', 'recovery')
+		`SELECT id, username, account_password_hash, string_to_array(COALESCE(two_step_method, ''), ',') && ARRAY['totp', 'passkey', 'recovery']
 		   FROM accounts WHERE email_token = $1`, emailToken,
 	).Scan(&dev.AccountID, &dev.Username, &accountHash, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (len(accountHash) == 0 || stronger)) {
@@ -1063,7 +1063,7 @@ func (s *Store) ResetAccountPassword(supabaseUserID string, emailToken []byte, a
 	var demo, stronger bool
 	const pick = `SELECT id, username, is_demo,
 	        recovery_key_hash IS NOT NULL OR EXISTS (SELECT 1 FROM passkeys p WHERE p.account_id = accounts.id)
-	        OR COALESCE(two_step_method, '') IN ('totp', 'passkey', 'recovery')
+	        OR string_to_array(COALESCE(two_step_method, ''), ',') && ARRAY['totp', 'passkey', 'recovery']
 	   FROM accounts `
 	err = tx.QueryRow(ctx, pick+`WHERE supabase_user_id = $1 FOR UPDATE`, supabaseUserID).Scan(&dev.AccountID, &dev.Username, &demo, &stronger)
 	if errors.Is(err, pgx.ErrNoRows) && len(emailToken) > 0 {
@@ -1195,14 +1195,15 @@ func (s *Store) ProvisionOAuthAccount(supabaseUserID string, emailToken []byte, 
 		// Apple/Google) can't take over an account that turned it on. The
 		// caller completes the second step, then provisions with
 		// ProvisionReplacementDevice (and LinkSupabaseUserIfUnlinked).
-		if twoStep.Method != TwoStepNone && twoStep.Method != TwoStepPIN {
+		pinOnly := twoStep.Joined() == TwoStepPIN
+		if twoStep.Method != TwoStepNone && !pinOnly {
 			if !accountPassword.Empty() {
 				accountPassword.burn()
 			}
-			return AddedDevice{AccountID: dev.AccountID, TwoStepMethod: twoStep.Method}, false, ErrTwoStepRequired
+			return AddedDevice{AccountID: dev.AccountID, TwoStepMethod: twoStep.Joined()}, false, ErrTwoStepRequired
 		}
 		// The PIN can also come with the request (older clients).
-		if twoStep.Method == TwoStepPIN {
+		if pinOnly {
 			locked := AddedDevice{AccountID: dev.AccountID, TwoStepMethod: TwoStepPIN}
 			// The client first asks without a password to learn whether one
 			// is needed; only real guesses go through the lockout.
