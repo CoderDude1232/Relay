@@ -1959,9 +1959,6 @@ struct AcknowledgementsView: View {
         Component(name: "WebRTC", license: "BSD-3-Clause",
                   url: "https://github.com/stasel/WebRTC",
                   note: "Voice and video calls. © The WebRTC project authors (Google). Binary distribution by stasel/WebRTC."),
-        Component(name: "Bricolage Grotesque", license: "OFL-1.1",
-                  url: "https://github.com/ateliertriay/bricolage",
-                  note: "The headline typeface. © 2022 The Bricolage Grotesque Project Authors."),
     ]
 
     var body: some View {

@@ -58,7 +58,7 @@ struct OnboardingView: View {
             BackgroundGradient()
             if isAutoRestoring {
                 ProgressView()
-                    .tint(.accentColor)
+                    .tint(.white)
                     .scaleEffect(1.5)
             } else {
             switch step {
@@ -160,9 +160,9 @@ struct OnboardingView: View {
             } // end else isAutoRestoring
         }
         .animation(.spring(duration: 0.5), value: step)
-        // The glow is dark, so these screens are too.
+        // White text over .ultraThinMaterial on near-black; force dark so the
+        // material stays dark in Light Mode.
         .preferredColorScheme(.dark)
-        .environment(\.colorScheme, .dark)
         .task {
             // Reuse a stored Supabase session (e.g. after a relay-only sign-out) instead
             // of prompting for OAuth again. If it has expired the refresh fails and the
@@ -318,15 +318,14 @@ struct BackgroundGradient: View {
 // MARK: - Welcome
 
 /// Shared look for every sign-in button: same height, font, icon box and
-/// spacing, with icon and title centred as a unit, each with a thin outline.
-/// `.light` is white, `.outlined` see-through over the glow.
+/// spacing, with icon and title centred as a unit.
 private struct SignInButtonLabel<Icon: View>: View {
     enum Style { case light, outlined }
     let title: String
     let style: Style
     @ViewBuilder let icon: () -> Icon
 
-    private static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous) }
+    private static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 14, style: .continuous) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -338,7 +337,11 @@ private struct SignInButtonLabel<Icon: View>: View {
         .frame(maxWidth: .infinity)
         .frame(height: 52)
         .background(style == .light ? Color.white : Color.white.opacity(0.08), in: Self.shape)
-        .overlay { Self.shape.strokeBorder(.white.opacity(0.22), lineWidth: 1) }
+        .overlay {
+            if style == .outlined {
+                Self.shape.strokeBorder(.white.opacity(0.22), lineWidth: 1)
+            }
+        }
         .contentShape(Self.shape)
     }
 }
@@ -373,11 +376,10 @@ private struct WelcomeView: View {
         if let url = model.deferredInvite, let link = RelayLink(url) {
             Label(Self.inviteTitle(link), systemImage: link.symbol)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(.white)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .foregroundStyle(Color.accentColor)
-                .background(Color.accentColor.opacity(0.14), in: .capsule)
+                .background(.white.opacity(0.15), in: .capsule)
                 .padding(.top, 6)
                 .transition(.scale.combined(with: .opacity))
         } else if clipboardHasLink {
@@ -390,10 +392,10 @@ private struct WelcomeView: View {
                 }
                 .buttonBorderShape(.capsule)
                 .labelStyle(.titleAndIcon)
-                .tint(.accentColor)
+                .tint(.white.opacity(0.25))
                 Text(pastedNotInvite ? "That link isn't a Relay invite." : "Got an invite link? Paste it here.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.6))
             }
             .padding(.top, 6)
         }
@@ -422,14 +424,14 @@ private struct WelcomeView: View {
             Spacer(minLength: 24)
 
             VStack(spacing: 18) {
-                Image("LaunchLogo")
+                Image("RelayLogo")
                     .resizable()
                     .scaledToFit()
                     .frame(width: 210)
                     .accessibilityLabel("Relay")
                 Text("Private messaging,\nend-to-end encrypted.")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
                 invite
@@ -440,7 +442,7 @@ private struct WelcomeView: View {
             VStack(spacing: 12) {
                 if oauthLoading {
                     ProgressView()
-                        .tint(.accentColor)
+                        .tint(.white)
                         .frame(maxWidth: .infinity)
                         .frame(height: Self.buttonHeight * 4 + 36)
                 } else {
@@ -483,7 +485,7 @@ private struct WelcomeView: View {
 
                     Button("Sign up with just a username", action: onUsernameOnly)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.6))
                         .frame(minHeight: 36)
                 }
 
@@ -493,8 +495,8 @@ private struct WelcomeView: View {
                 }
 
                 Button(action: onSignIn) {
-                    (Text("Already have an account? ").foregroundStyle(Color(.secondaryLabel))
-                     + Text("Sign in").foregroundStyle(Color.accentColor).fontWeight(.semibold))
+                    (Text("Already have an account? ").foregroundStyle(.white.opacity(0.6))
+                     + Text("Sign in").foregroundStyle(.white).fontWeight(.semibold))
                         .font(.subheadline)
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: 44)
@@ -523,7 +525,7 @@ private struct WelcomeView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
                     .glassCompat(in: .circle)
                     .overlay(alignment: .topTrailing) {
@@ -735,19 +737,30 @@ private struct EmailCodeView: View {
                             onBack()
                         }
                     } label: {
-                        Label("Back", systemImage: "chevron.left")
-                            .foregroundStyle(Color.accentColor)
-                            .frame(minHeight: 44)
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: .circle)
                     }
                     .accessibilityLabel("Back")
                     Spacer()
                 }
                 .padding(.top, 16)
 
-                OnboardingHeader(title: codeSent ? "Check your email" : "Sign in with email",
-                                 subtitle: codeSent
-                                     ? "Enter the code we sent to \(normalizedEmail)."
-                                     : "We'll email you a one-time code. New here? This creates your account.")
+                VStack(spacing: 6) {
+                    Text(codeSent ? "Check your email" : "Sign in with a code")
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text(codeSent
+                         ? "Enter the code we sent to \(normalizedEmail)."
+                         : "We'll email you a one-time code. New here? This creates your account.")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, 24)
+                .padding(.bottom, 12)
 
                 Group {
                     if codeSent {
@@ -760,25 +773,38 @@ private struct EmailCodeView: View {
                                   contentType: .username, keyboard: .emailAddress)
                     }
                 }
-                .onboardingCard()
+                .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
 
                 if let errorMessage {
                     InlineErrorBanner(errorMessage)
                 }
 
-                Button(codeSent ? "Continue" : "Send code", action: codeSent ? verify : sendCode)
-                    .buttonStyle(.dsPrimary(working: isLoading))
-                    .disabled(!canContinue)
+                Button(action: codeSent ? verify : sendCode) {
+                    ZStack {
+                        if isLoading {
+                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        } else {
+                            Text(codeSent ? "Continue" : "Send code")
+                                .font(.headline)
+                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(canContinue ? Color.white : Color.white.opacity(0.3),
+                                in: .rect(cornerRadius: 16, style: .continuous))
+                }
+                .disabled(!canContinue)
 
                 if codeSent {
                     Button("Resend code", action: sendCode)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(.white.opacity(0.8))
                         .disabled(isLoading)
                     if let resendNote {
                         Text(resendNote)
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.6))
                     }
                 } else {
                     LegalFooter().padding(.horizontal, 16)
@@ -901,7 +927,7 @@ private struct AuthField: View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.5))
                 .frame(width: 24)
 
             TextField(placeholder, text: $text)
@@ -910,8 +936,8 @@ private struct AuthField: View {
                 .autocorrectionDisabled()
                 .textContentType(contentType)
                 .focused(focused, equals: field)
-                .foregroundStyle(.primary)
-                .tint(.accentColor)
+                .foregroundStyle(.white)
+                .tint(.white)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 16)
@@ -980,9 +1006,11 @@ private struct SetupView: View {
             VStack(spacing: 0) {
                 HStack {
                     Button(action: onBack) {
-                        Label("Back", systemImage: "chevron.left")
-                            .foregroundStyle(Color.accentColor)
-                            .frame(minHeight: 44)
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 40, height: 40)
+                            .background(.ultraThinMaterial, in: .circle)
                     }
                     .accessibilityLabel("Back")
                     .disabled(isLoading)
@@ -991,43 +1019,55 @@ private struct SetupView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 16)
 
-                OnboardingHeader(title: "Set up your profile", subtitle: "Seen by the people you message.")
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 12)
+                VStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .font(.system(size: 52, weight: .light))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(.bottom, 8)
+                        .accessibilityHidden(true)
+                    Text("Set up your profile")
+                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("Seen by the people you message.")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .padding(.top, 24)
+                .padding(.bottom, 36)
 
                 VStack(spacing: 0) {
                     HStack(spacing: 12) {
                         Image(systemName: "person")
                             .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.5))
                             .frame(width: 24)
                         TextField("Display name", text: $displayName)
                             .focused($focused, equals: .displayName)
                             .textContentType(.name)
                             .textInputAutocapitalization(.words)
                             .autocorrectionDisabled()
-                            .foregroundStyle(.primary)
-                            .tint(.accentColor)
+                            .foregroundStyle(.white)
+                            .tint(.white)
                             .submitLabel(.next)
                             .onSubmit { focused = .username }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
 
-                    Divider()
+                    Divider().background(.white.opacity(0.12))
 
                     HStack(spacing: 12) {
                         Text("@")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.5))
                             .frame(width: 24)
                         TextField("username", text: $username)
                             .focused($focused, equals: .username)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.asciiCapable)
-                            .foregroundStyle(.primary)
-                            .tint(.accentColor)
+                            .foregroundStyle(.white)
+                            .tint(.white)
                             .submitLabel(.done)
                             .onSubmit { focused = nil }
                             .onChange(of: username) { _, new in scheduleCheck(new) }
@@ -1036,7 +1076,7 @@ private struct SetupView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
                 }
-                .onboardingCard()
+                .background(.ultraThinMaterial, in: .rect(cornerRadius: 16, style: .continuous))
                 .padding(.horizontal, 28)
                 .onAppear { focused = .displayName }
 
@@ -1071,9 +1111,22 @@ private struct SetupView: View {
                         }
                     }
                 } label: {
-                    Text("Start messaging")
+                    ZStack {
+                        if isLoading {
+                            ProgressView().tint(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        } else {
+                            Text("Start messaging")
+                                .font(.headline)
+                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        canContinue ? Color.white : Color.white.opacity(0.3),
+                        in: .rect(cornerRadius: 16, style: .continuous)
+                    )
                 }
-                .buttonStyle(.dsPrimary(working: isLoading))
                 .disabled(!canContinue)
                 .padding(.horizontal, 28)
                 .padding(.top, 28)
@@ -1091,7 +1144,7 @@ private struct SetupView: View {
     private var usernameStatusIcon: some View {
         switch usernameStatus {
         case .idle:           EmptyView()
-        case .checking:       ProgressView().scaleEffect(0.75)
+        case .checking:       ProgressView().scaleEffect(0.75).tint(.white.opacity(0.6))
         case .available:      Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .unknown:        Image(systemName: "wifi.exclamationmark").foregroundStyle(.orange.opacity(0.9))
         case .taken, .invalid: Image(systemName: "xmark.circle.fill").foregroundStyle(.red.opacity(0.8))
@@ -1103,10 +1156,10 @@ private struct SetupView: View {
         switch usernameStatus {
         case .idle:
             Text(UsernameRules.hint)
-                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                .font(.caption).foregroundStyle(.white.opacity(0.4)).multilineTextAlignment(.center)
         case .checking:
             Text("Checking availability…")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.white.opacity(0.5))
         case .available:
             Text("@\(username) is available")
                 .font(.caption).foregroundStyle(.green.opacity(0.9))
@@ -1155,8 +1208,8 @@ struct LegalFooter: View {
         // Literal URLs, not interpolated, so SwiftUI parses the Markdown links.
         Text("By continuing you agree to our [Terms](https://relaymsg.app/terms) and [Privacy Policy](https://relaymsg.app/privacy).")
             .font(.caption)
-            .foregroundStyle(.secondary)
-            .tint(.accentColor)
+            .foregroundStyle(.white.opacity(0.45))
+            .tint(.white.opacity(0.85))
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
     }

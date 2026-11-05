@@ -34,10 +34,6 @@
 		<string>turn:turn.relaymsg.app:3478?transport=tcp</string>
 		<string>stun:turn.relaymsg.app:3478</string>
 	</array>
-	<key>UIAppFonts</key>
-	<array>
-		<string>BricolageGrotesque.ttf</string>
-	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
