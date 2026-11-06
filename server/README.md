@@ -1004,7 +1004,8 @@ email sign-in still pass a `pin` step inline when `pin` is the only method.
 ### Confirming a sensitive change (step-up)
 
 On an account with a two-step method, a signed-in device answers the second
-step again before it can: link or add a device, unlink one, change the email
+step again before it can: link or add a device, unlink another one (a device
+signing itself out never asks), change the email
 or phone number, add or delete a passkey, set or delete the recovery key, set
 or delete the account password (PIN), replace an authenticator, turn a
 two-step method off (or switch to recovery-key only), or delete the account.

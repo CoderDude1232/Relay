@@ -415,7 +415,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/provisioning-sessions/{id}", s.auth(s.handleStoreProvisioning)) // primary stores ciphertext
 	mux.HandleFunc("POST /v1/devices/link", s.auth(s.stepUp(s.handleLinkDevice)))           // primary creates the device
 	mux.HandleFunc("GET /v1/devices", s.auth(s.handleListDevices))
-	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.stepUp(s.handleRemoveDevice)))
+	mux.HandleFunc("DELETE /v1/devices/{id}", s.auth(s.handleRemoveDevice))               // step-up unless removing itself
 	mux.HandleFunc("PUT /v1/devices/auth-key", s.bootstrapAuth(s.handleSetDeviceAuthKey)) // the only route accepting HTTP Basic
 	mux.HandleFunc("PUT /v1/devices/apns", s.auth(s.handleSetAPNSToken))
 	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
@@ -1864,6 +1864,11 @@ func (s *Server) handleRemoveDevice(w http.ResponseWriter, r *http.Request, dev 
 	id, err := strconv.ParseUint(r.PathValue("id"), 10, 32)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, "bad device id")
+		return
+	}
+	// Signing this device out gives nobody anything; removing another one
+	// asks for the second step.
+	if uint32(id) != dev.DeviceID && s.needsStepUp(w, dev) {
 		return
 	}
 	var req struct {

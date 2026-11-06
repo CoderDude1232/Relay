@@ -273,6 +273,18 @@ func TestStepUp(t *testing.T) {
 	if reply.StepUp.Method != "pin" {
 		t.Fatalf("step-up reply %+v", reply)
 	}
+	// Removing another device asks; signing this one out doesn't (it gets as
+	// far as the missing device-list signature).
+	env.doJSON("DELETE", fmt.Sprintf("/v1/devices/%d", first.DeviceID+1), c.authUser(), c.password, nil, http.StatusForbidden, &reply)
+	if reply.StepUp.Method != "pin" {
+		t.Fatalf("remove other device: %+v", reply)
+	}
+	reply.StepUp.Method = ""
+	env.doJSON("DELETE", fmt.Sprintf("/v1/devices/%d", first.DeviceID), c.authUser(), c.password,
+		map[string]any{"auth": map[string]any{}}, http.StatusForbidden, &reply)
+	if reply.StepUp.Method != "" {
+		t.Fatalf("sign out asked for step-up: %+v", reply)
+	}
 	// Someone else's recovery key doesn't count.
 	env.doJSON("POST", "/v1/accounts/me/two-step/verify", c.authUser(), c.password, map[string]string{"recoveryAuthKey": "not-the-key-0123456789"}, http.StatusUnauthorized, nil)
 	env.doJSON("POST", "/v1/accounts/me/two-step/verify", c.authUser(), c.password, map[string]string{"recoveryAuthKey": recoveryAuth}, http.StatusNoContent, nil)
