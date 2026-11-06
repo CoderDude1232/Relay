@@ -176,6 +176,7 @@ extension MessagingService {
                     return
                 }
                 await applyFetchedProfile(profile, account: account)
+                profileLog.info("fetched a contact's profile (photo: \(!profile.avatarJpeg.isEmpty, privacy: .public))")
                 setProfileKV(Self.peerProfileETagKV(account), newETag.map { Data($0.utf8) })
             }
         } catch {
@@ -208,6 +209,9 @@ extension MessagingService {
         guard now - readKVInt(Self.profileSyncAtKV) >= 15 * 60 else { return }
         writeKVInt(Self.profileSyncAtKV, now)
         await uploadMyProfile()
+        // Contacts who don't have our current key yet (first run of this
+        // build, or a key changed elsewhere) get it now, once.
+        distributeProfileUpdate()
         await refreshPeerProfiles(maxAge: 6 * 3600)
     }
 
