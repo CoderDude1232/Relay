@@ -86,8 +86,11 @@ relayd currently holds one key.
   a sealed send) are possible, as they were before. Authenticated requests are
   protected by their signature nonce.
 
-Older app versions keep using the direct routes, which stay up until they're
-retired.
+Older app versions keep using the direct routes until `relayd -tunnel-only`
+turns them off. Then every direct request gets `426` ("update the app") except
+the ones that have to stay direct: attachment uploads and downloads (bodies
+over 8 MiB), `GET /v1/ping`, `/v1/speedtest`, the public key-transparency
+routes and `/v1/supporter/keys`.
 
 Code: `server/internal/tunnel` and `server/internal/api/tunnel.go`;
 `RelayKit/Sources/RelayKit/RelayTunnel.swift`, `RelayAPIClient.fetch` and

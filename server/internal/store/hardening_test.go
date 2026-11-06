@@ -220,15 +220,15 @@ func TestResetAccountPassword(t *testing.T) {
 		t.Fatalf("reset of an active locked account: err = %v, want ErrRegistrationLockActive", err)
 	}
 	// Activity today keeps it locked.
-	if err := s.TouchDeviceActive(acct, 1, time.Now()); err != nil {
+	if err := s.TouchAccountActive(acct, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ResetAccountPassword(Identity{SupabaseID: "sb-" + uniqueName("u")}, token, LegacyPassword("new-account-pw"), "device-pw-2"); !errors.Is(err, ErrRegistrationLockActive) {
 		t.Fatalf("reset after activity: err = %v, want ErrRegistrationLockActive", err)
 	}
-	// Once every device has gone unused past the window, the reset works.
+	// Once the account has gone unused past the window, the reset works.
 	stale := unixDay(time.Now().Add(-RegistrationLockInactivity - 48*time.Hour))
-	if _, err := s.db.Exec(context.Background(), `UPDATE devices SET last_active_day = $2 WHERE account_id = $1`, acct, stale); err != nil {
+	if _, err := s.db.Exec(context.Background(), `UPDATE accounts SET lock_active_day = $2 WHERE id = $1`, acct, stale); err != nil {
 		t.Fatal(err)
 	}
 	dev, err := s.ResetAccountPassword(Identity{SupabaseID: "sb-" + uniqueName("u")}, token, LegacyPassword("new-account-pw"), "device-pw-2")

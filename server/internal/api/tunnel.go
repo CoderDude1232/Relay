@@ -50,6 +50,30 @@ var tunnelResponseHeaders = []string{"Content-Type", "Retry-After"}
 // SetTunnel enables /v1/t and /v1/t/ws with k.
 func (s *Server) SetTunnel(k *tunnel.Key) { s.tunnelKey = k }
 
+// SetTunnelOnly refuses direct requests except the few that must stay direct
+// (directRoute), so app builds from before the tunnel are told to update.
+func (s *Server) SetTunnelOnly(on bool) { s.tunnelOnly = on }
+
+// directRoute reports whether r may skip the tunnel when it's required:
+// attachments (bodies over maxTunnelBody), the reachability check, and the
+// public key-transparency and Supporter keys the witness and website fetch.
+func directRoute(r *http.Request) bool {
+	p := r.URL.Path
+	switch r.Method {
+	case http.MethodGet:
+		switch p {
+		case "/v1/ping", "/v1/speedtest", "/v1/kt/head", "/v1/kt/keys", "/v1/kt/consistency", "/v1/supporter/keys":
+			return true
+		}
+		return strings.HasPrefix(p, "/v1/attachments/")
+	case http.MethodPut:
+		return strings.HasPrefix(p, "/v1/attachments/")
+	}
+	return false
+}
+
+const errUpdateApp = "This version of Relay is out of date. Update it to keep using Relay."
+
 // tunnelRoutes handles the tunnel's own paths and passes everything else on.
 func (s *Server) tunnelRoutes(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +86,8 @@ func (s *Server) tunnelRoutes(next http.Handler) http.Handler {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"keyId": tunnel.KeyID, "publicKey": base64.StdEncoding.EncodeToString(s.tunnelKey.PublicKey()),
 			})
+		case s.tunnelOnly && s.tunnelKey != nil && !directRoute(r):
+			httpError(w, http.StatusUpgradeRequired, errUpdateApp)
 		default:
 			next.ServeHTTP(w, r)
 		}

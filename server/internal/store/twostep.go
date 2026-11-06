@@ -316,7 +316,7 @@ func (s *Store) CheckAccountPassword(accountID string, p AccountPassword) (bool,
 // ClearAccountPassword removes the account password. ErrTwoStepInUse while
 // it is a two-step method.
 func (s *Store) ClearAccountPassword(accountID string) error {
-	return s.clearIfNotTwoStep(accountID, TwoStepPIN, `UPDATE accounts SET account_password_hash = NULL WHERE id = $1`)
+	return s.clearIfNotTwoStep(accountID, TwoStepPIN, `UPDATE accounts SET account_password_hash = NULL, lock_active_day = NULL WHERE id = $1`)
 }
 
 // RefuseIfTwoStep returns ErrTwoStepInUse when method is one of the account's

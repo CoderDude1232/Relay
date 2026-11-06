@@ -64,6 +64,7 @@ type Server struct {
 	cfTURN       *CloudflareTURN  // nil = no failover
 	history      *history.Storage // nil = history backup unavailable
 	tunnelKey    *tunnel.Key      // nil = no encrypted tunnel (/v1/t)
+	tunnelOnly   bool             // direct requests outside directRoute get 426
 
 	// Supabase social login. When supabaseURL is set, access tokens are
 	// verified server-to-server via GET /auth/v1/user and the returned
@@ -548,7 +549,7 @@ func (s *Server) authenticate(allowBasic bool, next authedHandler) http.HandlerF
 				httpError(w, http.StatusUnauthorized, "signature authentication failed")
 				return
 			}
-			s.noteDeviceActive(dev)
+			s.noteAccountActive(dev)
 			next(w, r, dev)
 			return
 		}
@@ -1428,24 +1429,24 @@ const registrationLockResetMessage = "This account has an account password and w
 	"so it can't be reset by email yet. Sign in with your account password, or try again once the account " +
 	"has gone 7 days without use."
 
-// deviceActiveDays remembers the last day each device was recorded active, so
-// the database is written at most once per device per day.
-var deviceActiveDays sync.Map // "account.device" -> unix day
+// accountActiveDays remembers the last day each account was recorded active,
+// so the database is written at most once per account per day.
+var accountActiveDays sync.Map // account id -> unix day
 
-// noteDeviceActive records a signed request for the registration lock's
-// inactivity window. Best effort and off the request path.
-func (s *Server) noteDeviceActive(dev *store.Device) {
+// noteAccountActive records a signed request for the registration lock's
+// inactivity window (kept only for accounts with an account password). Best
+// effort and off the request path.
+func (s *Server) noteAccountActive(dev *store.Device) {
 	now := time.Now()
 	day := now.Unix() / 86400
-	key := dev.AccountID + "." + strconv.FormatUint(uint64(dev.DeviceID), 10)
-	if last, ok := deviceActiveDays.Load(key); ok && last.(int64) >= day {
+	if last, ok := accountActiveDays.Load(dev.AccountID); ok && last.(int64) >= day {
 		return
 	}
-	deviceActiveDays.Store(key, day)
+	accountActiveDays.Store(dev.AccountID, day)
 	go func() {
-		if err := s.store.TouchDeviceActive(dev.AccountID, dev.DeviceID, now); err != nil {
-			deviceActiveDays.Delete(key)
-			slog.Warn("device activity: update failed", "err", privlog.Error(err))
+		if err := s.store.TouchAccountActive(dev.AccountID, now); err != nil {
+			accountActiveDays.Delete(dev.AccountID)
+			slog.Warn("account activity: update failed", "err", privlog.Error(err))
 		}
 	}()
 }

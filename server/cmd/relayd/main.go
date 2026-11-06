@@ -204,6 +204,7 @@ func main() {
 	googleClientID := flag.String("google-client-id", "", "the app's Google OAuth client id; enables POST /v1/identity/google (needs -oprf-key)")
 	migrateSupabase := flag.Bool("migrate-supabase", false, "give Supabase-linked accounts the relay's own Apple/Google links and email tokens, then exit")
 	tunnelKey := flag.String("tunnel-key", "", "path to the encrypted tunnel's private key (created on first run; the app builds in its public half, so never replace it); empty = no /v1/t")
+	tunnelOnly := flag.Bool("tunnel-only", false, "refuse direct requests (426, update the app) except attachments and public keys; needs -tunnel-key")
 	tunnelPublic := flag.Bool("tunnel-public-key", false, "print the tunnel key's public half (base64) and exit")
 	supporterKey := flag.String("supporter-key", "", "path to the Relay Supporter credential master secret (hex, 32 bytes); generated if absent, enables /v1/supporter/*")
 	supporterAttachment := flag.Int64("max-supporter-attachment", 95<<20+1024, "max attachment blob size in bytes for Relay Supporter accounts (Cloudflare caps one request at 100 MB)")
@@ -472,7 +473,8 @@ func main() {
 			os.Exit(1)
 		}
 		apiServer.SetTunnel(key)
-		slog.Info("encrypted tunnel enabled")
+		apiServer.SetTunnelOnly(*tunnelOnly)
+		slog.Info("encrypted tunnel enabled", "required", *tunnelOnly)
 	}
 	if *oprfKey != "" {
 		key, err := oprf.LoadOrCreateKey(*oprfKey)

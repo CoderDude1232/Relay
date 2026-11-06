@@ -203,3 +203,45 @@ func TestTunnelWebSocket(t *testing.T) {
 		t.Fatalf("bob got: %v", f)
 	}
 }
+
+func TestTunnelOnly(t *testing.T) {
+	env := newTestEnv(t)
+	tc := enableTunnel(env)
+	c := env.register("tunnel-only-user", "password-tunnel-only")
+	env.api.SetTunnelOnly(true)
+
+	// Direct requests are told to update the app, signed or not.
+	direct := c.signedRequest("GET", "/v1/devices", randomNonce(t), time.Now().UnixMilli())
+	resp, err := http.DefaultClient.Do(direct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("direct signed request: %d", resp.StatusCode)
+	}
+	resp, err = http.Post(env.srv.URL+"/v1/messages/sealed", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("direct sealed send: %d", resp.StatusCode)
+	}
+	// The same request through the tunnel still works.
+	inner := c.signedRequest("GET", "/v1/devices", randomNonce(t), time.Now().UnixMilli())
+	if r := env.tunnelDo(tc, innerOf(inner, nil)); r.Status != http.StatusOK {
+		t.Fatalf("tunnelled: %d %s", r.Status, r.Body)
+	}
+	// What has to stay direct does.
+	for _, path := range []string{"/v1/ping", "/v1/kt/head", "/v1/attachments/unknown"} {
+		resp, err := http.Get(env.srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusUpgradeRequired {
+			t.Errorf("%s refused", path)
+		}
+	}
+}

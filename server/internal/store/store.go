@@ -381,10 +381,19 @@ CREATE TABLE IF NOT EXISTS group_invites (
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS push_kind TEXT NOT NULL DEFAULT 'apns'`,
 		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_name TEXT`,
-		// The day (unix days) a device last made a signed request: coarse on
-		// purpose, it only decides whether the registration lock still holds.
-		// Existing devices start at today, so the lock applies from the start.
-		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_active_day BIGINT NOT NULL DEFAULT (floor(extract(epoch from now()) / 86400))::bigint`,
+		// The day (unix days) an account with an account password last made a
+		// signed request: it only decides whether the registration lock still
+		// holds, so accounts without one keep nothing. It replaced a per-device
+		// day kept for every account.
+		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS lock_active_day BIGINT`,
+		`DO $$ BEGIN
+		   IF EXISTS (SELECT 1 FROM information_schema.columns
+		               WHERE table_name = 'devices' AND column_name = 'last_active_day') THEN
+		     UPDATE accounts a SET lock_active_day = (SELECT max(d.last_active_day) FROM devices d WHERE d.account_id = a.id)
+		      WHERE a.account_password_hash IS NOT NULL AND a.lock_active_day IS NULL;
+		     ALTER TABLE devices DROP COLUMN last_active_day;
+		   END IF;
+		 END $$`,
 		// Device names travel end-to-end encrypted between the account's own
 		// devices; the relay keeps none.
 		`UPDATE devices SET device_name = NULL WHERE device_name IS NOT NULL`,
@@ -699,8 +708,9 @@ func (s *Store) CreateAccount(username string, emailToken []byte, id Identity, d
 		return "", 0, ErrUsernameTaken
 	}
 	if _, err = tx.Exec(ctx,
-		`INSERT INTO accounts (id, username, email_token, supabase_user_id, identity_link, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)`,
-		accountID, username, nullableBytes(emailToken), nullableString(id.SupabaseID), nullableString(id.Link), accountHash, methodForNewAccount(accountHash), now); err != nil {
+		`INSERT INTO accounts (id, username, email_token, supabase_user_id, identity_link, account_password_hash, two_step_method, created_at, next_device_id, lock_active_day)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, CASE WHEN $6::bytea IS NULL THEN NULL ELSE $9::bigint END)`,
+		accountID, username, nullableBytes(emailToken), nullableString(id.SupabaseID), nullableString(id.Link), accountHash, methodForNewAccount(accountHash), now, unixDay(time.Now())); err != nil {
 		return "", 0, accountInsertError(err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO devices (account_id, device_id, mailbox_id, password_hash, created_at) VALUES ($1, 1, $2, $3, $4)`,
@@ -1032,9 +1042,9 @@ func (s *Store) SetAccountPassword(accountID string, accountPassword AccountPass
 		return err
 	}
 	tag, err := s.db.Exec(context.Background(),
-		`UPDATE accounts SET account_password_hash = $1,
+		`UPDATE accounts SET account_password_hash = $1, lock_active_day = $3,
 		        two_step_method = CASE WHEN two_step_method = '' THEN 'pin' ELSE two_step_method END
-		  WHERE id = $2`, hash, accountID)
+		  WHERE id = $2`, hash, accountID, unixDay(time.Now()))
 	if err != nil {
 		return err
 	}
@@ -1094,7 +1104,7 @@ func (s *Store) ResetAccountPassword(id Identity, emailToken []byte, accountPass
 	var locked bool
 	if err = tx.QueryRow(ctx, `
 		SELECT COALESCE(length(a.account_password_hash), 0) > 0
-		   AND EXISTS (SELECT 1 FROM devices d WHERE d.account_id = a.id AND d.last_active_day >= $2)
+		   AND COALESCE(a.lock_active_day, 0) >= $2
 		  FROM accounts a WHERE a.id = $1`,
 		dev.AccountID, unixDay(time.Now().Add(-RegistrationLockInactivity))).Scan(&locked); err != nil {
 		return AddedDevice{}, err
@@ -1102,7 +1112,9 @@ func (s *Store) ResetAccountPassword(id Identity, emailToken []byte, accountPass
 	if locked {
 		return AddedDevice{}, ErrRegistrationLockActive
 	}
-	if _, err = tx.Exec(ctx, `UPDATE accounts SET account_password_hash = $1 WHERE id = $2`, accountHash, dev.AccountID); err != nil {
+	// The new device is in use from now.
+	if _, err = tx.Exec(ctx, `UPDATE accounts SET account_password_hash = $1, lock_active_day = $3 WHERE id = $2`,
+		accountHash, dev.AccountID, unixDay(time.Now())); err != nil {
 		return AddedDevice{}, err
 	}
 	if err = linkIdentityTx(ctx, tx, dev.AccountID, id); err != nil {
@@ -1123,14 +1135,16 @@ const RegistrationLockInactivity = 7 * 24 * time.Hour
 
 func unixDay(t time.Time) int64 { return t.Unix() / 86400 }
 
-// TouchDeviceActive records that a device was used today. Callers write at
-// most once per device per day.
-func (s *Store) TouchDeviceActive(accountID string, deviceID uint32, now time.Time) error {
+// TouchAccountActive records that an account was used today, if it has an
+// account password (nothing is kept otherwise). Callers write at most once per
+// account per day.
+func (s *Store) TouchAccountActive(accountID string, now time.Time) error {
 	day := unixDay(now)
 	_, err := s.db.Exec(context.Background(),
-		`UPDATE devices SET last_active_day = $3
-		  WHERE account_id = $1 AND device_id = $2 AND last_active_day < $3`,
-		accountID, int64(deviceID), day)
+		`UPDATE accounts SET lock_active_day = $2
+		  WHERE id = $1 AND account_password_hash IS NOT NULL
+		    AND COALESCE(lock_active_day, 0) < $2`,
+		accountID, day)
 	return err
 }
 
@@ -1265,8 +1279,9 @@ func (s *Store) ProvisionOAuthAccount(id Identity, emailToken []byte, requestedU
 		}
 		now := coarseDayMillis()
 		if _, e := tx.Exec(ctx,
-			`INSERT INTO accounts (id, username, email_token, supabase_user_id, identity_link, account_password_hash, two_step_method, created_at, next_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)`,
-			dev.AccountID, dev.Username, nullableBytes(emailToken), nullableString(id.SupabaseID), nullableString(id.Link), accountHash, methodForNewAccount(accountHash), now); e != nil {
+			`INSERT INTO accounts (id, username, email_token, supabase_user_id, identity_link, account_password_hash, two_step_method, created_at, next_device_id, lock_active_day)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, CASE WHEN $6::bytea IS NULL THEN NULL ELSE $9::bigint END)`,
+			dev.AccountID, dev.Username, nullableBytes(emailToken), nullableString(id.SupabaseID), nullableString(id.Link), accountHash, methodForNewAccount(accountHash), now, unixDay(time.Now())); e != nil {
 			return AddedDevice{}, false, accountInsertError(e)
 		}
 		if dev.MailboxID, err = newMailboxID(); err != nil {
