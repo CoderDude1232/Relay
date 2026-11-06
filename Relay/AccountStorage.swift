@@ -309,6 +309,7 @@ extension MessagingService {
         }
         if let snapshot = try? JSONDecoder().decode(BackupSnapshot.self, from: plaintext) {
             importBackupSnapshot(snapshot)
+            importProfileKeys(from: snapshot)
         }
     }
 
@@ -547,7 +548,11 @@ extension MessagingService {
                 ))
             }
         }
-        return BackupSnapshot(conversations: convs, groups: groups)
+        var snapshot = BackupSnapshot(conversations: convs, groups: groups)
+        snapshot.profileKeys = peerProfileKeys()
+        snapshot.myProfileKey = myProfileKey
+        snapshot.myProfileKeyAt = readKVInt(Self.myProfileKeyAtKV)
+        return snapshot
     }
 
     /// Fingerprint of the list, so uploads happen only when it really changed.
@@ -555,6 +560,8 @@ extension MessagingService {
         conversations.map { "\($0.groupId ?? $0.peerAccount)" }.sorted().joined(separator: ",")
             + "|" + conversations.compactMap { $0.groupId }.compactMap { try? storage.messages.group(id: $0)?.revision }
                 .map(String.init).joined(separator: ",")
+            + "|" + String(Self.keyTag(myProfileKey))
+            + "|" + peerProfileKeys().map { "\($0.key)=\(Self.keyTag($0.value))" }.sorted().joined(separator: ",")
     }
 
     /// Uploads (after a short pause, coalescing bursts) when the list changed.

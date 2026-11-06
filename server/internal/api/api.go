@@ -486,6 +486,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/attachments", s.auth(s.handleCreateAttachment))
 	mux.HandleFunc("PUT /v1/attachments/{id}", s.handleUploadAttachment)   // unauthenticated: id is the capability
 	mux.HandleFunc("GET /v1/attachments/{id}", s.handleDownloadAttachment) // unauthenticated: id is the capability
+	mux.HandleFunc("PUT /v1/profiles/{id}", s.handlePutProfile)            // unauthenticated (profiles.go)
+	mux.HandleFunc("GET /v1/profiles/{id}", s.handleGetProfile)
+	mux.HandleFunc("DELETE /v1/profiles/{id}", s.handleDeleteProfile)
 	mux.HandleFunc("POST /v1/group-invites", s.auth(s.handleCreateEncryptedGroupInvite))
 	mux.HandleFunc("POST /v1/group-invites/claim", s.handleClaimEncryptedGroupInvite) // unauthenticated: token is the capability
 	mux.HandleFunc("GET /v1/supporter/keys", s.handleSupporterKeys)                   // unauthenticated: the same for everyone

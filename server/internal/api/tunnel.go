@@ -38,7 +38,9 @@ const (
 var tunnelRequestHeaders = map[string]bool{
 	"authorization":          true,
 	"content-type":           true,
+	"if-none-match":          true,
 	"relay-access-key":       true,
+	"relay-profile-write":    true,
 	"relay-token":            true,
 	"x-relay-timestamp":      true,
 	"x-relay-nonce":          true,
@@ -46,7 +48,7 @@ var tunnelRequestHeaders = map[string]bool{
 }
 
 // And the response headers the app reads.
-var tunnelResponseHeaders = []string{"Content-Type", "Retry-After"}
+var tunnelResponseHeaders = []string{"Content-Type", "ETag", "Retry-After"}
 
 // SetTunnel enables /v1/t and /v1/t/ws with k.
 func (s *Server) SetTunnel(k *tunnel.Key) { s.tunnelKey = k }

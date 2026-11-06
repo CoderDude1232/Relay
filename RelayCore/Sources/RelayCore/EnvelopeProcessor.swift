@@ -239,9 +239,13 @@ public struct ProfileInfo: Sendable, Codable {
     /// bundles anonymously. Nil from older clients (and in profiles queued by
     /// an older extension, which decode without it).
     public let accessKey: Data?
+    /// The sender's profile key, for fetching their current profile from the
+    /// relay whenever we like. Nil from older clients.
+    public let profileKey: Data?
 
     public init(account: String, displayName: String, avatar: Avatar?, revision: Int64,
-                status: String = "", bio: String = "", links: [Link] = [], accessKey: Data? = nil) {
+                status: String = "", bio: String = "", links: [Link] = [], accessKey: Data? = nil,
+                profileKey: Data? = nil) {
         self.account = account
         self.displayName = displayName
         self.avatar = avatar
@@ -250,6 +254,7 @@ public struct ProfileInfo: Sendable, Codable {
         self.bio = bio
         self.links = links
         self.accessKey = accessKey
+        self.profileKey = profileKey
     }
 }
 
@@ -989,7 +994,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 bio: ProfileText.bio(profile.bio),
                 links: ProfileText.links(profile.links.map { ($0.label, $0.url) })
                     .map { ProfileInfo.Link(label: $0.label, url: $0.url) },
-                accessKey: profile.accessKey.count == 32 ? profile.accessKey : nil
+                accessKey: profile.accessKey.count == 32 ? profile.accessKey : nil,
+                profileKey: profile.profileKey.count == 32 ? profile.profileKey : nil
             )
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, profile: info)
 

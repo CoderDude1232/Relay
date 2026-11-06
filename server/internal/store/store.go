@@ -523,6 +523,13 @@ CREATE TABLE IF NOT EXISTS group_invites (
     created_at BIGINT NOT NULL,
     PRIMARY KEY (account_id, seq)
 )`,
+		// Encrypted profiles (store/profiles.go): not tied to accounts.
+		`CREATE TABLE IF NOT EXISTS profiles (
+    id          BYTEA PRIMARY KEY,
+    write_hash  BYTEA NOT NULL,
+    blob        BYTEA NOT NULL,
+    written_day BIGINT NOT NULL
+)`,
 		// Relay Supporter (store/supporter.go): until when the account has
 		// supporter perks (unix ms), and the anonymous-credential books.
 		`ALTER TABLE accounts ADD COLUMN IF NOT EXISTS supporter_until BIGINT NOT NULL DEFAULT 0`,
@@ -2676,6 +2683,7 @@ func (s *Store) PurgeExpired() error {
 		{`DELETE FROM supporter_issuance WHERE expires_at < $1`, now},
 		{`DELETE FROM supporter_spent WHERE expires_at < $1`, now},
 		{`DELETE FROM app_attest_keys WHERE used_at < $1`, now - appAttestKeyRetention.Milliseconds()},
+		{`DELETE FROM profiles WHERE written_day < $1`, now/86_400_000 - ProfileRetentionDays},
 	} {
 		if _, err := s.db.Exec(ctx, q.sql, q.arg); err != nil {
 			return err

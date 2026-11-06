@@ -576,11 +576,49 @@ public nonisolated struct Relay_Content_ProfileUpdate: Sendable {
   /// clients.
   public var accessKey: Data = Data()
 
+  /// The sender's profile key (32 bytes). Contacts fetch the sender's current
+  /// profile with it (EncryptedProfile, GET /v1/profiles/{id}) whenever they
+  /// like, instead of waiting for an update like this one. Changes when the
+  /// sender blocks someone. Empty from older clients.
+  public var profileKey: Data = Data()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _avatar: Relay_Content_AttachmentPointer? = nil
+}
+
+/// The plaintext of a profile stored on the relay (PUT /v1/profiles/{id}).
+/// From the profile key K (HKDF-SHA256, no salt, 32 bytes each):
+///   id    = HKDF(K, "relay-profile-v1-id")     (the path, base64url)
+///   write = HKDF(K, "relay-profile-v1-write")  (header Relay-Profile-Write)
+///   enc   = HKDF(K, "relay-profile-v1-enc")
+/// Stored as nonce(12) ‖ AES-256-GCM(enc, ad = id, plaintext) ‖ tag(16), where
+/// plaintext = u32 big-endian length ‖ this message ‖ zero padding, so the blob
+/// is exactly 65536 bytes.
+public nonisolated struct Relay_Content_EncryptedProfile: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var displayName: String = String()
+
+  /// empty: no photo
+  public var avatarJpeg: Data = Data()
+
+  /// owner's clock when it changed; newest wins
+  public var timestamp: Int64 = 0
+
+  public var bio: String = String()
+
+  public var links: [Relay_Content_ProfileLink] = []
+
+  public var status: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
 }
 
 /// A single labelled link on a profile (e.g. label "Website", url
@@ -1762,7 +1800,7 @@ nonisolated extension Relay_Content_AttachmentPointer: SwiftProtobuf.Message, Sw
 
 nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProfileUpdate"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0\u{1}status\0\u{1}bio\0\u{1}links\0\u{3}access_key\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0\u{1}status\0\u{1}bio\0\u{1}links\0\u{3}access_key\0\u{3}profile_key\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1777,6 +1815,7 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
       case 5: try { try decoder.decodeSingularStringField(value: &self.bio) }()
       case 6: try { try decoder.decodeRepeatedMessageField(value: &self.links) }()
       case 7: try { try decoder.decodeSingularBytesField(value: &self.accessKey) }()
+      case 8: try { try decoder.decodeSingularBytesField(value: &self.profileKey) }()
       default: break
       }
     }
@@ -1808,6 +1847,9 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if !self.accessKey.isEmpty {
       try visitor.visitSingularBytesField(value: self.accessKey, fieldNumber: 7)
     }
+    if !self.profileKey.isEmpty {
+      try visitor.visitSingularBytesField(value: self.profileKey, fieldNumber: 8)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1819,6 +1861,62 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if lhs.bio != rhs.bio {return false}
     if lhs.links != rhs.links {return false}
     if lhs.accessKey != rhs.accessKey {return false}
+    if lhs.profileKey != rhs.profileKey {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Relay_Content_EncryptedProfile: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".EncryptedProfile"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{3}avatar_jpeg\0\u{1}timestamp\0\u{1}bio\0\u{1}links\0\u{1}status\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.displayName) }()
+      case 2: try { try decoder.decodeSingularBytesField(value: &self.avatarJpeg) }()
+      case 3: try { try decoder.decodeSingularInt64Field(value: &self.timestamp) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.bio) }()
+      case 5: try { try decoder.decodeRepeatedMessageField(value: &self.links) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.status) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.displayName.isEmpty {
+      try visitor.visitSingularStringField(value: self.displayName, fieldNumber: 1)
+    }
+    if !self.avatarJpeg.isEmpty {
+      try visitor.visitSingularBytesField(value: self.avatarJpeg, fieldNumber: 2)
+    }
+    if self.timestamp != 0 {
+      try visitor.visitSingularInt64Field(value: self.timestamp, fieldNumber: 3)
+    }
+    if !self.bio.isEmpty {
+      try visitor.visitSingularStringField(value: self.bio, fieldNumber: 4)
+    }
+    if !self.links.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.links, fieldNumber: 5)
+    }
+    if !self.status.isEmpty {
+      try visitor.visitSingularStringField(value: self.status, fieldNumber: 6)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Relay_Content_EncryptedProfile, rhs: Relay_Content_EncryptedProfile) -> Bool {
+    if lhs.displayName != rhs.displayName {return false}
+    if lhs.avatarJpeg != rhs.avatarJpeg {return false}
+    if lhs.timestamp != rhs.timestamp {return false}
+    if lhs.bio != rhs.bio {return false}
+    if lhs.links != rhs.links {return false}
+    if lhs.status != rhs.status {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

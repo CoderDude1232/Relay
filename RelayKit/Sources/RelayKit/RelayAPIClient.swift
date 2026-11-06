@@ -1092,6 +1092,58 @@ public struct RelayAPIClient: Sendable {
     }
 
 
+    // MARK: - Encrypted profiles
+
+    /// PUT /v1/profiles/{id}: stores our encrypted profile. Anonymous; the write
+    /// secret proves it's ours and a send token pays for it.
+    public func putProfile(id: Data, writeSecret: Data, blob: Data) async throws {
+        var request = makeRequest("PUT", "v1/profiles/\(Self.base64URL(id))")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue(Self.base64URL(writeSecret), forHTTPHeaderField: "Relay-Profile-Write")
+        request.httpBody = blob
+        _ = try await sendWithToken(request)
+    }
+
+    /// DELETE /v1/profiles/{id}: removes a profile we no longer use.
+    public func deleteProfile(id: Data, writeSecret: Data) async throws {
+        var request = makeRequest("DELETE", "v1/profiles/\(Self.base64URL(id))")
+        request.setValue(Self.base64URL(writeSecret), forHTTPHeaderField: "Relay-Profile-Write")
+        _ = try await send(request, authenticated: false)
+    }
+
+    public enum ProfileFetch: Sendable {
+        case changed(blob: Data, etag: String?)
+        case unchanged
+        case missing
+    }
+
+    /// GET /v1/profiles/{id}: a contact's encrypted profile, anonymously.
+    /// With the ETag from last time, an unchanged profile isn't downloaded.
+    public func fetchProfile(id: Data, etag: String?) async throws -> ProfileFetch {
+        var request = makeRequest("GET", "v1/profiles/\(Self.base64URL(id))")
+        request.setValue(nil, forHTTPHeaderField: "Authorization")
+        if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        let (data, response) = try await fetch(request, on: anonymousSession)
+        guard let http = response as? HTTPURLResponse else { throw RelayAPIError.malformedResponse }
+        switch http.statusCode {
+        case 304: return .unchanged
+        case 404: return .missing
+        case 200:
+            guard data.count <= 128 << 10 else { throw RelayAPIError.malformedResponse }
+            return .changed(blob: data, etag: http.value(forHTTPHeaderField: "ETag"))
+        default:
+            throw RelayAPIError.http(status: http.statusCode, message: "")
+        }
+    }
+
+    private static func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+
     // MARK: - Request plumbing
 
     private func makeRequest(_ method: String, _ path: String) -> URLRequest {

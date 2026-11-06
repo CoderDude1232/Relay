@@ -55,6 +55,7 @@ An hourly sweeper (also run at startup) deletes:
 | Contact invites | until used or expired (7 d) |
 | Released-username hashes (`released_usernames`) | 7 days (the reuse cooldown) |
 | Group invites, provisioning sessions | until expired |
+| Encrypted profiles (`profiles`) | 30 days after the last write (owners rewrite weekly) |
 | Devices that never published an identity key (an unfinished link) | 1–2 days: reaped once created before yesterday (creation times are kept to the day), only on accounts that have a keyed device. Removed like `DELETE /v1/devices/{id}` (prekeys, queue, `device_list_version` bump, socket closed, `DEVICE_REMOVED` broadcast) |
 | History backup segments (`history_segments` + blobs) | until the client deletes them, the account is deleted, or a demo reset. Kept across sign-ins that replace devices. A separate hourly sweep (not at startup) deletes blobs, local or remote, that no row refers to and that are over an hour old |
 
@@ -827,6 +828,32 @@ about the sender's network reaches those handlers.
   has no per-sender queue share and the sealed key fetch's one-time prekey budget
   is the target account's. Without one, an old app is limited by IP as before;
   `-require-send-tokens` answers it `426` instead.
+
+## Encrypted profiles (`store/profiles.go`)
+
+A contact's name, photo, status, bio and links are fetched from the relay
+whenever the app wants them, rather than only pushed when they change. Each
+account has a 32-byte **profile key**, sent to its contacts end-to-end
+(`ProfileUpdate.profile_key`) and kept with the encrypted chat list, so the
+account's devices share it and a restored device still has its contacts'.
+From the key (HKDF-SHA256, no salt) come the id (`relay-profile-v1-id`), a
+write secret (`relay-profile-v1-write`) and the encryption key
+(`relay-profile-v1-enc`). The blob is `EncryptedProfile` (content.proto),
+length-prefixed and zero-padded, AES-256-GCM with the id as AD: exactly
+65,536 bytes, so sizes say nothing. Nothing ties a profile to an account.
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `PUT /v1/profiles/{id}` | none; `Relay-Profile-Write`, `Relay-Token` | id and write secret base64url (32 bytes each); body exactly 65,536 bytes → `204 {ETag}`. The first write keeps SHA-256(`relay-profile-write\|` ‖ secret); later writes need the same secret (`403` otherwise). A send token is required whenever the relay issues them (`401` without); with none configured, 30 writes/IP/hour. `413` wrong size, `507` once 200,000 profiles are stored. |
+| `GET /v1/profiles/{id}` | none | `If-None-Match` → `304`; else `200` blob `{ETag}` or `404`. 600/IP/min, in memory. |
+| `DELETE /v1/profiles/{id}` | none; `Relay-Profile-Write` | → `204` (also when absent); `403` another write secret. |
+
+The row is only `(id, hash of write secret, blob, day last written)`. Clients
+rewrite their profile when it changes and weekly; one not written for 30 days
+is deleted. Contacts fetch after connecting (at most every 6 hours), when a
+chat opens (10 minutes) and straight after a restore, sending the last ETag.
+Blocking someone gives the account a new profile key, deletes the old profile
+and sends the new key to everyone else.
 
 ## Key transparency (`internal/kt`)
 

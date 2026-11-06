@@ -683,6 +683,7 @@ final class MessagingService {
     private func noteConnected() {
         connectingSince = nil
         if relayUnreachable { relayUnreachable = false }
+        Task { await syncProfilesAfterConnecting() }
     }
 
     /// Try Again: reconnect straight away rather than after the back-off.
@@ -1744,7 +1745,7 @@ final class MessagingService {
 
     /// Bumped on every profile change. Peers keep the newest revision, and a
     /// bump re-arms sending to every peer.
-    private var myProfileRevision: Int64 {
+    var myProfileRevision: Int64 {
         readKVInt("me:rev")
     }
 
@@ -1753,10 +1754,11 @@ final class MessagingService {
         // The cached avatar upload belongs to the old revision.
         try? storage.database.run("DELETE FROM kv WHERE key IN ('me:aptr', 'me:aptrrev')")
         distributeProfileUpdate()
+        Task { await uploadMyProfile() }
     }
 
     /// Sends the updated profile to every DM peer and group member.
-    private func distributeProfileUpdate() {
+    func distributeProfileUpdate() {
         let accepted = conversations.filter { !$0.isRequest }
         let dmPeers = accepted
             .filter { !$0.isGroup }
@@ -1798,6 +1800,8 @@ final class MessagingService {
             content.profile.displayName = myDisplayName ?? ""
             content.profile.timestamp = rev
             if let accessKey { content.profile.accessKey = accessKey }
+            let profileKey = myProfileKey
+            content.profile.profileKey = profileKey
             content.profile.bio = myBio
             content.profile.links = myLinks.map {
                 var l = Relay_Content_ProfileLink()
@@ -1811,6 +1815,7 @@ final class MessagingService {
             try await sendContent(try content.serializedData(), toPeer: account, clientTimestamp: rev)
             writeKVInt("pfsent:\(account)", rev)
             if let accessKey { writeKVInt("pfak:\(account)", Self.accessKeyTag(accessKey)) }
+            writeKVInt("pfpk:\(account)", Self.accessKeyTag(profileKey))
         } catch {
             log.error("profile send failed: \(PrivacyRedactor.error(error))")
         }
@@ -1821,6 +1826,9 @@ final class MessagingService {
     /// at the same revision when the peer hasn't had our current access key.
     private func profileNeedsSending(to account: String) -> Bool {
         if readKVInt("pfsent:\(account)") < max(myProfileRevision, 1) { return true }
+        // Also when they haven't had our current profile key (new, or changed
+        // after a block).
+        if readKVInt("pfpk:\(account)") != Self.accessKeyTag(myProfileKey) { return true }
         guard let accessKey = ownAccessKey() else { return false }
         return readKVInt("pfak:\(account)") != Self.accessKeyTag(accessKey)
     }
@@ -1850,7 +1858,10 @@ final class MessagingService {
     private func currentAvatarPointer() async throws -> Relay_Content_AttachmentPointer? {
         guard let data = myAvatarData else { return nil }
         let rev = myProfileRevision
-        if readKVInt("me:aptrrev") == rev,
+        // The relay deletes attachments after 14 days, so an older upload is
+        // made again rather than handed out dead.
+        let uploadedAt = readKVInt("me:aptrat")
+        if readKVInt("me:aptrrev") == rev, Int64(Date().timeIntervalSince1970) - uploadedAt < 12 * 86400,
            let cached = ((try? storage.database.query(
                "SELECT value FROM kv WHERE key = 'me:aptr'").first?.first?.data) ?? nil),
            let pointer = try? Relay_Content_AttachmentPointer(serializedBytes: cached) {
@@ -1868,6 +1879,7 @@ final class MessagingService {
             try? storage.database.run(
                 "INSERT OR REPLACE INTO kv (key, value) VALUES ('me:aptr', ?)", [.blob(encoded)])
             writeKVInt("me:aptrrev", rev)
+            writeKVInt("me:aptrat", Int64(Date().timeIntervalSince1970))
         }
         return pointer
     }
@@ -1879,6 +1891,9 @@ final class MessagingService {
         if let accessKey = profile.accessKey, profile.account != credentials.accountId,
            accessKey != knownAccessKey(profile.account) {
             rememberAccessKey(accessKey, for: profile.account)
+        }
+        if let profileKey = profile.profileKey, profile.account != credentials.accountId {
+            rememberPeerProfileKey(profileKey, for: profile.account)
         }
         let existing = (try? storage.messages.peerProfile(account: profile.account)) ?? nil
         if let existing, existing.revision >= profile.revision { return }
@@ -1925,6 +1940,52 @@ final class MessagingService {
         }
         nameCache[profile.account] = nil
         avatarCache[profile.account] = nil
+        refreshConversations()
+        if let id = activeConversationId { refreshActiveMessages(ifShowing: id) }
+    }
+
+    /// A contact's profile fetched from the relay (ProfileSync.swift). Newest
+    /// revision wins, as with pushed updates; the photo comes inline.
+    func applyFetchedProfile(_ profile: Relay_Content_EncryptedProfile, account: String) async {
+        let existing = (try? storage.messages.peerProfile(account: account)) ?? nil
+        if let existing, existing.revision >= profile.timestamp, existing.avatarId != nil || profile.avatarJpeg.isEmpty {
+            return
+        }
+        var avatarData: Data?
+        var avatarId: String?
+        if !profile.avatarJpeg.isEmpty {
+            let id = "profile-" + SHA256.hash(data: profile.avatarJpeg).prefix(8).map { String(format: "%02x", $0) }.joined()
+            if id == existing?.avatarId {
+                avatarData = existing?.avatarData
+            } else if let plaintext = SafeImage.avatarJPEG(from: profile.avatarJpeg) {
+                // Under Communication Safety a flagged photo is never shown or kept.
+                let flagged = SensitiveContent.isRestricted ? await SensitiveContent.isSensitive(imageData: plaintext) : false
+                avatarData = flagged ? nil : plaintext
+            }
+            avatarId = id
+        }
+        let links = ProfileText.links(profile.links.map { ($0.label, $0.url) })
+            .map { ProfileLink(label: $0.label, url: $0.url) }
+        let linksJSON = Self.encodeLinks(links)
+        let name = ProfileText.name(profile.displayName)
+        let status = ProfileText.status(profile.status)
+        let bio = ProfileText.bio(profile.bio)
+        do {
+            try storage.messages.upsertProfile(
+                account: account,
+                displayName: name.isEmpty ? nil : name,
+                avatarId: avatarId, avatarData: avatarData,
+                revision: max(profile.timestamp, existing?.revision ?? 0),
+                status: status.isEmpty ? nil : status,
+                bio: bio.isEmpty ? nil : bio,
+                linksJSON: linksJSON.isEmpty ? nil : linksJSON
+            )
+        } catch {
+            log.error("applyFetchedProfile: upsertProfile failed: \(PrivacyRedactor.error(error))")
+            return
+        }
+        nameCache[account] = nil
+        avatarCache[account] = nil
         refreshConversations()
         if let id = activeConversationId { refreshActiveMessages(ifShowing: id) }
     }
@@ -2045,7 +2106,7 @@ final class MessagingService {
         return data.flatMap { String(data: $0, encoding: .utf8) }.flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    private func readKVInt(_ key: String) -> Int64 {
+    func readKVInt(_ key: String) -> Int64 {
         guard let data = ((try? storage.database.query(
             "SELECT value FROM kv WHERE key = ?", [.text(key)]).first?.first?.data) ?? nil),
               let string = String(data: data, encoding: .utf8), let value = Int64(string)
@@ -2053,7 +2114,7 @@ final class MessagingService {
         return value
     }
 
-    private func writeKVInt(_ key: String, _ value: Int64) {
+    func writeKVInt(_ key: String, _ value: Int64) {
         try? storage.database.run(
             "INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
             [.text(key), .blob(Data(String(value).utf8))]
@@ -2619,6 +2680,11 @@ final class MessagingService {
         var version: Int = 1
         var conversations: [Conversation]
         var groups: [Group]
+        /// Contacts' profile keys and ours (ProfileSync.swift), in the chat
+        /// list only. Nil in older backups.
+        var profileKeys: [String: Data]? = nil
+        var myProfileKey: Data? = nil
+        var myProfileKeyAt: Int64? = nil
     }
 
     /// Leaves out what the user expects not to outlive this device: chats
@@ -4256,6 +4322,9 @@ final class MessagingService {
 
     func openConversation(_ conversationId: String) {
         activeConversationId = conversationId
+        if let peer = conversations.first(where: { $0.id == conversationId && !$0.isGroup })?.peerAccount, !peer.isEmpty {
+            Task { await refreshPeerProfile(peer, maxAge: 10 * 60) }
+        }
         activeMessageLimit = Self.messagePageSize
         // Not for disappearing chats: messages may have expired since.
         let disappearing = (conversations.first { $0.id == conversationId }?.disappearingSeconds ?? 0) > 0
@@ -4762,12 +4831,16 @@ final class MessagingService {
         blockedAccounts.insert(account)
         saveBlockedAccounts()
         refreshConversations()
+        // A new profile key for everyone else, so they stop seeing updates.
+        Task { await rotateMyProfileKey() }
     }
 
     func unblockAccount(_ account: String) {
         blockedAccounts.remove(account)
         saveBlockedAccounts()
         refreshConversations()
+        // They get our current profile (and key) again.
+        distributeProfileUpdate()
     }
 
     private func loadBlockedAccounts() {

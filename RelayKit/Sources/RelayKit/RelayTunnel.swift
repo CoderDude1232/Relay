@@ -102,7 +102,8 @@ public enum RelayTunnel {
     }
 
     private static let carriedHeaders: Set<String> = [
-        "authorization", "content-type", "relay-access-key",
+        "authorization", "content-type", "if-none-match", "relay-access-key",
+        "relay-profile-write", "relay-token",
         "x-relay-timestamp", "x-relay-nonce", "x-relay-content-sha256",
     ]
 
