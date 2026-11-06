@@ -691,7 +691,7 @@ private struct DataStorageSettingsView: View {
                 if service.isDemoAccount {
                     EmptyView()
                 } else if service.keepsChatListWithAccount {
-                    SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Back Up Message History",
+                    SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .blue, title: "Back Up Message History",
                                       info: "Keeps an encrypted copy of your messages (and, for Relay Supporters, photos and files) with your account, so they come back when you sign in on a new phone. Only your account password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy and stops backups on all your devices.",
                                       isOn: Binding(get: { historyBackup }, set: { enabled in
                                           historyBackup = enabled
@@ -860,41 +860,41 @@ struct PrivacySettingsView: View {
                 }
             }
             Section("Activity") {
-                SettingsToggleRow(systemName: "ellipsis.bubble.fill", title: "Send Typing Indicators",
+                SettingsToggleRow(systemName: "ellipsis.bubble.fill", color: .blue, title: "Send Typing Indicators",
                                   info: "When on, people you're chatting with can see when you're typing. When off, you'll still see theirs.",
                                   isOn: $sendTyping)
-                SettingsToggleRow(systemName: "checkmark.circle.fill", title: "Read Receipts",
+                SettingsToggleRow(systemName: "checkmark.circle.fill", color: .blue, title: "Read Receipts",
                                   info: "When on, people can see when you've read their messages.",
                                   isOn: Binding(get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 }))
             }
 
             Section("Messaging") {
-                SettingsToggleRow(systemName: "timer", title: "Send Delay",
+                SettingsToggleRow(systemName: "timer", color: .orange, title: "Send Delay",
                                   info: "Adds a small random delay before each message sends, making it harder to correlate your activity by timing.",
                                   isOn: Binding(get: { service.sendJitterEnabled }, set: { service.sendJitterEnabled = $0 }))
-                SettingsToggleRow(systemName: "keyboard", title: "Incognito Keyboard",
+                SettingsToggleRow(systemName: "keyboard", color: .indigo, title: "Incognito Keyboard",
                                   info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
                 #if DEBUG
                 NavigationLink("Scam Self-Test (debug)") { ScamSelfTestView() }
                 #endif
-                SettingsToggleRow(systemName: "exclamationmark.shield", title: "Scam Warnings",
+                SettingsToggleRow(systemName: "exclamationmark.shield", color: .red, title: "Scam Warnings",
                                   info: "Relay checks incoming messages with links, money or code requests on your iPhone (with Apple Intelligence where available) and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
                                   isOn: $scamWarnings)
-                SettingsToggleRow(systemName: "link", title: "Generate Link Previews",
+                SettingsToggleRow(systemName: "link", color: .teal, title: "Generate Link Previews",
                                   info: "When on, your iPhone fetches a preview for links you type, straight from that website (or YouTube for videos). The site sees your IP address and the link, even if you don't send it. Relay's servers never see the link. Previews are never fetched for links you receive, or while a proxy or backup connection is on.",
                                   isOn: $linkPreviews)
             }
 
             Section {
-                SettingsToggleRow(systemName: "magnifyingglass", title: "Show Chats in Search",
+                SettingsToggleRow(systemName: "magnifyingglass", color: .gray, title: "Show Chats in Search",
                                   info: "Adds your chat names to iPhone Search (Spotlight). The search index is stored by iOS outside Relay's encryption. Hidden chats are never added.",
                                   isOn: Binding(get: { spotlightIndexing }, set: { enabled in
                                       spotlightIndexing = enabled
                                       if enabled { service.refreshConversations() }  // re-index now
                                       else { SpotlightIndexer.deindexAll() }
                                   }))
-                SettingsToggleRow(systemName: "square.and.arrow.up", title: "Suggest Chats in Share Sheet",
+                SettingsToggleRow(systemName: "square.and.arrow.up", color: .gray, title: "Suggest Chats in Share Sheet",
                                   info: "Lets iOS suggest chats you message in the Share Sheet and Siri. iOS keeps those suggestions, with chat names and photos, outside Relay's encryption. Hidden chats are never suggested.",
                                   isOn: Binding(get: { shareSuggestions }, set: { enabled in
                                       shareSuggestions = enabled
@@ -911,7 +911,7 @@ struct PrivacySettingsView: View {
                     Text("No Name or Content").tag("none")
                 } label: {
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "bell.badge.fill", color: .gray)
+                        SettingsIcon(systemName: "bell.badge.fill", color: .red)
                         Text("Lock Screen Preview")
                     }
                 }
@@ -920,13 +920,13 @@ struct PrivacySettingsView: View {
                     UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
                 }
 
-                SettingsToggleRow(systemName: "bolt.fill", title: "Faster Alerts",
+                SettingsToggleRow(systemName: "bolt.fill", color: .red, title: "Faster Alerts",
                                   info: "On (the default): the encrypted message is delivered inside the push notification, so alerts show instantly and reliably. Apple's push servers carry only ciphertext they can't read, never who sent it. Off: the push is just a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it.",
                                   isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
             }
 
             Section {
-                SettingsToggleRow(systemName: "phone.fill", title: "Relay-Only Calls",
+                SettingsToggleRow(systemName: "phone.fill", color: .green, title: "Relay-Only Calls",
                                   info: "Routes every call through Relay's relay server so the other person never sees your IP address. If the relay server can't be reached, the call fails instead of connecting directly.",
                                   isOn: Binding(get: { privateCallMode }, set: { newValue in
                                       if newValue {
@@ -936,7 +936,7 @@ struct PrivacySettingsView: View {
                                           showDirectCallsWarning = true
                                       }
                                   }))
-                SettingsToggleRow(systemName: "clock.arrow.circlepath", title: "Show Calls in Recents",
+                SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .green, title: "Show Calls in Recents",
                                   info: "Adds Relay calls to the Phone app's Recents list, which can sync to your other Apple devices through iCloud.",
                                   isOn: $callsInRecents)
             } header: {
@@ -958,7 +958,7 @@ struct PrivacySettingsView: View {
             }
 
             Section("Media") {
-                SettingsToggleRow(systemName: "wifi", title: "Wi-Fi Only Downloads",
+                SettingsToggleRow(systemName: "wifi", color: .blue, title: "Wi-Fi Only Downloads",
                                   isOn: Binding(get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
                                                 set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") }))
             }
@@ -1264,7 +1264,7 @@ private struct SecuritySettingsView: View {
             }
 
             Section("Screen Lock") {
-                SettingsToggleRow(systemName: "faceid", title: "Screen Lock",
+                SettingsToggleRow(systemName: "faceid", color: .green, title: "Screen Lock",
                                   info: "Require \(biometricTypeName) when returning to Relay after it's been in the background.",
                                   isOn: $screenLockEnabled)
                 if screenLockEnabled {
@@ -1276,7 +1276,7 @@ private struct SecuritySettingsView: View {
                         Text("After 1 hour").tag(3600)
                     } label: {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "timer", color: .gray)
+                            SettingsIcon(systemName: "timer", color: .green)
                             Text("Lock After")
                         }
                     }
@@ -1284,7 +1284,7 @@ private struct SecuritySettingsView: View {
             }
 
             Section("Panic Mode") {
-                SettingsToggleRow(systemName: "eye.slash.fill", title: "Panic Mode",
+                SettingsToggleRow(systemName: "eye.slash.fill", color: .indigo, title: "Panic Mode",
                                   info: "Hides selected chats behind a PIN. Long-press a conversation in the list to mark it hidden.",
                                   isOn: Binding(
                                     get: { panicMode.isEnabled },
@@ -1503,21 +1503,17 @@ private struct EditProfileSheet: View {
 
 // MARK: - Settings icon
 
-/// A settings row's icon as iOS Settings draws it: a coloured tile with a
-/// white symbol in Light Mode, a dark tile with a coloured symbol in Dark Mode.
+/// A settings row's icon: a white symbol on a tile of the row's colour.
 struct SettingsIcon: View {
     let systemName: String
     let color: Color
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let dark = colorScheme == .dark
         Image(systemName: systemName)
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(dark ? color : .white)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white)
             .frame(width: 28, height: 28)
-            .background(dark ? AnyShapeStyle(Color(white: 0.09)) : AnyShapeStyle(color.gradient),
-                        in: .rect(cornerRadius: 7))
+            .background(color.gradient, in: .rect(cornerRadius: 7))
     }
 }
 
@@ -1557,17 +1553,18 @@ struct SettingsInfoButton: View {
     }
 }
 
-/// Standard settings toggle row: gray icon, title, optional ⓘ, trailing
+/// Standard settings toggle row: icon, title, optional ⓘ, trailing
 /// switch.
 struct SettingsToggleRow: View {
     let systemName: String
+    var color: Color = .gray
     let title: String
     var info: String? = nil
     @Binding var isOn: Bool
 
     var body: some View {
         HStack(spacing: 14) {
-            SettingsIcon(systemName: systemName, color: .gray)
+            SettingsIcon(systemName: systemName, color: color)
             Text(title)
             if let info {
                 SettingsInfoButton(title: title, message: info)
