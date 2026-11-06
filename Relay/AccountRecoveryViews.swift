@@ -168,9 +168,17 @@ struct RecoveryKeyCard: View {
     let key: String
     @State private var copied = false
 
+    /// Three groups a line, so the key never wraps mid-way and leaves a
+    /// dash hanging.
+    private var displayed: String {
+        let groups = RecoveryKey.format(key).split(separator: "-")
+        guard groups.count > 3 else { return RecoveryKey.format(key) }
+        return groups.prefix(3).joined(separator: "-") + "\n" + groups.dropFirst(3).joined(separator: "-")
+    }
+
     var body: some View {
         VStack(spacing: 14) {
-            Text(RecoveryKey.format(key))
+            Text(displayed)
                 .font(.title3.monospaced().weight(.semibold))
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)

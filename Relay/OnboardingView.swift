@@ -779,7 +779,8 @@ private struct EmailCodeView: View {
                         } else {
                             Text(codeSent ? "Continue" : "Send code")
                                 .font(.headline)
-                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                                // Dark ink only on the white button; greyed out it's white.
+                                .foregroundStyle(canContinue ? Color(red: 0.06, green: 0.02, blue: 0.22) : Color.white.opacity(0.55))
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -1098,6 +1099,9 @@ private struct SetupView: View {
                     Task {
                         do {
                             try await onComplete()
+                        } catch PasskeyError.canceled {
+                            // Backed out of the passkey sheet: nothing went wrong.
+                            isLoading = false
                         } catch {
                             errorMessage = FriendlyError.message(for: error)
                             isLoading = false
@@ -1110,7 +1114,7 @@ private struct SetupView: View {
                         } else {
                             Text("Start messaging")
                                 .font(.headline)
-                                .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
+                                .foregroundStyle(canContinue ? Color(red: 0.06, green: 0.02, blue: 0.22) : Color.white.opacity(0.55))
                         }
                     }
                     .frame(maxWidth: .infinity)

@@ -1356,7 +1356,7 @@ private struct NewChatSheet: View {
                                 Button {
                                     requestContactDiscovery()
                                 } label: {
-                                    actionLabel("Find Contacts on Relay", icon: "person.crop.circle.badge.checkmark", color: .green)
+                                    actionLabel("Find Contacts on Relay", icon: "person.crop.circle.badge.checkmark", color: .teal)
                                 }
                                 .tint(.primary)
                             }
@@ -1365,7 +1365,7 @@ private struct NewChatSheet: View {
                                 Button {
                                     showingInvite = true
                                 } label: {
-                                    actionLabel("Invite to Relay", icon: "person.badge.plus", color: .accentColor)
+                                    actionLabel("Invite to Relay", icon: "person.badge.plus", color: .green)
                                 }
                                 .tint(.primary)
                                 .sheet(isPresented: $showingInvite) {

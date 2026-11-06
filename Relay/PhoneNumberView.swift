@@ -167,9 +167,10 @@ struct PhoneNumberView: View {
         Button(action: action) {
             ZStack {
                 if working {
-                    ProgressView().tint(Self.ink)
+                    ProgressView().tint(.white)
                 } else {
-                    Text(title).font(.headline).foregroundStyle(Self.ink)
+                    // Dark ink only on the white button; greyed out it's white.
+                    Text(title).font(.headline).foregroundStyle(enabled ? Self.ink : Color.white.opacity(0.55))
                 }
             }
             .frame(maxWidth: .infinity)

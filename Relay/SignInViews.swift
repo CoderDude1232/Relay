@@ -60,9 +60,10 @@ struct OnboardingPrimaryButton: View {
         Button(action: action) {
             ZStack {
                 if working {
-                    ProgressView().tint(ink)
+                    ProgressView().tint(.white)
                 } else {
-                    Text(title).font(.headline).foregroundStyle(ink)
+                    // Dark ink only on the white button; greyed out it's white.
+                    Text(title).font(.headline).foregroundStyle(enabled ? ink : Color.white.opacity(0.55))
                 }
             }
             .frame(maxWidth: .infinity)
