@@ -122,8 +122,7 @@ func (s *Server) handleKTLookup(w http.ResponseWriter, r *http.Request, dev *sto
 // sealed bundle fetch), so the relay can't record who checks whose keys.
 // Unknown account and wrong key get the same 403.
 func (s *Server) handleKTLookupSealed(w http.ResponseWriter, r *http.Request) {
-	if !ktSealedLookupIPLimiter.allow(clientIP(r)) {
-		httpError(w, http.StatusTooManyRequests, "too many lookups; try again later")
+	if ok, _ := s.anonymousAllowed(w, r, ktSealedLookupIPLimiter, "too many lookups; try again later"); !ok {
 		return
 	}
 	token, err := base64.StdEncoding.DecodeString(r.Header.Get("Relay-Access-Key"))

@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"github.com/gtank/ristretto255"
+
+	"github.com/relayapp/relay-server/internal/voprf"
 )
 
 const (
@@ -125,89 +127,34 @@ func (is *Issuer) key(period string) *ristretto255.Scalar {
 
 // PublicKey is Y_p = k_p·G, which the app checks proofs against.
 func (is *Issuer) PublicKey(period string) []byte {
-	return ristretto255.NewElement().ScalarBaseMult(is.key(period)).Encode(nil)
+	return voprf.PublicKey(is.key(period))
 }
+
+var suite = voprf.Suite{H2G: h2gDomain, DLEQ: dleqDomain}
 
 // HashToGroup is H(period, nonce).
 func HashToGroup(period string, nonce []byte) *ristretto255.Element {
-	h := sha512.New()
-	h.Write([]byte(h2gDomain))
-	h.Write([]byte(period))
-	h.Write([]byte{0})
-	h.Write(nonce)
-	return ristretto255.NewElement().FromUniformBytes(h.Sum(nil))
+	return suite.HashToGroup(period, nonce)
 }
 
-func challenge(y, b, e, a1, a2 *ristretto255.Element) *ristretto255.Scalar {
-	h := sha512.New()
-	h.Write([]byte(dleqDomain))
-	for _, p := range []*ristretto255.Element{y, b, e, a1, a2} {
-		h.Write(p.Encode(nil))
-	}
-	return ristretto255.NewScalar().FromUniformBytes(h.Sum(nil))
-}
+func decodePoint(raw []byte) (*ristretto255.Element, error) { return voprf.DecodePoint(raw) }
 
-func decodePoint(raw []byte) (*ristretto255.Element, error) {
-	p := ristretto255.NewElement()
-	if len(raw) != 32 || p.Decode(raw) != nil || p.Equal(ristretto255.NewIdentityElement()) == 1 {
-		return nil, errors.New("supporter: bad point")
-	}
-	return p, nil
-}
-
-func randomScalar() *ristretto255.Scalar {
-	var b [64]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic("supporter: crypto/rand failed: " + err.Error())
-	}
-	return ristretto255.NewScalar().FromUniformBytes(b[:])
-}
+func randomScalar() *ristretto255.Scalar { return voprf.RandomScalar() }
 
 // Evaluate signs one blinded element for a period: E = k_p·B, with proof
 // c ‖ s (64 bytes) that log_G(Y_p) = log_B(E).
 func (is *Issuer) Evaluate(period string, blinded []byte) (evaluated, proof []byte, err error) {
-	b, err := decodePoint(blinded)
-	if err != nil {
-		return nil, nil, err
-	}
-	k := is.key(period)
-	y := ristretto255.NewElement().ScalarBaseMult(k)
-	e := ristretto255.NewElement().ScalarMult(k, b)
-	r := randomScalar()
-	a1 := ristretto255.NewElement().ScalarBaseMult(r)
-	a2 := ristretto255.NewElement().ScalarMult(r, b)
-	c := challenge(y, b, e, a1, a2)
-	s := ristretto255.NewScalar().Subtract(r, ristretto255.NewScalar().Multiply(c, k))
-	return e.Encode(nil), append(c.Encode(nil), s.Encode(nil)...), nil
+	return suite.Evaluate(is.key(period), blinded)
 }
 
 // VerifyProof is the app's check of Evaluate (here for tests).
 func VerifyProof(publicKey, blinded, evaluated, proof []byte) bool {
-	y, err1 := decodePoint(publicKey)
-	b, err2 := decodePoint(blinded)
-	e, err3 := decodePoint(evaluated)
-	if err1 != nil || err2 != nil || err3 != nil || len(proof) != 64 {
-		return false
-	}
-	c, s := ristretto255.NewScalar(), ristretto255.NewScalar()
-	if c.Decode(proof[:32]) != nil || s.Decode(proof[32:]) != nil {
-		return false
-	}
-	a1 := ristretto255.NewElement().Add(
-		ristretto255.NewElement().ScalarBaseMult(s), ristretto255.NewElement().ScalarMult(c, y))
-	a2 := ristretto255.NewElement().Add(
-		ristretto255.NewElement().ScalarMult(s, b), ristretto255.NewElement().ScalarMult(c, e))
-	return challenge(y, b, e, a1, a2).Equal(c) == 1
+	return suite.VerifyProof(publicKey, blinded, evaluated, proof)
 }
 
 // Check verifies a redeemed credential: point = k_p·H(period, nonce).
 func (is *Issuer) Check(period string, nonce, point []byte) bool {
-	n, err := decodePoint(point)
-	if err != nil || len(nonce) != NonceLength {
-		return false
-	}
-	want := ristretto255.NewElement().ScalarMult(is.key(period), HashToGroup(period, nonce))
-	return want.Equal(n) == 1
+	return len(nonce) == NonceLength && suite.Check(is.key(period), period, nonce, point)
 }
 
 // TransactionTag keys a transaction id so the issuance table holds no App

@@ -33,7 +33,7 @@ response)` with the key and nonce derived as in RFC 9458 §4.4 (export
 
 relayd rebuilds the inner request and runs it through the same handlers as a
 direct one, with the outer request's source address for rate limits. Only these
-inner headers are kept: `Authorization`, `Content-Type`, `Relay-Access-Key`,
+inner headers are kept: `Authorization`, `Content-Type`, `Relay-Access-Key`, `Relay-Token`,
 `X-Relay-Timestamp`, `X-Relay-Nonce`, `X-Relay-Content-SHA256`. Responses carry
 `Content-Type` and `Retry-After`. Inner paths must start with `/v1/` and can't be
 `/v1/t…`. Signatures, nonces and replay protection are unchanged: the inner

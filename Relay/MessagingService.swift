@@ -199,6 +199,8 @@ final class MessagingService {
     private let engine: CryptoEngine
     private let processor: EnvelopeProcessor
     private let api: RelayAPIClient
+    /// Anonymous send tokens for sealed sends, rings and sealed fetches.
+    private let sendTokens: SendTokenPool
     private let maintainer = PreKeyMaintainer()
     let attachmentStore = AttachmentBlobStore(appGroupId: AppModel.appGroupId)
     private let allocator: KVPreKeyIdAllocator
@@ -259,9 +261,13 @@ final class MessagingService {
             sealedSenderTrustRoot: RelayConfig.sealedSenderTrustRoot,
             processLock: .envelopeProcessing(appGroupId: AppModel.appGroupId)
         )
+        let sendTokens = SendTokenPool()
+        self.sendTokens = sendTokens
         self.api = RelayAPIClient(baseURL: serverURL, credentials: credentials, session: session,
                                   signer: DeviceAuthSigner(keychain: keychain),
-                                  stepUp: { await StepUpCoordinator.shared.confirm() })
+                                  stepUp: { await StepUpCoordinator.shared.confirm() },
+                                  sendToken: { await sendTokens.take() })
+        Task { [api] in await sendTokens.configure(api) }
         self.allocator = KVPreKeyIdAllocator(database: storage.database)
         StepUpCoordinator.shared.api = api
         loadMuteExpiries()

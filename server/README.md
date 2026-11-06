@@ -328,10 +328,10 @@ cooldown ends.
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `POST /v1/messages/sealed` | **none** | `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral, silent}` → `200 {serverTimestamp}`. `silent` (receipts) queues without a push. Verifies `accessKey` matches the destination account (one mailbox+key query, constant-time compare) without learning the sender, delivers an envelope with **empty sender fields**. **No client clock on the wire**: the envelope's `client_timestamp` and `server_timestamp` are both the relay's receive time (timestamps that matter live in the encrypted content). `403` for *any* failure (unknown mailbox and wrong key are indistinguishable). 600/IP-bucket/min, 120/mailbox/min. `429` also when this source-IP bucket already holds 200 unacked envelopes in the destination device's queue, or that queue is full (500 envelopes / 50 MB). |
+| `POST /v1/messages/sealed` | **none** | `{mailboxId, type, content (base64 sealed blob), accessKey (base64), ephemeral, silent}` → `200 {serverTimestamp}`. `silent` (receipts) queues without a push. Verifies `accessKey` matches the destination account (one mailbox+key query, constant-time compare) without learning the sender, delivers an envelope with **empty sender fields**. **No client clock on the wire**: the envelope's `client_timestamp` and `server_timestamp` are both the relay's receive time (timestamps that matter live in the encrypted content). `403` for *any* failure (unknown mailbox and wrong key are indistinguishable). 600/IP-bucket/min, 120/mailbox/min. `429` also when this source-IP bucket already holds 200 unacked envelopes in the destination device's queue, or that queue is full (500 envelopes / 50 MB). With a `Relay-Token` (see *Send tokens*) the token replaces the IP limits and queue share; `401` for a bad or used token. |
 | `GET /v1/queue[?limit=N][&cursor=C]` | sig | → `{envelopes:[base64 serialized Envelope], more: bool, cursor?: string}`. **Paged**: at most `limit` envelopes (1–100, default 100) and at most 4 MiB of ciphertext per page (always ≥1 envelope when any remain). When `more` is true, pass the returned opaque `cursor` back to get the next page; `cursor` is omitted when `more` is false. Does **not** dequeue (ack independently). `400` bad limit/cursor. HTTP/3-capable QUIC fallback for receiving when the TCP WebSocket can't connect. |
 | `POST /v1/messages/ack` | sig | `{envelopeId}` → `204`. REST equivalent of the WebSocket ack. |
-| `POST /v1/calls/ring` | **none** | `{destinationMailbox, accessKey (base64), callId}` → `204`. Rings **all** devices of the account owning `destinationMailbox` (PushKit VoIP on iOS, high-priority FCM data on Android). Authorised exactly like a sealed send (same access-key check, identical `403` for unknown mailbox / wrong key); `callId` `^[A-Za-z0-9-]{1,64}$`. The push payload is only `{"call_id": "<id>"}` (FCM adds `"type":"call"` for routing) — **no caller account, name or call kind**; the callee learns who is calling only from the E2E-encrypted offer. 60/IP/min, 20/mailbox/min. |
+| `POST /v1/calls/ring` | **none** | `{destinationMailbox, accessKey (base64), callId}` → `204`. Rings **all** devices of the account owning `destinationMailbox` (PushKit VoIP on iOS, high-priority FCM data on Android). Authorised exactly like a sealed send (same access-key check, identical `403` for unknown mailbox / wrong key); `callId` `^[A-Za-z0-9-]{1,64}$`. The push payload is only `{"call_id": "<id>"}` (FCM adds `"type":"call"` for routing) — **no caller account, name or call kind**; the callee learns who is calling only from the E2E-encrypted offer. 60/IP/min (or a `Relay-Token`), 20/mailbox/min. |
 
 ### Session establishment, discovery, invites
 
@@ -799,7 +799,34 @@ paths, signatures, account ids or mailboxes. The inner request goes through the
 same handlers and rate limits as a direct one. Bodies up to 8 MiB; larger
 attachments go direct. `GET /v1/t/key` → `{keyId, publicKey}` for checking only
 (the app builds the key in). `relayd -tunnel-key FILE -tunnel-public-key` prints
-it. Never replace the key file. The direct routes stay for older app versions.
+it. Never replace the key file. The direct routes stay for older app versions
+until `-tunnel-only`, which answers them `426` except attachments and the public
+key routes (see `docs/TUNNEL.md`).
+
+## Send tokens (`internal/sendtoken`)
+
+The anonymous capability routes (`POST /v1/messages/sealed`, `POST /v1/calls/ring`,
+`GET /v1/keys/{account}/sealed`, `GET /v1/kt/lookup/{account}/sealed`) are
+rate-limited by a one-use token instead of the sender's IP address, so nothing
+about the sender's network reaches those handlers.
+
+- **Issuing.** `POST /v1/send-tokens` (sig) `{day, blinded: [B]}` (1–100) →
+  `200 {day, tokens: [{evaluated, proof}]}`. `day` is the UTC day number
+  (`unix / 86400`); when it isn't the relay's, the answer is the relay's day and
+  no tokens, and the app blinds again for it. 10,000 tokens per account per day
+  (in memory), `429` past that.
+- **Construction.** The Relay Supporter VOPRF (`internal/voprf`: ristretto255,
+  DLEQ proof) with domain tags `Relay-SendToken-v1-h2g` / `-dleq`, label = the
+  day in decimal. One long-lived key, its public half built into the app
+  (`SendTokenPool.publicKey`), never fetched, so the relay can't hand an account
+  its own key and recognise its tokens. `relayd -send-token-key FILE
+  -send-token-public-key` prints it. Never replace the key file.
+- **Spending.** Header `Relay-Token: <day>.<base64url(nonce32 ‖ N32)>`. Good on
+  its day and the next, once (spent set in memory). A bad, old or used token is
+  `401`; the app takes a fresh one and retries once. With a token, a sealed send
+  has no per-sender queue share and the sealed key fetch's one-time prekey budget
+  is the target account's. Without one, an old app is limited by IP as before;
+  `-require-send-tokens` answers it `426` instead.
 
 ## Key transparency (`internal/kt`)
 

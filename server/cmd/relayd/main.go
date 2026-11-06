@@ -33,6 +33,7 @@ import (
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
+	"github.com/relayapp/relay-server/internal/sendtoken"
 	"github.com/relayapp/relay-server/internal/siwa"
 	"github.com/relayapp/relay-server/internal/store"
 	"github.com/relayapp/relay-server/internal/supporter"
@@ -204,6 +205,9 @@ func main() {
 	googleClientID := flag.String("google-client-id", "", "the app's Google OAuth client id; enables POST /v1/identity/google (needs -oprf-key)")
 	migrateSupabase := flag.Bool("migrate-supabase", false, "give Supabase-linked accounts the relay's own Apple/Google links and email tokens, then exit")
 	tunnelKey := flag.String("tunnel-key", "", "path to the encrypted tunnel's private key (created on first run; the app builds in its public half, so never replace it); empty = no /v1/t")
+	sendTokenKey := flag.String("send-token-key", "", "path to the anonymous send-token key (created on first run; the app builds in its public half, so never replace it); empty = sealed sends limited by IP only")
+	sendTokenPublic := flag.Bool("send-token-public-key", false, "print the send-token key's public half (base64) and exit")
+	requireSendTokens := flag.Bool("require-send-tokens", false, "refuse anonymous sends, rings and sealed fetches without a send token (426, update the app)")
 	tunnelOnly := flag.Bool("tunnel-only", false, "refuse direct requests (426, update the app) except attachments and public keys; needs -tunnel-key")
 	tunnelPublic := flag.Bool("tunnel-public-key", false, "print the tunnel key's public half (base64) and exit")
 	supporterKey := flag.String("supporter-key", "", "path to the Relay Supporter credential master secret (hex, 32 bytes); generated if absent, enables /v1/supporter/*")
@@ -214,6 +218,15 @@ func main() {
 	historyRemoteURL := flag.String("history-remote-url", "", "historyd base URL for segments when local disk is low (e.g. https://turn.example:9479)")
 	historyRemoteSecretFile := flag.String("history-remote-secret-file", "", "path to the secret shared with historyd")
 	flag.Parse()
+	if *sendTokenPublic {
+		is, err := sendtoken.LoadOrCreateIssuer(*sendTokenKey)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(base64.StdEncoding.EncodeToString(is.PublicKey()))
+		return
+	}
 	if *tunnelPublic {
 		key, err := tunnel.LoadOrCreateKey(*tunnelKey)
 		if err != nil {
@@ -475,6 +488,15 @@ func main() {
 		apiServer.SetTunnel(key)
 		apiServer.SetTunnelOnly(*tunnelOnly)
 		slog.Info("encrypted tunnel enabled", "required", *tunnelOnly)
+	}
+	if *sendTokenKey != "" {
+		is, err := sendtoken.LoadOrCreateIssuer(*sendTokenKey)
+		if err != nil {
+			slog.Error("failed to load send-token key", "err", privlog.Error(err))
+			os.Exit(1)
+		}
+		apiServer.SetSendTokens(is, *requireSendTokens)
+		slog.Info("anonymous send tokens enabled", "required", *requireSendTokens)
 	}
 	if *oprfKey != "" {
 		key, err := oprf.LoadOrCreateKey(*oprfKey)

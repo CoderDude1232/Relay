@@ -39,6 +39,7 @@ var tunnelRequestHeaders = map[string]bool{
 	"authorization":          true,
 	"content-type":           true,
 	"relay-access-key":       true,
+	"relay-token":            true,
 	"x-relay-timestamp":      true,
 	"x-relay-nonce":          true,
 	"x-relay-content-sha256": true,

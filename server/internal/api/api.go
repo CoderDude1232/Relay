@@ -40,6 +40,7 @@ import (
 	"github.com/relayapp/relay-server/internal/oprf"
 	"github.com/relayapp/relay-server/internal/privlog"
 	"github.com/relayapp/relay-server/internal/sealedsender"
+	"github.com/relayapp/relay-server/internal/sendtoken"
 	"github.com/relayapp/relay-server/internal/store"
 	"github.com/relayapp/relay-server/internal/tunnel"
 )
@@ -65,6 +66,10 @@ type Server struct {
 	history      *history.Storage // nil = history backup unavailable
 	tunnelKey    *tunnel.Key      // nil = no encrypted tunnel (/v1/t)
 	tunnelOnly   bool             // direct requests outside directRoute get 426
+	// sendTokens, when set, admits anonymous capability requests by token
+	// (sendtokens.go); requireSendTokens refuses them without one.
+	sendTokens        *sendtoken.Issuer
+	requireSendTokens bool
 
 	// Supabase social login. When supabaseURL is set, access tokens are
 	// verified server-to-server via GET /auth/v1/user and the returned
@@ -394,6 +399,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/directory/oprf", s.auth(s.handleDirectoryOPRF))
 	mux.HandleFunc("POST /v1/directory/buckets", s.auth(s.handleDirectoryBuckets))
 	mux.HandleFunc("POST /v1/messages/sealed", s.handleSealedSend) // unauthenticated by design
+	mux.HandleFunc("POST /v1/send-tokens", s.auth(s.handleSendTokens))
 	mux.HandleFunc("GET /v1/queue", s.auth(s.handleFetchQueue))
 	mux.HandleFunc("POST /v1/messages/ack", s.auth(s.handleAckMessage))
 	mux.HandleFunc("POST /v1/contact-invites", s.auth(s.handleCreateContactInvite))
@@ -955,9 +961,8 @@ var sealedDummyAccessKey = func() (k [32]byte) {
 // time. The envelope carries no sender fields; the recipient recovers the
 // sender by decrypting the sealed blob.
 func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if !sealedSendIPLimiter.allow(ip) {
-		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+	ok, viaToken := s.anonymousAllowed(w, r, sealedSendIPLimiter, "rate limit exceeded; try again later")
+	if !ok {
 		return
 	}
 	// No client timestamp is accepted: a sender clock offset is a fingerprint
@@ -1007,8 +1012,14 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		ServerTimestamp: now,
 		Ephemeral:       req.Ephemeral,
 	}
-	// Queue fairness for an anonymous sender is keyed by its source-IP bucket.
-	if err := s.hub.DeliverFrom("ip:"+ip, dest.AccountID, dest.DeviceID, env, !req.Silent); err != nil {
+	// Queue fairness for an old app's anonymous send is keyed by its source-IP
+	// bucket. A token sender can't be told apart from any other, so its share
+	// is bounded by the token allowance and the per-mailbox limit instead.
+	sender := ""
+	if !viaToken {
+		sender = "ip:" + clientIP(r)
+	}
+	if err := s.hub.DeliverFrom(sender, dest.AccountID, dest.DeviceID, env, !req.Silent); err != nil {
 		if errors.Is(err, hub.ErrSenderQuota) || errors.Is(err, store.ErrQueueFull) {
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 			return
@@ -2050,9 +2061,7 @@ var validCallID = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 // push carries only the call id; the caller's identity arrives in the
 // encrypted offer, sent as a sealed message.
 func (s *Server) handleCallRing(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if !callRingIPLimiter.allow(ip) {
-		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+	if ok, _ := s.anonymousAllowed(w, r, callRingIPLimiter, "rate limit exceeded; try again later"); !ok {
 		return
 	}
 	var req struct {
@@ -2455,9 +2464,8 @@ func (s *Server) handleGetKeys(w http.ResponseWriter, r *http.Request, dev *stor
 // key get the same 403. Abuse is bounded per IP and by the target's one-time
 // prekey budget.
 func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if !sealedKeyFetchIPLimiter.allow(ip) {
-		httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
+	ok, viaToken := s.anonymousAllowed(w, r, sealedKeyFetchIPLimiter, "rate limit exceeded; try again later")
+	if !ok {
 		return
 	}
 	account := r.PathValue("account")
@@ -2471,7 +2479,13 @@ func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "not allowed")
 		return
 	}
-	if !preKeyFetchLimiter.allow("sealed:" + ip + ":" + account) {
+	// The one-time prekey budget: per source and account for an old app, per
+	// account for token fetches (which name no source).
+	budget := "sealed-token:" + account
+	if !viaToken {
+		budget = "sealed:" + clientIP(r) + ":" + account
+	}
+	if !preKeyFetchLimiter.allow(budget) {
 		httpError(w, http.StatusTooManyRequests, "prekey fetch rate limit exceeded; try again later")
 		return
 	}
@@ -2484,8 +2498,12 @@ func (s *Server) handleGetKeysSealed(w http.ResponseWriter, r *http.Request) {
 		}
 		deviceIDs = []uint32{uint32(id)}
 	}
-	// Same one-time prekey budgets as the signed path, keyed by source IP.
-	requester := "ip:" + ip
+	// Same one-time prekey budgets as the signed path, keyed by source IP for
+	// an old app; a token fetch names no source, so its budget is the target's.
+	requester := "token:" + account
+	if !viaToken {
+		requester = "ip:" + clientIP(r)
+	}
 	allowOneTime := func(deviceID uint32) bool {
 		return allowOneTimePreKey(requester, account, deviceID)
 	}

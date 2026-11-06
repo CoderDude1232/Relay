@@ -139,6 +139,10 @@ public struct RelayAPIClient: Sendable {
     /// Asks the user to answer the account's second step when the relay wants
     /// it before a sensitive change (403 with `stepUp`); true to retry.
     private let stepUp: (@Sendable () async -> Bool)?
+    /// An anonymous send token (server internal/sendtoken) for sealed sends,
+    /// sealed key fetches and call rings, so the relay limits them by token
+    /// rather than by our address. nil when none is to hand.
+    private let sendToken: (@Sendable () async -> String?)?
 
     /// - Parameters:
     ///   - session: transport for signed requests.
@@ -150,13 +154,15 @@ public struct RelayAPIClient: Sendable {
                 session: URLSession = RelayTLS.sharedSession,
                 anonymousSession: URLSession = RelayTLS.sharedAnonymousSession,
                 signer: (any RelayRequestSigner)? = nil,
-                stepUp: (@Sendable () async -> Bool)? = nil) {
+                stepUp: (@Sendable () async -> Bool)? = nil,
+                sendToken: (@Sendable () async -> String?)? = nil) {
         self.baseURL = baseURL
         self.credentials = credentials
         self.session = session
         self.anonymousSession = anonymousSession
         self.signer = signer
         self.stepUp = stepUp
+        self.sendToken = sendToken
     }
 
     // MARK: - Accounts
@@ -678,19 +684,18 @@ public struct RelayAPIClient: Sendable {
             let silent: Bool
         }
         struct Response: Decodable { let serverTimestamp: Int64 }
-        let r: Response = try await request(
-            "POST", "v1/messages/sealed",
-            body: Req(
-                mailboxId: mailboxId,
-                type: Int(type.wireType.rawValue),
-                content: content.base64EncodedString(),
-                accessKey: accessKey.base64EncodedString(),
-                ephemeral: ephemeral,
-                silent: silent
-            ),
-            authenticated: false
-        )
-        return r.serverTimestamp
+        var request = makeRequest("POST", "v1/messages/sealed")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Req(
+            mailboxId: mailboxId,
+            type: Int(type.wireType.rawValue),
+            content: content.base64EncodedString(),
+            accessKey: accessKey.base64EncodedString(),
+            ephemeral: ephemeral,
+            silent: silent
+        ))
+        let (data, _) = try await sendWithToken(request)
+        return try JSONDecoder().decode(Response.self, from: data).serverTimestamp
     }
 
     /// Source-compatible shim; `clientTimestamp` is ignored.
@@ -970,7 +975,7 @@ public struct RelayAPIClient: Sendable {
             accessKey: accessKey.base64EncodedString(),
             callId: callId
         ))
-        _ = try await send(request, authenticated: false)
+        _ = try await sendWithToken(request)
     }
 
     // MARK: - Prekeys
@@ -1024,7 +1029,7 @@ public struct RelayAPIClient: Sendable {
         struct Response: Decodable { let devices: [BundleDTO] }
         var request = makeRequest("GET", "v1/keys/\(account)/sealed")
         request.setValue(accessKey.base64EncodedString(), forHTTPHeaderField: "Relay-Access-Key")
-        let (data, _) = try await send(request, authenticated: false)
+        let (data, _) = try await sendWithToken(request)
         return try JSONDecoder().decode(Response.self, from: data).devices.map { try $0.model() }
     }
 
@@ -1107,6 +1112,32 @@ public struct RelayAPIClient: Sendable {
             guard let stepUp, await stepUp() else { throw needed }
             return try await sendOnce(request, authenticated: authenticated)
         }
+    }
+
+    /// An anonymous capability request, with a send token when there is one.
+    /// A token the relay refuses (401: used, or from a day it no longer
+    /// takes) is replaced once.
+    private func sendWithToken(_ request: URLRequest) async throws -> (Data, Int) {
+        guard let sendToken else { return try await send(request, authenticated: false) }
+        var tokened = request
+        tokened.setValue(await sendToken(), forHTTPHeaderField: "Relay-Token")
+        do {
+            return try await send(tokened, authenticated: false)
+        } catch RelayAPIError.http(status: 401, _) where tokened.value(forHTTPHeaderField: "Relay-Token") != nil {
+            tokened.setValue(await sendToken(), forHTTPHeaderField: "Relay-Token")
+            return try await send(tokened, authenticated: false)
+        }
+    }
+
+    /// POST /v1/send-tokens: has the relay evaluate blinded send tokens for
+    /// `day` (its UTC day number). When the relay's day is another, it answers
+    /// with that day and no tokens, and the caller blinds again.
+    public func sendTokens(day: Int64, blinded: [Data]) async throws -> (day: Int64, tokens: [(evaluated: Data, proof: Data)]) {
+        struct Req: Encodable { let day: Int64; let blinded: [Data] }
+        struct Token: Decodable { let evaluated: Data; let proof: Data }
+        struct Response: Decodable { let day: Int64; let tokens: [Token] }
+        let r: Response = try await request("POST", "v1/send-tokens", body: Req(day: day, blinded: blinded))
+        return (r.day, r.tokens.map { ($0.evaluated, $0.proof) })
     }
 
     private func sendOnce(_ request: URLRequest, authenticated: Bool) async throws -> (Data, Int) {
@@ -1260,8 +1291,13 @@ public struct RelayAPIClient: Sendable {
     public func keyTransparencyLookup(account: String, since: UInt32 = 0, accessKey: Data? = nil) async throws -> KeyTransparency.Lookup {
         var request = makeRequest("GET", accessKey == nil ? "v1/kt/lookup/\(account)" : "v1/kt/lookup/\(account)/sealed")
         if since > 0 { request.url?.append(queryItems: [URLQueryItem(name: "since", value: String(since))]) }
-        if let accessKey { request.setValue(accessKey.base64EncodedString(), forHTTPHeaderField: "Relay-Access-Key") }
-        let (data, _) = try await send(request, authenticated: accessKey == nil)
+        let data: Data
+        if let accessKey {
+            request.setValue(accessKey.base64EncodedString(), forHTTPHeaderField: "Relay-Access-Key")
+            (data, _) = try await sendWithToken(request)
+        } else {
+            (data, _) = try await send(request, authenticated: true)
+        }
         return try JSONDecoder().decode(KeyTransparency.Lookup.self, from: data)
     }
 

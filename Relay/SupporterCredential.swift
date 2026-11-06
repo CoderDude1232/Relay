@@ -15,8 +15,14 @@ import CryptoKit
 import Foundation
 
 nonisolated enum SupporterCredential {
-    private static let h2gDomain = Data("Relay-Supporter-v1-h2g".utf8)
-    private static let dleqDomain = Data("Relay-Supporter-v1-dleq".utf8)
+    /// The domain tags of one use of the construction. Send tokens
+    /// (SendTokens.swift) use the same math under their own.
+    struct Suite: Sendable {
+        let h2g: Data
+        let dleq: Data
+        static let supporter = Suite(h2g: Data("Relay-Supporter-v1-h2g".utf8), dleq: Data("Relay-Supporter-v1-dleq".utf8))
+        static let sendToken = Suite(h2g: Data("Relay-SendToken-v1-h2g".utf8), dleq: Data("Relay-SendToken-v1-dleq".utf8))
+    }
     static let nonceLength = 32
 
     private static let initOnce: Int32 = sodium_init()
@@ -37,9 +43,9 @@ nonisolated enum SupporterCredential {
     }
 
     /// H(period, nonce).
-    static func hashToGroup(period: String, nonce: Data) -> [UInt8] {
+    static func hashToGroup(period: String, nonce: Data, suite: Suite = .supporter) -> [UInt8] {
         var hasher = SHA512()
-        hasher.update(data: h2gDomain)
+        hasher.update(data: suite.h2g)
         hasher.update(data: Data(period.utf8))
         hasher.update(data: Data([0]))
         hasher.update(data: nonce)
@@ -49,19 +55,19 @@ nonisolated enum SupporterCredential {
         return point
     }
 
-    static func blind(period: String) -> Pending? {
+    static func blind(period: String, suite: Suite = .supporter) -> Pending? {
         var nonce = [UInt8](repeating: 0, count: nonceLength)
         guard SecRandomCopyBytes(kSecRandomDefault, nonceLength, &nonce) == errSecSuccess else { return nil }
         _ = initOnce
         var r = [UInt8](repeating: 0, count: 32)
         crypto_core_ristretto255_scalar_random(&r)
-        return blind(period: period, nonce: Data(nonce), r: r)
+        return blind(period: period, nonce: Data(nonce), r: r, suite: suite)
     }
 
     /// Deterministic for the interop check.
-    static func blind(period: String, nonce: Data, r: [UInt8]) -> Pending? {
+    static func blind(period: String, nonce: Data, r: [UInt8], suite: Suite = .supporter) -> Pending? {
         _ = initOnce
-        let t = hashToGroup(period: period, nonce: nonce)
+        let t = hashToGroup(period: period, nonce: nonce, suite: suite)
         var b = [UInt8](repeating: 0, count: 32)
         guard crypto_scalarmult_ristretto255(&b, r, t) == 0 else { return nil }
         return Pending(period: period, nonce: nonce, blind: Data(r), blinded: Data(b))
@@ -69,7 +75,8 @@ nonisolated enum SupporterCredential {
 
     /// Checks the relay's proof that E = k_p·B for the published Y_p, then
     /// unblinds. nil if anything doesn't verify.
-    static func finish(_ pending: Pending, evaluated: Data, proof: Data, publicKey: Data) -> Token? {
+    static func finish(_ pending: Pending, evaluated: Data, proof: Data, publicKey: Data,
+                       suite: Suite = .supporter) -> Token? {
         _ = initOnce
         guard evaluated.count == 32, proof.count == 64, publicKey.count == 32,
               crypto_core_ristretto255_is_valid_point([UInt8](evaluated)) == 1,
@@ -88,7 +95,7 @@ nonisolated enum SupporterCredential {
               crypto_core_ristretto255_add(&a2, sB, cE) == 0
         else { return nil }
         var hasher = SHA512()
-        hasher.update(data: dleqDomain)
+        hasher.update(data: suite.dleq)
         for p in [y, b, e, a1, a2] { hasher.update(data: Data(p)) }
         var expected = [UInt8](repeating: 0, count: 32)
         crypto_core_ristretto255_scalar_reduce(&expected, [UInt8](hasher.finalize()))
