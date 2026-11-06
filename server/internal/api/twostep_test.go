@@ -453,8 +453,8 @@ func TestTwoStepSeveralMethods(t *testing.T) {
 	c.uploadDeviceAuthKey()
 
 	// The PIN can't be removed while it's on; turned off on its own, the
-	// authenticator stays.
-	stepUp(t, c, map[string]string{"code": code(1)}, http.StatusNoContent)
+	// authenticator stays. (Just signed in through two-step, the device isn't
+	// asked again.)
 	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusConflict, nil)
 	env.doJSON("PUT", "/v1/accounts/me/two-step", c.authUser(), c.password, map[string]any{"method": "pin", "enabled": false}, http.StatusNoContent, nil)
 	env.doJSON("DELETE", "/v1/accounts/me/account-password", c.authUser(), c.password, nil, http.StatusNoContent, nil)
@@ -525,4 +525,19 @@ func TestStepUpOnlyToRemove(t *testing.T) {
 	env.clients[d.authUser()] = d
 	d.uploadDeviceAuthKey()
 	env.doJSON("PUT", "/v1/accounts/me/two-step", d.authUser(), d.password, map[string]any{"method": "pin", "enabled": false}, http.StatusNoContent, nil)
+
+	// Asked for a challenge in that window, there's nothing to answer.
+	var challenge struct {
+		Method string `json:"method"`
+		Ticket string `json:"ticket"`
+	}
+	env.doJSON("POST", "/v1/accounts/me/two-step/challenge", d.authUser(), d.password, nil, http.StatusOK, &challenge)
+	if challenge.Method != "" || challenge.Ticket != "" {
+		t.Fatalf("fresh device got a challenge: %+v", challenge)
+	}
+	env.api.stepUps = newStepUps() // the window has passed
+	env.doJSON("POST", "/v1/accounts/me/two-step/challenge", d.authUser(), d.password, nil, http.StatusOK, &challenge)
+	if challenge.Method != "totp" {
+		t.Fatalf("after the window: %+v", challenge)
+	}
 }

@@ -235,6 +235,12 @@ struct RecoveryKeyView: View {
     private var email: String? { model.accountEmail }
     private var hasPasskey: Bool { (methods?.passkeys ?? 0) > 0 }
     private var hasKey: Bool { methods?.recoveryKey == true || service.recoveryKey != nil }
+    /// With two-step on, its check is the one confirmation (a passkey can
+    /// answer it); the other ways would only ask a second time.
+    private var hasTwoStep: Bool {
+        guard let on = methods?.twoStepMethods else { return false }
+        return !on.isEmpty && on != [.recovery]
+    }
 
     var body: some View {
         List {
@@ -252,17 +258,21 @@ struct RecoveryKeyView: View {
                 }
             } else {
                 Section {
-                    if hasPasskey {
+                    if hasTwoStep {
+                        Button { Task { await reveal() } } label: {
+                            Label(hasKey ? "Show Recovery Key" : "Create Recovery Key", systemImage: "key.horizontal.fill")
+                        }
+                    } else if hasPasskey {
                         Button { Task { await revealWithPasskey() } } label: {
                             Label("Show with Passkey", systemImage: "person.badge.key.fill")
                         }
                     }
-                    if email != nil {
+                    if !hasTwoStep, email != nil {
                         Button { showingEmailCode = true } label: {
                             Label("Show with Email Code", systemImage: "envelope.fill")
                         }
                     }
-                    if !hasPasskey && email == nil {
+                    if !hasTwoStep && !hasPasskey && email == nil {
                         // No passkey or email to confirm with (a phone-only account):
                         // the phone's owner confirms with Face ID or the passcode.
                         Button { Task { await revealWithDeviceOwner() } } label: {

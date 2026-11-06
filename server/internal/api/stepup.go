@@ -87,15 +87,16 @@ func (s *Server) needsStepUp(w http.ResponseWriter, dev *store.Device) bool {
 }
 
 // POST /v1/accounts/me/two-step/challenge → 200 {ticket, method, challenge?,
-// credentialIds?} (challenge for a passkey), or {method: ""} when the account
-// has no second step.
+// credentialIds?} (challenge for a passkey), or {method: ""} when there's
+// nothing to ask: the account has no second step, or this device answered it
+// within stepUpTTL.
 func (s *Server) handleStepUpChallenge(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	ts, err := s.store.TwoStepFor(dev.AccountID)
 	if err != nil {
 		internalError(w, err)
 		return
 	}
-	if ts.Method == "" {
+	if ts.Method == "" || s.stepUps.fresh(dev) {
 		writeJSON(w, http.StatusOK, map[string]any{"method": ""})
 		return
 	}

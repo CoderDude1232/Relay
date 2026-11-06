@@ -16,6 +16,9 @@ struct PasskeysView: View {
     @State private var isCreating = false
     @State private var errorMessage: String?
     @State private var pendingDelete: PasskeySummary?
+    /// The account's two-step methods, as of the last reload.
+    @State private var twoStep: [TwoStepRequired.Method] = []
+    @State private var offeringTwoStep = false
 
     var body: some View {
         List {
@@ -70,6 +73,12 @@ struct PasskeysView: View {
         } message: { _ in
             Text("You won't be able to sign in with it any more. To remove it from your iCloud Keychain too, use the Passwords app.")
         }
+        .confirmationDialog("Also ask for a passkey?", isPresented: $offeringTwoStep, titleVisibility: .visible) {
+            Button("Turn On") { Task { await turnOnPasskeyTwoStep() } }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text("When someone signs in on a new device with an email or phone code, Relay will also ask for one of your passkeys.")
+        }
     }
 
     private func reload() async {
@@ -77,6 +86,7 @@ struct PasskeysView: View {
         defer { isLoading = false }
         do {
             passkeys = try await service.apiClient.passkeys()
+            if let methods = try? await service.apiClient.signInMethods() { twoStep = methods.twoStepMethods }
         } catch {
             errorMessage = FriendlyError.message(for: error)
         }
@@ -89,14 +99,30 @@ struct PasskeysView: View {
         do {
             try await model.createPasskey()
             await reload()
+            // Most people adding a passkey want it to guard code sign-ins too;
+            // offered, not automatic, so an email-only fallback isn't lost unasked.
+            if !twoStep.contains(.passkey) && twoStep != [.recovery] { offeringTwoStep = true }
         } catch PasskeyError.canceled {
         } catch {
             errorMessage = FriendlyError.message(for: error)
         }
     }
 
+    private func turnOnPasskeyTwoStep() async {
+        do {
+            try await service.setTwoStep(.passkey, enabled: true)
+            await reload()
+        } catch {
+            errorMessage = FriendlyError.message(for: error)
+        }
+    }
+
     private func remove(_ passkey: PasskeySummary) async {
-        guard await BiometricGate.authenticate(reason: "Confirm it's you to remove this passkey.", requirePasscode: true) else { return }
+        // With two-step on, the relay asks for it before removing; Face ID
+        // would only ask a second time.
+        if twoStep.isEmpty || twoStep == [.recovery] {
+            guard await BiometricGate.authenticate(reason: "Confirm it's you to remove this passkey.", requirePasscode: true) else { return }
+        }
         do {
             try await service.apiClient.deletePasskey(id: passkey.id)
             if let id = Data(base64URL: passkey.id) { await service.removePasskeySlot(credentialId: id) }

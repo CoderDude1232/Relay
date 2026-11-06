@@ -991,7 +991,7 @@ works instead. Clients also ask before changes only the devices know about
 
 | Method & path | Auth | Request → Response |
 |---|---|---|
-| `POST /v1/accounts/me/two-step/challenge` | sig | → `200 {ticket, method, methods[], challenge?, credentialIds?}` (`challenge` when a passkey is one of them), or `{method: ""}` when there is no second step. |
+| `POST /v1/accounts/me/two-step/challenge` | sig | → `200 {ticket, method, methods[], challenge?, credentialIds?}` (`challenge` when a passkey is one of them), or `{method: ""}` when there's nothing to ask: no second step, or this device answered within the last 15 minutes. |
 | `POST /v1/accounts/me/two-step/verify` | sig | `{ticket, code? \| accountPasswordKey? \| credentialId, clientDataJSON, authenticatorData, signature, userHandle}` or `{recoveryAuthKey}` → `204`. `401` wrong answer or expired ticket; `429` locked out (shared with sign-in's per-account lockout). |
 
 ## Relay Supporter (anonymous subscription credentials)
