@@ -122,14 +122,16 @@ struct SettingsView: View {
                     .listRowBackground(rowHighlight("data"))
                 }
 
-                // MARK: Invite (hidden on demo accounts, which can't reach real users)
-                if !service.isDemoAccount {
+                // MARK: Invite and support
+                // Privacy Policy, Terms and Acknowledgements live under Privacy.
                 Section {
+                    // Hidden on demo accounts, which can't reach real users.
+                    if !service.isDemoAccount {
                     Button {
                         showingInvite = true
                     } label: {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "person.badge.plus", color: .accentColor)
+                            SettingsIcon(systemName: "person.badge.plus", color: .green)
                             Text("Invite Friends").foregroundStyle(.primary)
                         }
                     }
@@ -138,12 +140,7 @@ struct SettingsView: View {
                         InviteShareSheet(username: service.username)
                             .ignoresSafeArea()
                     }
-                }
-                }
-
-                // MARK: Support
-                // Privacy Policy, Terms and Acknowledgements live under Privacy.
-                Section {
+                    }
                     if Supporter.shared.isOffered {
                     Button { showingSupporter = true } label: {
                         HStack(spacing: 14) {
@@ -159,8 +156,9 @@ struct SettingsView: View {
                     .sheet(isPresented: $showingSupporter) { SupporterView() }
                     }
                     Link(destination: LegalLinks.feedbackMail) {
-                        SettingsExternalRow(systemName: "envelope.fill", title: "Send Feedback")
+                        SettingsExternalRow(systemName: "envelope.fill", color: .blue, title: "Send Feedback")
                     }
+                    .tint(.primary)
                 }
 
                 // MARK: Sign out
@@ -859,13 +857,15 @@ struct PrivacySettingsView: View {
                     }
                 }
             }
-            Section("Activity") {
-                SettingsToggleRow(systemName: "ellipsis.bubble.fill", color: .blue, title: "Send Typing Indicators",
-                                  info: "When on, people you're chatting with can see when you're typing. When off, you'll still see theirs.",
+            Section {
+                SettingsToggleRow(systemName: "ellipsis.bubble.fill", color: .blue, title: "Typing Indicators",
                                   isOn: $sendTyping)
                 SettingsToggleRow(systemName: "checkmark.circle.fill", color: .blue, title: "Read Receipts",
-                                  info: "When on, people can see when you've read their messages.",
                                   isOn: Binding(get: { service.sendReadReceipts }, set: { service.sendReadReceipts = $0 }))
+            } header: {
+                Text("Activity")
+            } footer: {
+                Text("Let people see when you're typing and when you've read their messages. With typing indicators off you still see theirs.")
             }
 
             Section("Messaging") {
@@ -888,20 +888,20 @@ struct PrivacySettingsView: View {
 
             Section {
                 SettingsToggleRow(systemName: "magnifyingglass", color: .gray, title: "Show Chats in Search",
-                                  info: "Adds your chat names to iPhone Search (Spotlight). The search index is stored by iOS outside Relay's encryption. Hidden chats are never added.",
                                   isOn: Binding(get: { spotlightIndexing }, set: { enabled in
                                       spotlightIndexing = enabled
                                       if enabled { service.refreshConversations() }  // re-index now
                                       else { SpotlightIndexer.deindexAll() }
                                   }))
                 SettingsToggleRow(systemName: "square.and.arrow.up", color: .gray, title: "Suggest Chats in Share Sheet",
-                                  info: "Lets iOS suggest chats you message in the Share Sheet and Siri. iOS keeps those suggestions, with chat names and photos, outside Relay's encryption. Hidden chats are never suggested.",
                                   isOn: Binding(get: { shareSuggestions }, set: { enabled in
                                       shareSuggestions = enabled
                                       if !enabled { INInteraction.deleteAll(completion: nil) }
                                   }))
             } header: {
                 Text("System Integration")
+            } footer: {
+                Text("Lets iOS show your chats in Search, the Share Sheet and Siri. iOS keeps these, with chat names and photos, outside Relay's encryption. Hidden chats are never included.")
             }
 
             Section("Notifications") {
@@ -927,7 +927,6 @@ struct PrivacySettingsView: View {
 
             Section {
                 SettingsToggleRow(systemName: "phone.fill", color: .green, title: "Relay-Only Calls",
-                                  info: "Routes every call through Relay's relay server so the other person never sees your IP address. If the relay server can't be reached, the call fails instead of connecting directly.",
                                   isOn: Binding(get: { privateCallMode }, set: { newValue in
                                       if newValue {
                                           privateCallMode = true
@@ -937,14 +936,18 @@ struct PrivacySettingsView: View {
                                       }
                                   }))
                 SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .green, title: "Show Calls in Recents",
-                                  info: "Adds Relay calls to the Phone app's Recents list, which can sync to your other Apple devices through iCloud.",
                                   isOn: $callsInRecents)
             } header: {
                 Text("Calls")
             } footer: {
-                if !privateCallMode {
-                    Text("Direct calls are on: the people you call can see your IP address, which can reveal your approximate location.")
-                        .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 6) {
+                    if privateCallMode {
+                        Text("Relay-Only Calls go through Relay's server, so the other person never sees your IP address.")
+                    } else {
+                        Text("Direct calls are on: the people you call can see your IP address, which can reveal your approximate location.")
+                            .foregroundStyle(.red)
+                    }
+                    Text("Show Calls in Recents adds Relay calls to the Phone app, which can sync them to your other Apple devices through iCloud.")
                 }
             }
             .confirmationDialog("Allow direct calls?", isPresented: $showDirectCallsWarning, titleVisibility: .visible) {
@@ -973,9 +976,11 @@ struct PrivacySettingsView: View {
                 Link(destination: LegalLinks.privacy) {
                     SettingsExternalRow(systemName: "hand.raised.fill", title: "Privacy Policy")
                 }
+                .tint(.primary)
                 Link(destination: LegalLinks.terms) {
                     SettingsExternalRow(systemName: "doc.text.fill", title: "Terms of Service")
                 }
+                .tint(.primary)
                 NavigationLink(destination: AcknowledgementsView()) {
                     SettingsNavRow(systemName: "heart.text.square.fill", color: .gray, title: "Acknowledgements")
                 }
@@ -1231,41 +1236,8 @@ private struct SecuritySettingsView: View {
 
     var body: some View {
         List {
-            Section("Encryption") {
-                HStack(spacing: 14) {
-                    SettingsIcon(systemName: "lock.shield.fill", color: .green)
-                    LabeledContent("Protocol", value: "Signal (PQXDH)")
-                }
-                HStack(spacing: 14) {
-                    SettingsIcon(systemName: "cylinder.split.1x2.fill", color: .blue)
-                    LabeledContent("Storage", value: "SQLCipher AES-256")
-                }
-                HStack(spacing: 14) {
-                    SettingsIcon(systemName: "key.fill", color: .orange)
-                    LabeledContent("Keys", value: "Secure Enclave")
-                }
-            }
-
             Section {
-                Picker(selection: $appSwitcherMode) {
-                    ForEach(AppSwitcherPrivacy.Mode.allCases) { mode in
-                        Text(mode.title).tag(mode.rawValue)
-                    }
-                } label: {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "square.on.square", color: .indigo)
-                        Text("App Switcher")
-                    }
-                }
-            } header: {
-                Text("App Switcher")
-            } footer: {
-                Text("What's hidden when Relay shows in the app switcher. Hide Messages & Names blurs messages, names and photos and leaves the rest of the screen as it is.")
-            }
-
-            Section("Screen Lock") {
                 SettingsToggleRow(systemName: "faceid", color: .green, title: "Screen Lock",
-                                  info: "Require \(biometricTypeName) when returning to Relay after it's been in the background.",
                                   isOn: $screenLockEnabled)
                 if screenLockEnabled {
                     Picker(selection: $screenLockTimeout) {
@@ -1281,11 +1253,28 @@ private struct SecuritySettingsView: View {
                         }
                     }
                 }
+            } footer: {
+                Text("Require \(biometricTypeName) when returning to Relay after it's been in the background.")
             }
 
-            Section("Panic Mode") {
+            Section {
+                Picker(selection: $appSwitcherMode) {
+                    ForEach(AppSwitcherPrivacy.Mode.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "square.on.square", color: .indigo)
+                        Text("Hide in App Switcher")
+                    }
+                }
+                .pickerStyle(.navigationLink)
+            } footer: {
+                Text("Messages & Names blurs messages, names and photos and leaves the rest of the screen as it is.")
+            }
+
+            Section {
                 SettingsToggleRow(systemName: "eye.slash.fill", color: .indigo, title: "Panic Mode",
-                                  info: "Hides selected chats behind a PIN. Long-press a conversation in the list to mark it hidden.",
                                   isOn: Binding(
                                     get: { panicMode.isEnabled },
                                     set: { enabled in
@@ -1296,6 +1285,27 @@ private struct SecuritySettingsView: View {
                     Button("Configure Panic Mode") { showingPanicSettings = true }
                         .foregroundStyle(.tint)
                 }
+            } footer: {
+                Text("Hides selected chats behind a PIN. Long-press a conversation in the list to mark it hidden.")
+            }
+
+            Section {
+                HStack(spacing: 14) {
+                    SettingsIcon(systemName: "lock.shield.fill", color: .green)
+                    LabeledContent("Messages and Calls", value: "End-to-End")
+                }
+                HStack(spacing: 14) {
+                    SettingsIcon(systemName: "iphone", color: .blue)
+                    LabeledContent("On This Device", value: "Encrypted")
+                }
+                HStack(spacing: 14) {
+                    SettingsIcon(systemName: "key.fill", color: .orange)
+                    LabeledContent("Keys", value: "Secure Enclave")
+                }
+            } header: {
+                Text("Encryption")
+            } footer: {
+                Text("Messages and calls use the Signal Protocol with post-quantum key agreement (PQXDH). Relay stores them on this device in an AES-256 encrypted database whose key is protected by the Secure Enclave.")
             }
         }
         .modifier(ThemedPageBackground())
@@ -1915,11 +1925,12 @@ struct InviteShareSheet: UIViewControllerRepresentable {
 /// A settings row that opens something outside the app (Safari / Mail).
 struct SettingsExternalRow: View {
     let systemName: String
+    var color: Color = .accentColor
     let title: String
 
     var body: some View {
         HStack(spacing: 14) {
-            SettingsIcon(systemName: systemName, color: .accentColor)
+            SettingsIcon(systemName: systemName, color: color)
             Text(title).foregroundStyle(.primary)
             Spacer(minLength: 0)
             Image(systemName: "arrow.up.right")

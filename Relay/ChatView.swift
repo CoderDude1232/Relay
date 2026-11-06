@@ -2997,6 +2997,8 @@ private struct MessageRow: View {
             HStack(alignment: .bottom, spacing: 8) {
                 if message.isOutgoing {
                     Spacer(minLength: MessageRow.sideGap(dynamicTypeSize))
+                } else if !isGroup {
+                    // One person: their photo is already in the header.
                 } else if position.closesGroup {
                     AvatarView(name: rowAvatarName, size: 28, imageData: rowAvatarData)
                 } else {

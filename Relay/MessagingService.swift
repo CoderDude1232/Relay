@@ -541,6 +541,8 @@ final class MessagingService {
             moveWhatsAppImportNoticesOnce()
         }
         loadDirectoryDecoySeed()
+        // Connecting from the first frame, not "offline" until the loop runs.
+        if connectionState == .disconnected { connectionState = .connecting }
         connectionTask = Task { await runConnectionLoop() }
         pollTask = Task { [weak self] in await self?.runQueuePollLoop() }
         Task { [weak self] in

@@ -2082,7 +2082,9 @@ private struct ConversationRow: View {
                                 .accessibilityLabel("Muted")
                                 .foregroundStyle(.tertiary)
                         }
-                        if conversation.lastMessageIsOutgoing && !conversation.isGroup {
+                        // A failed send has its own line under the preview.
+                        if conversation.lastMessageIsOutgoing && !conversation.isGroup
+                            && conversation.lastMessageStatus != .failed {
                             deliveryStatusIcon
                         }
                         if let ts = conversation.lastMessageAt {
@@ -2125,6 +2127,16 @@ private struct ConversationRow: View {
                     if hasUnread {
                         CountBadge(count: conversation.unreadCount)
                     }
+                }
+                if conversation.lastMessageIsOutgoing && conversation.lastMessageStatus == .failed {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                        Text("Not delivered")
+                    }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                        .padding(.top, 1)
                 }
                 if scamFlagged {
                     Label("Possible scam", systemImage: "exclamationmark.triangle.fill")

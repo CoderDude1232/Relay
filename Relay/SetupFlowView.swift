@@ -236,7 +236,7 @@ private struct SetupPrivacyPage: View {
                 .onboardingCard()
 
             VStack(alignment: .leading, spacing: 10) {
-                label("In the App Switcher")
+                label("Hide in the App Switcher")
                 VStack(spacing: 0) {
                     ForEach(Array(AppSwitcherPrivacy.Mode.allCases.enumerated()), id: \.element) { index, mode in
                         if index > 0 { divider }

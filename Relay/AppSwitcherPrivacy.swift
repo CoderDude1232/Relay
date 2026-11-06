@@ -19,9 +19,9 @@ final class AppSwitcherPrivacy {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .everything: "Hide Everything"
-            case .content: "Hide Messages & Names"
-            case .off: "Don't Hide"
+            case .everything: "Everything"
+            case .content: "Messages & Names"
+            case .off: "Nothing"
             }
         }
     }
