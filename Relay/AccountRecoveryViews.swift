@@ -166,15 +166,16 @@ struct RecoveryKeySignInSheet: View {
 
 struct RecoveryKeyCard: View {
     let key: String
-    @State private var copied = false
 
     /// Three groups a line, so the key never wraps mid-way and leaves a
     /// dash hanging.
-    private var displayed: String {
+    static func lines(_ key: String) -> String {
         let groups = RecoveryKey.format(key).split(separator: "-")
         guard groups.count > 3 else { return RecoveryKey.format(key) }
         return groups.prefix(3).joined(separator: "-") + "\n" + groups.dropFirst(3).joined(separator: "-")
     }
+
+    private var displayed: String { Self.lines(key) }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -185,16 +186,26 @@ struct RecoveryKeyCard: View {
                 .padding(.vertical, 18)
                 .background(.fill.tertiary, in: .rect(cornerRadius: 14, style: .continuous))
                 .accessibilityLabel(RecoveryKey.format(key).map { String($0) }.joined(separator: " "))
-            Button {
-                SecurePasteboard.copySecret(RecoveryKey.format(key))
-                copied = true
-                Task { try? await Task.sleep(for: .seconds(2)); copied = false }
-            } label: {
-                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-            }
-            .buttonStyle(.bordered)
-            .tint(.primary)
+            RecoveryKeyCopyButton(key: key)
         }
+    }
+}
+
+struct RecoveryKeyCopyButton: View {
+    let key: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            SecurePasteboard.copySecret(RecoveryKey.format(key))
+            copied = true
+            Task { try? await Task.sleep(for: .seconds(2)); copied = false }
+        } label: {
+            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                .foregroundStyle(.primary)
+        }
+        .buttonStyle(.bordered)
+        .tint(.primary)
     }
 }
 
@@ -251,55 +262,96 @@ struct RecoveryKeyView: View {
         return !on.isEmpty && on != [.recovery]
     }
 
+    /// Random stand-in shown blurred until the key is revealed: the real key
+    /// is never on screen (or in the view tree) while it's hidden.
+    @State private var decoy = RecoveryKeyView.makeDecoy()
+
+    private static func makeDecoy() -> String {
+        let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        let groups = (0..<6).map { _ in String((0..<4).map { _ in alphabet.randomElement()! }) }
+        return groups.prefix(3).joined(separator: "-") + "\n" + groups.dropFirst(3).joined(separator: "-")
+    }
+
+    /// The first way this account can confirm it's you; the card's tap uses it.
+    private var primaryReveal: (() async -> Void)? {
+        if hasTwoStep { return { await reveal() } }
+        if hasPasskey { return { await revealWithPasskey() } }
+        if email != nil { return { showingEmailCode = true } }
+        return { await revealWithDeviceOwner() }
+    }
+
+    private var revealHint: String {
+        if !hasKey { return "Tap to Create" }
+        if hasTwoStep { return "Tap to Reveal" }
+        if hasPasskey { return "Tap to Reveal with Passkey" }
+        if email != nil { return "Tap to Reveal with Email Code" }
+        return "Tap to Reveal with \(BiometricGate.biometryName)"
+    }
+
     var body: some View {
         List {
-            if let revealed {
-                Section {
-                    RecoveryKeyCard(key: revealed)
-                        .listRowBackground(Color.clear)
-                } footer: {
-                    Text("Anyone with this key can sign in to your account, so keep it private.")
+            Section {
+                VStack(spacing: 16) {
+                    Image(systemName: "key.horizontal.fill")
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 64, height: 64)
+                        .background(Color.yellow.gradient, in: .rect(cornerRadius: 16))
+                    Text(hasKey
+                         ? "Your recovery key signs you in when you can't get a code or use a passkey, and brings back your chat list."
+                         : "A recovery key signs you in when you can't get a code or use a passkey, and brings back your chat list.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    keyBox
+                    if let revealed {
+                        HStack(spacing: 12) {
+                            RecoveryKeyCopyButton(key: revealed)
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.3)) { self.revealed = nil }
+                                decoy = Self.makeDecoy()
+                            } label: {
+                                Label("Hide", systemImage: "eye.slash")
+                                    .foregroundStyle(.primary)
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.primary)
+                        }
+                    }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .listRowBackground(Color.clear)
+            } footer: {
+                Text(errorMessage ?? (revealed != nil
+                    ? "Anyone with this key can sign in to your account, so keep it private: a password manager, or written down."
+                    : "Only you can see it, after you confirm it's you."))
+                    .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+            }
+
+            // Other ways to confirm, when the account has more than one.
+            if revealed == nil, !hasTwoStep, hasPasskey, email != nil {
+                Section {
+                    Button { showingEmailCode = true } label: {
+                        SettingsNavRow(systemName: "envelope.fill", color: .blue, title: "Use an Email Code Instead")
+                    }
+                    .tint(.primary)
+                }
+            }
+
+            if revealed != nil {
                 Section {
                     Button("Create New Key", role: .destructive) { confirmingReplace = true }
                 } footer: {
                     Text("Makes a new key and stops the old one working.")
-                }
-            } else {
-                Section {
-                    if hasTwoStep {
-                        Button { Task { await reveal() } } label: {
-                            SettingsNavRow(systemName: "key.horizontal.fill", color: .yellow, title: hasKey ? "Show Recovery Key" : "Create Recovery Key")
-                        }
-                    } else if hasPasskey {
-                        Button { Task { await revealWithPasskey() } } label: {
-                            SettingsNavRow(systemName: "person.badge.key.fill", color: .teal, title: "Show with Passkey")
-                        }
-                    }
-                    if !hasTwoStep, email != nil {
-                        Button { showingEmailCode = true } label: {
-                            SettingsNavRow(systemName: "envelope.fill", color: .blue, title: "Show with Email Code")
-                        }
-                    }
-                    if !hasTwoStep && !hasPasskey && email == nil {
-                        // No passkey or email to confirm with (a phone-only account):
-                        // the phone's owner confirms with Face ID or the passcode.
-                        Button { Task { await revealWithDeviceOwner() } } label: {
-                            SettingsNavRow(systemName: "faceid", color: .green, title: "Show with Face ID")
-                        }
-                    }
-                } footer: {
-                    Text(errorMessage ?? (hasKey
-                        ? "Your recovery key signs you in when you can't get a code or use a passkey, and brings back your chat list. Confirm it's you to see it."
-                        : "A recovery key signs you in when you can't get a code or use a passkey, and brings back your chat list. Confirm it's you to create one."))
-                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
             }
         }
         .modifier(ThemedPageBackground())
         .navigationTitle("Recovery Key")
         .navigationBarTitleDisplayMode(.inline)
-        .overlay { if working { ProgressView() } }
         .sheet(isPresented: $showingEmailCode) {
             if let email {
                 EmailCodeConfirmSheet(email: email) { Task { await reveal() } }
@@ -310,6 +362,47 @@ struct RecoveryKeyView: View {
         } message: {
             Text("Your old key will stop working straight away.")
         }
+    }
+
+    private var keyBox: some View {
+        let hidden = revealed == nil
+        return Button {
+            guard hidden, !working, let action = primaryReveal else { return }
+            errorMessage = nil
+            Task { await action() }
+        } label: {
+            Text(revealed.map(RecoveryKeyCard.lines) ?? decoy)
+                .font(.title2.monospaced().weight(.semibold))
+                .lineSpacing(6)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.primary)
+                .blur(radius: hidden ? 6 : 0)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 26)
+                .background(.fill.tertiary, in: .rect(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    if hidden {
+                        Group {
+                            if working {
+                                ProgressView()
+                            } else {
+                                Label(revealHint, systemImage: hasKey ? "eye.fill" : "plus")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .glassCompat(in: .capsule)
+                        .transition(.opacity)
+                    }
+                }
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(hidden ? revealHint : RecoveryKey.format(revealed ?? "").map { String($0) }.joined(separator: " "))
     }
 
     private func revealWithDeviceOwner() async {
@@ -341,7 +434,7 @@ struct RecoveryKeyView: View {
         guard await StepUpCoordinator.shared.confirm() else { return }
         if service.recoveryKey == nil { await service.restoreAccountStorage() }
         if let key = service.recoveryKey {
-            revealed = key
+            withAnimation(.easeOut(duration: 0.4)) { revealed = key }
         } else if methods?.recoveryKey != false { // unknown counts as "has one"
             errorMessage = "Your recovery key couldn't be loaded on this device. Check your connection and try again, or create a new key (the old one will stop working)."
             confirmingReplace = true
@@ -354,7 +447,8 @@ struct RecoveryKeyView: View {
         working = true
         defer { working = false }
         do {
-            revealed = try await service.createRecoveryKey()
+            let key = try await service.createRecoveryKey()
+            withAnimation(.easeOut(duration: 0.4)) { revealed = key }
         } catch {
             errorMessage = FriendlyError.message(for: error)
         }

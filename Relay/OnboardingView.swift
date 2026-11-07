@@ -1289,6 +1289,11 @@ enum FriendlyError {
                 return "Relay sent an unexpected response. Please try again."
             }
         }
+        // iOS checks the app's passkey link to relaymsg.app for a few seconds
+        // after an install or update; its error names the team and domain.
+        if (error as NSError).localizedDescription.contains("webcredentials") {
+            return "Passkeys aren't ready on this iPhone yet. Try again in a few seconds."
+        }
         if let described = (error as? LocalizedError)?.errorDescription, !described.isEmpty {
             return described
         }
