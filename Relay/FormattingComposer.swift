@@ -159,10 +159,9 @@ struct FormattingTextEditor: UIViewRepresentable {
 
         func updatePlaceholder(in tv: UITextView) {
             placeholderLabel?.text = parent.placeholder
-            let shouldHide = !tv.text.isEmpty
-            guard placeholderLabel?.isHidden != shouldHide else { return }
-            UIView.animate(withDuration: 0.15) { self.placeholderLabel?.alpha = shouldHide ? 0 : 1 }
-            if !shouldHide { placeholderLabel?.isHidden = false }
+            let target: CGFloat = tv.text.isEmpty ? 1 : 0
+            guard let label = placeholderLabel, label.alpha != target else { return }
+            UIView.animate(withDuration: 0.15) { label.alpha = target }
         }
     }
 }

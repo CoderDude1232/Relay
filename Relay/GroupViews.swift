@@ -431,7 +431,8 @@ struct GroupInfoView: View {
                                                 .foregroundStyle(.yellow)
                                         }
                                     }
-                                    if member == ownAccountId {
+                                    // displayName already reads "You" for us.
+                                    if member == ownAccountId, service.displayName(forAccount: member) != "You" {
                                         Text("You")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
