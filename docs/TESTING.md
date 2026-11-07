@@ -18,13 +18,15 @@ re-sign-in, export-compliance and CloudKit production setup.
 Not yet verified: everything marked ☐ below.
 
 ## Accounts and sign-in
-- ☐ Sign up without an email (passkey only): trade-offs screen, recovery key
-  shown once and must be acknowledged.
+- ✅ Sign up without an email (passkey only): trade-offs screen, recovery key
+  shown once and must be acknowledged. (Simulator, 2026-11-06.)
 - ☐ Recovery key: view with passkey and with email code; sign out, sign in
   with the key; chat list comes back; "Create New Key" stops the old one.
 - ☐ Remove email (account with a passkey): Email shows "None" afterwards,
   Find Me by Email hidden, passkey sign-in still works.
-- ☐ Passkey sign-in on a second iPhone restores the chat list.
+- ☐ Passkey sign-in on a second iPhone restores the chat list. (Passes in the
+  simulator, 2026-11-07: sign out, passkey sign-in, chat list and contacts'
+  photos come back.)
 
 ## Messaging
 - ✅ Message requests: C (never chatted with A) messages A. A sees "Message
@@ -76,7 +78,7 @@ Not yet verified: everything marked ☐ below.
 - ☐ Disappearing timer: B changes it → a line in A's chat; turning it off
   sticks.
 - ☐ Change account password / remove a passkey asks for Face ID.
-- ☐ iCloud backup restore keeps message requests as requests.
+- ☐ Restoring after sign-in keeps message requests as requests.
 
 ## Sharing (2026-11-03)
 - ☐ WhatsApp → chat → Export Chat → Attach Media → Relay: the importer opens,

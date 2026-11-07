@@ -1,28 +1,9 @@
-# Release prep — CloudKit production + App Review package
+# Release prep — App Review package
 
 Morgan does the Apple-portal steps (his Apple ID owns team HK396F3767).
 
-## 1. CloudKit: deploy the schema to Production (Morgan, ~2 min)
-
-TestFlight and App Store builds use CloudKit's **Production** environment, which
-can't create record types on the fly. Until this is done, iCloud Backup fails in
-every TestFlight build.
-
-1. Go to https://icloud.developer.apple.com and sign in with Morgan's Apple ID.
-2. **CloudKit Database** → container picker (top left) → `iCloud.app.relaymsg`.
-3. Make sure the environment switch says **Development**. Open **Schema → Record Types**
-   and check that **Backup** exists, with these fields:
-   - `payload` — Asset
-   - `format` — Int(64)
-
-   (`updatedAt`, Date/Time, may also be there from older builds — that's fine.)
-   If **Backup** isn't listed, run one backup from an Xcode build first
-   (Profile → Backup & Restore → turn on iCloud Backup), then reload.
-4. Left sidebar, bottom: **Deploy Schema Changes…** → review (it should add the
-   `Backup` record type) → **Deploy**.
-5. Switch the environment to **Production** and confirm **Backup** is listed.
-
-No indexes are needed: the app fetches backups by record name only.
+(iCloud Backup and its CloudKit schema were retired: messages are backed up
+with the account on the relay, so there is nothing to deploy in CloudKit.)
 
 ## 2. Demo accounts for App Review (owner creates, then the server marks them)
 
@@ -41,10 +22,10 @@ changed, and "Delete Account" resets them instead of deleting (see
 5. Simplest for Apple: the **review code** (in 1Password; on the server at
    `/opt/relay/demo-code`). Sign in → *Sign in with a review code*. The first
    device gets one demo account, a second device the other, and each already
-   has a chat with the other demo account. Also give both email logins as a
-   fallback (email + account password). They sign in with
-   *Already have an account? Sign in*. Don't use the accounts yourself during
-   review: each sign-in signs the other device out.
+   has a chat with the other demo account. (Email sign-in sends a code to our
+   inbox, so it's no use to a reviewer; the review code is the way in.) Don't
+   use the accounts yourself during review: each sign-in signs the other
+   device out.
 
 ## 3. App Store Connect: TestFlight external testing (Morgan)
 
@@ -58,8 +39,8 @@ App Store Connect → Apps → **Relay: Private Messenger** → **TestFlight**.
 
 **Beta App Review Information:**
 - Contact: Morgan Daly, his phone, `support@relaymsg.app`
-- Sign-in required: **Yes**. Username = the demo email, Password = the demo
-  account password
+- Sign-in required: **Yes**. Username = `review code`, Password = the review
+  code (the notes explain where to enter it)
 - Review Notes: paste the notes below
 
 Then **External Testing** → **+** → new group (e.g. "Public Beta") → add the latest
@@ -71,19 +52,19 @@ automatically.
 
 Relay is a private messenger. Messages, photos, voice notes, calls and group
 chats are end-to-end encrypted with the Signal Protocol, so only the people in
-the conversation can read them. Sign up with Apple, Google or email. No phone
-number needed. Relay's servers never see your messages, your contacts or who
+the conversation can read them. Sign up with Apple, Google, a phone number,
+email, or just a username and a passkey. Relay's servers never see your messages, your contacts or who
 you talk to.
 
 ## What to Test (TestFlight)
 
 Thanks for testing Relay! Please try:
-- Signing up (Apple, Google, or email with a one-time code) and choosing a username
+- Signing up (Apple, Google, phone, email, or just a username) and choosing a username
 - Messaging someone by username, link or QR code: text, photos, voice notes, polls, live location
 - Voice and video calls
 - Group chats
-- Profile → Backup & Restore: turn on iCloud Backup, then sign out and back in. You should be offered your messages back
-- Forgot password and change email (Profile → Account)
+- Sign out and back in: your chats, messages and contacts' photos should come back
+- Passkeys, two-step verification and the recovery key (Profile → Account)
 
 Report problems with TestFlight's screenshot feedback, or email support@relaymsg.app.
 
@@ -93,10 +74,13 @@ Relay is an end-to-end encrypted messenger (Signal Protocol). Our servers can't
 read message content, so there is nothing for us to moderate centrally; users
 are protected with the tools listed below.
 
-SIGN IN: Use the demo account. On the welcome screen tap "Already have an
-account? Sign in" and enter the email and password above. Signing in on a new
-device signs out the account's other devices (a security feature). New accounts
-can also be created with Sign in with Apple, Google, or an emailed one-time code.
+SIGN IN: On the welcome screen tap "Already have an account? Sign in", then
+"Review Code" at the bottom, and enter the review code above. The first device
+gets one demo account and a second device the other; each already has a
+conversation with the other. Signing in on a new device signs out the
+account's other devices (a security feature). New accounts can be created with
+Sign in with Apple, Google, a phone number or email (one-time codes), or just
+a username and a passkey.
 
 TO TRY MESSAGING: Tap the compose button (top right of Chats) and enter a
 username. The demo account already has a conversation, and "Note to Self" works
@@ -107,18 +91,26 @@ USER SAFETY (Guideline 1.2):
   support@relaymsg.app; message content is included only if the reporter chooses
   to share it. Groups: group info → "Report Group".
 - Block: the contact's card → "Block". Manage under Profile → Chats → Blocked Contacts.
+- Message requests: a message from someone the user hasn't chatted with lands
+  in "Message Requests", where it can be accepted, deleted or blocked; the
+  sender can't see read receipts, name or photo until it's accepted.
 
-ACCOUNT DELETION (5.1.1(v)): Profile → Delete Account. This deletes the account
+ACCOUNT DELETION (5.1.1(v)): Profile → Account → Delete Account (for the
+demo accounts this button reads "Reset Demo Account"). This deletes the account
 on our server and its sign-in record, and revokes the Sign in with Apple token.
 
 OPTIONAL PRIVACY FEATURE (disclosed per 2.3.1): "Panic Mode" lets a user hide
-selected chats behind a PIN. It's opened by tapping the version number at the
-bottom of the Profile tab five times. Once enabled, long-press a chat → "Hide in
-Panic Mode", and tap the lock icon in the Chats header to reveal hidden chats.
+selected chats behind a PIN. Turn it on in Profile → Security → Panic Mode,
+then long-press a chat → "Hide in Panic Mode"; the lock icon in the Chats
+header reveals hidden chats with the PIN.
 
-PERMISSIONS: Camera (calls, photos, QR scanning), Microphone (calls, voice
-notes), Contacts (optional: finds friends via blinded lookups; the address book is
-never uploaded), Location (only when the user shares a location in a chat).
+PERMISSIONS: Camera (video calls, photos, QR scanning), Microphone (calls,
+voice notes), Photos (saving received photos), Contacts (optional: finds
+friends with blinded lookups; the address book is never uploaded), Location
+(only when the user shares a location in a chat, or opts in to showing an
+approximate region on their own devices' names), Face ID (app lock and
+passkeys), Siri and Speech Recognition (Siri messages and voice-note
+transcription, on device).
 
 BACKGROUND LOCATION (UIBackgroundModes "location", 2.5.4): used only for live
 location sharing, which the user starts explicitly in a chat (+ → Location →
