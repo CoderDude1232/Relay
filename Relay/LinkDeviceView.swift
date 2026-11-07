@@ -160,69 +160,52 @@ struct LinkDeviceView: View {
         return cleaned.isEmpty ? "Unnamed device" : cleaned
     }
 
+    /// "iPad", "Mac" or "iPhone" from the name the new device reported.
+    private var pendingDeviceKind: String {
+        let name = pendingDeviceName.lowercased()
+        if name.contains("ipad") { return "iPad" }
+        if name.contains("mac") { return "Mac" }
+        if name.contains("iphone") { return "iPhone" }
+        return "Device"
+    }
+
     private var confirmView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(spacing: 10) {
-                    Image(systemName: "iphone.and.arrow.forward")
-                        .font(.system(size: 46, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.tint)
-                    Text("Link “\(pendingDeviceName)”?")
-                        .font(.title2.weight(.bold))
-                        .multilineTextAlignment(.center)
-                    Text("Only continue if this is your own device and you are holding it right now. Someone who tricks you into scanning their code gets full access to your account.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+        Form {
+            Section {
+                SettingsHero(systemName: pendingDeviceKind == "iPad" ? "ipad" : pendingDeviceKind == "Mac" ? "laptopcomputer" : "iphone",
+                             color: .orange, title: "Link This \(pendingDeviceKind)?",
+                             message: "Only continue if it's your own \(pendingDeviceKind.lowercased()) and it's in front of you. Someone who gets you to scan their code gets your account.")
+                    .settingsBareRow()
+            }
+            Section {
+                LabeledContent("Device", value: pendingDeviceName)
+                HStack(spacing: 14) {
+                    SettingsIcon(systemName: "key.fill", color: .yellow)
+                    Text("Sends and receives messages as you")
                 }
-                .frame(maxWidth: .infinity)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("This device will receive").font(.headline)
-                    Label("Your account identity — it can send and receive messages as you", systemImage: "key.fill")
-                    if service.chatListKeyForLinking != nil {
-                        Label("Your chats and message history, from your encrypted backup", systemImage: "bubble.left.and.bubble.right.fill")
-                    } else if syncConversations {
-                        Label("Your conversation list (up to 50 chats)", systemImage: "bubble.left.and.bubble.right.fill")
-                    }
-                    if service.chatListKeyForLinking == nil, syncHistory {
-                        Label("Recent message history (up to 50 messages per chat)", systemImage: "clock.arrow.circlepath")
-                    }
-                    Text("Device name as reported by the new device: \(pendingDeviceName). You can remove it any time in Profile → Linked Devices.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let qr = pendingLink {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Link code").font(.caption.weight(.semibold))
-                            Text(LinkCode.make(ephemeralPublicKey: qr.ephemeralPublicKey, accountId: service.credentials.accountId))
-                                .font(.title2.monospacedDigit().weight(.bold))
-                            Text("The new device will show this code and your username before it joins. If either is different, don't continue on it.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                HStack(spacing: 14) {
+                    SettingsIcon(systemName: "bubble.left.and.bubble.right.fill", color: .green)
+                    Text(service.chatListKeyForLinking != nil
+                         ? "Gets your chats and history from your backup"
+                         : syncHistory ? "Gets your chats and recent messages"
+                         : syncConversations ? "Gets your chat list" : "Starts with no chats")
                 }
-                .font(.subheadline)
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.ultraThinMaterial, in: .rect(cornerRadius: 14))
-
-                Button {
+            } footer: {
+                Text("You can remove it any time in Linked Devices.")
+            }
+            Section {
+                SettingsPrimaryButton(title: "Link \(pendingDeviceKind)", systemName: "checkmark", color: .orange) {
                     confirmLink()
-                } label: {
-                    Text("Link This Device").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-
-                Button("Cancel", role: .cancel) {
+                .settingsBareRow()
+                Button("Cancel") {
                     pendingLink = nil
                     phase = .options
                 }
+                .tint(.primary)
                 .frame(maxWidth: .infinity)
+                .settingsBareRow()
             }
-            .padding()
         }
     }
 
@@ -298,7 +281,24 @@ struct LinkNewDeviceView: View {
                         }
                         .padding(.top, 16)
 
-                        if let qrImage {
+                        if let confirmation = model.linkConfirmation {
+                            // Someone who photographed the code could answer it
+                            // with their own account: check it's yours first.
+                            AvatarView(name: confirmation.username, size: 96)
+                                .padding(.top, 40)
+                            OnboardingHeader(title: "@\(confirmation.username)",
+                                             subtitle: "Is this your account? Only continue if it's the username you just linked from.")
+                            OnboardingPrimaryButton(title: "Continue") {
+                                qrImage = nil
+                                status = "Setting up…"
+                                confirmation.respond(true)
+                            }
+                                .frame(maxWidth: 460)
+                            Button("This Isn't Me") { confirmation.respond(false) }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.8))
+                                .frame(minHeight: 44)
+                        } else if let qrImage {
                             OnboardingHeader(title: "Link to Your Account",
                                              subtitle: "Scan this code with Relay on your phone to use your account on this \(deviceKind).")
                             // As big as the screen allows: a phone camera reads a

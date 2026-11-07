@@ -116,16 +116,6 @@ struct ContentView: View {
             }
 
         }
-        .alert(
-            "Join @\(model.linkConfirmation?.username ?? "")?",
-            isPresented: Binding(get: { model.linkConfirmation != nil }, set: { _ in }),
-            presenting: model.linkConfirmation
-        ) { confirmation in
-            Button("Join") { confirmation.respond(true) }
-            Button("Cancel", role: .cancel) { confirmation.respond(false) }
-        } message: { confirmation in
-            Text("Link code \(confirmation.code). Only join if this is your username and your other device shows the same code.")
-        }
         // The privacy blur and the lock screen live in their own window above
         // everything (see PrivacyShield): a sheet or full-screen photo is
         // presented above any overlay in this hierarchy.

@@ -56,7 +56,6 @@ final class AppModel {
     struct LinkConfirmation: Identifiable {
         let id = UUID()
         let username: String
-        let code: String
         let respond: (Bool) -> Void
     }
     var linkConfirmation: LinkConfirmation?
@@ -1241,11 +1240,9 @@ final class AppModel {
 
         // The signature only proves the payload is self-consistent: anyone who
         // saw the QR could have sent their own account first. The user checks
-        // the account and code against the existing device before anything is
-        // installed.
-        let code = LinkCode.make(ephemeralPublicKey: ephemeral.publicKey, accountId: payload.accountId)
+        // it's their username before anything is installed.
         let joined = await withCheckedContinuation { continuation in
-            linkConfirmation = LinkConfirmation(username: payload.username ?? "", code: code) {
+            linkConfirmation = LinkConfirmation(username: payload.username ?? "") {
                 continuation.resume(returning: $0)
             }
         }
