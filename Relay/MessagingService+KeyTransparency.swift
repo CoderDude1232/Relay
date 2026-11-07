@@ -57,10 +57,21 @@ extension MessagingService {
     private func lookUp(peer: String, key: Data) async -> TransparencyStatus {
         let seen = seenState(Self.peerStateKey(peer))
         do {
-            // Anonymous when we hold their access key; a rejected key comes
-            // back as unavailable rather than falling back to a signed lookup.
-            let lookup = try await apiClient.keyTransparencyLookup(account: peer, since: seen?.version ?? 0,
-                                                                   accessKey: knownAccessKey(peer))
+            // Anonymous when we hold their access key. A rejected key was
+            // rotated (they blocked someone): forget it and ask signed, as the
+            // bundle fetch does, or the check would fail until they message us.
+            let since = seen?.version ?? 0
+            let lookup: KeyTransparency.Lookup
+            if let accessKey = knownAccessKey(peer) {
+                do {
+                    lookup = try await apiClient.keyTransparencyLookup(account: peer, since: since, accessKey: accessKey)
+                } catch RelayAPIError.http(status: 403, _) {
+                    rememberAccessKey(nil, for: peer)
+                    lookup = try await apiClient.keyTransparencyLookup(account: peer, since: since)
+                }
+            } else {
+                lookup = try await apiClient.keyTransparencyLookup(account: peer, since: since)
+            }
             guard await acceptHead(lookup.head) else { return .mismatch }
             try KeyTransparency.verify(lookup, account: peer, key: key, signPublicKeys: trustedSignKeys())
             // Their history must have grown from what we accepted before, so a

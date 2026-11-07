@@ -64,7 +64,12 @@ struct VerificationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
         .task {
-            if let peer { await service.refreshPeerIdentitiesIfConflicting(peer: peer) }
+            guard let peer else { return }
+            await service.refreshPeerIdentitiesIfConflicting(peer: peer)
+            reload()
+            // Checked against the key directory every visit, so "verified
+            // automatically" doesn't depend on something else having checked.
+            await service.refreshTransparency(peer: peer)
             reload()
         }
         .sheet(isPresented: $showingScanner) {

@@ -331,14 +331,21 @@ final class MessagingService {
         return url
     }
 
-    /// Best-effort; messaging works without push.
-    func uploadPushToken(_ token: String) async {
+    /// Messaging works without push; AppModel tries again on reconnect.
+    @discardableResult
+    func uploadPushToken(_ token: String) async -> Bool {
         do {
             try await api.setAPNSToken(token)
+            return true
         } catch {
             log.warning("apns token upload failed: \(PrivacyRedactor.error(error))")
+            return false
         }
     }
+
+    /// Called each time the relay is reachable again (AppModel re-sends
+    /// whatever didn't make it up at launch).
+    var onConnected: (() -> Void)?
 
     func publishInitialKeys() async throws {
         try await maintainer.publishInitialKeys(api: api, engine: engine, allocator: allocator)
@@ -463,6 +470,9 @@ final class MessagingService {
     }
 
     private var didSweepInterruptedSends = false
+    /// Automatic resends this run, by message id (see resendPendingSends).
+    private var autoResendAttempts: [String: Int] = [:]
+    private var isResendingPendingSends = false
 
     // MARK: Demo accounts (App Review)
 
@@ -686,6 +696,8 @@ final class MessagingService {
         connectingSince = nil
         if relayUnreachable { relayUnreachable = false }
         Task { await syncProfilesAfterConnecting() }
+        Task { await resendPendingSends() }
+        onConnected?()
     }
 
     /// Try Again: reconnect straight away rather than after the back-off.
@@ -1392,6 +1404,7 @@ final class MessagingService {
         messageId: String, conversationId: String, body: String, timestamp: Int64,
         replyTo: QuotedMessage?, attachments: [StoredAttachment]
     ) async {
+        markSendPending(messageId, true)
         do {
             var content = Relay_Content_Content()
             content.text.body = body
@@ -1416,6 +1429,7 @@ final class MessagingService {
                 content.groupID = group.id
                 try await transmitToGroup(content, group: group, messageId: messageId, timestamp: timestamp)
                 try storage.messages.updateStatus(messageId: messageId, status: .sent)
+                markSendPending(messageId, false)
                 // The group fan-out excludes our own account.
                 await sendSyncToOwnDevices(content: content, peer: group.id, timestamp: timestamp)
             } else {
@@ -1425,12 +1439,22 @@ final class MessagingService {
                 Task { await sendMyProfileIfNeeded(toPeer: peer) }
                 try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp)
                 try storage.messages.updateStatus(messageId: messageId, status: .sent)
+                markSendPending(messageId, false)
                 donateInteraction(peerAccount: peer, conversationId: conversationId)
                 await sendSyncToOwnDevices(content: content, peer: peer, timestamp: timestamp)
             }
         } catch {
             log.error("send failed: \(PrivacyRedactor.error(error))")
             try? storage.messages.updateStatus(messageId: messageId, status: .failed)
+            if Self.isTransientSendError(error) {
+                // Resent by itself once the connection is back; Retry still works.
+                Task {
+                    try? await Task.sleep(for: .seconds(15))
+                    await self.resendPendingSends()
+                }
+            } else {
+                markSendPending(messageId, false)
+            }
             if group(for: conversationId) != nil {
                 // A group send stops at a member whose key changed; the group
                 // thread names them (groupMembersWithChangedSafetyNumbers).
@@ -1443,6 +1467,63 @@ final class MessagingService {
         }
         refreshConversations()
         refreshActiveMessages(ifShowing: conversationId)
+    }
+
+    // MARK: Automatic resend
+
+    private static let pendingSendsKey = "send.pending"
+
+    /// Messages `transmit` started and hasn't finished: a send cut off by a
+    /// network drop or the app being closed is resent when the relay is back.
+    private func pendingSendIds() -> [String] {
+        guard let data = (try? storage.database.query(
+            "SELECT value FROM kv WHERE key = ?", [.text(Self.pendingSendsKey)]).first?.first?.data) ?? nil
+        else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
+
+    private func markSendPending(_ messageId: String, _ pending: Bool) {
+        var ids = pendingSendIds().filter { $0 != messageId }
+        if pending { ids.append(messageId) }
+        guard let data = try? JSONEncoder().encode(Array(ids.suffix(200))) else { return }
+        try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",
+                                  [.text(Self.pendingSendsKey), .blob(data)])
+    }
+
+    /// Worth trying again by itself: the network or relay, not the message.
+    private static func isTransientSendError(_ error: Error) -> Bool {
+        switch error {
+        case is SafetyNumberChangedError, is MessagingError, is GroupError: return false
+        case RelayAPIError.http(let status, _): return status == 408 || status >= 500
+        default: return true
+        }
+    }
+
+    /// Resends failed messages that were cut off rather than refused, up to a
+    /// few times each per run and only for a day, so a message never goes out
+    /// long after the moment it was written for.
+    func resendPendingSends() async {
+        guard !isResendingPendingSends else { return }
+        isResendingPendingSends = true
+        defer { isResendingPendingSends = false }
+        let cutoff = Int64(Date().addingTimeInterval(-24 * 3600).timeIntervalSince1970 * 1000)
+        for id in pendingSendIds() {
+            guard let row = try? storage.database.query(
+                "SELECT conversation_id, timestamp, status FROM messages WHERE id = ? AND is_outgoing = 1",
+                [.text(id)]).first,
+                let conversationId = row[0].string, let timestamp = row[1].int64
+            else { markSendPending(id, false); continue }
+            guard row[2].string == MessageStatus.failed.rawValue else {
+                if row[2].string != MessageStatus.sending.rawValue { markSendPending(id, false) }
+                continue
+            }
+            let attempts = autoResendAttempts[id, default: 0]
+            guard timestamp > cutoff, attempts < 5 else { markSendPending(id, false); continue }
+            guard let message = (try? storage.messages.messages(in: conversationId, limit: 500))?
+                .first(where: { $0.id == id }) else { markSendPending(id, false); continue }
+            autoResendAttempts[id] = attempts + 1
+            await retrySend(message)
+        }
     }
 
     /// Fails sends interrupted by the app being killed, so they offer Retry.
@@ -4138,7 +4219,7 @@ final class MessagingService {
         return data
     }
 
-    private func rememberAccessKey(_ key: Data?, for account: String) {
+    func rememberAccessKey(_ key: Data?, for account: String) {
         peerAccessKeys[account] = key
         if let key {
             try? storage.database.run("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)",

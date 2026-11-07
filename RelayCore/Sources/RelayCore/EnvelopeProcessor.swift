@@ -497,6 +497,19 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     private static let deferredMaxAge: TimeInterval = 3 * 24 * 3600
     private static let deferredMaxRows = 300
 
+    /// Same author, timestamp and text already in the chat: a resent copy.
+    /// A sender's timestamps are unique to the millisecond per message.
+    private func isResend(conversationId: String, timestamp: Int64, body: String,
+                          isOutgoing: Bool, sender: String?) -> Bool {
+        var sql = "SELECT 1 FROM messages WHERE conversation_id = ? AND timestamp = ? AND body = ? AND is_outgoing = ?"
+        var args: [SQLValue] = [.text(conversationId), .integer(timestamp), .text(body), .integer(isOutgoing ? 1 : 0)]
+        if let sender {
+            sql += " AND sender_account = ?"
+            args.append(.text(sender))
+        }
+        return !((try? storage.database.query(sql + " LIMIT 1", args)) ?? []).isEmpty
+    }
+
     private func deferGroupContent(
         envelopeId: String, sender: ProtocolAddress, attestedUsername: String?, plaintext: Data, groupId: String
     ) {
@@ -784,6 +797,15 @@ public struct EnvelopeProcessor: @unchecked Sendable {
             // Apply the sender's disappearing-message timer before inserting, so it
             // covers this message. A message request can't change it.
             applyDisappearingTimer(content.expiresAfterMs, conversationId: conversationId, isSync: isSyncMessage)
+            // A resend (Retry, or the automatic one after a dropped connection)
+            // arrives in a new envelope with the same timestamp and text.
+            if isResend(conversationId: conversationId, timestamp: storable(text.timestamp), body: text.body,
+                        isOutgoing: isSyncMessage, sender: groupId == nil ? nil : attestedAccount) {
+                var effects = EnvelopeSideEffects()
+                if !isSyncMessage { effects.deliveryReceiptTimestamp = text.timestamp }
+                return ProcessedEnvelope(outcome: .duplicate, peerAccount: isSyncMessage ? content.syncRecipient : attestedAccount,
+                                         conversationId: conversationId, sideEffects: effects)
+            }
             if isSyncMessage {
                 // Our own message from another device: store as outgoing under the
                 // envelope id, so duplicates are ignored.

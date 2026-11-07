@@ -42,7 +42,16 @@ final class AppModel {
     static let identityProvisionedKey = "relay.identityProvisioned"
 
     private(set) var phase: Phase = .loading {
-        didSet { if case .ready(let service) = phase { Supporter.shared.attach(service) } }
+        didSet {
+            if case .ready(let service) = phase {
+                Supporter.shared.attach(service)
+            } else {
+                // A later sign-in (maybe another account) publishes afresh.
+                uploadedPushToken = nil
+                publishedDeviceAuthKey = false
+                publishedAccessKey = false
+            }
+        }
     }
     /// Show the one-time "create a passkey" prompt after a non-passkey sign-in.
     var shouldOfferPasskey = false
@@ -382,18 +391,37 @@ final class AppModel {
         uploadPushTokenIfReady()
     }
 
+    /// What reached the relay for the running service; anything still false
+    /// is sent again when the connection comes back (a launch while offline
+    /// would otherwise leave push or private delivery off until next launch).
+    private var uploadedPushToken: String?
+    private var publishedDeviceAuthKey = false
+    private var publishedAccessKey = false
+
     private func uploadPushTokenIfReady() {
         guard case .ready(let service) = phase, let token = apnsTokenHex else { return }
-        Task { await service.uploadPushToken(token) }
+        service.onConnected = { [weak self] in self?.republishIfNeeded() }
+        guard uploadedPushToken != token else { return }
+        Task {
+            if await service.uploadPushToken(token) { uploadedPushToken = token }
+        }
+    }
+
+    private func republishIfNeeded() {
+        if uploadedPushToken != apnsTokenHex { uploadPushTokenIfReady() }
+        if !publishedDeviceAuthKey { publishDeviceAuthorizationKeyIfReady() }
+        if !publishedAccessKey { publishAccessKeyIfReady() }
     }
 
     private func publishDeviceAuthorizationKeyIfReady() {
         guard case .ready(let service) = phase else { return }
+        service.onConnected = { [weak self] in self?.republishIfNeeded() }
         let keychain = self.keychain
         Task {
             do {
                 let publicKey = try keychain.deviceAuthorizationPublicKey()
                 try await service.apiClient.setDeviceAuthorizationKey(publicKey)
+                publishedDeviceAuthKey = true
             } catch {
                 // Best effort; not yet required for device-list changes.
             }
@@ -423,6 +451,7 @@ final class AppModel {
             for attempt in 1...3 {
                 do {
                     try await service.apiClient.setAccessKey(key)
+                    publishedAccessKey = true
                     return
                 } catch {
                     Logger(subsystem: "app.relaymsg", category: "account")
