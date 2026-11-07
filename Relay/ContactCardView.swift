@@ -240,10 +240,9 @@ struct ContactCardView: View {
                             if blocked { service.unblockAccount(account) }
                             else { confirmBlock = true }
                         } label: {
-                            Label(
-                                blocked ? "Unblock \(displayName)" : "Block \(displayName)",
-                                systemImage: blocked ? "checkmark.circle" : "nosign"
-                            )
+                            SettingsNavRow(systemName: blocked ? "checkmark.circle.fill" : "nosign",
+                                           color: blocked ? .green : .red,
+                                           title: blocked ? "Unblock \(displayName)" : "Block \(displayName)")
                         }
                         .tint(blocked ? .primary : .red)
                         .foregroundStyle(blocked ? Color.primary : Color.red)
@@ -251,7 +250,7 @@ struct ContactCardView: View {
                         Button {
                             showingReport = true
                         } label: {
-                            Label("Report \(displayName)", systemImage: "exclamationmark.bubble")
+                            SettingsNavRow(systemName: "exclamationmark.bubble.fill", color: .red, title: "Report \(displayName)")
                         }
                         .tint(.red)
                         .foregroundStyle(.red)
@@ -267,7 +266,7 @@ struct ContactCardView: View {
                             Button {
                                 confirmResetSession = true
                             } label: {
-                                Label("Fix Delivery Problems", systemImage: "arrow.triangle.2.circlepath")
+                                SettingsNavRow(systemName: "arrow.triangle.2.circlepath", color: .orange, title: "Fix Delivery Problems")
                             }
                             Text("Starts a fresh encrypted connection with this person. Use it only if your messages keep showing \"Not Delivered\" while you're online.")
                                 .font(.footnote)
@@ -278,9 +277,11 @@ struct ContactCardView: View {
                     }
                 }
             }
+            // The name is the big heading; the title only labels the back button.
             .navigationTitle(displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { saveAndDismiss() }
                 }

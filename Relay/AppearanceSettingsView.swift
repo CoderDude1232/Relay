@@ -166,7 +166,7 @@ struct AppearanceSettingsView: View {
                     .overlay {
                         RoundedRectangle(cornerRadius: 14)
                             .strokeBorder(
-                                appearance.wallpaper == style ? Color.accentColor : Color.clear,
+                                appearance.wallpaper == style ? appearance.bubbleTint : Color.clear,
                                 lineWidth: 3
                             )
                     }
@@ -183,7 +183,7 @@ struct AppearanceSettingsView: View {
                     .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
                 Text(style.title)
                     .font(.caption2)
-                    .foregroundStyle(appearance.wallpaper == style ? Color.accentColor : .secondary)
+                    .foregroundStyle(appearance.wallpaper == style ? appearance.bubbleTint : .secondary)
             }
         }
         .buttonStyle(.plain)
@@ -222,14 +222,14 @@ struct AppearanceSettingsView: View {
                 .overlay {
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(
-                            appearance.wallpaper == .photo ? Color.accentColor : Color.clear,
+                            appearance.wallpaper == .photo ? appearance.bubbleTint : Color.clear,
                             lineWidth: 3
                         )
                 }
                 .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
                 Text("Photo")
                     .font(.caption2)
-                    .foregroundStyle(appearance.wallpaper == .photo ? Color.accentColor : .secondary)
+                    .foregroundStyle(appearance.wallpaper == .photo ? appearance.bubbleTint : .secondary)
             }
         }
     }
@@ -290,7 +290,7 @@ struct AppearanceSettingsView: View {
         Text(title)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.secondary)
-            .textCase(.uppercase)
+            .textCase(nil)
     }
 
     private func loadPhoto(_ item: PhotosPickerItem?) {
@@ -328,7 +328,7 @@ private struct AppIconSection: View {
             Text("App Icon")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+                .textCase(nil)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 14) {
                     ForEach(Self.icons, id: \.title) { icon in

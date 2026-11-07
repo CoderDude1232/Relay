@@ -33,7 +33,7 @@ struct TwoStepSettingsView: View {
                     toggle("Authenticator App", icon: "lock.rotation", color: .indigo, method: .authenticator) {
                         showingAuthenticator = true
                     }
-                    toggle("Passkey", icon: "person.badge.key.fill", color: .green, method: .passkey) {
+                    toggle("Passkey", icon: "person.badge.key.fill", color: .teal, method: .passkey) {
                         if methods.passkeys > 0 { set(.passkey, on: true) } else { showingAddPasskeyFirst = true }
                     }
                     toggle("PIN", icon: "circle.grid.3x3.fill", color: .orange, method: .pin) {

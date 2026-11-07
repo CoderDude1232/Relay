@@ -68,7 +68,7 @@ struct CallLinksView: View {
                         newName = ""
                         showingNew = true
                     } label: {
-                        Label("Create Call Link", systemImage: "link.badge.plus")
+                        SettingsNavRow(systemName: "link.badge.plus", color: .green, title: "Create Call Link")
                     }
                 } footer: {
                     Text("Anyone with the link can ask to join. You decide who gets in, and the link only works while you're available to let them in. Delete a link to turn it off.")

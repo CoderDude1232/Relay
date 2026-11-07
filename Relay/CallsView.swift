@@ -248,15 +248,15 @@ private struct CallHistoryRow: View {
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .trailing, spacing: 8) {
-                Text(Date(timeIntervalSince1970: Double(call.startedAt) / 1000)
-                        .formatted(date: .omitted, time: .shortened))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    callActionButton(systemName: "phone.fill") { onCall(.audio) }
-                    callActionButton(systemName: "video.fill") { onCall(.video) }
-                }
+            Text(Date(timeIntervalSince1970: Double(call.startedAt) / 1000)
+                    .formatted(date: .omitted, time: .shortened))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            // Calls back the same way; the other kind is in the row's menu.
+            if call.kind == .video {
+                callActionButton(systemName: "video.fill") { onCall(.video) }
+            } else {
+                callActionButton(systemName: "phone.fill") { onCall(.audio) }
             }
         }
         .padding(.vertical, 4)

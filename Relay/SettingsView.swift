@@ -484,7 +484,7 @@ private struct AccountSettingsView: View {
                     }
                     NavigationLink(destination: PasskeysView(service: service)) {
                         HStack(spacing: 14) {
-                            SettingsIcon(systemName: "person.badge.key.fill", color: .green)
+                            SettingsIcon(systemName: "person.badge.key.fill", color: .teal)
                             Text("Passkeys")
                             Spacer(minLength: 0)
                             if let count = methods?.passkeys, count > 0 {
@@ -501,7 +501,7 @@ private struct AccountSettingsView: View {
                         }
                     }
                     NavigationLink(destination: RecoveryKeyView(service: service, methods: methods)) {
-                        SettingsNavRow(systemName: "key.horizontal.fill", color: .blue, title: "Recovery Key")
+                        SettingsNavRow(systemName: "key.horizontal.fill", color: .yellow, title: "Recovery Key")
                     }
                 } header: {
                     Text("Sign-In & Security")
@@ -622,7 +622,7 @@ private struct ChatsSettingsView: View {
             Section {
                 Toggle(isOn: $inChatSounds) {
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "speaker.wave.2.fill", color: .accentColor)
+                        SettingsIcon(systemName: "speaker.wave.2.fill", color: .pink)
                         Text("In-Chat Sounds")
                     }
                 }
@@ -634,8 +634,14 @@ private struct ChatsSettingsView: View {
                 NavigationLink(destination: ChatFoldersView(service: service)) {
                     SettingsNavRow(systemName: "folder.fill", color: .blue, title: "Chat Folders")
                 }
+                NavigationLink(destination: ScheduledMessagesView(service: service)) {
+                    SettingsNavRow(systemName: "clock.badge.checkmark", color: .orange, title: "Scheduled Messages")
+                }
+                NavigationLink(destination: BlockedContactsView(service: service)) {
+                    SettingsNavRow(systemName: "person.crop.circle.badge.minus", color: .red, title: "Blocked Contacts")
+                }
             } footer: {
-                Text("Group chats into folders like Work or Family. Folders stay on this device.")
+                Text("Folders stay on this device. Blocked accounts can't message or call you.")
             }
 
             Section {
@@ -650,22 +656,6 @@ private struct ChatsSettingsView: View {
                 }
             } footer: {
                 Text("Bring a chat's history over from WhatsApp. It stays on this iPhone.")
-            }
-
-            Section {
-                NavigationLink(destination: ScheduledMessagesView(service: service)) {
-                    SettingsNavRow(systemName: "clock.badge.checkmark", color: .orange, title: "Scheduled Messages")
-                }
-            } footer: {
-                Text("Messages you've queued to send automatically at a later time.")
-            }
-
-            Section {
-                NavigationLink(destination: BlockedContactsView(service: service)) {
-                    SettingsNavRow(systemName: "person.crop.circle.badge.minus", color: .red, title: "Blocked Contacts")
-                }
-            } footer: {
-                Text("Blocked accounts can't message or call you.")
             }
         }
         .modifier(ThemedPageBackground())

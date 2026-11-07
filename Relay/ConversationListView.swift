@@ -659,21 +659,6 @@ struct ConversationListView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
-    private func listSectionLabel(_ title: String, systemImage: String?) -> some View {
-        HStack(spacing: 5) {
-            if let systemImage { Image(systemName: systemImage) }
-            Text(title)
-        }
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .listRowInsets(EdgeInsets(top: 10, leading: 20, bottom: 2, trailing: 20))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        .selectionDisabled()
-        .accessibilityAddTraits(.isHeader)
-    }
-
     @ViewBuilder
     private func conversationRow(_ conversation: Conversation) -> some View {
         if isEditing {
@@ -1051,17 +1036,11 @@ struct ConversationListView: View {
                 .selectionDisabled()
             }
 
-            // Pinned chats get their own group at the top.
+            // Pinned chats come first; the pin beside the name marks them.
             let pinned = visibleConversations.filter(\.isPinned)
             let others = visibleConversations.filter { !$0.isPinned }
-            if !pinned.isEmpty && !isEditing {
-                listSectionLabel("Pinned", systemImage: "pin.fill")
-            }
             ForEach(pinned) { conversation in
                 conversationRow(conversation)
-            }
-            if !pinned.isEmpty && !others.isEmpty && !isEditing {
-                listSectionLabel("Chats", systemImage: nil)
             }
             ForEach(others) { conversation in
                 conversationRow(conversation)
@@ -1854,10 +1833,7 @@ private struct UsernameSearchSheet: View {
                     Section("Result") {
                         HStack(spacing: 14) {
                             AvatarView(name: username, size: 44, imageData: nil)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("@\(username)").font(.body.weight(.medium))
-                                Text(accountId.prefix(8)).font(.caption2).foregroundStyle(.tertiary)
-                            }
+                            Text("@\(username)").font(.body.weight(.medium))
                             Spacer()
                             if isStarting {
                                 ProgressView()

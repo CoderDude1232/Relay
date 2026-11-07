@@ -468,7 +468,10 @@ struct LinkedDevicesView: View {
                             }
                         }
                     )) {
-                        Label("Show Device Regions", systemImage: "location")
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "location.fill", color: .blue)
+                            Text("Show Device Regions")
+                        }
                     }
                 } footer: {
                     Text("Adds an approximate region like \"Queensland, Australia\" to each device's name here. Applies to all your devices; each asks for approximate location once. The region is worked out by Apple and never reaches Relay's servers.")
@@ -478,7 +481,7 @@ struct LinkedDevicesView: View {
                     Button {
                         showingLinkSheet = true
                     } label: {
-                        Label("Link a New Device", systemImage: "plus.circle")
+                        SettingsNavRow(systemName: "plus", color: .green, title: "Link a New Device")
                     }
                 }
 

@@ -268,23 +268,23 @@ struct RecoveryKeyView: View {
                 Section {
                     if hasTwoStep {
                         Button { Task { await reveal() } } label: {
-                            Label(hasKey ? "Show Recovery Key" : "Create Recovery Key", systemImage: "key.horizontal.fill")
+                            SettingsNavRow(systemName: "key.horizontal.fill", color: .yellow, title: hasKey ? "Show Recovery Key" : "Create Recovery Key")
                         }
                     } else if hasPasskey {
                         Button { Task { await revealWithPasskey() } } label: {
-                            Label("Show with Passkey", systemImage: "person.badge.key.fill")
+                            SettingsNavRow(systemName: "person.badge.key.fill", color: .teal, title: "Show with Passkey")
                         }
                     }
                     if !hasTwoStep, email != nil {
                         Button { showingEmailCode = true } label: {
-                            Label("Show with Email Code", systemImage: "envelope.fill")
+                            SettingsNavRow(systemName: "envelope.fill", color: .blue, title: "Show with Email Code")
                         }
                     }
                     if !hasTwoStep && !hasPasskey && email == nil {
                         // No passkey or email to confirm with (a phone-only account):
                         // the phone's owner confirms with Face ID or the passcode.
                         Button { Task { await revealWithDeviceOwner() } } label: {
-                            Label("Show with Face ID", systemImage: "faceid")
+                            SettingsNavRow(systemName: "faceid", color: .green, title: "Show with Face ID")
                         }
                     }
                 } footer: {

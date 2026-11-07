@@ -257,14 +257,14 @@ struct ChatView: View {
                                 .id(id)
                         case .unreadSeparator:
                             HStack(spacing: 8) {
-                                Rectangle().fill(Color.accentColor.opacity(0.4)).frame(height: 1)
+                                Rectangle().fill(appearance.bubbleTint.opacity(0.4)).frame(height: 1)
                                 Text("New Messages")
                                     .accessibilityAddTraits(.isHeader)
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color.accentColor)
+                                    .foregroundStyle(appearance.bubbleTint)
                                     .modifier(PhotoWallpaperLabel())
                                     .fixedSize()
-                                Rectangle().fill(Color.accentColor.opacity(0.4)).frame(height: 1)
+                                Rectangle().fill(appearance.bubbleTint.opacity(0.4)).frame(height: 1)
                             }
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
@@ -2715,24 +2715,28 @@ struct ChatPrivacySettingsView: View {
     var body: some View {
         Form {
             Section("Conversation") {
-                Toggle("Pinned", isOn: $isPinned)
-                Toggle("Hide previews in chat list", isOn: $hidePreviews)
+                SettingsToggleRow(systemName: "pin.fill", color: .orange, title: "Pinned", isOn: $isPinned)
+                SettingsToggleRow(systemName: "eye.slash.fill", color: .gray, title: "Hide Previews in Chat List", isOn: $hidePreviews)
             }
 
             Section("Privacy") {
-                Toggle("Require \(BiometricGate.biometryName) for media", isOn: $mediaRequiresBiometric)
-                Toggle("Require \(BiometricGate.biometryName) to open chat", isOn: $requireBiometricChat)
+                SettingsToggleRow(systemName: "photo.fill", color: .green,
+                                  title: "Require \(BiometricGate.biometryName) for Media", isOn: $mediaRequiresBiometric)
+                SettingsToggleRow(systemName: "faceid", color: .green,
+                                  title: "Require \(BiometricGate.biometryName) to Open", isOn: $requireBiometricChat)
             }
 
             Section {
                 if isGroup && !canEditGroupScreenSecurity {
-                    HStack {
-                        Text("Hide from screenshots")
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "camera.viewfinder", color: .indigo)
+                        Text("Hide from Screenshots")
                         Spacer()
                         Text(screenSecurity ? "On" : "Off").foregroundStyle(.secondary)
                     }
                 } else {
-                    Toggle("Hide from screenshots", isOn: $screenSecurity)
+                    SettingsToggleRow(systemName: "camera.viewfinder", color: .indigo,
+                                      title: "Hide from Screenshots", isOn: $screenSecurity)
                 }
             } header: {
                 Text("Screenshots")
@@ -2746,20 +2750,28 @@ struct ChatPrivacySettingsView: View {
                 }
             }
 
-            Section("Disappearing Messages") {
-                Picker("Timer", selection: $disappearingSeconds) {
-                    Text("Off").tag(Int64(0))
-                    Text("5 minutes").tag(Int64(5 * 60))
-                    Text("1 hour").tag(Int64(60 * 60))
-                    Text("8 hours").tag(Int64(8 * 60 * 60))
-                    Text("1 day").tag(Int64(24 * 60 * 60))
-                    Text("1 week").tag(Int64(7 * 24 * 60 * 60))
-                    Text("30 days").tag(Int64(30 * 24 * 60 * 60))
+            // One-to-one chats set this from the contact card.
+            if isGroup {
+                Section {
+                    Picker(selection: $disappearingSeconds) {
+                        Text("Off").tag(Int64(0))
+                        Text("5 minutes").tag(Int64(5 * 60))
+                        Text("1 hour").tag(Int64(60 * 60))
+                        Text("8 hours").tag(Int64(8 * 60 * 60))
+                        Text("1 day").tag(Int64(24 * 60 * 60))
+                        Text("1 week").tag(Int64(7 * 24 * 60 * 60))
+                        Text("30 days").tag(Int64(30 * 24 * 60 * 60))
+                    } label: {
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "timer", color: .orange)
+                            Text("Disappearing Messages")
+                        }
+                    }
                 }
             }
 
             Section("Features") {
-                Toggle("Shared notepad", isOn: $notepadEnabled)
+                SettingsToggleRow(systemName: "note.text", color: .yellow, title: "Shared Notepad", isOn: $notepadEnabled)
             }
         }
         .navigationTitle("Chat Settings")
@@ -3522,7 +3534,7 @@ private struct MessageBubble: View {
     private func bodyText(_ text: String) -> some View {
         let hasSpoilers = Spoilers.contains(text)
         return Text(formattedBody(text))
-            .tint(message.isOutgoing ? .white : .accentColor)
+            .tint(message.isOutgoing ? .white : appearance.bubbleTint)
             .accessibilityLabel(hasSpoilers && !spoilersRevealed
                                 ? Spoilers.redact(text).replacingOccurrences(of: Spoilers.placeholder, with: "spoiler")
                                 : Spoilers.reveal(text))

@@ -370,12 +370,12 @@ struct GroupInfoView: View {
                                     }
                                 }
                             } label: {
-                                Label("Create Invite Link", systemImage: "link.badge.plus")
+                                SettingsNavRow(systemName: "link.badge.plus", color: .blue, title: "Create Invite Link")
                             }
                             Button(role: .destructive) {
                                 confirmingInviteReset = true
                             } label: {
-                                Label("Reset Invite Link", systemImage: "link.badge.minus")
+                                SettingsNavRow(systemName: "link.badge.minus", color: .red, title: "Reset Invite Link")
                             }
                         }
                         .confirmationDialog("Reset the invite link?", isPresented: $confirmingInviteReset, titleVisibility: .visible) {
@@ -392,19 +392,19 @@ struct GroupInfoView: View {
                             NavigationLink {
                                 ChatPrivacySettingsView(service: service, conversation: conversation)
                             } label: {
-                                Label("Chat Settings", systemImage: "gearshape")
+                                SettingsNavRow(systemName: "slider.horizontal.3", color: .blue, title: "Chat Settings")
                             }
                         }
                         NavigationLink {
                             AppearanceSettingsView(chatId: conversationId)
                         } label: {
-                            Label("Chat Appearance", systemImage: "paintbrush")
+                            SettingsNavRow(systemName: "paintbrush.fill", color: .purple, title: "Chat Appearance")
                         }
                     }
 
                     if group.admins.contains(ownAccountId) || group.isAnnounceOnly {
                         Section("Permissions") {
-                            Toggle("Announce Only", isOn: Binding(
+                            SettingsToggleRow(systemName: "megaphone.fill", color: .orange, title: "Announce Only", isOn: Binding(
                                 get: { group.isAnnounceOnly },
                                 set: { newVal in run { try await service.setAnnounceOnly(newVal, in: group.id) } }
                             ))

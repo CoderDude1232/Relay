@@ -33,7 +33,7 @@ struct ContactSyncView: View {
                 Button {
                     requestSync()
                 } label: {
-                    Label("Find contacts on Relay", systemImage: "person.crop.circle.badge.checkmark")
+                    SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .teal, title: "Find Contacts on Relay")
                 }
                 .disabled(status == .loading)
             } footer: {

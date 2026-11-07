@@ -25,7 +25,7 @@ struct PasskeysView: View {
             Section {
                 ForEach(passkeys) { passkey in
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "person.badge.key.fill", color: .green)
+                        SettingsIcon(systemName: "person.badge.key.fill", color: .teal)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(passkey.name.isEmpty ? "Passkey" : passkey.name)
                             Text("Added \(Date(timeIntervalSince1970: Double(passkey.createdAt) / 1000).formatted(date: .abbreviated, time: .omitted))")
