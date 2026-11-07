@@ -395,13 +395,21 @@ struct LinkedDevicesView: View {
     /// so its safety numbers differ from the account's. Nudge the user once to
     /// re-link it; provisioned devices set `identityProvisionedKey` and skip this.
     private var showRelinkNudge: Bool {
+        // Only with another device whose numbers could differ: a phone that
+        // signed in again (a new device id) has nothing to match.
         !relinkNudgeDismissed
+            && devices.count > 1
             && service.credentials.deviceId != 1
             && !UserDefaults.standard.bool(forKey: AppModel.identityProvisionedKey)
     }
 
     var body: some View {
         List {
+            Section {
+                SettingsHero(systemName: "laptopcomputer.and.iphone", color: .orange,
+                             message: "Use Relay on your iPad, Mac or another iPhone. Each device gets your chats and keeps them end-to-end encrypted.")
+                    .settingsBareRow()
+            }
             if loading {
                 ProgressView()
                     .frame(maxWidth: .infinity)
@@ -410,8 +418,11 @@ struct LinkedDevicesView: View {
                 if showRelinkNudge {
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Label("Re-link for verifiable safety numbers", systemImage: "checkmark.shield")
-                                .font(.subheadline.weight(.semibold))
+                            HStack(spacing: 14) {
+                                SettingsIcon(systemName: "checkmark.shield.fill", color: .green)
+                                Text("Re-link for verifiable safety numbers")
+                                    .font(.subheadline.weight(.semibold))
+                            }
                             Text("This device was linked before Relay shared one identity per account. Unlink and link it again so its safety numbers match your other devices.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -428,11 +439,9 @@ struct LinkedDevicesView: View {
 
                 Section {
                     ForEach(devices) { device in
-                        HStack(spacing: 12) {
-                            Image(systemName: deviceIcon(device))
-                                .font(.title3)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 28)
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: deviceIcon(device),
+                                         color: device.deviceId == service.credentials.deviceId ? .orange : .gray)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(deviceTitle(device))
                                 if let subtitle = deviceSubtitle(device) {
@@ -459,6 +468,13 @@ struct LinkedDevicesView: View {
                 }
 
                 Section {
+                    SettingsPrimaryButton(title: "Link a New Device", systemName: "plus", color: .orange) {
+                        showingLinkSheet = true
+                    }
+                    .settingsBareRow()
+                }
+
+                Section {
                     Toggle(isOn: Binding(
                         get: { regionsShown },
                         set: { on in
@@ -478,13 +494,6 @@ struct LinkedDevicesView: View {
                     Text("Adds an approximate region like \"Queensland, Australia\" to each device's name here. Applies to all your devices; each asks for approximate location once. The region is worked out by Apple and never reaches Relay's servers.")
                 }
 
-                Section {
-                    Button {
-                        showingLinkSheet = true
-                    } label: {
-                        SettingsNavRow(systemName: "plus", color: .green, title: "Link a New Device")
-                    }
-                }
 
                 if let errorMessage {
                     Section {

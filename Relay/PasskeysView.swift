@@ -23,41 +23,51 @@ struct PasskeysView: View {
     var body: some View {
         List {
             Section {
-                ForEach(passkeys) { passkey in
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "person.badge.key.fill", color: .teal)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(passkey.name.isEmpty ? "Passkey" : passkey.name)
-                            Text("Added \(Date(timeIntervalSince1970: Double(passkey.createdAt) / 1000).formatted(date: .abbreviated, time: .omitted))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                SettingsHero(systemName: "person.badge.key.fill", color: .teal,
+                             message: "Sign in with Face ID or Touch ID, no password or code. A passkey lives in your iCloud Keychain or password manager, and signing in with one on a new device brings your chat list back.")
+                    .settingsBareRow()
+            }
+
+            if !passkeys.isEmpty || isLoading {
+                Section {
+                    ForEach(passkeys) { passkey in
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "person.badge.key.fill", color: .teal)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(passkey.name.isEmpty ? "Passkey" : passkey.name)
+                                Text("Added \(Date(timeIntervalSince1970: Double(passkey.createdAt) / 1000).formatted(date: .abbreviated, time: .omitted))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .swipeActions {
+                            Button("Remove", role: .destructive) { pendingDelete = passkey }
                         }
                     }
-                    .accessibilityElement(children: .combine)
-                    .swipeActions {
-                        Button("Remove", role: .destructive) { pendingDelete = passkey }
+                    if isLoading && passkeys.isEmpty {
+                        ProgressView().frame(maxWidth: .infinity)
+                    }
+                } header: {
+                    Text("Your Passkeys")
+                } footer: {
+                    if !passkeys.isEmpty {
+                        Text("Swipe left on a passkey to remove it. Signing in on a new device signs out your other devices.")
                     }
                 }
-                if isLoading && passkeys.isEmpty {
-                    ProgressView()
-                } else if passkeys.isEmpty {
-                    Text("No passkeys yet")
-                        .foregroundStyle(.secondary)
-                }
-            } footer: {
-                Text(errorMessage ?? "A passkey signs you in with Face ID or Touch ID and is stored in your iCloud Keychain or password manager. Signing in with one on a new device brings your chat list back, and doesn't need your account password or an email code. Signing in signs out your other devices.")
             }
 
             Section {
-                Button {
+                SettingsPrimaryButton(title: passkeys.isEmpty ? "Create a Passkey" : "Add Another Passkey",
+                                      systemName: "plus", color: .teal, working: isCreating) {
                     Task { await create() }
-                } label: {
-                    HStack {
-                        Label("Create Passkey", systemImage: "plus.circle.fill")
-                        if isCreating { Spacer(); ProgressView() }
-                    }
                 }
-                .disabled(isCreating || passkeys.count >= 10)
+                .disabled(passkeys.count >= 10)
+                .settingsBareRow()
+            } footer: {
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(.red)
+                }
             }
         }
         .modifier(ThemedPageBackground())

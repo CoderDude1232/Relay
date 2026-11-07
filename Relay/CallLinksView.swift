@@ -64,14 +64,18 @@ struct CallLinksView: View {
         NavigationStack {
             List {
                 Section {
-                    Button {
+                    SettingsHero(systemName: "link", color: .green,
+                                 message: "Share a link anyone can use to join a call. You decide who gets in, and it only works while you're available to let them in.")
+                        .settingsBareRow()
+                    SettingsPrimaryButton(title: "Create Call Link", systemName: "plus", color: .green) {
                         newName = ""
                         showingNew = true
-                    } label: {
-                        SettingsNavRow(systemName: "link.badge.plus", color: .green, title: "Create Call Link")
                     }
+                    .settingsBareRow()
                 } footer: {
-                    Text("Anyone with the link can ask to join. You decide who gets in, and the link only works while you're available to let them in. Delete a link to turn it off.")
+                    Text("Delete a link to turn it off.")
+                        .frame(maxWidth: .infinity)
+                        .multilineTextAlignment(.center)
                 }
 
                 if !store.links.isEmpty {

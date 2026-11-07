@@ -1518,6 +1518,82 @@ struct SettingsIcon: View {
     }
 }
 
+/// The top of a settings page about one thing (recovery key, passkeys,
+/// linked devices…): a large tile in the page's colour, a title and what it's
+/// for. Sits in a List section with a clear background.
+struct SettingsHero: View {
+    let systemName: String
+    let color: Color
+    var title: String? = nil
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: systemName)
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 64, height: 64)
+                .background(color.gradient, in: .rect(cornerRadius: 16))
+                .accessibilityHidden(true)
+            if let title {
+                Text(title)
+                    .font(.title2.weight(.bold))
+                    .accessibilityAddTraits(.isHeader)
+            }
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+}
+
+/// The page's main action, as a full-width capsule in its colour.
+struct SettingsPrimaryButton: View {
+    let title: String
+    var systemName: String? = nil
+    let color: Color
+    var working = false
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if working {
+                    ProgressView().tint(.white)
+                } else {
+                    if let systemName { Image(systemName: systemName) }
+                    Text(title)
+                }
+            }
+            .font(.headline)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 15)
+            .background(color.gradient, in: .capsule)
+            .opacity(isEnabled ? 1 : 0.4)
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .disabled(working)
+    }
+}
+
+/// A list row holding a SettingsHero or SettingsPrimaryButton: no card behind
+/// it and no separator.
+extension View {
+    func settingsBareRow() -> some View {
+        listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+    }
+}
+
 struct SettingsNavRow: View {
     let systemName: String
     let color: Color
@@ -1634,21 +1710,27 @@ struct PanicModeSheet: View {
         Group {
             Form {
                 Section {
-                    Toggle("Enable Panic Mode", isOn: Binding(
+                    SettingsHero(systemName: "eye.slash.fill", color: .indigo,
+                                 message: "Hide chats behind a PIN. Long-press a chat in the list to hide it; the lock icon in the Chats header shows hidden chats again.")
+                        .settingsBareRow()
+                }
+                Section {
+                    SettingsToggleRow(systemName: "eye.slash.fill", color: .indigo, title: "Panic Mode", isOn: Binding(
                         get: { manager.isEnabled },
                         set: { enabled in
                             if enabled { showingPINSetup = true }
                             else { manager.disable() }
                         }
                     ))
-                } footer: {
-                    Text("When enabled, long-press a chat in the list to mark it hidden. Tap the lock icon to reveal with your PIN.")
-                }
-
-                if manager.isEnabled {
-                    Section("Manage") {
-                        Button("Change PIN") { showingPINSetup = true }.tint(.primary)
-                        LabeledContent("Hidden Chats", value: "\(manager.hiddenIds.count)")
+                    if manager.isEnabled {
+                        Button { showingPINSetup = true } label: {
+                            SettingsNavRow(systemName: "pencil", color: .gray, title: "Change PIN")
+                        }
+                        .tint(.primary)
+                        HStack(spacing: 14) {
+                            SettingsIcon(systemName: "bubble.left.and.bubble.right.fill", color: .blue)
+                            LabeledContent("Hidden Chats", value: "\(manager.hiddenIds.count)")
+                        }
                     }
                 }
             }
@@ -2013,12 +2095,15 @@ private struct DeleteAccountSheet: View {
         Group {
             Form {
                 Section {
+                    SettingsHero(systemName: service.isDemoAccount ? "arrow.counterclockwise" : "person.crop.circle.badge.xmark",
+                                 color: service.isDemoAccount ? .orange : .red,
+                                 message: service.isDemoAccount
+                                    ? "This is a demo account, so it's reset instead of deleted."
+                                    : "This permanently deletes your Relay account. It can't be undone.")
+                        .settingsBareRow()
+                }
+                Section {
                     if service.isDemoAccount {
-                        Label {
-                            Text("This is a demo account, so it's reset instead of deleted.")
-                        } icon: {
-                            Image(systemName: "arrow.counterclockwise.circle.fill").foregroundStyle(.orange)
-                        }
                         VStack(alignment: .leading, spacing: 6) {
                             Text("• Its devices are signed out and its keys and undelivered messages are removed from the server.")
                             Text("• All messages and media on this iPhone are erased.")
@@ -2028,11 +2113,6 @@ private struct DeleteAccountSheet: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     } else {
-                    Label {
-                        Text("This permanently deletes your Relay account. It can't be undone.")
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-                    }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("• Your username is released and people can no longer reach you.")
                         Text("• All your linked devices are signed out and removed.")
@@ -2061,20 +2141,13 @@ private struct DeleteAccountSheet: View {
                 }
 
                 Section {
-                    Button(role: .destructive) {
+                    SettingsPrimaryButton(title: service.isDemoAccount ? "Reset Demo Account" : "Delete Account Permanently",
+                                          systemName: service.isDemoAccount ? "arrow.counterclockwise" : "trash.fill",
+                                          color: .red, working: isDeleting) {
                         delete()
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if isDeleting {
-                                ProgressView()
-                            } else {
-                                Text(service.isDemoAccount ? "Reset Demo Account" : "Delete Account Permanently").bold()
-                            }
-                            Spacer()
-                        }
                     }
-                    .disabled(!confirmed || isDeleting)
+                    .disabled(!confirmed)
+                    .settingsBareRow()
                 }
             }
             .navigationTitle(service.isDemoAccount ? "Reset Demo Account" : "Delete Account")

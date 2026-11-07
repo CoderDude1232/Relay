@@ -28,6 +28,13 @@ struct TwoStepSettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                SettingsHero(systemName: "lock.shield.fill", color: .indigo,
+                             message: on.isEmpty
+                                ? "Ask for a second step when someone signs in to your account on a new device, so a stolen code or email isn't enough."
+                                : "On. Signing in on a new device asks for one of the ways below as well.")
+                    .settingsBareRow()
+            }
             if let methods {
                 Section {
                     toggle("Authenticator App", icon: "lock.rotation", color: .indigo, method: .authenticator) {
@@ -44,7 +51,10 @@ struct TwoStepSettingsView: View {
                         }
                     }
                     if on.contains(.pin) {
-                        Button("Change PIN") { showingPIN = true }.tint(.primary)
+                        Button { showingPIN = true } label: {
+                            SettingsNavRow(systemName: "pencil", color: .gray, title: "Change PIN")
+                        }
+                        .tint(.primary)
                     }
                 } footer: {
                     if let errorMessage {

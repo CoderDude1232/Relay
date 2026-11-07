@@ -30,20 +30,19 @@ struct ContactSyncView: View {
     var body: some View {
         List {
             Section {
-                Button {
+                SettingsHero(systemName: "person.crop.circle.badge.checkmark", color: .teal,
+                             message: "See which of your contacts already use Relay, and message them straight away.")
+                    .settingsBareRow()
+                SettingsPrimaryButton(title: status == .done ? "Check Again" : "Find Contacts on Relay",
+                                      systemName: "magnifyingglass", color: .teal,
+                                      working: status == .loading) {
                     requestSync()
-                } label: {
-                    SettingsNavRow(systemName: "person.crop.circle.badge.checkmark", color: .teal, title: "Find Contacts on Relay")
                 }
-                .disabled(status == .loading)
+                .settingsBareRow()
             } footer: {
                 Text(ContactDiscoveryConsent.explanation)
-            }
-
-            if status == .loading {
-                Section {
-                    HStack { Spacer(); ProgressView(); Spacer() }
-                }
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
             }
 
             if denied {
