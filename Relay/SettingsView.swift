@@ -755,6 +755,7 @@ private struct HistoryBackupStatusRow: View {
                 Button("Back Up Now") {
                     Task { await service.backUpHistoryIfDue(force: true) }
                 }
+                .tint(.primary)
                 .font(.subheadline.weight(.semibold))
                 .disabled(!service.canBackUpHistory || service.connectionState != .connected)
             }
@@ -1272,7 +1273,7 @@ private struct SecuritySettingsView: View {
                                         else { panicMode.disable() }
                                     }))
                 if panicMode.isEnabled {
-                    Button("Configure Panic Mode") { showingPanicSettings = true }
+                    Button("Configure Panic Mode") { showingPanicSettings = true }.tint(.primary)
                         .foregroundStyle(.tint)
                 }
             } footer: {
@@ -1646,7 +1647,7 @@ struct PanicModeSheet: View {
 
                 if manager.isEnabled {
                     Section("Manage") {
-                        Button("Change PIN") { showingPINSetup = true }
+                        Button("Change PIN") { showingPINSetup = true }.tint(.primary)
                         LabeledContent("Hidden Chats", value: "\(manager.hiddenIds.count)")
                     }
                 }
@@ -1800,7 +1801,7 @@ private struct ChangeUsernameSheet: View {
                         Text(errorMessage)
                             .foregroundStyle(.red)
                             .font(.footnote)
-                        Button("Retry") { save() }
+                        Button("Retry") { save() }.tint(.primary)
                     }
                 }
             }
@@ -2151,7 +2152,7 @@ private struct ChangeEmailSheet: View {
                         footer("Enter the code from the email.")
                     }
                     Section {
-                        Button("Send a new code") { sendCode() }.disabled(working)
+                        Button("Send a new code") { sendCode() }.disabled(working).tint(.primary)
                     }
                 }
                 if !codeSent {
@@ -2172,9 +2173,9 @@ private struct ChangeEmailSheet: View {
                     if working {
                         ProgressView()
                     } else if codeSent {
-                        Button("Confirm") { confirm() }.bold().disabled((6...10).contains(code.count) == false)
+                        Button("Confirm") { confirm() }.bold().disabled((6...10).contains(code.count) == false).tint(.primary)
                     } else {
-                        Button("Send Code") { sendCode() }.bold().disabled(!normalizedEmail.contains("@"))
+                        Button("Send Code") { sendCode() }.bold().disabled(!normalizedEmail.contains("@")).tint(.primary)
                     }
                 }
             }

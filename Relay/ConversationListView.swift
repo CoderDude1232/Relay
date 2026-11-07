@@ -1180,7 +1180,7 @@ struct ConversationListView: View {
                             .listRowBackground(Color.clear)
                         }
                         if results.count > 3 && !expanded {
-                            Button("Show \(results.count - 3) More") { expandedSearchChats.insert(conversationId) }
+                            Button("Show \(results.count - 3) More") { expandedSearchChats.insert(conversationId) }.tint(.primary)
                                 .font(.subheadline.weight(.medium))
                                 .listRowBackground(Color.clear)
                         }
@@ -1396,6 +1396,7 @@ private struct NewChatSheet: View {
                                     UIApplication.shared.open(url)
                                 }
                             }
+                            .tint(.primary)
                         }
                     } else if isLoadingContacts {
                         Section {
@@ -1497,7 +1498,7 @@ private struct NewChatSheet: View {
                 Text(message)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Button("Retry") { Task { await checkRelayStatus() } }
+                Button("Retry") { Task { await checkRelayStatus() } }.tint(.primary)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -1838,7 +1839,7 @@ private struct UsernameSearchSheet: View {
                             if isStarting {
                                 ProgressView()
                             } else {
-                                Button("Message") { startConversation(username: username) }
+                                Button("Message") { startConversation(username: username) }.tint(.primary)
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                             }

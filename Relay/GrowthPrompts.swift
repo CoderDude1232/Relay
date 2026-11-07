@@ -81,6 +81,7 @@ struct InviteFriendsCard: View {
                 Button("Invite Friends", action: onInvite)
                     .font(.subheadline.weight(.semibold))
                     .buttonStyle(.borderless)
+                    .tint(.primary)
                     .padding(.top, 2)
             }
             Spacer(minLength: 0)

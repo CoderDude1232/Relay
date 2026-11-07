@@ -107,7 +107,7 @@ struct NewGroupView: View {
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                     }
-                    Button("Add another") { members.append("") }
+                    Button("Add another") { members.append("") }.tint(.primary)
                 }
                 if let error {
                     Text(error).font(.footnote).foregroundStyle(.red)
@@ -323,6 +323,7 @@ struct GroupInfoView: View {
                                     draftDescription = ""
                                     editingDescription = true
                                 }
+                                .tint(.primary)
                                 .foregroundStyle(.secondary)
                             } else {
                                 Text("No description")
@@ -496,6 +497,7 @@ struct GroupInfoView: View {
                                 let username = newMember.trimmingCharacters(in: .whitespaces)
                                 addMember(username: username, groupId: group.id)
                             }
+                            .tint(.primary)
                             .disabled(newMember.trimmingCharacters(in: .whitespaces).isEmpty)
                         }
                         if let addMemberError {

@@ -136,7 +136,7 @@ struct RecoveryKeySignInSheet: View {
                     if working {
                         ProgressView()
                     } else {
-                        Button("Sign In") { signIn() }
+                        Button("Sign In") { signIn() }.tint(.primary)
                             .bold()
                             .disabled(!RecoveryKey.isPlausible(key))
                     }
@@ -193,6 +193,7 @@ struct RecoveryKeyCard: View {
                 Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
             }
             .buttonStyle(.bordered)
+            .tint(.primary)
         }
     }
 }
@@ -396,9 +397,9 @@ private struct EmailCodeConfirmSheet: View {
                     if working {
                         ProgressView()
                     } else if sent {
-                        Button("Confirm") { Task { await verify() } }.bold().disabled(code.count < 6)
+                        Button("Confirm") { Task { await verify() } }.bold().disabled(code.count < 6).tint(.primary)
                     } else {
-                        Button("Send Code") { Task { await send() } }.bold()
+                        Button("Send Code") { Task { await send() } }.bold().tint(.primary)
                     }
                 }
             }
@@ -526,6 +527,7 @@ struct BackupUnlockSheet: View {
                         let key = recoveryKey
                         unlock { await service.restoreAccountStorage(recoveryKey: key) }
                     }
+                    .tint(.primary)
                     .disabled(!RecoveryKey.isPlausible(recoveryKey))
                 }
                 Section("PIN") {
@@ -535,6 +537,7 @@ struct BackupUnlockSheet: View {
                         let entered = pin
                         unlock { await service.unlockBackup(pin: entered) }
                     }
+                    .tint(.primary)
                     .disabled(pin.isEmpty)
                 }
                 if let errorMessage {

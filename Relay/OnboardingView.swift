@@ -880,7 +880,7 @@ struct ReviewCodeSheet: View {
                     if working {
                         ProgressView()
                     } else {
-                        Button("Sign In") { signIn() }
+                        Button("Sign In") { signIn() }.tint(.primary)
                             .bold()
                             .disabled(code.trimmingCharacters(in: .whitespaces).count < 6)
                     }

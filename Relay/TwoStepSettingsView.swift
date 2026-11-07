@@ -44,7 +44,7 @@ struct TwoStepSettingsView: View {
                         }
                     }
                     if on.contains(.pin) {
-                        Button("Change PIN") { showingPIN = true }
+                        Button("Change PIN") { showingPIN = true }.tint(.primary)
                     }
                 } footer: {
                     if let errorMessage {
@@ -60,7 +60,7 @@ struct TwoStepSettingsView: View {
                 if on == [.recovery] {
                     Section {
                         LabeledContent("Recovery Key Only") {
-                            Button("Turn Off") { set(.recovery, on: false) }
+                            Button("Turn Off") { set(.recovery, on: false) }.tint(.primary)
                         }
                     } footer: {
                         Text("Set before two-step verification had other options. Turning on one above replaces it.")
@@ -161,6 +161,7 @@ private struct AuthenticatorSetupView: View {
                                 if !opened { errorMessage = "No authenticator app on this iPhone opened it. Scan the code or enter the setup key instead." }
                             }
                         }
+                        .tint(.primary)
                     }
                     if let image = Self.qrImage(setup.uri) {
                         Image(uiImage: image)
@@ -213,7 +214,7 @@ private struct AuthenticatorSetupView: View {
                 if working {
                     ProgressView()
                 } else if setup != nil {
-                    Button("Turn On") { confirm() }.bold().disabled(code.count != 6)
+                    Button("Turn On") { confirm() }.bold().disabled(code.count != 6).tint(.primary)
                 }
             }
         }

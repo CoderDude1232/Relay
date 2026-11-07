@@ -119,7 +119,7 @@ struct WhatsAppImportView: View {
                 Text("Messages are read on this iPhone and stay on it. Nothing is sent to the people in the chat, to WhatsApp or to Relay's servers.")
             }
             Section {
-                Button("Choose an Export in Files") { choosingFile = true }
+                Button("Choose an Export in Files") { choosingFile = true }.tint(.primary)
             } footer: {
                 Text("If you saved the export to Files instead.")
             }

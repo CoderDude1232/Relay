@@ -51,7 +51,7 @@ struct ContactSyncView: View {
                     Label("Contacts access denied. Allow it in Settings → Relay.", systemImage: "person.slash")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
-                    Button("Open Settings") { openAppSettings() }
+                    Button("Open Settings") { openAppSettings() }.tint(.primary)
                 }
             }
 
@@ -96,7 +96,7 @@ struct ContactSyncView: View {
                                 if startingAccountId == match.id {
                                     ProgressView().controlSize(.small)
                                 } else {
-                                    Button("Message") { startConversation(match) }
+                                    Button("Message") { startConversation(match) }.tint(.primary)
                                         .buttonStyle(.bordered)
                                         .controlSize(.small)
                                         .disabled(startingAccountId != nil)

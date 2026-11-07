@@ -74,6 +74,7 @@ struct AppearanceSettingsView: View {
                 Button("Use App Theme") {
                     withAnimation(.spring(duration: 0.3)) { app.removeTheme(forChat: chatId) }
                 }
+                .tint(.primary)
                 .font(.footnote.weight(.semibold))
                 .buttonStyle(.bordered)
             }

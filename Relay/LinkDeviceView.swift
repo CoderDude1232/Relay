@@ -419,6 +419,7 @@ struct LinkedDevicesView: View {
                                 relinkNudgeDismissed = true
                                 UserDefaults.standard.set(true, forKey: Self.relinkNudgeDismissedKey)
                             }
+                            .tint(.primary)
                             .font(.caption.weight(.semibold))
                         }
                         .padding(.vertical, 4)
