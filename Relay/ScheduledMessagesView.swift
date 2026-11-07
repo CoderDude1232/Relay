@@ -28,6 +28,11 @@ struct ScheduledMessagesView: View {
                 )
             } else {
                 List {
+                    Section {
+                        SettingsHero(systemName: "clock.badge.checkmark", color: .orange, title: "Scheduled Messages",
+                                     message: "Messages waiting to send. They go out from this iPhone at the time you chose.")
+                            .settingsBareRow()
+                    }
                     ForEach(messages) { msg in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 4) {

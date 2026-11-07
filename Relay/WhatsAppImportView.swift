@@ -110,6 +110,11 @@ struct WhatsAppImportView: View {
     private var intro: some View {
         List {
             Section {
+                SettingsHero(systemName: "square.and.arrow.down.on.square.fill", color: .green, title: "Import from WhatsApp",
+                             message: "Bring a chat's history over from WhatsApp. It stays on this iPhone.")
+                    .settingsBareRow()
+            }
+            Section {
                 step(1, "Open the chat in WhatsApp and tap its name at the top.")
                 step(2, "Tap **Export Chat**, then **Attach Media** to bring photos and videos too.")
                 step(3, "Choose **Relay** in the share sheet.")

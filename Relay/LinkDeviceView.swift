@@ -79,64 +79,51 @@ struct LinkDeviceView: View {
     }
 
     private var optionsView: some View {
-        VStack(spacing: 24) {
-            ContentUnavailableView(
-                "Link a New Device",
-                systemImage: "qrcode.viewfinder",
-                description: Text("On your new device, choose “Link existing device” to show its code, then scan it here.")
-            )
-
+        Form {
+            Section {
+                SettingsHero(systemName: "qrcode.viewfinder", color: .orange, title: "Link a New Device",
+                             message: "On your new device, choose “Link existing device” to show its code, then scan it here.")
+                    .settingsBareRow()
+            }
             if service.chatListKeyForLinking != nil {
-                Label("Your chats and message history come across from your encrypted backup.",
-                      systemImage: "lock.icloud.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
+                Section {
+                    Label("Your chats and message history come across from your encrypted backup.",
+                          systemImage: "lock.icloud.fill")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 legacySyncOptions
             }
-
-            Spacer()
-
-            Button {
-                phase = .scanning
-            } label: {
-                Label("Scan Device Code", systemImage: "qrcode.viewfinder")
-                    .frame(maxWidth: .infinity)
+            Section {
+                SettingsPrimaryButton(title: "Scan Device Code", systemName: "qrcode.viewfinder", color: .orange) {
+                    phase = .scanning
+                }
+                .settingsBareRow()
             }
-            .buttonStyle(.borderedProminent)
-            .padding(.horizontal)
         }
     }
 
     /// Accounts without an encrypted chat list copy a little history across instead.
     private var legacySyncOptions: some View {
-            VStack(spacing: 0) {
-                Toggle(isOn: $syncConversations) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Sync conversation list").font(.subheadline)
-                        Text("The new device will see your existing chats.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+        Section {
+            Toggle(isOn: $syncConversations) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sync conversation list")
+                    Text("The new device will see your existing chats.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .padding()
-
-                Divider().padding(.leading)
-
-                Toggle(isOn: $syncHistory) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Sync message history").font(.subheadline)
-                        Text("Transfers up to 50 recent messages per chat, end-to-end encrypted.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .padding()
-                .disabled(!syncConversations)
-                .onChange(of: syncConversations) { _, on in if !on { syncHistory = false } }
             }
-            .background(.ultraThinMaterial, in: .rect(cornerRadius: 14))
-            .padding(.horizontal)
-        .padding(.top, 24)
+            Toggle(isOn: $syncHistory) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sync message history")
+                    Text("Transfers up to 50 recent messages per chat, end-to-end encrypted.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!syncConversations)
+            .onChange(of: syncConversations) { _, on in if !on { syncHistory = false } }
+        }
     }
 
     private var scannerView: some View {

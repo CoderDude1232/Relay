@@ -416,6 +416,11 @@ private struct AccountSettingsView: View {
     var body: some View {
         List {
             Section {
+                SettingsHero(systemName: "person.crop.circle.fill", color: .blue, title: "Account",
+                             message: "Your username, how you sign in, and how to get back in if you lose this iPhone.")
+                    .settingsBareRow()
+            }
+            Section {
                 if service.isDemoAccount {
                     LabeledContent("Username", value: "@\(username)")
                 } else {
@@ -622,6 +627,11 @@ private struct ChatsSettingsView: View {
     var body: some View {
         List {
             Section {
+                SettingsHero(systemName: "bubble.left.and.bubble.right.fill", color: .green, title: "Chats",
+                             message: "Sounds, folders, scheduled messages and blocked contacts.")
+                    .settingsBareRow()
+            }
+            Section {
                 Toggle(isOn: $inChatSounds) {
                     HStack(spacing: 14) {
                         SettingsIcon(systemName: "speaker.wave.2.fill", color: .pink)
@@ -674,6 +684,11 @@ private struct DataStorageSettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                SettingsHero(systemName: "internaldrive.fill", color: .orange, title: "Data & Storage",
+                             message: "Your encrypted backup, what's stored on this iPhone, and contact syncing.")
+                    .settingsBareRow()
+            }
             Section {
                 NavigationLink(destination: StorageSettingsView(service: service)) {
                     SettingsNavRow(systemName: "internaldrive.fill", color: .gray, title: "Storage")
@@ -805,6 +820,11 @@ struct PrivacySettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                SettingsHero(systemName: "hand.raised.fill", color: .indigo, title: "Privacy",
+                             message: "Choose who can find you and what others see. Your messages and calls are always end-to-end encrypted.")
+                    .settingsBareRow()
+            }
             if !service.isDemoAccount {
                 Section {
                     LabeledContent {
@@ -1013,6 +1033,11 @@ private struct DataRetentionView: View {
     var body: some View {
         List {
             Section {
+                SettingsHero(systemName: "server.rack", color: .gray, title: "Data & Retention",
+                             message: "What Relay's server can see, what it keeps, and for how long.")
+                    .settingsBareRow()
+            }
+            Section {
                 RetentionRow(
                     icon: "lock.fill", color: .green,
                     title: "Message Content",
@@ -1137,6 +1162,11 @@ private struct StorageSettingsView: View {
     var body: some View {
         List {
             Section {
+                SettingsHero(systemName: "internaldrive.fill", color: .gray, title: "Storage",
+                             message: "What Relay keeps on this iPhone, and how to free up space.")
+                    .settingsBareRow()
+            }
+            Section {
                 LabeledContent("Cached Media", value: formattedSize(cacheSize))
                 Button(role: .destructive) {
                     confirmingClear = true
@@ -1229,6 +1259,11 @@ private struct SecuritySettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                SettingsHero(systemName: "lock.shield.fill", color: .teal, title: "Security",
+                             message: "Lock Relay, hide chats, and see how your messages are protected.")
+                    .settingsBareRow()
+            }
             Section {
                 SettingsToggleRow(systemName: "faceid", color: .green, title: "Screen Lock",
                                   isOn: $screenLockEnabled)
@@ -2032,6 +2067,11 @@ struct AcknowledgementsView: View {
 
     var body: some View {
         List {
+            Section {
+                SettingsHero(systemName: "heart.text.square.fill", color: .gray, title: "Acknowledgements",
+                             message: "Relay is built on open-source software. Thank you to the people who make it.")
+                    .settingsBareRow()
+            }
             Section {
                 ForEach(components) { c in
                     VStack(alignment: .leading, spacing: 4) {

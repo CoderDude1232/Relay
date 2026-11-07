@@ -2714,6 +2714,11 @@ struct ChatPrivacySettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                SettingsHero(systemName: "slider.horizontal.3", color: .blue, title: "Chat Settings",
+                             message: "Settings for this chat only. Your other chats aren't affected.")
+                    .settingsBareRow()
+            }
             Section("Conversation") {
                 SettingsToggleRow(systemName: "pin.fill", color: .orange, title: "Pinned", isOn: $isPinned)
                 SettingsToggleRow(systemName: "eye.slash.fill", color: .gray, title: "Hide Previews in Chat List", isOn: $hidePreviews)

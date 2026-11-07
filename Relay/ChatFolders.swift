@@ -94,6 +94,11 @@ struct ChatFoldersView: View {
     var body: some View {
         List {
             Section {
+                SettingsHero(systemName: "folder.fill", color: .blue, title: "Chat Folders",
+                             message: "Sort chats into tabs at the top of your chat list.")
+                    .settingsBareRow()
+            }
+            Section {
                 ForEach(store.folders, id: \.self) { folder in
                     Button {
                         renameText = folder

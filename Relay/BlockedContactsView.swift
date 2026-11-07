@@ -24,6 +24,11 @@ struct BlockedContactsView: View {
                 )
             } else {
                 List {
+                    Section {
+                        SettingsHero(systemName: "person.crop.circle.badge.minus", color: .red, title: "Blocked Contacts",
+                                     message: "Blocked contacts can't message or call you.")
+                            .settingsBareRow()
+                    }
                     ForEach(blocked, id: \.self) { account in
                         HStack(spacing: 12) {
                             AvatarView(

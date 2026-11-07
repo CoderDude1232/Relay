@@ -580,21 +580,30 @@ private struct DisappearingSheet: View {
     }
 
     var body: some View {
-        List(Self.options, id: \.value) { option in
-            Button {
-                seconds = option.value
-                service.setDisappearingSeconds(conversationId, seconds: option.value)
-                dismiss()
-            } label: {
-                HStack {
-                    Text(option.label).foregroundStyle(.primary)
-                    Spacer()
-                    if seconds == option.value {
-                        Image(systemName: "checkmark").foregroundStyle(.tint)
+        List {
+            Section {
+                SettingsHero(systemName: "timer", color: .orange, title: "Disappearing Messages",
+                             message: "New messages in this chat disappear for everyone after the time you choose.")
+                    .settingsBareRow()
+            }
+            Section {
+                ForEach(Self.options, id: \.value) { option in
+                    Button {
+                        seconds = option.value
+                        service.setDisappearingSeconds(conversationId, seconds: option.value)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(option.label).foregroundStyle(.primary)
+                            Spacer()
+                            if seconds == option.value {
+                                Image(systemName: "checkmark").foregroundStyle(.tint)
+                            }
+                        }
                     }
+                    .tint(.primary)
                 }
             }
-            .tint(.primary)
         }
         .navigationTitle("Disappearing Messages")
         .navigationBarTitleDisplayMode(.inline)
