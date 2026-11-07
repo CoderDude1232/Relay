@@ -268,62 +268,97 @@ struct LinkNewDeviceView: View {
     @State private var started = false
     @State private var linkTask: Task<Void, Never>?
 
+    private var deviceKind: String {
+        switch UIDevice.current.userInterfaceIdiom {
+        case .pad: "iPad"
+        case .mac: "Mac"
+        default: "device"
+        }
+    }
+
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                if let qrImage {
-                    Text("Scan with your other device")
-                        .font(.headline)
-                    Image(uiImage: qrImage)
-                        .interpolation(.none)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 240, height: 240)
-                        .padding(12)
-                        .background(.white, in: .rect(cornerRadius: 16))
-                        .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(status).font(.footnote).foregroundStyle(.secondary)
+        ZStack {
+            BackgroundGradient()
+            GeometryReader { geo in
+                ScrollView {
+                    VStack(spacing: 20) {
+                        HStack {
+                            Button {
+                                linkTask?.cancel()
+                                dismiss()
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 40, height: 40)
+                                    .background(.ultraThinMaterial, in: .circle)
+                            }
+                            .accessibilityLabel("Cancel")
+                            Spacer()
+                        }
+                        .padding(.top, 16)
+
+                        if let qrImage {
+                            OnboardingHeader(title: "Link to Your Account",
+                                             subtitle: "Scan this code with Relay on your phone to use your account on this \(deviceKind).")
+                            // As big as the screen allows: a phone camera reads a
+                            // large code quickly from a comfortable distance.
+                            let side = max(200, min(geo.size.width - 48, geo.size.height * 0.5, 460))
+                            Image(uiImage: qrImage)
+                                .interpolation(.none)
+                                .resizable()
+                                .scaledToFit()
+                                .padding(side * 0.06)
+                                .frame(width: side, height: side)
+                                .background(.white, in: .rect(cornerRadius: 24, style: .continuous))
+                                .accessibilityLabel("Device link code")
+                            HStack(spacing: 8) {
+                                ProgressView().tint(.white)
+                                Text(status).font(.footnote).foregroundStyle(.white.opacity(0.7))
+                            }
+                            VStack(spacing: 0) {
+                                step("iphone", "Open Relay on your phone")
+                                Divider().background(.white.opacity(0.12)).padding(.leading, 52)
+                                step("person.crop.circle", "Go to Profile → Account → Linked Devices")
+                                Divider().background(.white.opacity(0.12)).padding(.leading, 52)
+                                step("qrcode.viewfinder", "Tap Link a New Device and scan this code")
+                            }
+                            .onboardingCard()
+                            .frame(maxWidth: 460)
+                        } else if let errorMessage {
+                            OnboardingHeader(title: "Linking Failed", subtitle: errorMessage)
+                            OnboardingPrimaryButton(title: "Try Again") { start() }
+                                .frame(maxWidth: 460)
+                        } else {
+                            ProgressView(status)
+                                .tint(.white)
+                                .foregroundStyle(.white.opacity(0.7))
+                                .padding(.top, 120)
+                        }
                     }
-                    Text("On your existing device: Profile → Linked Devices → Link a New Device, then scan this code.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                } else if let errorMessage {
-                    ContentUnavailableView {
-                        Label("Linking Failed", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(errorMessage)
-                    } actions: {
-                        Button("Try Again") { start() }
-                            .buttonStyle(.borderedProminent)
-                    }
-                } else {
-                    ProgressView(status).padding(.top, 60)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 40)
+                    .frame(maxWidth: .infinity)
                 }
             }
-            .padding(.top, 24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Link to Account")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        linkTask?.cancel()
-                        dismiss()
-                    }
-                }
-            }
-            .task {
-                guard !started else { return }
-                started = true
-                start()
-            }
-            // Stop polling once the user leaves, or a late approval could still flip the
-            // app into the account.
-            .onDisappear { linkTask?.cancel() }
+        }
+        .preferredColorScheme(.dark)
+        .task {
+            guard !started else { return }
+            started = true
+            start()
+        }
+        // Stop polling once the user leaves, or a late approval could still flip the
+        // app into the account.
+        .onDisappear { linkTask?.cancel() }
+    }
+
+    private func step(_ icon: String, _ text: String) -> some View {
+        OnboardingRow(icon: icon) {
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -356,7 +391,8 @@ struct LinkNewDeviceView: View {
         filter.message = Data(text.utf8)
         filter.correctionLevel = "M"
         guard let output = filter.outputImage else { return nil }
-        let scale: CGFloat = 240 / output.extent.width
+        // Whole pixels per module, so the code stays sharp at any size.
+        let scale: CGFloat = 16
         let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
         return UIImage(cgImage: cgImage)
@@ -596,10 +632,11 @@ private final class LinkScannerVC: UIViewController, AVCaptureMetadataOutputObje
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        guard let device = AVCaptureDevice.default(for: .video),
+        guard let device = Self.camera(),
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else { return }
         session.addInput(input)
+        Self.setUpFocus(device)
 
         let output = AVCaptureMetadataOutput()
         if session.canAddOutput(output) {
@@ -622,6 +659,38 @@ private final class LinkScannerVC: UIViewController, AVCaptureMetadataOutputObje
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         preview?.frame = view.bounds
+    }
+
+    /// The multi-lens camera where there is one: like the Camera app it
+    /// switches to the ultra wide lens up close, so a code on a nearby
+    /// screen comes into focus.
+    private static func camera() -> AVCaptureDevice? {
+        AVCaptureDevice.default(.builtInTripleCamera, for: .video, position: .back)
+            ?? AVCaptureDevice.default(.builtInDualWideCamera, for: .video, position: .back)
+            ?? AVCaptureDevice.default(for: .video)
+    }
+
+    private static func setUpFocus(_ device: AVCaptureDevice) {
+        guard (try? device.lockForConfiguration()) != nil else { return }
+        defer { device.unlockForConfiguration() }
+        if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
+        if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = .near }
+        if device.isVirtualDevice {
+            // Start on the wide lens (1x), not the ultra wide the virtual
+            // device reports as 1.0; it drops back down on its own up close.
+            if let wide = device.virtualDeviceSwitchOverVideoZoomFactors.first {
+                device.videoZoomFactor = CGFloat(truncating: wide)
+            }
+        } else if device.minimumFocusDistance > 0 {
+            // A single lens: zoom in so a code filling the frame is held
+            // beyond the closest distance the lens can focus at.
+            let halfFOV = Double(device.activeFormat.videoFieldOfView) / 2 * .pi / 180
+            let closestForCode = 50 / tan(halfFOV)  // mm, a 5 cm code across the frame
+            let minimum = Double(device.minimumFocusDistance)
+            if closestForCode < minimum {
+                device.videoZoomFactor = min(CGFloat(minimum / closestForCode), device.activeFormat.videoMaxZoomFactor)
+            }
+        }
     }
 
     nonisolated func metadataOutput(

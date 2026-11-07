@@ -210,7 +210,7 @@ struct OnboardingView: View {
                  ? "That password is incorrect. Try again."
                  : "This account is protected by an account password. Signing in here will sign out your other devices.")
         }
-        .sheet(isPresented: $showingLinkScanner) {
+        .fullScreenCover(isPresented: $showingLinkScanner) {
             LinkNewDeviceView()
                 .environment(model)
         }
