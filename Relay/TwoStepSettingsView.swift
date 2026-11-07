@@ -165,14 +165,19 @@ private struct AuthenticatorSetupView: View {
         Form {
             if let setup {
                 Section {
+                    SettingsHero(systemName: "lock.rotation", color: .indigo, title: "Authenticator App",
+                                 message: "Add Relay to an authenticator app (Passwords, Google Authenticator, 1Password…), then enter the code it shows.")
+                        .settingsBareRow()
                     if let url = URL(string: setup.uri) {
-                        Button("Add to Authenticator App") {
+                        SettingsPrimaryButton(title: "Add to Authenticator App", systemName: "plus", color: .indigo) {
                             openURL(url) { opened in
                                 if !opened { errorMessage = "No authenticator app on this iPhone opened it. Scan the code or enter the setup key instead." }
                             }
                         }
-                        .tint(.primary)
+                        .settingsBareRow()
                     }
+                }
+                Section {
                     if let image = Self.qrImage(setup.uri) {
                         Image(uiImage: image)
                             .interpolation(.none)
@@ -192,8 +197,8 @@ private struct AuthenticatorSetupView: View {
                         }
                     }
                     .tint(.primary)
-                } footer: {
-                    Text("Add Relay to an authenticator app (Passwords, Google Authenticator, 1Password…): tap the button, scan the code from another device, or enter the setup key.")
+                } header: {
+                    Text("Or scan from another device")
                 }
                 Section {
                     TextField("6-digit code", text: $code)
@@ -209,6 +214,11 @@ private struct AuthenticatorSetupView: View {
                     Text(errorMessage ?? "Enter the code the app shows for Relay to finish.")
                         .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
                 }
+                Section {
+                    SettingsPrimaryButton(title: "Turn On", color: .indigo, working: working) { confirm() }
+                        .disabled(code.count != 6)
+                        .settingsBareRow()
+                }
             } else if let errorMessage {
                 Section { Text(errorMessage).foregroundStyle(.red) }
             } else {
@@ -219,15 +229,6 @@ private struct AuthenticatorSetupView: View {
         .modifier(ThemedPageBackground())
         .navigationTitle("Authenticator App")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                if working {
-                    ProgressView()
-                } else if setup != nil {
-                    Button("Turn On") { confirm() }.bold().disabled(code.count != 6).tint(.primary)
-                }
-            }
-        }
         .navigationBarBackButtonHidden(working)
         .task {
             do {
@@ -291,6 +292,11 @@ private struct PINSetupView: View {
     var body: some View {
         Form {
             Section {
+                SettingsHero(systemName: "circle.grid.3x3.fill", color: .orange, title: "Choose a PIN",
+                             message: "It's asked for when you sign in on a new device with an email or phone code, and it unlocks your backup there.")
+                    .settingsBareRow()
+            }
+            Section {
                 SecureField("PIN", text: $pin)
                     .keyboardType(.numberPad)
                     .textContentType(.newPassword)
@@ -298,22 +304,18 @@ private struct PINSetupView: View {
                     .keyboardType(.numberPad)
                     .textContentType(.newPassword)
             } footer: {
-                Text(errorMessage ?? "At least \(Self.minimumLength) digits. It's asked for when you sign in on a new device with an email or phone code, and it unlocks your backup there. A longer PIN is much harder to guess.")
+                Text(errorMessage ?? "At least \(Self.minimumLength) digits. A longer PIN is much harder to guess.")
                     .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+            }
+            Section {
+                SettingsPrimaryButton(title: "Save PIN", color: .orange, working: working) { save() }
+                    .disabled(!valid)
+                    .settingsBareRow()
             }
         }
         .modifier(ThemedPageBackground())
         .navigationTitle("PIN")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                if working {
-                    ProgressView()
-                } else {
-                    Button("Save") { save() }.bold().disabled(!valid)
-                }
-            }
-        }
         .navigationBarBackButtonHidden(working)
         .onChange(of: pin) { _, new in let d = new.filter(\.isNumber); if d != new { pin = d } }
         .onChange(of: confirm) { _, new in let d = new.filter(\.isNumber); if d != new { confirm = d } }

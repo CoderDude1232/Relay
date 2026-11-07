@@ -299,8 +299,8 @@ struct ContactCardView: View {
             } message: {
                 Text("Blocked contacts can't message or call you. You can unblock them later in Profile → Chats → Blocked Contacts.")
             }
-            .sheet(isPresented: $showingReport) {
-                ReportContactSheet(service: service, account: account, displayName: displayName)
+            .navigationDestination(isPresented: $showingReport) {
+                ReportContactSheet(service: service, account: account, displayName: displayName, embedded: true)
             }
             .alert("Nickname", isPresented: $editingNickname) {
                 TextField("Custom name (optional)", text: $nicknameDraft)
@@ -447,6 +447,8 @@ struct ReportContactSheet: View {
     let service: MessagingService
     let account: String
     let displayName: String
+    /// Pushed onto an existing stack rather than shown as a sheet.
+    var embedded = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var reason: ReportReason = .spam
@@ -458,8 +460,13 @@ struct ReportContactSheet: View {
     @State private var sent = false
 
     var body: some View {
-        NavigationStack {
+        OptionalNavigationStack(enabled: !embedded) {
             Form {
+                Section {
+                    SettingsHero(systemName: "exclamationmark.bubble.fill", color: .red, title: "Report \(displayName)",
+                                 message: "Reports go to the Relay team. Tell us what's wrong and we'll take a look.")
+                        .settingsBareRow()
+                }
                 Section {
                     Picker("Reason", selection: $reason) {
                         ForEach(ReportReason.allCases) { r in
@@ -492,26 +499,24 @@ struct ReportContactSheet: View {
                     }
                 }
 
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage).foregroundStyle(.red).font(.footnote)
-                    }
+                Section {
+                    SettingsPrimaryButton(title: alsoBlock && !service.isBlocked(account) ? "Report and Block" : "Report",
+                                          color: .red, working: isSending) { submit() }
+                        .disabled(details.count > 2000)
+                        .settingsBareRow()
+                } footer: {
+                    if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("Report")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(isSending)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                        .disabled(isSending)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if isSending {
-                        ProgressView()
-                    } else {
-                        Button(alsoBlock && !service.isBlocked(account) ? "Report and Block" : "Report") { submit() }
-                            .bold()
-                            .disabled(details.count > 2000)
+                if !embedded {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                            .disabled(isSending)
                     }
                 }
             }

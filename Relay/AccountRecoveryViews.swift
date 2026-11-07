@@ -352,7 +352,7 @@ struct RecoveryKeyView: View {
         .modifier(ThemedPageBackground())
         .navigationTitle("Recovery Key")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingEmailCode) {
+        .navigationDestination(isPresented: $showingEmailCode) {
             if let email {
                 EmailCodeConfirmSheet(email: email) { Task { await reveal() } }
             }
@@ -466,39 +466,38 @@ private struct EmailCodeConfirmSheet: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationStack {
-            Form {
+        Form {
+            Section {
+                SettingsHero(systemName: sent ? "envelope.open.fill" : "envelope.fill", color: .blue,
+                             title: sent ? "Check Your Email" : "Confirm It's You",
+                             message: sent ? "We sent a code to \(email)." : "We'll email a code to \(email) to check it's you.")
+                    .settingsBareRow()
+            }
+            if sent {
                 Section {
-                    if sent {
-                        TextField("Code", text: $code)
-                            .keyboardType(.numberPad)
-                            .textContentType(.oneTimeCode)
-                    } else {
-                        LabeledContent("Email", value: email)
-                    }
+                    TextField("Code", text: $code)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
                 } footer: {
-                    Text(errorMessage ?? (sent ? "Enter the code we sent to \(email)." : "We'll email you a code to confirm it's you."))
-                        .foregroundStyle(errorMessage == nil ? Color.secondary : Color.red)
+                    if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
                 }
             }
-            .navigationTitle("Confirm It's You")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+            Section {
+                if sent {
+                    SettingsPrimaryButton(title: "Confirm", color: .blue, working: working) { Task { await verify() } }
+                        .disabled(code.count < 6)
+                        .settingsBareRow()
+                } else {
+                    SettingsPrimaryButton(title: "Send Code", color: .blue, working: working) { Task { await send() } }
+                        .settingsBareRow()
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    if working {
-                        ProgressView()
-                    } else if sent {
-                        Button("Confirm") { Task { await verify() } }.bold().disabled(code.count < 6).tint(.primary)
-                    } else {
-                        Button("Send Code") { Task { await send() } }.bold().tint(.primary)
-                    }
-                }
+            } footer: {
+                if !sent, let errorMessage { Text(errorMessage).foregroundStyle(.red) }
             }
         }
-        .presentationDetents([.medium])
+        .modifier(ThemedPageBackground())
+        .navigationTitle("Email Code")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func send() async {
@@ -546,19 +545,9 @@ struct RemoveEmailSheet: View {
                     if let errorMessage {
                         Text(errorMessage).foregroundStyle(.red)
                     }
-                    Button(role: .destructive) {
+                    SettingsPrimaryButton(title: "Remove My Email", systemName: "trash.fill", color: .red, working: working) {
                         Task { await remove() }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if working { ProgressView() } else { Text("Remove My Email").bold() }
-                            Spacer()
-                        }
-                        .padding(.vertical, 6)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(working)
                     Text("You'll confirm with Face ID and your passkey. Make sure you've saved your recovery key first.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -568,8 +557,6 @@ struct RemoveEmailSheet: View {
             .modifier(ThemedPageBackground())
             .navigationTitle("Remove Email")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-            }
         }
     }
 
@@ -606,13 +593,15 @@ struct BackupUnlockSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Button { unlock { try await model.unlockBackupWithPasskey() } } label: {
-                        Label("Use Passkey", systemImage: "person.badge.key.fill")
+                    SettingsHero(systemName: "lock.open.fill", color: .blue, title: "Unlock Your Backup",
+                                 message: "Your chat list and settings are backed up with your account, encrypted so only you can open them. Unlock it to bring them here and keep backing up.")
+                        .settingsBareRow()
+                    SettingsPrimaryButton(title: "Use Passkey", systemName: "person.badge.key.fill", color: .teal, working: working) {
+                        unlock { try await model.unlockBackupWithPasskey() }
                     }
-                } footer: {
-                    Text("Your chat list and settings are backed up with your account, encrypted so only you can open them. Unlock the backup to bring them here and keep backing up.")
+                    .settingsBareRow()
                 }
-                Section("Recovery Key") {
+                Section("Or Use Your Recovery Key") {
                     TextField("Recovery key", text: $recoveryKey)
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
@@ -624,7 +613,7 @@ struct BackupUnlockSheet: View {
                     .tint(.primary)
                     .disabled(!RecoveryKey.isPlausible(recoveryKey))
                 }
-                Section("PIN") {
+                Section("Or Use Your PIN") {
                     SecureField("PIN", text: $pin)
                         .textContentType(.password)
                     Button("Unlock with PIN") {
@@ -638,7 +627,8 @@ struct BackupUnlockSheet: View {
                     Section { Text(errorMessage).foregroundStyle(.red) }
                 }
             }
-            .navigationTitle("Unlock Your Backup")
+            .modifier(ThemedPageBackground())
+            .navigationTitle("Backup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

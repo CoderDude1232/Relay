@@ -1703,7 +1703,6 @@ struct AvatarView: View {
 struct PanicModeSheet: View {
     let manager: PanicModeManager
 
-    @Environment(\.dismiss) private var dismiss
     @State private var showingPINSetup = false
 
     var body: some View {
@@ -1737,12 +1736,7 @@ struct PanicModeSheet: View {
             .modifier(ThemedPageBackground())
             .navigationTitle("Panic Mode")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-            .sheet(isPresented: $showingPINSetup) {
+            .navigationDestination(isPresented: $showingPINSetup) {
                 PanicSetupSheet(manager: manager)
             }
         }
@@ -1758,45 +1752,41 @@ struct PanicSetupSheet: View {
     @State private var pin = ""
     @State private var confirm = ""
     @State private var error: String?
+    @FocusState private var focused: Bool
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    SecureField("PIN (at least 4 digits)", text: $pin)
-                        .keyboardType(.numberPad)
-                    SecureField("Confirm PIN", text: $confirm)
-                        .keyboardType(.numberPad)
-                }
-                if let error {
-                    Section {
-                        Text(error).foregroundStyle(.red)
-                    }
-                }
-                Section {
-                    Text("The PIN is stored as a one-way hash. If you forget it you will need to disable panic mode from Settings.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+        Form {
+            Section {
+                SettingsHero(systemName: "circle.grid.3x3.fill", color: .indigo, title: "Choose a PIN",
+                             message: "You'll enter it to see hidden chats. Use at least 4 digits.")
+                    .settingsBareRow()
             }
-            .navigationTitle("Set Panic PIN")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }.bold()
-                }
+            Section {
+                SecureField("PIN", text: $pin)
+                    .keyboardType(.numberPad)
+                    .focused($focused)
+                SecureField("Confirm PIN", text: $confirm)
+                    .keyboardType(.numberPad)
+            } footer: {
+                Text(error ?? "Relay keeps only a one-way hash of the PIN. If you forget it, turn Panic Mode off here and set a new one.")
+                    .foregroundStyle(error == nil ? Color.secondary : Color.red)
+            }
+            Section {
+                SettingsPrimaryButton(title: "Save PIN", color: .indigo) { save() }
+                    .disabled(pin.count < 4 || confirm.isEmpty)
+                    .settingsBareRow()
             }
         }
-        .presentationDetents([.medium])
+        .modifier(ThemedPageBackground())
+        .navigationTitle("Panic PIN")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { focused = true }
     }
 
     private func save() {
-        guard pin.count >= 4 else { error = "PIN must be at least 4 digits."; return }
-        guard pin.allSatisfy({ $0.isASCII && $0.isNumber }) else { error = "PIN must contain digits only."; return }
-        guard pin == confirm else { error = "PINs do not match."; return }
+        guard pin.count >= 4 else { error = "Use at least 4 digits."; return }
+        guard pin.allSatisfy({ $0.isASCII && $0.isNumber }) else { error = "Use digits only."; return }
+        guard pin == confirm else { error = "The two PINs don't match."; return }
         let chosen = pin
         Task {
             await manager.enableAsync(pin: chosen)
@@ -1849,6 +1839,11 @@ private struct ChangeUsernameSheet: View {
         Group {
             Form {
                 Section {
+                    SettingsHero(systemName: "at", color: .pink, title: "Your Username",
+                                 message: "People find you by your username, your link or your QR code. No phone number or email needed.")
+                        .settingsBareRow()
+                }
+                Section {
                     HStack {
                         Text("@").foregroundStyle(.secondary)
                         TextField("username", text: $username)
@@ -1874,29 +1869,21 @@ private struct ChangeUsernameSheet: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                } footer: {
-                    Text("People can start a chat with you by opening this link or scanning your QR code — no phone number or email needed.")
                 }
 
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
-                            .font(.footnote)
-                        Button("Retry") { save() }.tint(.primary)
+                Section {
+                    SettingsPrimaryButton(title: "Save Username", color: .pink, working: isLoading) { save() }
+                        .disabled(!canSave)
+                        .settingsBareRow()
+                } footer: {
+                    if let errorMessage {
+                        Text(errorMessage).foregroundStyle(.red)
                     }
                 }
             }
             .modifier(ThemedPageBackground())
-            .navigationTitle("Change Username")
+            .navigationTitle("Username")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
-                        .disabled(!canSave)
-                        .bold()
-                }
-            }
             .onAppear {
                 username = currentUsername
                 isFocused = true
@@ -2200,6 +2187,14 @@ private struct ChangeEmailSheet: View {
     var body: some View {
         Group {
             Form {
+                Section {
+                    SettingsHero(systemName: codeSent ? "envelope.open.fill" : "envelope.fill", color: .blue,
+                                 title: codeSent ? "Check Your Email" : "Change Email",
+                                 message: codeSent
+                                    ? "We sent a code to \(normalizedEmail)."
+                                    : "Your email signs you in and, if you turn it on in Privacy, lets people find you.")
+                        .settingsBareRow()
+                }
                 if !codeSent {
                     Section {
                         TextField("New email address", text: $newEmail)
@@ -2208,7 +2203,12 @@ private struct ChangeEmailSheet: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     } footer: {
-                        footer("To change it, enter a new address and we'll send it a code. Your email signs you in and, if you turn it on in Privacy, lets people find you.")
+                        footer("We'll send a code to the new address to check it's yours.")
+                    }
+                    Section {
+                        SettingsPrimaryButton(title: "Send Code", color: .blue, working: working) { sendCode() }
+                            .disabled(!normalizedEmail.contains("@"))
+                            .settingsBareRow()
                     }
                 } else {
                     Section {
@@ -2219,13 +2219,18 @@ private struct ChangeEmailSheet: View {
                                 let digits = String(new.filter(\.isNumber).prefix(10))
                                 if digits != new { code = digits }
                             }
-                    } header: {
-                        Text("Code sent to \(normalizedEmail)")
                     } footer: {
                         footer("Enter the code from the email.")
                     }
                     Section {
-                        Button("Send a new code") { sendCode() }.disabled(working).tint(.primary)
+                        SettingsPrimaryButton(title: "Confirm", color: .blue, working: working) { confirm() }
+                            .disabled((6...10).contains(code.count) == false)
+                            .settingsBareRow()
+                        Button("Send a New Code") { sendCode() }
+                            .disabled(working)
+                            .tint(.primary)
+                            .frame(maxWidth: .infinity)
+                            .settingsBareRow()
                     }
                 }
                 if !codeSent {
@@ -2241,17 +2246,6 @@ private struct ChangeEmailSheet: View {
             .modifier(ThemedPageBackground())
             .navigationTitle("Email")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    if working {
-                        ProgressView()
-                    } else if codeSent {
-                        Button("Confirm") { confirm() }.bold().disabled((6...10).contains(code.count) == false).tint(.primary)
-                    } else {
-                        Button("Send Code") { sendCode() }.bold().disabled(!normalizedEmail.contains("@")).tint(.primary)
-                    }
-                }
-            }
             .navigationBarBackButtonHidden(working)
             .navigationDestination(isPresented: $showingRemove) {
                 RemoveEmailSheet {

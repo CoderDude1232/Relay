@@ -211,7 +211,7 @@ struct GroupInfoView: View {
     /// Member being reported.
     @State private var reportTarget: ReportTarget?
 
-    private struct ReportTarget: Identifiable {
+    private struct ReportTarget: Identifiable, Hashable {
         let account: String
         var id: String { account }
     }
@@ -560,10 +560,11 @@ struct GroupInfoView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
-            .sheet(item: $reportTarget) { target in
+            .navigationDestination(item: $reportTarget) { target in
                 ReportContactSheet(
                     service: service, account: target.account,
-                    displayName: service.displayName(forAccount: target.account)
+                    displayName: service.displayName(forAccount: target.account),
+                    embedded: true
                 )
             }
             .sheet(isPresented: $showingAvatarPicker) {
