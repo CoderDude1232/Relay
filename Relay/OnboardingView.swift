@@ -535,7 +535,7 @@ private struct WelcomeView: View {
         .animation(.spring(duration: 0.35), value: model.deferredInvite)
         .sheet(isPresented: $showingProxy) {
             NavigationStack {
-                ProxySettingsView()
+                ProxySettingsView(onboarding: true)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Done") { showingProxy = false }

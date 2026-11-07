@@ -2,8 +2,9 @@
 //  PhoneNumberView.swift
 //  Relay
 //
-//  The phone number, laid out like the onboarding screens: offered once right
-//  after a new account, and opened from Settings → Account → Phone Number.
+//  The phone number: offered once right after a new account (laid out like
+//  the onboarding screens), and as a settings page from Settings → Account →
+//  Phone Number.
 //  It signs in by texted code and, if the user turns it on, lets people who
 //  already have it find them. Verified by text and never shown to anyone.
 //
@@ -44,6 +45,165 @@ struct PhoneNumberView: View {
     private var codeDigits: String { String(code.filter(\.isNumber).prefix(Self.codeLength)) }
 
     var body: some View {
+        Group {
+            if context == .settings { settingsForm } else { onboardingLayout }
+        }
+        .task { await load() }
+        .onChange(of: code) { _, new in
+            let digits = String(new.filter(\.isNumber).prefix(Self.codeLength))
+            if digits != new { code = digits; return }
+            if digits.count == Self.codeLength { verify() }
+        }
+        .confirmationDialog("Remove your phone number?", isPresented: $confirmingRemove, titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                run {
+                    try await service.removePhone()
+                    number = ""
+                    step = .enterNumber
+                }
+            }
+        } message: {
+            Text("People who have your number won't be able to find you on Relay anymore. Your chats aren't affected.")
+        }
+    }
+
+    // MARK: Settings page
+
+    private var settingsForm: some View {
+        Form {
+            Section {
+                SettingsHero(systemName: "phone.fill", color: .green, title: heroTitle, message: heroMessage)
+                    .settingsBareRow()
+            }
+            switch step {
+            case .loading:
+                HStack { Spacer(); ProgressView(); Spacer() }
+                    .settingsBareRow()
+            case .unavailable:
+                EmptyView()
+            case .enterNumber:
+                Section {
+                    if countries.count > 1 {
+                        Picker("Country", selection: $country) {
+                            ForEach(countries) { c in
+                                Text("\(c.flag) \(c.name) (+\(c.callingCode))").tag(c)
+                            }
+                        }
+                    }
+                    HStack(spacing: 8) {
+                        Text("\(countries.count > 1 ? "" : country.flag + " ")+\(country.callingCode)")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                        TextField("Phone number", text: $number)
+                            .focused($focused, equals: .number)
+                            .keyboardType(.phonePad)
+                            .textContentType(.telephoneNumber)
+                            .monospacedDigit()
+                    }
+                } footer: {
+                    formError
+                }
+                Section {
+                    SettingsToggleRow(systemName: "magnifyingglass", color: .blue, title: "Find Me by Number", isOn: discoverableBinding)
+                } footer: {
+                    Text("People who have your number can find you on Relay. Your number is never shown to anyone.")
+                }
+                Section {
+                    SettingsPrimaryButton(title: "Send Code", color: .green, working: working) { sendCode() }
+                        .disabled(typedNumber == nil)
+                        .settingsBareRow()
+                }
+            case .enterCode:
+                Section {
+                    TextField("Code", text: $code)
+                        .focused($focused, equals: .code)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                } footer: {
+                    formError
+                }
+                Section {
+                    SettingsPrimaryButton(title: "Confirm", color: .green, working: working) { verify() }
+                        .disabled(codeDigits.count != Self.codeLength)
+                        .settingsBareRow()
+                }
+                Section {
+                    Button("Resend Code") { sendCode(resending: true) }
+                    Button("Use a Different Number") {
+                        errorMessage = nil
+                        resendNote = nil
+                        step = .enterNumber
+                    }
+                } footer: {
+                    if let resendNote { Text(resendNote) }
+                }
+                .tint(.primary)
+                .disabled(working)
+                .onAppear { focused = .code }
+            case .added:
+                Section {
+                    LabeledContent("Number") {
+                        HStack(spacing: 6) {
+                            Text(savedNumber.map(PhoneNumbers.display) ?? "Added").monospacedDigit()
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        }
+                    }
+                    SettingsToggleRow(systemName: "magnifyingglass", color: .blue, title: "Find Me by Number", isOn: discoverableBinding)
+                } footer: {
+                    if let errorMessage {
+                        Text(errorMessage).foregroundStyle(.red)
+                    } else {
+                        Text("You can sign in with a code texted to it. Your number is never shown to anyone.")
+                    }
+                }
+                Section {
+                    Button {
+                        number = ""
+                        errorMessage = nil
+                        step = .enterNumber
+                    } label: {
+                        SettingsNavRow(systemName: "arrow.left.arrow.right", color: .gray, title: "Change Number")
+                    }
+                    Button(role: .destructive) { confirmingRemove = true } label: {
+                        SettingsNavRow(systemName: "trash.fill", color: .red, title: "Remove Number")
+                    }
+                }
+                .tint(.primary)
+                .disabled(working)
+            }
+        }
+        .modifier(ThemedPageBackground())
+        .navigationTitle("Phone Number")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(working)
+        .animation(.default, value: step)
+    }
+
+    private var heroTitle: String {
+        switch step {
+        case .enterCode: "Check Your Messages"
+        case .enterNumber where savedNumber != nil: "New Number"
+        default: "Phone Number"
+        }
+    }
+
+    private var heroMessage: String {
+        switch step {
+        case .loading, .enterNumber: "Optional. Sign in with a texted code, and let friends who have your number find you."
+        case .unavailable: "Adding a phone number isn't available yet."
+        case .enterCode: "Enter the code we texted to \(PhoneNumbers.display(pendingNumber ?? ""))."
+        case .added: "Your number is added and verified."
+        }
+    }
+
+    @ViewBuilder
+    private var formError: some View {
+        if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+    }
+
+    // MARK: Onboarding layout
+
+    private var onboardingLayout: some View {
         ZStack {
             BackgroundGradient()
             ScrollView {
@@ -72,23 +232,6 @@ struct PhoneNumberView: View {
         .animation(.spring(duration: 0.4), value: step)
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
-        .task { await load() }
-        .onChange(of: code) { _, new in
-            let digits = String(new.filter(\.isNumber).prefix(Self.codeLength))
-            if digits != new { code = digits; return }
-            if digits.count == Self.codeLength { verify() }
-        }
-        .confirmationDialog("Remove your phone number?", isPresented: $confirmingRemove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) {
-                run {
-                    try await service.removePhone()
-                    number = ""
-                    step = .enterNumber
-                }
-            }
-        } message: {
-            Text("People who have your number won't be able to find you on Relay anymore. Your chats aren't affected.")
-        }
     }
 
     // MARK: Pieces (the same look as OnboardingView's screens)
@@ -188,17 +331,21 @@ struct PhoneNumberView: View {
             .disabled(working)
     }
 
+    private var discoverableBinding: Binding<Bool> {
+        Binding(
+            get: { discoverable },
+            set: { on in
+                guard step == .added else { discoverable = on; return }
+                let previous = discoverable
+                discoverable = on
+                run(onError: { discoverable = previous }) { try await service.setPhoneDiscoverable(on) }
+            }
+        )
+    }
+
     private var discoverableRow: some View {
         row("magnifyingglass") {
-            Toggle("Find me by number", isOn: Binding(
-                get: { discoverable },
-                set: { on in
-                    guard step == .added else { discoverable = on; return }
-                    let previous = discoverable
-                    discoverable = on
-                    run(onError: { discoverable = previous }) { try await service.setPhoneDiscoverable(on) }
-                }
-            ))
+            Toggle("Find me by number", isOn: discoverableBinding)
             .foregroundStyle(.white)
             .tint(.accentColor)
         }

@@ -40,7 +40,8 @@ final class StepUpCoordinator {
         guard let fetched else { return true }
         guard let presenter = Self.topViewController() else { return false }
         let sheet = UIHostingController(rootView: StepUpSheet(challenge: fetched, api: api))
-        sheet.modalPresentationStyle = .fullScreen
+        // Cancel is the only way out: the caller waits for an answer.
+        sheet.isModalInPresentation = true
         presented = sheet
         return await withCheckedContinuation { continuation in
             waiting.append(continuation)
@@ -72,8 +73,7 @@ final class StepUpCoordinator {
     }
 }
 
-/// Asks for the account's second step, or the recovery key instead: a
-/// full-screen page in the onboarding style.
+/// Asks for the account's second step, or the recovery key instead.
 struct StepUpSheet: View {
     let challenge: StepUpChallenge
     let api: RelayAPIClient
@@ -94,116 +94,118 @@ struct StepUpSheet: View {
     }
 
     var body: some View {
-        ZStack {
-            BackgroundGradient()
-            ScrollView {
-                VStack(spacing: 16) {
-                    HStack {
-                        Button { StepUpCoordinator.shared.finish(false) } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 17, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 40, height: 40)
-                                .background(.ultraThinMaterial, in: .circle)
-                        }
-                        .accessibilityLabel("Cancel")
-                        .disabled(working)
-                        Spacer()
+        NavigationStack {
+            Form {
+                Section {
+                    SettingsHero(systemName: heroIcon, color: heroColor, title: "Confirm It's You", message: footer)
+                        .settingsBareRow()
+                }
+                switch method {
+                case .authenticator:
+                    Section {
+                        TextField("6-digit code", text: $answer)
+                            .keyboardType(.numberPad)
+                            .textContentType(.oneTimeCode)
+                            .focused($focused)
+                            .onChange(of: answer) { _, new in
+                                let digits = String(new.filter(\.isNumber).prefix(6))
+                                if digits != new { answer = digits; return }
+                                if digits.count == 6 { submit() }
+                            }
+                    } footer: { errorFooter }
+                case .pin:
+                    Section {
+                        SecureField(pinHasLetters ? "Password" : "PIN", text: $answer)
+                            .keyboardType(pinHasLetters ? .default : .numberPad)
+                            .textContentType(.password)
+                            .focused($focused)
+                            .onSubmit { submit() }
+                            .id(pinHasLetters)
+                    } footer: { errorFooter }
+                case .passkey:
+                    if errorMessage != nil {
+                        Section {} footer: { errorFooter }
                     }
-                    .padding(.top, 16)
-
-                    OnboardingHeader(title: "Confirm it's you", subtitle: footer)
-
-                    switch method {
-                    case .authenticator:
-                        OnboardingRow(icon: "lock.rotation") {
-                            TextField("6-digit code", text: $answer)
-                                .keyboardType(.numberPad)
-                                .textContentType(.oneTimeCode)
-                                .focused($focused)
-                                .foregroundStyle(.white)
-                                .tint(.white)
-                                .onChange(of: answer) { _, new in
-                                    let digits = String(new.filter(\.isNumber).prefix(6))
-                                    if digits != new { answer = digits; return }
-                                    if digits.count == 6 { submit() }
-                                }
+                case .recovery, nil:
+                    Section {
+                        TextField("Recovery key", text: $recoveryKey)
+                            .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                            .focused($focused)
+                    } footer: { errorFooter }
+                }
+                Section {
+                    SettingsPrimaryButton(title: method == .passkey ? "Use Passkey" : "Confirm",
+                                          systemName: method == .passkey ? "person.badge.key.fill" : nil,
+                                          color: heroColor, working: working) { submit() }
+                        .disabled(!(method == .passkey || canSubmit))
+                        .settingsBareRow()
+                }
+                let others = usingRecoveryKey ? [] : challenge.methods.filter { $0 != method && $0 != .recovery }
+                let offerRecovery = !usingRecoveryKey && challenge.method != .recovery && challenge.method != nil
+                if method == .pin || !others.isEmpty || offerRecovery {
+                    Section {
+                        if method == .pin {
+                            Button(pinHasLetters ? "Use a number PIN" : "My PIN has letters") {
+                                pinHasLetters.toggle()
+                                answer = ""
+                                Task { focused = true }
+                            }
                         }
-                        .onboardingCard()
-                    case .pin:
-                        OnboardingRow(icon: "lock") {
-                            SecureField(pinHasLetters ? "Password" : "PIN", text: $answer)
-                                .keyboardType(pinHasLetters ? .default : .numberPad)
-                                .textContentType(.password)
-                                .focused($focused)
-                                .foregroundStyle(.white)
-                                .tint(.white)
-                                .onSubmit { submit() }
-                                .id(pinHasLetters)
-                        }
-                        .onboardingCard()
-                    case .passkey:
-                        EmptyView()
-                    case .recovery, nil:
-                        OnboardingRow(icon: "key") {
-                            TextField("Recovery key", text: $recoveryKey)
-                                .textInputAutocapitalization(.characters)
-                                .autocorrectionDisabled()
-                                .font(.body.monospaced())
-                                .focused($focused)
-                                .foregroundStyle(.white)
-                                .tint(.white)
-                        }
-                        .onboardingCard()
-                    }
-
-                    if let errorMessage { InlineErrorBanner(errorMessage) }
-
-                    OnboardingPrimaryButton(title: method == .passkey ? "Use Passkey" : "Confirm",
-                                            enabled: method == .passkey || canSubmit, working: working) { submit() }
-
-                    if method == .pin {
-                        textButton(pinHasLetters ? "Use a number PIN" : "My PIN has letters") {
-                            pinHasLetters.toggle()
-                            answer = ""
-                            Task { focused = true }
-                        }
-                    }
-                    if !usingRecoveryKey {
-                        ForEach(challenge.methods.filter { $0 != method && $0 != .recovery }, id: \.self) { other in
-                            textButton(TwoStepRequired.Method.useInsteadTitle(other)) {
+                        ForEach(others, id: \.self) { other in
+                            Button(TwoStepRequired.Method.useInsteadTitle(other)) {
                                 chosen = other
                                 answer = ""
                                 errorMessage = nil
                                 Task { focused = true }
                             }
                         }
-                    }
-                    if !usingRecoveryKey, challenge.method != .recovery, challenge.method != nil {
-                        textButton("Use your recovery key instead") {
-                            usingRecoveryKey = true
-                            errorMessage = nil
-                            Task { focused = true }
+                        if offerRecovery {
+                            Button("Use your recovery key instead") {
+                                usingRecoveryKey = true
+                                errorMessage = nil
+                                Task { focused = true }
+                            }
                         }
                     }
+                    .tint(.primary)
+                    .disabled(working)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 40)
-                .frame(maxWidth: 480)
-                .frame(maxWidth: .infinity)
             }
-            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle("Confirm It's You")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { StepUpCoordinator.shared.finish(false) }
+                        .disabled(working)
+                }
+            }
         }
-        .preferredColorScheme(.dark)
         .onAppear { focused = true }
     }
 
-    private func textButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.white.opacity(0.8))
-            .frame(minHeight: 44)
-            .disabled(working)
+    @ViewBuilder
+    private var errorFooter: some View {
+        if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+    }
+
+    private var heroIcon: String {
+        switch method {
+        case .authenticator: "lock.rotation"
+        case .pin: "circle.grid.3x3.fill"
+        case .passkey: "person.badge.key.fill"
+        case .recovery, nil: "key.fill"
+        }
+    }
+
+    private var heroColor: Color {
+        switch method {
+        case .authenticator: .indigo
+        case .pin: .orange
+        case .passkey: .teal
+        case .recovery, nil: .yellow
+        }
     }
 
     private var footer: String {

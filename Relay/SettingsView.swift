@@ -460,12 +460,6 @@ private struct AccountSettingsView: View {
                                 .foregroundStyle(Color(.tertiaryLabel))
                         }
                     }
-                    .fullScreenCover(isPresented: $showingPhoneNumber, onDismiss: {
-                        phoneNumber = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey)
-                        Task { methods = try? await service.apiClient.signInMethods() }
-                    }) {
-                        PhoneNumberView(service: service, context: .settings) { showingPhoneNumber = false }
-                    }
                     if hasEmail {
                         NavigationLink(destination: ChangeEmailSheet(canRemove: (methods?.passkeys ?? 0) > 0) {
                             accountEmail = nil
@@ -556,6 +550,14 @@ private struct AccountSettingsView: View {
                          avatarData: service.myAvatarData, createInviteLink: {
                 try await service.createContactInviteLink()
             })
+        }
+        .navigationDestination(isPresented: $showingPhoneNumber) {
+            PhoneNumberView(service: service, context: .settings) { showingPhoneNumber = false }
+        }
+        .onChange(of: showingPhoneNumber) { _, showing in
+            guard !showing else { return }
+            phoneNumber = UserDefaults.standard.string(forKey: MessagingService.phoneNumberKey)
+            Task { methods = try? await service.apiClient.signInMethods() }
         }
         .navigationDestination(isPresented: $showingDeleteAccount) {
             DeleteAccountSheet(service: service) {

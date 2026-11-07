@@ -146,7 +146,7 @@ struct ContentView: View {
             get: { model.pendingProxy != nil }, set: { if !$0 { model.pendingProxy = nil } }
         )) {
             NavigationStack {
-                ProxySettingsView(initialAddress: model.pendingProxy)
+                ProxySettingsView(initialAddress: model.pendingProxy, onboarding: !model.isReady)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Done") { model.pendingProxy = nil }
