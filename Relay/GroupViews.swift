@@ -266,11 +266,6 @@ struct GroupInfoView: View {
                                 .accessibilityLabel("Rename group")
                             }
                         }
-                    } footer: {
-                        if !isAdmin {
-                            Text("Only admins can change group info.")
-                                .frame(maxWidth: .infinity)
-                        }
                     }
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
@@ -279,7 +274,7 @@ struct GroupInfoView: View {
                         let muted = service.isConversationMuted(conversationId)
                         let others = group.members.filter { $0 != ownAccountId }
                         HStack(spacing: 10) {
-                            InfoQuickAction(icon: "phone.fill", label: "Call",
+                            InfoQuickAction(icon: "phone.fill", label: "Voice",
                                             isDisabled: callManager.isInGroupCall || others.isEmpty) {
                                 dismiss()
                                 Task {
@@ -316,19 +311,16 @@ struct GroupInfoView: View {
                         SharedMediaRow(service: service, conversationId: conversationId)
                     }
 
+                    // Members who can't edit don't see an empty box.
+                    if isAdmin || !group.description.isEmpty {
                     Section("Description") {
                         if group.description.isEmpty {
-                            if isAdmin {
-                                Button("Add a description…") {
-                                    draftDescription = ""
-                                    editingDescription = true
-                                }
-                                .tint(.primary)
-                                .foregroundStyle(.secondary)
-                            } else {
-                                Text("No description")
-                                    .foregroundStyle(.secondary)
+                            Button("Add a description…") {
+                                draftDescription = ""
+                                editingDescription = true
                             }
+                            .tint(.primary)
+                            .foregroundStyle(.secondary)
                         } else {
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack(alignment: .top) {
@@ -357,6 +349,7 @@ struct GroupInfoView: View {
                                 }
                             }
                         }
+                    }
                     }
 
                     // Admin-only; hidden on demo accounts.
@@ -413,7 +406,7 @@ struct GroupInfoView: View {
                         }
                     }
 
-                    Section("Members (\(group.members.count))") {
+                    Section {
                         ForEach(group.members, id: \.self) { member in
                             let memberIsAdmin = group.admins.contains(member)
                             HStack(spacing: 12) {
@@ -431,9 +424,8 @@ struct GroupInfoView: View {
                                                 .foregroundStyle(.yellow)
                                         }
                                     }
-                                    // displayName already reads "You" for us.
-                                    if member == ownAccountId, service.displayName(forAccount: member) != "You" {
-                                        Text("You")
+                                    if let username = member == ownAccountId ? service.username : service.username(forAccount: member) {
+                                        Text("@\(username)")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -480,6 +472,10 @@ struct GroupInfoView: View {
                                 }
                             }
                         }
+                    } header: {
+                        Text("Members (\(group.members.count))")
+                    } footer: {
+                        if !isAdmin { Text("Only admins can change the group's name, photo and members.") }
                     }
 
                     if isAdmin {
@@ -513,13 +509,21 @@ struct GroupInfoView: View {
                         // Reports the group's admins; individual members are
                         // reported from their row's menu.
                         if let admin = group.admins.first(where: { $0 != ownAccountId }) {
-                            Button("Report Group", role: .destructive) {
+                            Button {
                                 reportTarget = ReportTarget(account: admin)
+                            } label: {
+                                SettingsNavRow(systemName: "exclamationmark.bubble.fill", color: .red, title: "Report Group")
                             }
+                            .tint(.red)
+                            .foregroundStyle(.red)
                         }
-                        Button("Leave Group", role: .destructive) {
+                        Button {
                             confirmLeave = true
+                        } label: {
+                            SettingsNavRow(systemName: "rectangle.portrait.and.arrow.right", color: .red, title: "Leave Group")
                         }
+                        .tint(.red)
+                        .foregroundStyle(.red)
                     } footer: {
                         Text("Long-press a member to report them. Reports go to the Relay team; messages are included only if you choose.")
                     }
@@ -538,6 +542,8 @@ struct GroupInfoView: View {
             .navigationTitle("Group Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // The header names the group, like the contact card.
+                ToolbarItem(placement: .principal) { Text(verbatim: " ").accessibilityHidden(true) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
@@ -636,23 +642,9 @@ struct GroupAvatarView: View {
     let name: String
     let size: CGFloat
 
+    /// The same initial and colour as the group's row in the chat list.
     var body: some View {
-        if let data, let image = DecodedImageCache.image(for: data) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: size, height: size)
-                .clipShape(.circle)
-        } else {
-            Circle()
-                .fill(.quaternary)
-                .frame(width: size, height: size)
-                .overlay {
-                    Text(name.prefix(2).uppercased())
-                        .font(.system(size: size * 0.35, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-        }
+        AvatarView(name: name, size: size, imageData: data)
     }
 }
 

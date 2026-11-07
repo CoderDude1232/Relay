@@ -18,12 +18,13 @@ enum WallpaperStyle: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .none: "None"
-        case .sunset: "Peach"
-        case .ocean: "Sky"
-        case .forest: "Mint"
-        case .twilight: "Lavender"
-        case .rose: "Rose"
-        case .graphite: "Graphite"
+        // Not the theme names: a theme pairs one of these with a bubble colour.
+        case .sunset: "Apricot"
+        case .ocean: "Glacier"
+        case .forest: "Seafoam"
+        case .twilight: "Lilac"
+        case .rose: "Blush"
+        case .graphite: "Slate"
         case .aurora: "Aurora"
         case .dusk: "Dusk"
         case .midnight: "Midnight"

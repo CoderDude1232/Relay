@@ -101,8 +101,10 @@ struct CallsView: View {
                         Text("Your voice and video calls will appear here. Start one from any chat, or share a call link to start a group call.")
                     } actions: {
                         if !service.isDemoAccount {
-                            Button("Create a Call Link") { showingCallLinks = true }
-                                .buttonStyle(.borderedProminent)
+                            SettingsPrimaryButton(title: "Create a Call Link", systemName: "link", color: .green) {
+                                showingCallLinks = true
+                            }
+                            .frame(maxWidth: 320)
                         }
                     }
                 } else {
@@ -169,17 +171,18 @@ struct CallsView: View {
                 markMissedCallsSeen()
             }
             .toolbar {
-                if !service.isDemoAccount {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { showingCallLinks = true } label: {
-                            Label("Call Links", systemImage: "link")
-                        }
-                    }
-                }
+                // Top right, like the compose button on Chats.
                 if !service.callHistory.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Clear") { showingClearConfirm = true }
                             .foregroundStyle(.red)
+                    }
+                }
+                if !service.isDemoAccount {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showingCallLinks = true } label: {
+                            Label("Call Links", systemImage: "link")
+                        }
                     }
                 }
             }

@@ -108,6 +108,10 @@ struct SettingsView: View {
                         SettingsNavRow(systemName: "bubble.left.and.bubble.right.fill", color: .green, title: "Chats")
                     }
                     .listRowBackground(rowHighlight("chats"))
+                    NavigationLink(destination: NotificationSettingsView(service: service).markOpen("notifications", in: $openPage)) {
+                        SettingsNavRow(systemName: "bell.badge.fill", color: .red, title: "Notifications")
+                    }
+                    .listRowBackground(rowHighlight("notifications"))
                     NavigationLink(destination: PrivacySettingsView(service: service).markOpen("privacy", in: $openPage)) {
                         SettingsNavRow(systemName: "hand.raised.fill", color: .indigo, title: "Privacy")
                     }
@@ -123,7 +127,7 @@ struct SettingsView: View {
                 }
 
                 // MARK: Invite and support
-                // Privacy Policy, Terms and Acknowledgements live under Privacy.
+                // Privacy Policy, Terms and Acknowledgements live under About.
                 Section {
                     // Hidden on demo accounts, which can't reach real users.
                     if !service.isDemoAccount {
@@ -159,6 +163,10 @@ struct SettingsView: View {
                         SettingsExternalRow(systemName: "envelope.fill", color: .blue, title: "Send Feedback")
                     }
                     .tint(.primary)
+                    NavigationLink(destination: AboutSettingsView(appVersion: appVersion).markOpen("about", in: $openPage)) {
+                        SettingsNavRow(systemName: "info.circle.fill", color: .gray, title: "About")
+                    }
+                    .listRowBackground(rowHighlight("about"))
                 }
 
                 // MARK: Sign out
@@ -245,6 +253,7 @@ struct SettingsView: View {
         case passkeys = "Passkeys", linkedDevices = "Linked Devices", blocked = "Blocked Contacts"
         case folders = "Chat Folders", scheduled = "Scheduled Messages", storage = "Storage"
         case proxy = "Proxy", contactSync = "Contact Syncing"
+        case notifications = "Notifications", about = "About"
     }
 
     /// Every setting worth finding, with the page it lives on.
@@ -269,12 +278,17 @@ struct SettingsView: View {
         ("Typing Indicators", "typing", .privacy),
         ("Link Previews", "link preview", .privacy),
         ("Incognito Keyboard", "keyboard autocorrect learning", .privacy),
-        ("Notification Previews", "notifications lock screen preview banner", .privacy),
-        ("Relay-Only Calls", "calls ip address relay turn direct", .privacy),
+        ("Notification Previews", "notifications lock screen preview banner", .notifications),
+        ("Faster Alerts", "push notifications alerts", .notifications),
+        ("Relay-Only Calls", "calls ip address relay turn direct", .chats),
+        ("Show Calls in Recents", "calls recents phone app", .chats),
+        ("Wi-Fi Only Downloads", "wifi media download cellular", .data),
         ("Scam Warnings", "scam fraud warning", .privacy),
         ("Send Delay", "delay timing jitter", .privacy),
         ("Proxy", "proxy blocked censorship connect", .proxy),
-        ("Data & Retention", "retention server stores policy legal", .privacy),
+        ("Data & Retention", "retention server stores policy legal", .about),
+        ("Privacy Policy", "privacy policy terms legal", .about),
+        ("Acknowledgements", "open source licenses", .about),
         ("Screen Lock", "lock face id touch id passcode", .security),
         ("Panic Mode", "panic hide chats pin", .security),
         ("Message History Backup", "backup history restore", .data),
@@ -333,6 +347,8 @@ struct SettingsView: View {
         case .storage: StorageSettingsView(service: service)
         case .proxy: ProxySettingsView()
         case .contactSync: ContactSyncView(service: service)
+        case .notifications: NotificationSettingsView(service: service)
+        case .about: AboutSettingsView(appVersion: appVersion)
         }
     }
 
@@ -621,6 +637,10 @@ private struct AccountSettingsView: View {
 private struct ChatsSettingsView: View {
     let service: MessagingService
     @Environment(AppModel.self) private var model
+    @Environment(CallManager.self) private var callManager
+    @State private var privateCallMode = CallManager.isPrivateCallModeEnabled
+    @State private var showDirectCallsWarning = false
+    @AppStorage(CallManager.callsInRecentsKey) private var callsInRecents = false
     @AppStorage(InChatSounds.enabledKey) private var inChatSounds = true
     @State private var importingWhatsApp = false
 
@@ -628,7 +648,7 @@ private struct ChatsSettingsView: View {
         List {
             Section {
                 SettingsHero(systemName: "bubble.left.and.bubble.right.fill", color: .green, title: "Chats",
-                             message: "Sounds, folders, scheduled messages and blocked contacts.")
+                             message: "Sounds, folders, calls, scheduled messages and blocked contacts.")
                     .settingsBareRow()
             }
             Section {
@@ -654,6 +674,41 @@ private struct ChatsSettingsView: View {
                 }
             } footer: {
                 Text("Folders stay on this device. Blocked accounts can't message or call you.")
+            }
+
+            Section {
+                SettingsToggleRow(systemName: "phone.fill", color: .green, title: "Relay-Only Calls",
+                                  isOn: Binding(get: { privateCallMode }, set: { newValue in
+                                      if newValue {
+                                          privateCallMode = true
+                                          callManager.privateCallMode = true
+                                      } else {
+                                          showDirectCallsWarning = true
+                                      }
+                                  }))
+                SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .green, title: "Show Calls in Recents",
+                                  isOn: $callsInRecents)
+            } header: {
+                Text("Calls")
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    if privateCallMode {
+                        Text("Relay-Only Calls go through Relay's server, so the other person never sees your IP address.")
+                    } else {
+                        Text("Direct calls are on: the people you call can see your IP address, which can reveal your approximate location.")
+                            .foregroundStyle(.red)
+                    }
+                    Text("Show Calls in Recents adds Relay calls to the Phone app, which can sync them to your other Apple devices through iCloud.")
+                }
+            }
+            .confirmationDialog("Allow direct calls?", isPresented: $showDirectCallsWarning, titleVisibility: .visible) {
+                Button("Allow Direct Calls", role: .destructive) {
+                    privateCallMode = false
+                    callManager.privateCallMode = false
+                }
+                Button("Keep Relay-Only", role: .cancel) {}
+            } message: {
+                Text("Direct calls can connect faster, but they reveal your IP address — and with it your approximate location and network — to the person you're calling.")
             }
 
             Section {
@@ -727,6 +782,12 @@ private struct DataStorageSettingsView: View {
                     }
                 }
             }
+            Section("Media") {
+                SettingsToggleRow(systemName: "wifi", color: .blue, title: "Wi-Fi Only Downloads",
+                                  isOn: Binding(get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
+                                                set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") }))
+            }
+
 
             if service.preKeyDesyncDropCount > 0 {
                 Section {
@@ -801,12 +862,7 @@ private struct HistoryBackupStatusRow: View {
 
 struct PrivacySettingsView: View {
     let service: MessagingService
-    @Environment(CallManager.self) private var callManager
     @Environment(AppModel.self) private var model
-    @State private var privateCallMode = CallManager.isPrivateCallModeEnabled
-    @State private var showDirectCallsWarning = false
-    @AppStorage(CallManager.callsInRecentsKey) private var callsInRecents = false
-    @State private var notificationPrivacy: String = NotificationPreviewSetting.current.rawValue
     @AppStorage(PrivacyPreferences.incognitoKeyboardKey) private var incognitoKeyboard = true
     @AppStorage(PrivacyPreferences.sendTypingKey) private var sendTyping = true
     @AppStorage(PrivacyPreferences.linkPreviewsKey) private var linkPreviews = true
@@ -917,89 +973,6 @@ struct PrivacySettingsView: View {
                 Text("Lets iOS show your chats in Search, the Share Sheet and Siri. iOS keeps these, with chat names and photos, outside Relay's encryption. Hidden chats are never included.")
             }
 
-            Section("Notifications") {
-                Picker(selection: $notificationPrivacy) {
-                    Text("Name and Content").tag("full")
-                    Text("Name Only").tag("nameOnly")
-                    Text("No Name or Content").tag("none")
-                } label: {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "bell.badge.fill", color: .red)
-                        Text("Lock Screen Preview")
-                    }
-                }
-                .pickerStyle(.navigationLink)
-                .onChange(of: notificationPrivacy) { _, value in
-                    UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
-                }
-
-                SettingsToggleRow(systemName: "bolt.fill", color: .red, title: "Faster Alerts",
-                                  info: "On (the default): the encrypted message is delivered inside the push notification, so alerts show instantly and reliably. Apple's push servers carry only ciphertext they can't read, never who sent it. Off: the push is just a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it.",
-                                  isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
-            }
-
-            Section {
-                SettingsToggleRow(systemName: "phone.fill", color: .green, title: "Relay-Only Calls",
-                                  isOn: Binding(get: { privateCallMode }, set: { newValue in
-                                      if newValue {
-                                          privateCallMode = true
-                                          callManager.privateCallMode = true
-                                      } else {
-                                          showDirectCallsWarning = true
-                                      }
-                                  }))
-                SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .green, title: "Show Calls in Recents",
-                                  isOn: $callsInRecents)
-            } header: {
-                Text("Calls")
-            } footer: {
-                VStack(alignment: .leading, spacing: 6) {
-                    if privateCallMode {
-                        Text("Relay-Only Calls go through Relay's server, so the other person never sees your IP address.")
-                    } else {
-                        Text("Direct calls are on: the people you call can see your IP address, which can reveal your approximate location.")
-                            .foregroundStyle(.red)
-                    }
-                    Text("Show Calls in Recents adds Relay calls to the Phone app, which can sync them to your other Apple devices through iCloud.")
-                }
-            }
-            .confirmationDialog("Allow direct calls?", isPresented: $showDirectCallsWarning, titleVisibility: .visible) {
-                Button("Allow Direct Calls", role: .destructive) {
-                    privateCallMode = false
-                    callManager.privateCallMode = false
-                }
-                Button("Keep Relay-Only", role: .cancel) {}
-            } message: {
-                Text("Direct calls can connect faster, but they reveal your IP address — and with it your approximate location and network — to the person you're calling.")
-            }
-
-            Section("Media") {
-                SettingsToggleRow(systemName: "wifi", color: .blue, title: "Wi-Fi Only Downloads",
-                                  isOn: Binding(get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
-                                                set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") }))
-            }
-
-            Section {
-                NavigationLink(destination: DataRetentionView()) {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "doc.text.magnifyingglass", color: .gray)
-                        Text("Data & Retention Policy")
-                    }
-                }
-                Link(destination: LegalLinks.privacy) {
-                    SettingsExternalRow(systemName: "hand.raised.fill", title: "Privacy Policy")
-                }
-                .tint(.primary)
-                Link(destination: LegalLinks.terms) {
-                    SettingsExternalRow(systemName: "doc.text.fill", title: "Terms of Service")
-                }
-                .tint(.primary)
-                NavigationLink(destination: AcknowledgementsView()) {
-                    SettingsNavRow(systemName: "heart.text.square.fill", color: .gray, title: "Acknowledgements")
-                }
-            } header: {
-                Text("Policies & Legal")
-            }
         }
         .modifier(ThemedPageBackground())
         .navigationTitle("Privacy")
@@ -1024,6 +997,85 @@ struct PrivacySettingsView: View {
                 Text(title)
             }
         }
+    }
+}
+
+// MARK: - Notifications sub-page
+
+private struct NotificationSettingsView: View {
+    let service: MessagingService
+    @State private var notificationPrivacy: String = NotificationPreviewSetting.current.rawValue
+
+    var body: some View {
+        List {
+            Section {
+                SettingsHero(systemName: "bell.badge.fill", color: .red, title: "Notifications",
+                             message: "What your Lock Screen shows, and how messages reach this iPhone.")
+                    .settingsBareRow()
+            }
+            Section {
+                Picker(selection: $notificationPrivacy) {
+                    Text("Name and Content").tag("full")
+                    Text("Name Only").tag("nameOnly")
+                    Text("No Name or Content").tag("none")
+                } label: {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "bell.badge.fill", color: .red)
+                        Text("Lock Screen Preview")
+                    }
+                }
+                .pickerStyle(.navigationLink)
+                .onChange(of: notificationPrivacy) { _, value in
+                    UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
+                }
+
+                SettingsToggleRow(systemName: "bolt.fill", color: .red, title: "Faster Alerts",
+                                  info: "On (the default): the encrypted message is delivered inside the push notification, so alerts show instantly and reliably. Apple's push servers carry only ciphertext they can't read, never who sent it. Off: the push is just a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it.",
+                                  isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
+            }
+
+        }
+        .modifier(ThemedPageBackground())
+        .navigationTitle("Notifications")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - About sub-page
+
+private struct AboutSettingsView: View {
+    let appVersion: String
+
+    var body: some View {
+        List {
+            Section {
+                SettingsHero(systemName: "info.circle.fill", color: .gray, title: "About Relay",
+                             message: "Relay \(appVersion). How your data is handled, and the software Relay is built on.")
+                    .settingsBareRow()
+            }
+            Section {
+                NavigationLink(destination: DataRetentionView()) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "doc.text.magnifyingglass", color: .gray)
+                        Text("Data & Retention Policy")
+                    }
+                }
+                Link(destination: LegalLinks.privacy) {
+                    SettingsExternalRow(systemName: "lock.doc.fill", color: .blue, title: "Privacy Policy")
+                }
+                .tint(.primary)
+                Link(destination: LegalLinks.terms) {
+                    SettingsExternalRow(systemName: "doc.text.fill", title: "Terms of Service")
+                }
+                .tint(.primary)
+                NavigationLink(destination: AcknowledgementsView()) {
+                    SettingsNavRow(systemName: "heart.text.square.fill", color: .gray, title: "Acknowledgements")
+                }
+            }
+        }
+        .modifier(ThemedPageBackground())
+        .navigationTitle("About")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -1563,6 +1615,9 @@ struct SettingsHero: View {
     let color: Color
     var title: String? = nil
     let message: String
+    /// While the big title is on screen the bar's small one is hidden, as in
+    /// iOS Settings, so the page doesn't name itself twice.
+    @State private var titleOnScreen = true
 
     var body: some View {
         VStack(spacing: 14) {
@@ -1576,6 +1631,7 @@ struct SettingsHero: View {
                 Text(title)
                     .font(.title2.weight(.bold))
                     .accessibilityAddTraits(.isHeader)
+                    .onScrollVisibilityChange(threshold: 0.2) { titleOnScreen = $0 }
             }
             Text(message)
                 .font(.subheadline)
@@ -1586,6 +1642,12 @@ struct SettingsHero: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        .toolbar {
+            if title != nil, titleOnScreen {
+                // A blank principal item stands in for the bar title.
+                ToolbarItem(placement: .principal) { Text(verbatim: " ") }
+            }
+        }
     }
 }
 

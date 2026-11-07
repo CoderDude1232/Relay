@@ -86,13 +86,15 @@ struct InviteFriendsCard: View {
             }
             Spacer(minLength: 0)
             Button(action: onDismiss) {
+                // The same grey circle as the system tips' close button.
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.secondary)
                     .frame(width: 28, height: 28)
-                    .contentShape(.rect)
+                    .background(Color(.tertiarySystemFill), in: .circle)
+                    .contentShape(.circle)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .accessibilityLabel("Dismiss")
         }
         .padding(14)

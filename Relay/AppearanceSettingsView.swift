@@ -142,12 +142,16 @@ struct AppearanceSettingsView: View {
             sectionHeader("Wallpaper")
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
+                    // Your own photo right after None, so a photo wallpaper
+                    // shows as chosen without scrolling.
+                    wallpaperSwatch(for: .none)
+                    photoWallpaperSwatch
                     ForEach(WallpaperStyle.allCases.filter { style in
-                        style != .photo && (!style.isSupporterOnly || supporter.isOffered || appearance.wallpaper == style)
+                        style != .none && style != .photo
+                            && (!style.isSupporterOnly || supporter.isOffered || appearance.wallpaper == style)
                     }) { style in
                         wallpaperSwatch(for: style)
                     }
-                    photoWallpaperSwatch
                 }
                 .padding(.horizontal, 1)
                 .padding(.vertical, 4)

@@ -640,6 +640,20 @@ struct ChatView: View {
                     }
 
                     Menu {
+                        if !isRelayOfficial {
+                            Button {
+                                if isGroup { showingGroupInfo = true } else { showingContactCard = true }
+                            } label: {
+                                Label(isGroup ? "Group Info" : isNoteToSelf ? "Info" : "Contact Info",
+                                      systemImage: isGroup ? "person.3" : "person.crop.circle")
+                            }
+                            let muted = service.isConversationMuted(conversationId)
+                            Button {
+                                service.setConversationMuted(conversationId, muted: !muted)
+                            } label: {
+                                Label(muted ? "Unmute" : "Mute", systemImage: muted ? "bell" : "bell.slash")
+                            }
+                        }
                         Button {
                             inChatSearchActive.toggle()
                             if !inChatSearchActive { inChatQuery = ""; inChatMatches = [] }
