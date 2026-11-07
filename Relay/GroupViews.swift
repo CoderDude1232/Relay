@@ -56,6 +56,11 @@ struct NewGroupView: View {
     var body: some View {
         OptionalNavigationStack(enabled: !embedded) {
             Form {
+                Section {
+                    SettingsHero(systemName: "person.3.fill", color: .orange, title: "New Group",
+                                 message: "Name it, then pick people from your chats or add them by username.")
+                        .settingsBareRow()
+                }
                 Section("Group name") {
                     TextField("Name", text: $name).incognitoKeyboard()
                 }
@@ -101,18 +106,34 @@ struct NewGroupView: View {
                         }
                     }
                 }
-                Section("Add by username") {
+                Section {
                     ForEach(members.indices, id: \.self) { index in
-                        TextField("Username", text: $members[index])
+                        TextField("@username", text: $members[index])
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                     }
-                    Button("Add another") { members.append("") }.tint(.primary)
+                    Button { members.append("") } label: {
+                        Label {
+                            Text("Add Another Username").foregroundStyle(.primary)
+                        } icon: {
+                            Image(systemName: "plus.circle.fill").foregroundStyle(.green)
+                        }
+                    }
+                    .tint(.primary)
+                } header: {
+                    Text("Find by Username")
+                } footer: {
+                    Text("Someone not on Relay yet? Once the group is made, Group Info → Add Members has a link to send them.")
                 }
-                if let error {
-                    Text(error).font(.footnote).foregroundStyle(.red)
+                Section {
+                    SettingsPrimaryButton(title: "Create Group", color: .orange, working: creating) { create() }
+                        .disabled(!canCreate)
+                        .settingsBareRow()
+                } footer: {
+                    if let error { Text(error).foregroundStyle(.red) }
                 }
             }
+            .modifier(ThemedPageBackground())
             .navigationTitle("New Group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -121,12 +142,8 @@ struct NewGroupView: View {
                         Button("Cancel") { dismiss() }
                     }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { create() }
-                        .disabled(!canCreate || creating)
-                }
             }
-            .overlay { if creating { ProgressView() } }
+            .navigationBarBackButtonHidden(creating)
         }
     }
 
@@ -194,18 +211,14 @@ struct GroupInfoView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(CallManager.self) private var callManager
-    @State private var newMember = ""
     @State private var editingName = false
     @State private var draftName = ""
     @State private var editingDescription = false
     @State private var draftDescription = ""
-    @State private var inviteURL: String?
     @State private var confirmingInviteReset = false
-    @State private var showingShareSheet = false
     @State private var showingAvatarPicker = false
     @State private var working = false
     @State private var errorMessage: String?
-    @State private var addMemberError: String?
     @State private var descriptionExpanded = false
     @State private var confirmLeave = false
     /// Member being reported.
@@ -352,24 +365,23 @@ struct GroupInfoView: View {
                     }
                     }
 
-                    // Admin-only; hidden on demo accounts.
-                    if isAdmin && !service.isDemoAccount {
-                        Section("Invite") {
-                            Button {
-                                run {
-                                    let url = try await service.createGroupInviteLink(groupId: group.id)
-                                    await MainActor.run {
-                                        inviteURL = url
-                                        showingShareSheet = true
-                                    }
-                                }
+                    // Admin-only. Picking from chats, a username, or a link for
+                    // people not on Relay yet all live on one page.
+                    if isAdmin {
+                        Section {
+                            NavigationLink {
+                                AddGroupMembersView(service: service, groupId: group.id, conversationId: conversationId)
                             } label: {
-                                SettingsNavRow(systemName: "link.badge.plus", color: .blue, title: "Create Invite Link")
+                                SettingsNavRow(systemName: "person.badge.plus", color: .green, title: "Add Members")
                             }
-                            Button(role: .destructive) {
-                                confirmingInviteReset = true
-                            } label: {
-                                SettingsNavRow(systemName: "link.badge.minus", color: .red, title: "Reset Invite Link")
+                            if !service.isDemoAccount {
+                                Button(role: .destructive) {
+                                    confirmingInviteReset = true
+                                } label: {
+                                    SettingsNavRow(systemName: "arrow.clockwise", color: .red, title: "Reset Invite Link")
+                                }
+                                .tint(.red)
+                                .foregroundStyle(.red)
                             }
                         }
                         .confirmationDialog("Reset the invite link?", isPresented: $confirmingInviteReset, titleVisibility: .visible) {
@@ -410,10 +422,12 @@ struct GroupInfoView: View {
                         ForEach(group.members, id: \.self) { member in
                             let memberIsAdmin = group.admins.contains(member)
                             HStack(spacing: 12) {
+                                // Our own row: our photo and initial, not the "You" label's.
                                 AvatarView(
-                                    name: service.displayName(forAccount: member),
+                                    name: member == ownAccountId ? (service.myDisplayName ?? service.username ?? "")
+                                        : service.displayName(forAccount: member),
                                     size: 36,
-                                    imageData: service.peerAvatarData(forAccount: member)
+                                    imageData: member == ownAccountId ? service.myAvatarData : service.peerAvatarData(forAccount: member)
                                 )
                                 VStack(alignment: .leading, spacing: 1) {
                                     HStack(spacing: 4) {
@@ -478,32 +492,6 @@ struct GroupInfoView: View {
                         if !isAdmin { Text("Only admins can change the group's name, photo and members.") }
                     }
 
-                    if isAdmin {
-                    Section("Add member") {
-                        HStack {
-                            TextField("Username", text: $newMember)
-                                .autocorrectionDisabled()
-                                .textInputAutocapitalization(.never)
-                                .submitLabel(.done)
-                                .onSubmit {
-                                    let username = newMember.trimmingCharacters(in: .whitespaces)
-                                    guard !username.isEmpty else { return }
-                                    addMember(username: username, groupId: group.id)
-                                }
-                            Button("Add") {
-                                let username = newMember.trimmingCharacters(in: .whitespaces)
-                                addMember(username: username, groupId: group.id)
-                            }
-                            .tint(.primary)
-                            .disabled(newMember.trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
-                        if let addMemberError {
-                            Label(addMemberError, systemImage: "exclamationmark.circle.fill")
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        }
-                    }
-                    } // end admin-only add member
 
                     Section {
                         // Reports the group's admins; individual members are
@@ -579,11 +567,6 @@ struct GroupInfoView: View {
                     GroupAvatarPickerSheet(service: service, groupId: group.id)
                 }
             }
-            .sheet(isPresented: $showingShareSheet) {
-                if let url = inviteURL {
-                    ShareSheet(items: [url])
-                }
-            }
             .confirmationDialog("Leave this group?", isPresented: $confirmLeave, titleVisibility: .visible) {
                 Button("Leave Group", role: .destructive) {
                     run(dismissAfter: true) { try await service.leaveGroup(group?.id ?? "") }
@@ -604,21 +587,6 @@ struct GroupInfoView: View {
         }
     }
 
-    private func addMember(username: String, groupId: String) {
-        guard !username.isEmpty else { return }
-        newMember = ""
-        addMemberError = nil
-        working = true
-        Task {
-            do {
-                try await service.addGroupMember(username: username, toGroup: groupId)
-            } catch {
-                addMemberError = "Couldn't add \"\(username)\": \(error.localizedDescription)"
-            }
-            working = false
-        }
-    }
-
     private func run(dismissAfter: Bool = false, _ action: @escaping () async throws -> Void) {
         working = true
         errorMessage = nil
@@ -636,6 +604,185 @@ struct GroupInfoView: View {
 }
 
 // MARK: - Group avatar display
+
+// MARK: - Add members
+
+/// Adds people to a group three ways: tick them from your chats, type a
+/// username, or send the group's invite link, which also works for someone
+/// who doesn't have Relay yet (it carries through installing and signing up).
+struct AddGroupMembersView: View {
+    let service: MessagingService
+    let groupId: String
+    let conversationId: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var picked: Set<String> = []
+    @State private var username = ""
+    @State private var query = ""
+    @State private var working = false
+    @State private var sharing = false
+    @State private var inviteURL: URL?
+    @State private var errorMessage: String?
+
+    private struct Candidate: Identifiable {
+        let account: String
+        let username: String
+        let name: String
+        var id: String { account }
+    }
+
+    /// 1:1 chats with a known username who aren't in the group yet.
+    private var candidates: [Candidate] {
+        let members = Set(service.group(for: conversationId)?.members ?? [])
+        var seen = Set<String>()
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return service.conversations.compactMap { c in
+            guard !c.isGroup,
+                  c.peerAccount != service.noteToSelfAccount,
+                  c.peerAccount != service.relayOfficialAccount,
+                  !members.contains(c.peerAccount),
+                  !service.isBlocked(c.peerAccount),
+                  seen.insert(c.peerAccount).inserted,
+                  let username = service.username(forAccount: c.peerAccount), !username.isEmpty
+            else { return nil }
+            let name = service.displayName(forAccount: c.peerAccount)
+            guard q.isEmpty || name.lowercased().contains(q) || username.lowercased().contains(q) else { return nil }
+            return Candidate(account: c.peerAccount, username: username, name: name)
+        }
+    }
+
+    private var typedUsername: String {
+        username.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+    }
+
+    private var addCount: Int { picked.count + (typedUsername.isEmpty ? 0 : 1) }
+
+    var body: some View {
+        Form {
+            Section {
+                SettingsHero(systemName: "person.badge.plus", color: .green, title: "Add Members",
+                             message: "Pick people you already chat with, or find someone by username. Not on Relay yet? Send them a link.")
+                    .settingsBareRow()
+            }
+
+            if !service.isDemoAccount {
+                Section {
+                    Button { shareInviteLink() } label: {
+                        SettingsNavRow(systemName: "link.badge.plus", color: .blue, title: "Invite with a Link")
+                    }
+                    .tint(.primary)
+                    .disabled(working)
+                } footer: {
+                    Text("Anyone with the link can join, including people who don't have Relay yet: they install it, sign up and land in the group.")
+                }
+            }
+
+            let candidates = candidates
+            if !candidates.isEmpty || !query.isEmpty {
+                Section("Your Chats") {
+                    ForEach(candidates) { candidate in
+                        let isPicked = picked.contains(candidate.account)
+                        Button {
+                            if isPicked { picked.remove(candidate.account) } else { picked.insert(candidate.account) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                AvatarView(name: candidate.name, size: 36,
+                                           imageData: service.peerAvatarData(forAccount: candidate.account))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(candidate.name).foregroundStyle(.primary)
+                                    Text("@\(candidate.username)").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: isPicked ? "checkmark.circle.fill" : "circle")
+                                    .font(.title3)
+                                    .foregroundStyle(isPicked ? Color.accentColor : Color.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(isPicked ? [.isButton, .isSelected] : .isButton)
+                    }
+                    if candidates.isEmpty {
+                        Text("No chats match.").foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section {
+                HStack(spacing: 4) {
+                    Text("@").foregroundStyle(.secondary)
+                    TextField("username", text: $username)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.done)
+                        .onSubmit { add() }
+                }
+            } header: {
+                Text("Find by Username")
+            } footer: {
+                if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+            }
+
+            Section {
+                SettingsPrimaryButton(title: addCount > 1 ? "Add \(addCount) People" : "Add to Group",
+                                      color: .green, working: working) { add() }
+                    .disabled(addCount == 0)
+                    .settingsBareRow()
+            }
+        }
+        .modifier(ThemedPageBackground())
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search your chats")
+        .navigationTitle("Add Members")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(working)
+        .sheet(isPresented: $sharing) {
+            if let inviteURL { ShareSheet(items: [inviteURL]) }
+        }
+    }
+
+    private func add() {
+        guard addCount > 0, !working else { return }
+        let usernames = picked.compactMap { service.username(forAccount: $0) } + (typedUsername.isEmpty ? [] : [typedUsername])
+        working = true
+        errorMessage = nil
+        Task {
+            var failed: [String] = []
+            for name in usernames {
+                do {
+                    try await service.addGroupMember(username: name, toGroup: groupId)
+                } catch {
+                    failed.append(name)
+                    errorMessage = FriendlyError.message(for: error)
+                }
+            }
+            working = false
+            if failed.isEmpty {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                dismiss()
+            } else {
+                // Keep only what didn't go through, so Add retries just those.
+                picked = picked.filter { service.username(forAccount: $0).map(failed.contains) ?? false }
+                if !failed.contains(typedUsername) { username = "" }
+                if failed.count > 1 || errorMessage == nil {
+                    errorMessage = "Couldn't add " + failed.map { "@" + $0 }.joined(separator: ", ") + "."
+                }
+            }
+        }
+    }
+
+    private func shareInviteLink() {
+        working = true
+        errorMessage = nil
+        Task {
+            do {
+                inviteURL = URL(string: try await service.createGroupInviteLink(groupId: groupId))
+                sharing = inviteURL != nil
+            } catch {
+                errorMessage = FriendlyError.message(for: error)
+            }
+            working = false
+        }
+    }
+}
 
 struct GroupAvatarView: View {
     let data: Data?
