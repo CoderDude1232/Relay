@@ -217,7 +217,8 @@ struct ContactCardView: View {
                         HStack {
                             Text("Account ID")
                                 .foregroundStyle(.primary)
-                            Spacer(minLength: 0)
+                                .fixedSize()
+                            Spacer(minLength: 12)
                             Text(accountIdCopied ? "Copied!" : account)
                                 .font(.caption.monospaced())
                                 .lineLimit(1)
@@ -245,6 +246,7 @@ struct ContactCardView: View {
                             )
                         }
                         .tint(blocked ? .primary : .red)
+                        .foregroundStyle(blocked ? Color.primary : Color.red)
 
                         Button {
                             showingReport = true
@@ -252,6 +254,7 @@ struct ContactCardView: View {
                             Label("Report \(displayName)", systemImage: "exclamationmark.bubble")
                         }
                         .tint(.red)
+                        .foregroundStyle(.red)
                     } footer: {
                         Text("Reports go to the Relay team. Messages are only included if you choose to share them.")
                     }

@@ -689,7 +689,7 @@ private struct DataStorageSettingsView: View {
                 if service.isDemoAccount {
                     EmptyView()
                 } else if service.keepsChatListWithAccount {
-                    SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .blue, title: "Back Up Message History",
+                    SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .blue, title: "Message Backup",
                                       info: "Keeps an encrypted copy of your messages (and, for Relay Supporters, photos and files) with your account, so they come back when you sign in on a new phone. Only your account password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy and stops backups on all your devices.",
                                       isOn: Binding(get: { historyBackup }, set: { enabled in
                                           historyBackup = enabled
@@ -705,9 +705,9 @@ private struct DataStorageSettingsView: View {
                     }
                 } else {
                     HStack(spacing: 14) {
-                        SettingsIcon(systemName: "clock.arrow.circlepath", color: .accentColor)
+                        SettingsIcon(systemName: "clock.arrow.circlepath", color: .blue)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Message History Backup")
+                            Text("Message Backup")
                             Text("Add a passkey, recovery key or account password in Account to back up your messages.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

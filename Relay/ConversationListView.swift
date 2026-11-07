@@ -1013,6 +1013,7 @@ struct ConversationListView: View {
                 }
                 .buttonStyle(.plain)
                 .selectionDisabled()
+                .listRowBackground(Color.clear)
                 .accessibilityElement(children: .combine)
             }
 
