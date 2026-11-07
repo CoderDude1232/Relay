@@ -22,7 +22,6 @@ struct ContactCardView: View {
     @State private var editingNickname = false
     @State private var nicknameDraft = ""
     @State private var accountIdCopied = false
-    @State private var confirmResetSession = false
     @State private var confirmBlock = false
     @State private var showingReport = false
     @State private var photoExpanded = false
@@ -259,23 +258,6 @@ struct ContactCardView: View {
                     }
                 }
 
-                // MARK: Advanced
-                if !isNoteToSelf {
-                    Section {
-                        DisclosureGroup("Troubleshooting") {
-                            Button {
-                                confirmResetSession = true
-                            } label: {
-                                SettingsNavRow(systemName: "arrow.triangle.2.circlepath", color: .orange, title: "Fix Delivery Problems")
-                            }
-                            Text("Starts a fresh encrypted connection with this person. Use it only if your messages keep showing \"Not Delivered\" while you're online.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    } header: {
-                        Text("Advanced")
-                    }
-                }
             }
             // The name is the big heading; the title only labels the back button.
             .navigationTitle(displayName)
@@ -287,12 +269,6 @@ struct ContactCardView: View {
                 }
             }
             .onAppear { nickname = service.nickname(forAccount: account) ?? "" }
-            .confirmationDialog("Fix delivery problems with \(displayName)?", isPresented: $confirmResetSession, titleVisibility: .visible) {
-                Button("Start Fresh Connection", role: .destructive) { service.resetSession(withPeer: account) }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Your next message will start a fresh encrypted connection with this person. Your chat history stays as it is.")
-            }
             .confirmationDialog("Block \(displayName)?", isPresented: $confirmBlock, titleVisibility: .visible) {
                 Button("Block", role: .destructive) { service.blockAccount(account) }
                 Button("Cancel", role: .cancel) {}

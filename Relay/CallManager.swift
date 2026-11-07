@@ -78,16 +78,6 @@ enum CallQuality: Equatable {
     case unknown, good, fair, poor
 }
 
-struct CallDiagnostics: Equatable {
-    var iceConnectionState = "Idle"
-    var iceGatheringState = "Idle"
-    var signalingState = "Stable"
-    var localVideoActive = false
-    var remoteVideoActive = false
-    var screenSharingActive = false
-    var lastUpdated = Date()
-}
-
 // MARK: - CallManager
 
 @Observable
@@ -100,7 +90,6 @@ final class CallManager: NSObject {
     private(set) var isScreenSharing = false
     private(set) var localVideoTrack: RTCVideoTrack?
     private(set) var remoteVideoTrack: RTCVideoTrack?
-    private(set) var diagnostics = CallDiagnostics()
     private(set) var callQuality: CallQuality = .unknown
     /// Audio packet counters at the last quality check, for the loss rate.
     private var lastAudioPackets: (received: Double, lost: Double)?
@@ -404,7 +393,7 @@ final class CallManager: NSObject {
         storedCallConnectedAt = nil
         storedCallKind = kind
         storedPeerName = peerName
-        resetDiagnostics()
+        resetCallStats()
         state = .outgoing(callId: callId, peerAccount: peerAccount, peerName: peerName)
         log.info("startCall: peer and call id redacted")
 
@@ -548,7 +537,7 @@ final class CallManager: NSObject {
         storedCallKind = .audio
         storedPeerName = nil
         wasIncomingCall = true
-        resetDiagnostics()
+        resetCallStats()
         state = .incoming(callId: callId, callerAccount: "", callerName: "Relay")
         hasCallKitReport = true
 
@@ -609,7 +598,7 @@ final class CallManager: NSObject {
         storedPeerName = nil
         hasAnsweredCall = false
         wasIncomingCall = false
-        resetDiagnostics()
+        resetCallStats()
         state = .idle
         return (uuid, answered)
     }
@@ -645,7 +634,7 @@ final class CallManager: NSObject {
         isSpeaker = false
         isVideoEnabled = true
         isScreenSharing = false
-        resetDiagnostics()
+        resetCallStats()
         state = .idle
     }
 
@@ -722,7 +711,7 @@ final class CallManager: NSObject {
         storedCallKind = kind
         storedPeerName = callerName
         wasIncomingCall = true
-        resetDiagnostics()
+        resetCallStats()
         state = .incoming(callId: callId, callerAccount: callerAccount, callerName: callerName)
         startIncomingRingTimeout(callId: callId)
 
@@ -1266,7 +1255,7 @@ final class CallManager: NSObject {
         isSpeaker = false
         isVideoEnabled = true
         isScreenSharing = false
-        resetDiagnostics()
+        resetCallStats()
         state = .failed(reason)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
@@ -1344,11 +1333,10 @@ final class CallManager: NSObject {
         isSpeaker = false
         isVideoEnabled = true
         isScreenSharing = false
-        resetDiagnostics()
+        resetCallStats()
     }
 
-    private func resetDiagnostics() {
-        diagnostics = CallDiagnostics()
+    private func resetCallStats() {
         callQuality = .unknown
         lastAudioPackets = nil
     }
@@ -1393,14 +1381,6 @@ final class CallManager: NSObject {
             quality = .good
         }
         if quality != callQuality { callQuality = quality }
-    }
-
-    private func updateDiagnostics(_ mutate: (inout CallDiagnostics) -> Void) {
-        mutate(&diagnostics)
-        diagnostics.localVideoActive = localVideoTrack?.isEnabled == true
-        diagnostics.remoteVideoActive = remoteVideoTrack != nil
-        diagnostics.screenSharingActive = isScreenSharing
-        diagnostics.lastUpdated = Date()
     }
 
     // MARK: - Ringtone (foreground WebSocket calls)
@@ -1468,12 +1448,10 @@ final class CallManager: NSObject {
             stopScreenShare(restartCamera: false)
             isVideoEnabled = false
             localVideoTrack.isEnabled = false
-            updateDiagnostics { _ in }
             return
         }
         isVideoEnabled.toggle()
         localVideoTrack.isEnabled = isVideoEnabled
-        updateDiagnostics { _ in }
     }
 
     func toggleScreenShare() {
@@ -1668,7 +1646,6 @@ final class CallManager: NSObject {
         localVideoCapturer = capturer
         localVideoTrack = track
         isVideoEnabled = true
-        updateDiagnostics { _ in }
         if let sender = pc.add(track, streamIds: ["stream0"]) {
             configureVideoSender(sender)
         }
@@ -1749,7 +1726,6 @@ final class CallManager: NSObject {
                 self.isScreenSharing = true
                 self.isVideoEnabled = true
                 self.localVideoTrack?.isEnabled = true
-                self.updateDiagnostics { _ in }
             }
         }
     }
@@ -1763,7 +1739,6 @@ final class CallManager: NSObject {
         isVideoEnabled = true
         localVideoTrack.isEnabled = true
         deviceBroadcastFrameModifiedAt = nil
-        updateDiagnostics { _ in }
         Self.setBroadcastWanted(true)
 
         deviceBroadcastTask?.cancel()
@@ -1797,7 +1772,6 @@ final class CallManager: NSObject {
             if let url = Self.broadcastFrameURL() { try? FileManager.default.removeItem(at: url) }
             Self.setBroadcastWanted(false)
             isScreenSharing = false
-            updateDiagnostics { _ in }
             if restartCamera, isVideoEnabled, let capturer = localVideoCapturer {
                 startVideoCapture(capturer)
             }
@@ -1811,7 +1785,6 @@ final class CallManager: NSObject {
                 }
                 self.screenVideoCapturer = nil
                 self.isScreenSharing = false
-                self.updateDiagnostics { _ in }
                 if restartCamera, self.isVideoEnabled, let capturer = self.localVideoCapturer {
                     self.startVideoCapture(capturer)
                 }
@@ -2660,16 +2633,11 @@ extension CallManager: RTCPeerConnectionDelegate {
     }
 
     nonisolated func peerConnectionShouldNegotiate(_ pc: RTCPeerConnection) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange state: RTCSignalingState) {
-        Task { @MainActor in
-            updateDiagnostics { $0.signalingState = String(describing: state) }
-        }
-    }
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange state: RTCSignalingState) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didAdd stream: RTCMediaStream) {
         Task { @MainActor in
             guard pc === peerConnection else { return }
             remoteVideoTrack = stream.videoTracks.first
-            updateDiagnostics { _ in }
         }
     }
 
@@ -2677,7 +2645,6 @@ extension CallManager: RTCPeerConnectionDelegate {
         Task { @MainActor in
             if remoteVideoTrack === stream.videoTracks.first {
                 remoteVideoTrack = nil
-                updateDiagnostics { _ in }
             }
         }
     }
@@ -2692,7 +2659,6 @@ extension CallManager: RTCPeerConnectionDelegate {
             if let track = receiver.track as? RTCVideoTrack {
                 remoteVideoTrack = track
                 storedCallKind = .video
-                updateDiagnostics { _ in }
             }
         }
     }
@@ -2703,7 +2669,6 @@ extension CallManager: RTCPeerConnectionDelegate {
             // can land after the next call has started: it must not mark that
             // call connected or schedule its failure.
             guard pc === peerConnection else { return }
-            updateDiagnostics { $0.iceConnectionState = String(describing: state) }
             switch state {
             case .connected, .completed:
                 iceRecoveryTask?.cancel()
@@ -2740,11 +2705,7 @@ extension CallManager: RTCPeerConnectionDelegate {
         }
     }
 
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange state: RTCIceGatheringState) {
-        Task { @MainActor in
-            updateDiagnostics { $0.iceGatheringState = String(describing: state) }
-        }
-    }
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange state: RTCIceGatheringState) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
 }

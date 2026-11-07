@@ -944,9 +944,6 @@ struct PrivacySettingsView: View {
                 SettingsToggleRow(systemName: "keyboard", color: .indigo, title: "Incognito Keyboard",
                                   info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
-                #if DEBUG
-                NavigationLink("Scam Self-Test (debug)") { ScamSelfTestView() }
-                #endif
                 SettingsToggleRow(systemName: "exclamationmark.shield", color: .red, title: "Scam Warnings",
                                   info: "Relay checks incoming messages with links, money or code requests on your iPhone (with Apple Intelligence where available) and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
                                   isOn: $scamWarnings)

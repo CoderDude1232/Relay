@@ -20,7 +20,6 @@ struct CallView: View {
 
     @State private var elapsed = 0
     @State private var cameraOptionsExpanded = false
-    @State private var showingDiagnostics = false
     @State private var showingScreenShareOptions = false
     // Controls auto-hide after 4 seconds during active video calls.
     @State private var controlsVisible = true
@@ -133,9 +132,6 @@ struct CallView: View {
             if case .active = new, case .active = old {} else if case .active = new {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
-        }
-        .sheet(isPresented: $showingDiagnostics) {
-            CallDiagnosticsView(callManager: callManager)
         }
         .sheet(isPresented: $showingScreenShareOptions) {
             ScreenShareOptionsView()
@@ -617,64 +613,6 @@ private struct RoutePickerButton: UIViewRepresentable {
     }
 
     func updateUIView(_ view: AVRoutePickerView, context: Context) {}
-}
-
-private struct CallDiagnosticsView: View {
-    let callManager: CallManager
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Connection") {
-                    diagnosticRow("State", callStateLabel)
-                    diagnosticRow("ICE", callManager.diagnostics.iceConnectionState)
-                    diagnosticRow("Gathering", callManager.diagnostics.iceGatheringState)
-                    diagnosticRow("Signaling", callManager.diagnostics.signalingState)
-                }
-                Section("Media") {
-                    diagnosticRow("Call Type", callManager.currentCallKind.rawValue.capitalized)
-                    diagnosticRow("Local Video", callManager.diagnostics.localVideoActive ? "On" : "Off")
-                    diagnosticRow("Remote Video", callManager.diagnostics.remoteVideoActive ? "Present" : "Waiting")
-                    diagnosticRow("Screen Share", callManager.diagnostics.screenSharingActive ? "On" : "Off")
-                    diagnosticRow("Muted", callManager.isMuted ? "Yes" : "No")
-                }
-                Section("Updated") {
-                    Text(callManager.diagnostics.lastUpdated.formatted(date: .omitted, time: .standard))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .navigationTitle("Call Diagnostics")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private var callStateLabel: String {
-        switch callManager.state {
-        case .idle: "Idle"
-        case .outgoing: "Outgoing"
-        case .incoming: "Incoming"
-        case .connecting: "Connecting"
-        case .active: "Active"
-        case .failed(let reason): reason
-        case .ended: "Ended"
-        }
-    }
-
-    private func diagnosticRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-            Spacer()
-            Text(value)
-                .foregroundStyle(.secondary)
-        }
-    }
 }
 
 private struct ScreenShareOptionsView: View {
