@@ -242,10 +242,12 @@ public struct ProfileInfo: Sendable, Codable {
     /// The sender's profile key, for fetching their current profile from the
     /// relay whenever we like. Nil from older clients.
     public let profileKey: Data?
+    /// The sender has no profile key for us and asks for our profile.
+    public let wantsProfile: Bool?
 
     public init(account: String, displayName: String, avatar: Avatar?, revision: Int64,
                 status: String = "", bio: String = "", links: [Link] = [], accessKey: Data? = nil,
-                profileKey: Data? = nil) {
+                profileKey: Data? = nil, wantsProfile: Bool = false) {
         self.account = account
         self.displayName = displayName
         self.avatar = avatar
@@ -255,6 +257,7 @@ public struct ProfileInfo: Sendable, Codable {
         self.links = links
         self.accessKey = accessKey
         self.profileKey = profileKey
+        self.wantsProfile = wantsProfile
     }
 }
 
@@ -995,7 +998,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 links: ProfileText.links(profile.links.map { ($0.label, $0.url) })
                     .map { ProfileInfo.Link(label: $0.label, url: $0.url) },
                 accessKey: profile.accessKey.count == 32 ? profile.accessKey : nil,
-                profileKey: profile.profileKey.count == 32 ? profile.profileKey : nil
+                profileKey: profile.profileKey.count == 32 ? profile.profileKey : nil,
+                wantsProfile: profile.wantsProfile
             )
             return ProcessedEnvelope(outcome: .applied, peerAccount: attestedAccount, profile: info)
 

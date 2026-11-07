@@ -163,6 +163,9 @@ message ProfileUpdate {
   // like, instead of waiting for an update like this one. Changes when the
   // sender blocks someone. Empty from older clients.
   bytes profile_key = 8;
+  // Set when the sender has no profile key for the recipient (after a restore
+  // from a backup without it, say): the recipient sends its profile back.
+  bool wants_profile = 9;
 }
 
 // The plaintext of a profile stored on the relay (PUT /v1/profiles/{id}).

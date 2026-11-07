@@ -1319,7 +1319,14 @@ public struct RelayAPIClient: Sendable {
             #if DEBUG
             if RelayFallback.simulatesBlocked(routed.url?.host()) { throw URLError(.cannotFindHost) }
             #endif
-            return try await session.data(for: routed)
+            do {
+                return try await session.data(for: routed)
+            } catch let lost as URLError where lost.code == .networkConnectionLost {
+                // A pooled HTTP/3 connection the network dropped while idle fails
+                // its next request; a fresh connection usually works. Signed
+                // requests carry a nonce, so one that did arrive isn't applied twice.
+                return try await session.data(for: routed)
+            }
         } catch where RelayProxy.active == nil && RelayFallback.suggestsBlock(error) {
             let failed = routed.url?.host() ?? primary
             let host = await RelayFallback.failover(primary: primary, failedHost: failed, session: session)

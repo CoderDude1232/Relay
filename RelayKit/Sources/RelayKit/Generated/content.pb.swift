@@ -582,6 +582,10 @@ public nonisolated struct Relay_Content_ProfileUpdate: Sendable {
   /// sender blocks someone. Empty from older clients.
   public var profileKey: Data = Data()
 
+  /// Set when the sender has no profile key for the recipient (after a restore
+  /// from a backup without it, say): the recipient sends its profile back.
+  public var wantsProfile: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1800,7 +1804,7 @@ nonisolated extension Relay_Content_AttachmentPointer: SwiftProtobuf.Message, Sw
 
 nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProfileUpdate"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0\u{1}status\0\u{1}bio\0\u{1}links\0\u{3}access_key\0\u{3}profile_key\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}display_name\0\u{1}avatar\0\u{1}timestamp\0\u{1}status\0\u{1}bio\0\u{1}links\0\u{3}access_key\0\u{3}profile_key\0\u{3}wants_profile\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1816,6 +1820,7 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
       case 6: try { try decoder.decodeRepeatedMessageField(value: &self.links) }()
       case 7: try { try decoder.decodeSingularBytesField(value: &self.accessKey) }()
       case 8: try { try decoder.decodeSingularBytesField(value: &self.profileKey) }()
+      case 9: try { try decoder.decodeSingularBoolField(value: &self.wantsProfile) }()
       default: break
       }
     }
@@ -1850,6 +1855,9 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if !self.profileKey.isEmpty {
       try visitor.visitSingularBytesField(value: self.profileKey, fieldNumber: 8)
     }
+    if self.wantsProfile != false {
+      try visitor.visitSingularBoolField(value: self.wantsProfile, fieldNumber: 9)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1862,6 +1870,7 @@ nonisolated extension Relay_Content_ProfileUpdate: SwiftProtobuf.Message, SwiftP
     if lhs.links != rhs.links {return false}
     if lhs.accessKey != rhs.accessKey {return false}
     if lhs.profileKey != rhs.profileKey {return false}
+    if lhs.wantsProfile != rhs.wantsProfile {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

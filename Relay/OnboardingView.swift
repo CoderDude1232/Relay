@@ -1250,9 +1250,10 @@ enum FriendlyError {
         }
         if let url = error as? URLError {
             switch url.code {
-            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
-                 .internationalRoamingOff:
+            case .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff:
                 return offline
+            case .networkConnectionLost:
+                return "The connection dropped. Please try again."
             case .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed:
                 return unreachable
             case .cancelled:

@@ -1115,7 +1115,10 @@ type ProfileUpdate struct {
 	// profile with it (EncryptedProfile, GET /v1/profiles/{id}) whenever they
 	// like, instead of waiting for an update like this one. Changes when the
 	// sender blocks someone. Empty from older clients.
-	ProfileKey    []byte `protobuf:"bytes,8,opt,name=profile_key,json=profileKey,proto3" json:"profile_key,omitempty"`
+	ProfileKey []byte `protobuf:"bytes,8,opt,name=profile_key,json=profileKey,proto3" json:"profile_key,omitempty"`
+	// Set when the sender has no profile key for the recipient (after a restore
+	// from a backup without it, say): the recipient sends its profile back.
+	WantsProfile  bool `protobuf:"varint,9,opt,name=wants_profile,json=wantsProfile,proto3" json:"wants_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1204,6 +1207,13 @@ func (x *ProfileUpdate) GetProfileKey() []byte {
 		return x.ProfileKey
 	}
 	return nil
+}
+
+func (x *ProfileUpdate) GetWantsProfile() bool {
+	if x != nil {
+		return x.WantsProfile
+	}
+	return false
 }
 
 // The plaintext of a profile stored on the relay (PUT /v1/profiles/{id}).
@@ -2237,7 +2247,7 @@ const file_content_proto_rawDesc = "" +
 	"\x04size\x18\x05 \x01(\x04R\x04size\x12\x1a\n" +
 	"\bfilename\x18\x06 \x01(\tR\bfilename\x12\x14\n" +
 	"\x05width\x18\a \x01(\rR\x05width\x12\x16\n" +
-	"\x06height\x18\b \x01(\rR\x06height\"\xa6\x02\n" +
+	"\x06height\x18\b \x01(\rR\x06height\"\xcb\x02\n" +
 	"\rProfileUpdate\x12!\n" +
 	"\fdisplay_name\x18\x01 \x01(\tR\vdisplayName\x128\n" +
 	"\x06avatar\x18\x02 \x01(\v2 .relay.content.AttachmentPointerR\x06avatar\x12\x1c\n" +
@@ -2248,7 +2258,8 @@ const file_content_proto_rawDesc = "" +
 	"\n" +
 	"access_key\x18\a \x01(\fR\taccessKey\x12\x1f\n" +
 	"\vprofile_key\x18\b \x01(\fR\n" +
-	"profileKey\"\xd0\x01\n" +
+	"profileKey\x12#\n" +
+	"\rwants_profile\x18\t \x01(\bR\fwantsProfile\"\xd0\x01\n" +
 	"\x10EncryptedProfile\x12!\n" +
 	"\fdisplay_name\x18\x01 \x01(\tR\vdisplayName\x12\x1f\n" +
 	"\vavatar_jpeg\x18\x02 \x01(\fR\n" +

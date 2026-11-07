@@ -212,7 +212,25 @@ extension MessagingService {
         // Contacts who don't have our current key yet (first run of this
         // build, or a key changed elsewhere) get it now, once.
         distributeProfileUpdate()
-        await refreshPeerProfiles(maxAge: 6 * 3600)
+        await refreshPeerProfiles(maxAge: Self.profileRefreshInterval)
+        startProfileRefreshLoop()
+    }
+
+    /// How often contacts' profiles are checked while the app is open. An
+    /// unchanged profile costs one small "not modified" answer.
+    static let profileRefreshInterval: TimeInterval = 3600
+
+    /// Re-checks every contact's profile hourly while the app runs, so a
+    /// photo missed at a restore or a push arrives anyway.
+    private func startProfileRefreshLoop() {
+        guard profileRefreshTask == nil else { return }
+        profileRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.profileRefreshInterval))
+                guard let self, !Task.isCancelled else { return }
+                await self.refreshPeerProfiles(maxAge: Self.profileRefreshInterval - 60)
+            }
+        }
     }
 
     // MARK: - Encryption

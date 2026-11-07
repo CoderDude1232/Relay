@@ -649,6 +649,8 @@ final class MessagingService {
         pathMonitor = nil
         expireTask?.cancel()
         expireTask = nil
+        profileRefreshTask?.cancel()
+        profileRefreshTask = nil
         // Lets a background refresh know it must start() the service again.
         connectionState = .disconnected
         socketLive = false
@@ -1802,6 +1804,7 @@ final class MessagingService {
             if let accessKey { content.profile.accessKey = accessKey }
             let profileKey = myProfileKey
             content.profile.profileKey = profileKey
+            content.profile.wantsProfile = peerProfileKey(account) == nil
             content.profile.bio = myBio
             content.profile.links = myLinks.map {
                 var l = Relay_Content_ProfileLink()
@@ -1847,6 +1850,8 @@ final class MessagingService {
         return key
     }
     @ObservationIgnored private var cachedOwnAccessKey: Data?
+    /// The hourly contact-profile check (ProfileSync.swift).
+    @ObservationIgnored var profileRefreshTask: Task<Void, Never>?
 
     /// Short tag recording which access key a peer last got. Not secret: kv is
     /// encrypted at rest, and it only has to tell a rotated key from the old one.
@@ -1894,6 +1899,12 @@ final class MessagingService {
         }
         if let profileKey = profile.profileKey, profile.account != credentials.accountId {
             rememberPeerProfileKey(profileKey, for: profile.account)
+        }
+        if profile.wantsProfile == true, profile.account != credentials.accountId {
+            // They lost our profile (a restore); send it again even though we
+            // sent this revision before.
+            writeKVInt("pfsent:\(profile.account)", 0)
+            Task { await sendMyProfileIfNeeded(toPeer: profile.account) }
         }
         let existing = (try? storage.messages.peerProfile(account: profile.account)) ?? nil
         if let existing, existing.revision >= profile.revision { return }
