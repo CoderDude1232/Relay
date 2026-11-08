@@ -280,7 +280,7 @@ struct SettingsView: View {
         ("Link Previews", "link preview", .privacy),
         ("Incognito Keyboard", "keyboard autocorrect learning", .privacy),
         ("Notification Previews", "notifications lock screen preview banner", .notifications),
-        ("Faster Alerts", "push notifications alerts", .notifications),
+        ("Notification Delivery", "faster alerts push instant wake notifications", .notifications),
         ("Relay-Only Calls", "calls ip address relay turn direct", .chats),
         ("Show Calls in Recents", "calls recents phone app", .chats),
         ("Wi-Fi Only Downloads", "wifi media download cellular", .data),
@@ -1024,30 +1024,215 @@ private struct NotificationSettingsView: View {
                     .settingsBareRow()
             }
             Section {
-                Picker(selection: $notificationPrivacy) {
-                    Text("Name and Content").tag("full")
-                    Text("Name Only").tag("nameOnly")
-                    Text("No Name or Content").tag("none")
-                } label: {
-                    HStack(spacing: 14) {
-                        SettingsIcon(systemName: "bell.badge.fill", color: .red)
-                        Text("Lock Screen Preview")
+                HStack(spacing: 10) {
+                    ForEach(NotificationPreviewSetting.allCases, id: \.self) { level in
+                        LockScreenPreviewCard(level: level, isSelected: notificationPrivacy == level.rawValue) {
+                            notificationPrivacy = level.rawValue
+                        }
                     }
                 }
-                .pickerStyle(.navigationLink)
-                .onChange(of: notificationPrivacy) { _, value in
-                    UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
-                }
-
-                SettingsToggleRow(systemName: "bolt.fill", color: .red, title: "Faster Alerts",
-                                  info: "On (the default): the encrypted message is delivered inside the push notification, so alerts show instantly and reliably. Apple's push servers carry only ciphertext they can't read, never who sent it. Off: the push is just a content-free wake and your device fetches the encrypted message from Relay, so Apple's push servers never carry it.",
-                                  isOn: Binding(get: { service.pushIncludeContent }, set: { service.pushIncludeContent = $0 }))
+                .settingsBareRow()
+            } header: {
+                Text("Lock Screen Preview")
+            } footer: {
+                Text("What a new message shows on your Lock Screen and in Notification Centre.")
             }
 
+            Section {
+                HStack(spacing: 10) {
+                    DeliveryModeCard(instant: true, isSelected: service.pushIncludeContent) {
+                        service.pushIncludeContent = true
+                    }
+                    DeliveryModeCard(instant: false, isSelected: !service.pushIncludeContent) {
+                        service.pushIncludeContent = false
+                    }
+                }
+                .settingsBareRow()
+            } header: {
+                Text("Delivery")
+            } footer: {
+                Text(service.pushIncludeContent
+                     ? "The encrypted message rides inside the push, so alerts show at once. Apple carries only ciphertext it can't read."
+                     : "The push only wakes your iPhone, which then fetches the message from Relay. Apple carries nothing, but alerts can be a little slower.")
+            }
         }
         .modifier(ThemedPageBackground())
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: notificationPrivacy) { _, value in
+            UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
+        }
+    }
+}
+
+// MARK: - Notification option cards
+
+/// The dusk wallpaper behind the little Lock Screens.
+private let lockScreenGradient = LinearGradient(
+    colors: [Color(red: 0.14, green: 0.16, blue: 0.32), Color(red: 0.38, green: 0.20, blue: 0.42)],
+    startPoint: .top, endPoint: .bottom)
+
+/// A tiny Lock Screen showing what a banner looks like at one preview level.
+private struct LockScreenPreviewCard: View {
+    let level: NotificationPreviewSetting
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    private var title: String {
+        switch level {
+        case .full: "Name & Message"
+        case .nameOnly: "Name Only"
+        case .none: "Hidden"
+        }
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 6) {
+                ZStack(alignment: .top) {
+                    lockScreenGradient
+                    VStack(spacing: 8) {
+                        Text("9:41")
+                            .font(.system(size: 22, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .padding(.top, 12)
+                        MiniBanner(
+                            sender: level.showsSenderName ? "Alex" : "Relay",
+                            text: level.showsContent ? "See you at 6?" : "New Message",
+                            showsAvatar: level.showsSenderName
+                        )
+                    }
+                }
+                .frame(height: 100)
+                .clipShape(.rect(cornerRadius: 16))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.08),
+                                      lineWidth: isSelected ? 3 : 1)
+                }
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(isSelected ? Color.primary : .secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel("Lock Screen preview: \(title)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+/// A notification banner, shrunk to fit a card.
+private struct MiniBanner: View {
+    let sender: String
+    let text: String
+    var showsAvatar = true
+    var time = "now"
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            Group {
+                if showsAvatar {
+                    Circle().fill(Color.orange.gradient)
+                        .overlay { Text(String(sender.prefix(1))).font(.system(size: 8, weight: .bold)).foregroundStyle(.white) }
+                } else {
+                    RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.gradient)
+                        .overlay { Image(systemName: "bolt.fill").font(.system(size: 7)).foregroundStyle(.white) }
+                }
+            }
+            .frame(width: 15, height: 15)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 2) {
+                    Text(sender).font(.system(size: 8, weight: .semibold))
+                    Spacer(minLength: 0)
+                    Text(time).font(.system(size: 6.5)).opacity(0.7)
+                }
+                Text(text).font(.system(size: 7.5)).lineLimit(2)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(5)
+        .background(.white.opacity(0.22), in: .rect(cornerRadius: 8))
+        .padding(.horizontal, 6)
+    }
+}
+
+/// How a message reaches the iPhone: inside the push, or fetched after a
+/// content-free wake.
+private struct DeliveryModeCard: View {
+    let instant: Bool
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 6) {
+                ZStack {
+                    lockScreenGradient
+                    VStack(spacing: 10) {
+                        // Apple's push servers, what they carry, and the phone.
+                        HStack(spacing: 5) {
+                            node("icloud.fill")
+                            arrow
+                            Image(systemName: instant ? "lock.fill" : "bell.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 20, height: 20)
+                                .background(instant ? Color.green.opacity(0.7) : Color.white.opacity(0.25), in: .circle)
+                            arrow
+                            node("iphone")
+                        }
+                        if !instant {
+                            // The phone fetches the message from Relay itself.
+                            HStack(spacing: 5) {
+                                node("server.rack")
+                                arrow
+                                Image(systemName: "lock.fill")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 20, height: 20)
+                                    .background(Color.green.opacity(0.7), in: .circle)
+                                arrow
+                                node("iphone")
+                            }
+                        }
+                        MiniBanner(sender: "Alex", text: "See you at 6?", time: instant ? "now" : "2s")
+                    }
+                    .padding(.vertical, 10)
+                }
+                .frame(height: 128)
+                .clipShape(.rect(cornerRadius: 16))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.08),
+                                      lineWidth: isSelected ? 3 : 1)
+                }
+                Label(instant ? "Instant" : "Wake Only", systemImage: instant ? "bolt.fill" : "moon.zzz.fill")
+                    .font(.caption)
+                    .foregroundStyle(isSelected ? Color.primary : .secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(instant
+            ? "Instant: the encrypted message comes inside the push"
+            : "Wake only: the push carries nothing and your iPhone fetches the message")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func node(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 13))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 20)
+    }
+
+    private var arrow: some View {
+        Image(systemName: "arrow.right")
+            .font(.system(size: 7, weight: .bold))
+            .foregroundStyle(.white.opacity(0.5))
     }
 }
 
