@@ -1015,12 +1015,14 @@ struct PrivacySettingsView: View {
 private struct NotificationSettingsView: View {
     let service: MessagingService
     @State private var notificationPrivacy: String = NotificationPreviewSetting.current.rawValue
+    /// Kept here so the cards redraw: the service reads it from UserDefaults.
+    @State private var instantDelivery = true
 
     var body: some View {
         List {
             Section {
                 SettingsHero(systemName: "bell.badge.fill", color: .red, title: "Notifications",
-                             message: "What your Lock Screen shows, and how messages reach this iPhone.")
+                             message: "Your Lock Screen and alerts.")
                     .settingsBareRow()
             }
             Section {
@@ -1034,26 +1036,22 @@ private struct NotificationSettingsView: View {
                 .settingsBareRow()
             } header: {
                 Text("Lock Screen Preview")
-            } footer: {
-                Text("What a new message shows on your Lock Screen and in Notification Centre.")
             }
 
             Section {
                 HStack(spacing: 10) {
-                    DeliveryModeCard(instant: true, isSelected: service.pushIncludeContent) {
+                    DeliveryModeCard(instant: true, isSelected: instantDelivery) {
+                        instantDelivery = true
                         service.pushIncludeContent = true
                     }
-                    DeliveryModeCard(instant: false, isSelected: !service.pushIncludeContent) {
+                    DeliveryModeCard(instant: false, isSelected: !instantDelivery) {
+                        instantDelivery = false
                         service.pushIncludeContent = false
                     }
                 }
                 .settingsBareRow()
             } header: {
                 Text("Delivery")
-            } footer: {
-                Text(service.pushIncludeContent
-                     ? "The encrypted message rides inside the push, so alerts show at once. Apple carries only ciphertext it can't read."
-                     : "The push only wakes your iPhone, which then fetches the message from Relay. Apple carries nothing, but alerts can be a little slower.")
             }
         }
         .modifier(ThemedPageBackground())
@@ -1062,6 +1060,7 @@ private struct NotificationSettingsView: View {
         .onChange(of: notificationPrivacy) { _, value in
             UserDefaults(suiteName: AppModel.appGroupId)?.set(value, forKey: "relay.notificationPrivacy")
         }
+        .onAppear { instantDelivery = service.pushIncludeContent }
     }
 }
 
