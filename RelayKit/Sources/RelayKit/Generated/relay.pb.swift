@@ -195,9 +195,16 @@ public nonisolated struct Relay_V1_SendRequest: Sendable {
   /// connected devices and are never queued for offline delivery.
   public var ephemeral: Bool = false
 
-  /// Silent payloads (receipts) are queued like any message but never trigger
-  /// a push: the recipient gets them the next time it connects.
+  /// Silent payloads (receipts) are queued best-effort (dropped when the
+  /// queue is full) and never trigger a push: the recipient gets them the next
+  /// time it connects.
   public var silent: Bool = false
+
+  /// Queued like any message, but no push: for payloads that never show a
+  /// notification (sync copies, sender keys, group and profile updates, call
+  /// offers that ring over VoIP push). A push for them could only show the
+  /// placeholder banner.
+  public var noPush: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -585,7 +592,7 @@ nonisolated extension Relay_V1_ClientFrame: SwiftProtobuf.Message, SwiftProtobuf
 
 nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".SendRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}destination_account\0\u{1}messages\0\u{3}client_timestamp\0\u{1}ephemeral\0\u{1}silent\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}destination_account\0\u{1}messages\0\u{3}client_timestamp\0\u{1}ephemeral\0\u{1}silent\0\u{3}no_push\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -598,6 +605,7 @@ nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf
       case 3: try { try decoder.decodeSingularInt64Field(value: &self.clientTimestamp) }()
       case 4: try { try decoder.decodeSingularBoolField(value: &self.ephemeral) }()
       case 5: try { try decoder.decodeSingularBoolField(value: &self.silent) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self.noPush) }()
       default: break
       }
     }
@@ -619,6 +627,9 @@ nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf
     if self.silent != false {
       try visitor.visitSingularBoolField(value: self.silent, fieldNumber: 5)
     }
+    if self.noPush != false {
+      try visitor.visitSingularBoolField(value: self.noPush, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -628,6 +639,7 @@ nonisolated extension Relay_V1_SendRequest: SwiftProtobuf.Message, SwiftProtobuf
     if lhs.clientTimestamp != rhs.clientTimestamp {return false}
     if lhs.ephemeral != rhs.ephemeral {return false}
     if lhs.silent != rhs.silent {return false}
+    if lhs.noPush != rhs.noPush {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

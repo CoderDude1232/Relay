@@ -139,7 +139,7 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
             exp: Int64(exp.timeIntervalSince1970 * 1000),
             stop: false
         )
-        await service.sendLiveLocation(payload.encode(), in: convId)
+        await service.sendLiveLocation(payload.encode(), in: convId, wake: false)
     }
 
     private func sendStop(conversationId: String) {
@@ -151,7 +151,7 @@ final class LocationShareManager: NSObject, CLLocationManagerDelegate {
             exp: Int64(Date().timeIntervalSince1970 * 1000),
             stop: true
         )
-        Task { await service.sendLiveLocation(payload.encode(), in: conversationId) }
+        Task { await service.sendLiveLocation(payload.encode(), in: conversationId, wake: false) }
     }
 
     // MARK: - Incoming payloads

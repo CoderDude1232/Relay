@@ -279,7 +279,7 @@ func (h *Hub) DisconnectDevice(accountID string, deviceID uint32, reason string)
 // Deliver routes one envelope to one device without per-sender queue
 // accounting. Prefer DeliverFrom.
 func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) error {
-	return h.DeliverFrom("", accountID, deviceID, env, true)
+	return h.DeliverFrom("", accountID, deviceID, env, true, false)
 }
 
 // DeliverFrom routes one envelope to one device. Non-ephemeral envelopes are
@@ -291,9 +291,11 @@ func (h *Hub) Deliver(accountID string, deviceID uint32, env *relaypb.Envelope) 
 // unacked envelopes in this device's queue, ErrSenderQuota is returned and
 // nothing is queued or pushed.
 //
-// push=false (silent sends such as receipts) queues without waking an offline
-// device; it gets the envelope the next time it connects.
-func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relaypb.Envelope, push bool) error {
+// push=false queues without waking an offline device; it gets the envelope
+// the next time it connects. bestEffort (silent sends such as receipts) also
+// keeps it out of the room real messages need, dropping it when the queue is
+// full; a no-push send without it is queued like any message.
+func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relaypb.Envelope, push, bestEffort bool) error {
 	frame := &relaypb.ServerFrame{Payload: &relaypb.ServerFrame_Envelope{Envelope: env}}
 	devKey := shareDevice(accountID, deviceID)
 
@@ -304,7 +306,7 @@ func (h *Hub) DeliverFrom(sender, accountID string, deviceID uint32, env *relayp
 		if err != nil {
 			return err
 		}
-		if !push {
+		if bestEffort {
 			// Silent (receipts): best effort, outside the sender's queue share,
 			// and never into the room real messages need. A full queue drops it.
 			if err := h.store.EnqueueBestEffort(env.Id, accountID, deviceID, blob); errors.Is(err, store.ErrQueueFull) {

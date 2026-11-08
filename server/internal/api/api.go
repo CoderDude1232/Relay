@@ -977,7 +977,8 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 		Content   string `json:"content"`   // base64 sealed blob
 		AccessKey string `json:"accessKey"` // base64, recipient's access key
 		Ephemeral bool   `json:"ephemeral"`
-		Silent    bool   `json:"silent"` // queue without a push (receipts)
+		Silent    bool   `json:"silent"` // best effort, no push (receipts)
+		NoPush    bool   `json:"noPush"` // queued, no push
 	}
 	if err := decodeJSON(r, &req); err != nil || req.MailboxID == "" {
 		httpError(w, http.StatusBadRequest, "mailboxId and content required")
@@ -1022,7 +1023,7 @@ func (s *Server) handleSealedSend(w http.ResponseWriter, r *http.Request) {
 	if !viaToken {
 		sender = "ip:" + clientIP(r)
 	}
-	if err := s.hub.DeliverFrom(sender, dest.AccountID, dest.DeviceID, env, !req.Silent); err != nil {
+	if err := s.hub.DeliverFrom(sender, dest.AccountID, dest.DeviceID, env, !req.Silent && !req.NoPush, req.Silent); err != nil {
 		if errors.Is(err, hub.ErrSenderQuota) || errors.Is(err, store.ErrQueueFull) {
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded; try again later")
 			return

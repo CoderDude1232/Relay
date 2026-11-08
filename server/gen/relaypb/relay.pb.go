@@ -302,9 +302,15 @@ type SendRequest struct {
 	// Ephemeral payloads (typing indicators) are delivered only to currently
 	// connected devices and are never queued for offline delivery.
 	Ephemeral bool `protobuf:"varint,4,opt,name=ephemeral,proto3" json:"ephemeral,omitempty"`
-	// Silent payloads (receipts) are queued like any message but never trigger
-	// a push: the recipient gets them the next time it connects.
-	Silent        bool `protobuf:"varint,5,opt,name=silent,proto3" json:"silent,omitempty"`
+	// Silent payloads (receipts) are queued best-effort (dropped when the
+	// queue is full) and never trigger a push: the recipient gets them the next
+	// time it connects.
+	Silent bool `protobuf:"varint,5,opt,name=silent,proto3" json:"silent,omitempty"`
+	// Queued like any message, but no push: for payloads that never show a
+	// notification (sync copies, sender keys, group and profile updates, call
+	// offers that ring over VoIP push). A push for them could only show the
+	// placeholder banner.
+	NoPush        bool `protobuf:"varint,6,opt,name=no_push,json=noPush,proto3" json:"no_push,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -370,6 +376,13 @@ func (x *SendRequest) GetEphemeral() bool {
 func (x *SendRequest) GetSilent() bool {
 	if x != nil {
 		return x.Silent
+	}
+	return false
+}
+
+func (x *SendRequest) GetNoPush() bool {
+	if x != nil {
+		return x.NoPush
 	}
 	return false
 }
@@ -1077,13 +1090,14 @@ const file_relay_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12+\n" +
 	"\x04send\x18\x02 \x01(\v2\x15.relay.v1.SendRequestH\x00R\x04send\x12(\n" +
 	"\x03ack\x18\x03 \x01(\v2\x14.relay.v1.AckRequestH\x00R\x03ackB\t\n" +
-	"\apayload\"\xd4\x01\n" +
+	"\apayload\"\xed\x01\n" +
 	"\vSendRequest\x12/\n" +
 	"\x13destination_account\x18\x01 \x01(\tR\x12destinationAccount\x123\n" +
 	"\bmessages\x18\x02 \x03(\v2\x17.relay.v1.DeviceMessageR\bmessages\x12)\n" +
 	"\x10client_timestamp\x18\x03 \x01(\x03R\x0fclientTimestamp\x12\x1c\n" +
 	"\tephemeral\x18\x04 \x01(\bR\tephemeral\x12\x16\n" +
-	"\x06silent\x18\x05 \x01(\bR\x06silent\"\x9d\x01\n" +
+	"\x06silent\x18\x05 \x01(\bR\x06silent\x12\x17\n" +
+	"\ano_push\x18\x06 \x01(\bR\x06noPush\"\x9d\x01\n" +
 	"\rDeviceMessage\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12'\n" +
 	"\x0fregistration_id\x18\x02 \x01(\rR\x0eregistrationId\x12,\n" +

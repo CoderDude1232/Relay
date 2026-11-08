@@ -172,7 +172,8 @@ public actor RelayWebSocket {
         messages: [DeviceMessagePayload],
         clientTimestamp: Int64,
         ephemeral: Bool = false,
-        silent: Bool = false
+        silent: Bool = false,
+        noPush: Bool = false
     ) async throws -> SendOutcome {
         guard let task, let opened else { throw RelayWebSocketError.notConnected }
         do { try await opened.value } catch { throw RelayWebSocketError.notConnected }
@@ -188,6 +189,7 @@ public actor RelayWebSocket {
         send.clientTimestamp = clientTimestamp
         send.ephemeral = ephemeral
         send.silent = silent
+        send.noPush = noPush
         frame.send = send
 
         let data = try frame.serializedData()

@@ -19,6 +19,7 @@ import RelayCore
 import RelayKit
 import SwiftProtobuf
 import SecureStorage
+import SwiftUI
 import UIKit
 import WidgetKit
 import UserNotifications
@@ -104,6 +105,16 @@ final class MessagingService {
         // whose app was briefly backgrounded.
         case .offer, .hangup, .groupRing, .linkJoinRequest, .linkAdmit, .linkDeny, .UNRECOGNIZED:
             return false
+        }
+    }
+
+    /// Only a hang-up (missed call) and a call-link join request put up a
+    /// banner. An offer or group ring rings through VoIP push instead, and a
+    /// normal push for it would show an empty "New message".
+    private static func callSignalWakes(_ type: Relay_Content_CallMessage.TypeEnum) -> Bool {
+        switch type {
+        case .hangup, .linkJoinRequest, .UNRECOGNIZED: true
+        default: false
         }
     }
 
@@ -368,7 +379,8 @@ final class MessagingService {
                 try content.serializedData(),
                 toPeer: account,
                 clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
-                ephemeral: Self.isEphemeralCallSignal(msg.type)
+                ephemeral: Self.isEphemeralCallSignal(msg.type),
+                wake: Self.callSignalWakes(msg.type)
             )
             log.info("call signal sent type=\(String(describing: msg.type))")
             return true
@@ -1271,7 +1283,8 @@ final class MessagingService {
 
     /// Unlike `sendMessage`, updates collapse into one bubble per sharer per
     /// conversation, locally and on the recipient (see EnvelopeProcessor).
-    func sendLiveLocation(_ body: String, in conversationId: String) async {
+    /// `wake`: false for the updates after the first, which only move the pin.
+    func sendLiveLocation(_ body: String, in conversationId: String, wake: Bool = true) async {
         let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
         let locId = "liveloc:\(conversationId):\(credentials.accountId)"
         try? storage.messages.upsertLiveLocation(
@@ -1291,11 +1304,11 @@ final class MessagingService {
                 content.groupID = group.id
                 let data = try content.serializedData()
                 for member in group.members where member != credentials.accountId && !isBlocked(member) {
-                    try? await sendContent(data, toPeer: member, clientTimestamp: timestamp)
+                    try? await sendContent(data, toPeer: member, clientTimestamp: timestamp, wake: wake)
                 }
             } else if let peer = try? peerAccount(for: conversationId),
                       peer != noteToSelfAccount, !isBlocked(peer) {
-                try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp)
+                try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp, wake: wake)
             }
         } catch {
             log.warning("live location send failed: \(PrivacyRedactor.error(error))")
@@ -1307,6 +1320,7 @@ final class MessagingService {
         in conversationId: String,
         replyTo: QuotedMessage? = nil,
         attachments pending: [PendingAttachment] = [],
+        staged: [StoredAttachment] = [],
         linkPreview: MessageStore.LinkPreview? = nil
     ) async {
         if isMessageRequest(conversationId) { acceptMessageRequest(conversationId) }
@@ -1323,7 +1337,9 @@ final class MessagingService {
             // so store locally. Attachments stay sealed on-device.
             if peer == noteToSelfAccount {
                 let ts = Int64(Date().timeIntervalSince1970 * 1000)
-                var localAttachments: [StoredAttachment] = []
+                // Kept on this device only: no upload needed.
+                for item in staged { stagedUploads.removeValue(forKey: item.id)?.cancel() }
+                var localAttachments: [StoredAttachment] = staged
                 for item in pending {
                     guard let sealed = try? AttachmentCipher.seal(item.data) else { continue }
                     let attachId = UUID().uuidString
@@ -1356,7 +1372,7 @@ final class MessagingService {
         let localId = UUID().uuidString
         let stored: [StoredAttachment]
         do {
-            stored = try sealLocally(pending)
+            stored = try staged + sealLocally(pending)
             try storage.messages.insertMessage(
                 id: localId, conversationId: conversationId, isOutgoing: true,
                 body: text, timestamp: timestamp, status: .sending,
@@ -1404,10 +1420,64 @@ final class MessagingService {
     /// cached, not yet uploaded. `uploadAttachments` swaps in the relay's id.
     nonisolated static let localAttachmentPrefix = "local-"
 
+    /// The relay's caps (ciphertext adds 28 bytes): 25 MiB, or 95 MiB for
+    /// Relay Supporters.
+    static var maxAttachmentPlaintextBytes: Int {
+        (Supporter.shared.hasAccountPerks ? 95 : 25) * 1024 * 1024
+    }
+
+    // MARK: Attachments staged in the composer
+
+    /// Uploads started from the composer, by local attachment id. Sending
+    /// waits for these instead of uploading again.
+    private var stagedUploads: [String: Task<String, Error>] = [:]
+    /// Upload progress (0 to 1) by attachment id, for the composer and bubbles.
+    private(set) var uploadProgress: [String: Double] = [:]
+
+    /// Seals an attachment off the main thread and starts uploading it right
+    /// away, so it's usually on the relay by the time Send is pressed.
+    func stageAttachment(_ item: PendingAttachment) async throws -> StoredAttachment {
+        guard item.data.count <= Self.maxAttachmentPlaintextBytes else { throw MessagingError.attachmentTooLarge }
+        let store = attachmentStore
+        let id = Self.localAttachmentPrefix + UUID().uuidString
+        let data = item.data
+        let sealed = try await Task.detached(priority: .userInitiated) {
+            let sealed = try AttachmentCipher.seal(data)
+            try store.write(sealed.ciphertext, for: id)
+            return sealed
+        }.value
+        let stored = StoredAttachment(
+            id: id, key: sealed.key, digest: sealed.digest, contentType: item.contentType,
+            size: Int64(sealed.ciphertext.count), filename: item.filename,
+            width: item.width, height: item.height, isDownloaded: true
+        )
+        startStagedUpload(id: id, ciphertext: sealed.ciphertext)
+        return stored
+    }
+
+    private func startStagedUpload(id: String, ciphertext: Data) {
+        uploadProgress[id] = 0
+        let api = api
+        stagedUploads[id] = Task {
+            defer { self.uploadProgress[id] = nil }
+            return try await api.uploadAttachment(ciphertext) { fraction in
+                Task { @MainActor in
+                    if self.uploadProgress[id] != nil { self.uploadProgress[id] = fraction }
+                }
+            }
+        }
+    }
+
+    /// Removed from the composer before sending. An upload already finished
+    /// stays on the relay until its 14-day cleanup.
+    func discardStagedAttachment(_ id: String) {
+        stagedUploads.removeValue(forKey: id)?.cancel()
+        uploadProgress[id] = nil
+        attachmentStore.delete(id)
+    }
+
     private func sealLocally(_ pending: [PendingAttachment]) throws -> [StoredAttachment] {
-        // The relay's caps (ciphertext adds 28 bytes): 25 MiB, or 95 MiB for
-        // Relay Supporters.
-        let maxPlaintextBytes = (Supporter.shared.hasAccountPerks ? 95 : 25) * 1024 * 1024
+        let maxPlaintextBytes = Self.maxAttachmentPlaintextBytes
         return try pending.map { item in
             guard item.data.count <= maxPlaintextBytes else { throw MessagingError.attachmentTooLarge }
             let sealed = try AttachmentCipher.seal(item.data)
@@ -1424,17 +1494,28 @@ final class MessagingService {
     /// Uploads local-only attachments, renaming the row and cache entry to the
     /// relay's blob id. Already-uploaded ones are reused on retry.
     private func uploadAttachments(_ attachments: [StoredAttachment]) async throws -> [Relay_Content_AttachmentPointer] {
+        // Every upload runs at once; each is one blob.
+        var remoteIds: [String: Task<String, Error>] = [:]
+        for attachment in attachments where attachment.id.hasPrefix(Self.localAttachmentPrefix) {
+            let id = attachment.id
+            if let staged = stagedUploads.removeValue(forKey: id) {
+                remoteIds[id] = Task {
+                    if let remote = try? await staged.value { return remote }
+                    return try await self.upload(localId: id)
+                }
+            } else {
+                remoteIds[id] = Task { try await self.upload(localId: id) }
+            }
+        }
         var pointers: [Relay_Content_AttachmentPointer] = []
         for attachment in attachments {
             var id = attachment.id
-            if id.hasPrefix(Self.localAttachmentPrefix) {
-                let ciphertext = try attachmentStore.read(id)
-                let remoteId = try await api.uploadAttachment(ciphertext)
-                try attachmentStore.write(ciphertext, for: remoteId)
+            if let task = remoteIds[id] {
+                let remoteId = try await task.value
+                try attachmentStore.move(id, to: remoteId)
                 try storage.database.run(
                     "UPDATE attachments SET id = ? WHERE id = ?", [.text(remoteId), .text(id)]
                 )
-                attachmentStore.delete(id)
                 id = remoteId
             }
             var pointer = Relay_Content_AttachmentPointer()
@@ -1449,6 +1530,18 @@ final class MessagingService {
             pointers.append(pointer)
         }
         return pointers
+    }
+
+    /// Uploads a sealed local attachment, reporting progress for its bubble.
+    private func upload(localId id: String) async throws -> String {
+        let ciphertext = try attachmentStore.read(id)
+        uploadProgress[id] = 0
+        defer { uploadProgress[id] = nil }
+        return try await api.uploadAttachment(ciphertext) { fraction in
+            Task { @MainActor in
+                if self.uploadProgress[id] != nil { self.uploadProgress[id] = fraction }
+            }
+        }
     }
 
     /// Marks the message sent, or failed for `retrySend`.
@@ -1705,15 +1798,16 @@ final class MessagingService {
             // Sealed too: an authenticated self-send alongside a sealed send
             // would reveal the sender.
             if sealedSenderEnabled, await recipientSupportsSealed(credentials.accountId) {
+                // Our own devices show nothing for a sync copy: no push.
                 try await sendContentSealed(
                     padded, toPeer: credentials.accountId,
-                    clientTimestamp: timestamp, ephemeral: false
+                    clientTimestamp: timestamp, ephemeral: false, noPush: true
                 )
                 log.debug("self-sync: sealed to \(devices.count) own device(s)")
                 return
             }
             let payloads = try buildMailboxPayloads(padded, forPeer: credentials.accountId, devices: devices)
-            let outcome = try await sendMailboxPayloads(payloads, clientTimestamp: timestamp)
+            let outcome = try await sendMailboxPayloads(payloads, clientTimestamp: timestamp, noPush: true)
             log.debug("self-sync: sent to \(devices.count) own device(s), outcome \(String(describing: outcome))")
         } catch {
             log.warning("self-sync: send failed: \(PrivacyRedactor.error(error))")
@@ -1948,7 +2042,7 @@ final class MessagingService {
             if let pointer = try await currentAvatarPointer() {
                 content.profile.avatar = pointer
             }
-            try await sendContent(try content.serializedData(), toPeer: account, clientTimestamp: rev)
+            try await sendContent(try content.serializedData(), toPeer: account, clientTimestamp: rev, wake: false)
             writeKVInt("pfsent:\(account)", rev)
             if let accessKey { writeKVInt("pfak:\(account)", Self.accessKeyTag(accessKey)) }
             writeKVInt("pfpk:\(account)", Self.accessKeyTag(profileKey))
@@ -3404,7 +3498,9 @@ final class MessagingService {
         let data = try content.serializedData()
         for member in targets {
             do {
-                try await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
+                // The group message after it wakes them.
+                try await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                                      wake: false)
                 sent.insert(deviceKey(member))
             } catch {
                 log.warning("SKDM send failed: \(PrivacyRedactor.error(error))")
@@ -3453,7 +3549,8 @@ final class MessagingService {
         content.senderDeviceID = credentials.deviceId
         guard let data = try? content.serializedData() else { return }
         for member in recipients ?? group.members where member != credentials.accountId {
-            try? await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
+            try? await sendContent(data, toPeer: member, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                                   wake: false)
         }
     }
 
@@ -3866,7 +3963,7 @@ final class MessagingService {
         guard let data = try? content.serializedData() else { return }
         let targets = pollTargets(for: conversationId, content: &content)
         for peer in targets {
-            try? await sendContent(data, toPeer: peer, clientTimestamp: timestamp)
+            try? await sendContent(data, toPeer: peer, clientTimestamp: timestamp, wake: false)
         }
     }
 
@@ -4114,8 +4211,12 @@ final class MessagingService {
         toPeer account: String,
         clientTimestamp: Int64,
         ephemeral: Bool = false,
-        silent: Bool = false
+        silent: Bool = false,
+        wake: Bool = true
     ) async throws {
+        // `wake: false` only skips the push: still queued reliably and still
+        // identity-checked. `silent` (receipts) is best effort and skips both.
+        let noPush = !wake
         // Receipts (silent) and typing (ephemeral) carry nothing; they may go
         // out while a safety-number change is pending.
         if !ephemeral && !silent {
@@ -4131,7 +4232,7 @@ final class MessagingService {
             }
             try await sendContentSealed(
                 payloadPlaintext, toPeer: account,
-                clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent
+                clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent, noPush: noPush
             )
             return
         }
@@ -4145,7 +4246,8 @@ final class MessagingService {
             payloads,
             clientTimestamp: clientTimestamp,
             ephemeral: ephemeral,
-            silent: silent
+            silent: silent,
+            noPush: noPush
         )
         if case .mismatchedDevices(let missing, _, let stale) = outcome {
             try await refreshSessions(withPeer: account)
@@ -4163,7 +4265,8 @@ final class MessagingService {
                     payloads,
                     clientTimestamp: clientTimestamp,
                     ephemeral: ephemeral,
-                    silent: silent
+                    silent: silent,
+                    noPush: noPush
                 )
                 // Remaining missing/stale devices that were all addressed count as success.
                 if case .mismatchedDevices(let m2, let e2, let s2) = outcome, e2.isEmpty {
@@ -4196,7 +4299,8 @@ final class MessagingService {
         toPeer account: String,
         clientTimestamp: Int64,
         ephemeral: Bool,
-        silent: Bool = false
+        silent: Bool = false,
+        noPush: Bool = false
     ) async throws {
         let certificate = try await senderCertificate()
         if knownAccessKey(account) == nil {
@@ -4211,7 +4315,7 @@ final class MessagingService {
         let devices = try await knownMailboxDevices(ofPeer: account)
         var failed = try await sealedSendPass(
             plaintext, toPeer: account, devices: devices, certificate: certificate,
-            clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent
+            clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent, noPush: noPush
         )
         guard !failed.isEmpty else { return }
 
@@ -4221,7 +4325,7 @@ final class MessagingService {
         let retryDevices = refreshedDevices.filter { failedIds.contains($0.id) }
         failed = try await sealedSendPass(
             plaintext, toPeer: account, devices: retryDevices, certificate: certificate,
-            clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent
+            clientTimestamp: clientTimestamp, ephemeral: ephemeral, silent: silent, noPush: noPush
         )
         if !failed.isEmpty {
             throw RelayAPIError.http(status: 403, message: "sealed delivery rejected")
@@ -4236,7 +4340,8 @@ final class MessagingService {
         certificate: Data,
         clientTimestamp: Int64,
         ephemeral: Bool,
-        silent: Bool = false
+        silent: Bool = false,
+        noPush: Bool = false
     ) async throws -> [PeerDevice] {
         // Re-read each pass so a refresh in between takes effect.
         guard let accessKey = knownAccessKey(account) else { return devices }
@@ -4256,7 +4361,7 @@ final class MessagingService {
                     accessKey: accessKey,
                     ephemeral: ephemeral,
                     silent: silent,
-                    clientTimestamp: clientTimestamp
+                    noPush: noPush
                 )
             } catch let RelayAPIError.http(status, _) where status == 403 {
                 failed.append(device)
@@ -4428,7 +4533,8 @@ final class MessagingService {
         _ payloads: [(mailboxId: String, payload: DeviceMessagePayload)],
         clientTimestamp: Int64,
         ephemeral: Bool = false,
-        silent: Bool = false
+        silent: Bool = false,
+        noPush: Bool = false
     ) async throws -> SendOutcome {
         guard let socket else { throw RelayWebSocketError.notConnected }
         var missing: [UInt32] = []
@@ -4440,7 +4546,8 @@ final class MessagingService {
                 messages: [entry.payload],
                 clientTimestamp: clientTimestamp,
                 ephemeral: ephemeral,
-                silent: silent
+                silent: silent,
+                noPush: noPush
             )
             switch outcome {
             case .ok:
@@ -4871,7 +4978,8 @@ final class MessagingService {
             content.senderAccountID = credentials.accountId
             content.senderDeviceID = credentials.deviceId
             if let data = try? content.serializedData() {
-                try? await sendContent(data, toPeer: peer, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000))
+                try? await sendContent(data, toPeer: peer, clientTimestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                                       wake: false)
             }
         }
     }
@@ -4911,7 +5019,7 @@ final class MessagingService {
         guard let data = try? content.serializedData() else { return }
         Task {
             for peer in recipients {
-                try? await sendContent(data, toPeer: peer, clientTimestamp: ts)
+                try? await sendContent(data, toPeer: peer, clientTimestamp: ts, wake: false)
             }
         }
         insertSystemLine("You took a screenshot", conversationId: conversationId)
@@ -5769,11 +5877,30 @@ final class MessagingService {
             lastShortcutChats = chatNames
             RelayShortcuts.updateAppShortcutParameters()
         }
+        // The picture on this chat's notifications: their photo, or the
+        // coloured letter the chat list shows, small enough for the extension.
+        let names = Dictionary(summaries.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
         for conv in conversations {
-            if let data = peerAvatarData(forAccount: conv.peerAccount) {
-                ShareBridge.writeAvatar(data, forConversationId: conv.id)
-            }
+            guard let name = names[conv.id] else { continue }
+            let photo = peerAvatarData(forAccount: conv.peerAccount)
+            var hasher = Hasher()
+            hasher.combine(name)
+            hasher.combine(photo)
+            let fingerprint = hasher.finalize()
+            guard exportedAvatarFingerprints[conv.id] != fingerprint else { continue }
+            guard let rendered = Self.notificationAvatar(name: name, photo: photo) else { continue }
+            exportedAvatarFingerprints[conv.id] = fingerprint
+            ShareBridge.writeAvatar(rendered, forConversationId: conv.id)
         }
+    }
+
+    /// What's been written for each chat's notification picture this run.
+    @ObservationIgnored private var exportedAvatarFingerprints: [String: Int] = [:]
+
+    static func notificationAvatar(name: String, photo: Data?) -> Data? {
+        let renderer = ImageRenderer(content: AvatarView(name: name, size: 128, imageData: photo))
+        renderer.scale = 2
+        return renderer.uiImage?.pngData()
     }
 
     // Sends every PendingShare left by the Share Extension, Siri or a quick
