@@ -384,6 +384,16 @@ public struct EnvelopeProcessor: @unchecked Sendable {
         self.processLock = processLock
     }
 
+    /// The database was busy, locked, full or failed to write. Claim, decrypt
+    /// and store roll back together (see `processAtomically`), so nothing was
+    /// lost yet: leave the envelope unacked so it is delivered again, instead
+    /// of dropping it as a poison message.
+    public static func isTransientStorageFailure(_ error: Error) -> Bool {
+        guard case StorageError.sqlite(let code, _)? = error as? StorageError else { return false }
+        // Primary result codes: BUSY, LOCKED, IOERR, FULL, CANTOPEN.
+        return [5, 6, 10, 13, 14].contains(code & 0xff)
+    }
+
     /// - Parameter blockedAccounts: accounts whose messages are dropped. A sealed
     ///   message's sender is only known after decryption, so blocking happens here.
     /// - Parameter persist: runs in the same transaction as the decrypt, for

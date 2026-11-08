@@ -629,16 +629,22 @@ final class MessagingService {
     }
 
     private func startPathMonitor() {
+        pathMonitor?.cancel()
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let wifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
             let online = path.status == .satisfied
             Task { @MainActor [weak self] in
-                self?.isOnWifi = wifi
-                self?.hasNetwork = online
+                guard let self else { return }
+                // Back online: reconnect now, not when the back-off ends.
+                if online, !self.hasNetwork || self.isOnWifi != wifi, !self.socketLive {
+                    self.backoffSleep?.cancel()
+                }
+                self.isOnWifi = wifi
+                self.hasNetwork = online
                 // A different network may not block the relay: start over.
-                self?.connectingSince = nil
-                if !online { self?.relayUnreachable = false }
+                self.connectingSince = nil
+                if !online { self.relayUnreachable = false }
             }
         }
         monitor.start(queue: DispatchQueue.global(qos: .utility))
@@ -706,8 +712,18 @@ final class MessagingService {
         relayUnreachable = false
         connectionTask?.cancel()
         connectionTask = nil
+        pollTask?.cancel()
+        pollTask = nil
+        if let socket {
+            self.socket = nil
+            socketLive = false
+            Task { await socket.disconnect() }
+        }
         start()
     }
+
+    /// The reconnect back-off's sleep; cut short when the network comes back.
+    private var backoffSleep: Task<Void, Never>?
 
     private func runConnectionLoop() async {
         var backoffSeconds = 1.0
@@ -808,13 +824,22 @@ final class MessagingService {
                     break
                 }
             }
+            // A cancelled loop (Try Again) must not clear the newer connection.
+            guard !Task.isCancelled else {
+                await socket.disconnect()
+                return
+            }
             self.socket = nil
             socketLive = false
             isDrainingQueue = false
             // Don't force `.disconnected`: we may still be usable via QUIC and
             // the poll loop, and the next preflight re-checks reachability.
             guard !Task.isCancelled else { return }
-            try? await Task.sleep(for: .seconds(backoffSeconds))
+            let delay = backoffSeconds
+            let sleep = Task { _ = try? await Task.sleep(for: .seconds(delay)) }
+            backoffSleep = sleep
+            await sleep.value
+            backoffSleep = nil
             backoffSeconds = min(backoffSeconds * 2, 30)
         }
     }
@@ -833,6 +858,22 @@ final class MessagingService {
             for envelope in envelopes {
                 await handleEnvelope(envelope)
             }
+        }
+    }
+
+    private var queueRefetchScheduled = false
+
+    /// The relay sends its queue only when the socket connects, so an envelope
+    /// left unacked after a storage failure is fetched again in a little while
+    /// instead of waiting for the next connection.
+    private func scheduleQueueRefetch() {
+        guard !queueRefetchScheduled else { return }
+        queueRefetchScheduled = true
+        Task {
+            try? await Task.sleep(for: .seconds(30))
+            queueRefetchScheduled = false
+            guard !isStopped, let envelopes = try? await api.fetchQueue() else { return }
+            for envelope in envelopes { await handleEnvelope(envelope) }
         }
     }
 
@@ -878,24 +919,35 @@ final class MessagingService {
         // which would take the shared-container lock just as the app is
         // suspended. No ack, so the relay delivers it again.
         guard !isStopped else { return }
-        // Always ack, or an undecryptable envelope would redeliver forever.
-        defer {
-            Task { await self.ackEnvelope(envelope.id) }
-        }
         // Blocked senders are still decrypted to keep the ratchet in step, then
         // dropped by `process(_:blockedAccounts:)`.
-        do {
-            // Off the main thread; `handleEnvelope`'s chain keeps it serial.
-            let proc = processor
-            let blocked = blockedAccounts
-            let result = try await Task.detached(priority: .userInitiated) {
-                try proc.process(envelope, blockedAccounts: blocked)
-            }.value
-            await applyProcessed(result, outerSender: envelope.senderAccount,
-                                 live: AppActivity.isLive(serverTimestamp: envelope.serverTimestamp))
-        } catch {
-            log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
-            handlePossiblePreKeyDesync(error)
+        var attempt = 0
+        while true {
+            do {
+                // Off the main thread; `handleEnvelope`'s chain keeps it serial.
+                let proc = processor
+                let blocked = blockedAccounts
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try proc.process(envelope, blockedAccounts: blocked)
+                }.value
+                Task { await self.ackEnvelope(envelope.id) }
+                await applyProcessed(result, outerSender: envelope.senderAccount,
+                                     live: AppActivity.isLive(serverTimestamp: envelope.serverTimestamp))
+            } catch where EnvelopeProcessor.isTransientStorageFailure(error) {
+                // Rolled back, nothing lost: try again shortly, then leave it
+                // queued for the next connection rather than dropping it.
+                attempt += 1
+                log.warning("envelope storage failed, attempt \(attempt): \(PrivacyRedactor.error(error))")
+                guard attempt < 3, !isStopped else { scheduleQueueRefetch(); return }
+                try? await Task.sleep(for: .seconds(attempt))
+                continue
+            } catch {
+                // Acked anyway, or an undecryptable envelope would redeliver forever.
+                Task { await self.ackEnvelope(envelope.id) }
+                log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
+                handlePossiblePreKeyDesync(error)
+            }
+            return
         }
     }
 
@@ -3880,17 +3932,41 @@ final class MessagingService {
         }
         let wifiOnly = UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload")
         if wifiOnly && !isOnWifi { return }
-        do {
-            let ciphertext = if let backup = Self.parseHistoryAttachmentId(attachment.id) {
-                try await historyAttachment(index: backup.index, parts: backup.parts, digest: attachment.digest)
-            } else {
-                try await api.downloadAttachment(id: attachment.id)
+        // The bubble, the viewer and the gallery can all ask at once: one download.
+        if let running = attachmentDownloads[attachment.id] {
+            await running.value
+            return
+        }
+        let task = Task { await fetchAttachment(attachment, in: conversationId) }
+        attachmentDownloads[attachment.id] = task
+        await task.value
+        attachmentDownloads[attachment.id] = nil
+    }
+
+    private var attachmentDownloads: [String: Task<Void, Never>] = [:]
+
+    /// Tries again after a dropped connection or a relay error, not after a
+    /// refusal (a 4xx: expired or missing), which won't change.
+    private func fetchAttachment(_ attachment: StoredAttachment, in conversationId: String) async {
+        for attempt in 1...3 {
+            do {
+                let ciphertext = if let backup = Self.parseHistoryAttachmentId(attachment.id) {
+                    try await historyAttachment(index: backup.index, parts: backup.parts, digest: attachment.digest)
+                } else {
+                    try await api.downloadAttachment(id: attachment.id)
+                }
+                try attachmentStore.write(ciphertext, for: attachment.id)
+                try storage.messages.markAttachmentDownloaded(id: attachment.id)
+                refreshActiveMessages(ifShowing: conversationId)
+                return
+            } catch {
+                log.error("attachment download failed (attempt \(attempt)): \(PrivacyRedactor.error(error))")
+                if case RelayAPIError.http(let status, _) = error, (400..<500).contains(status), status != 408, status != 429 {
+                    return
+                }
+                guard attempt < 3, !Task.isCancelled else { return }
+                try? await Task.sleep(for: .seconds(Double(attempt) * 2))
             }
-            try attachmentStore.write(ciphertext, for: attachment.id)
-            try storage.messages.markAttachmentDownloaded(id: attachment.id)
-            refreshActiveMessages(ifShowing: conversationId)
-        } catch {
-            log.error("attachment download failed: \(PrivacyRedactor.error(error))")
         }
     }
 

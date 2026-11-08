@@ -361,6 +361,11 @@ class NotificationService: UNNotificationServiceExtension {
                     // and the rest queued, unacked, for the app.
                     if latest == nil { latest = Self.pendingMessageOutcome }
                     break envelopes
+                } catch where EnvelopeProcessor.isTransientStorageFailure(error) {
+                    // Rolled back with nothing lost: leave this and the rest
+                    // queued, unacked, for the app.
+                    if latest == nil { latest = Self.pendingMessageOutcome }
+                    break envelopes
                 } catch {
                     result = nil
                 }
