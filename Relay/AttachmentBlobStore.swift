@@ -47,6 +47,13 @@ nonisolated struct AttachmentBlobStore {
         try Data(contentsOf: try url(for: id))
     }
 
+    /// Renames a cached file (a local id to the relay's), without reading it.
+    func move(_ id: String, to newId: String) throws {
+        let from = try url(for: id), to = try url(for: newId)
+        try? FileManager.default.removeItem(at: to)
+        try FileManager.default.moveItem(at: from, to: to)
+    }
+
     func delete(_ id: String) {
         guard let url = try? url(for: id) else { return }
         try? FileManager.default.removeItem(at: url)

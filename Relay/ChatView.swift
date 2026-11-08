@@ -70,7 +70,9 @@ struct ChatView: View {
     @State private var showingAttachmentPreview = false
     @State private var showingComposerEmoji = false
     @State private var photoItems: [PhotosPickerItem] = []
-    @State private var pendingAttachments: [MessagingService.PendingAttachment] = []
+    @State private var pendingAttachments: [ComposerAttachment] = []
+    /// Videos go compressed unless this is on.
+    @State private var originalQuality = false
     @State private var confirmSensitiveSend = false
     @State private var sensitiveSendBlocked = false
     @State private var viewOnce = false
@@ -1616,18 +1618,31 @@ struct ChatView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            ForEach(Array(pendingAttachments.enumerated()), id: \.offset) { index, attachment in
+                            ForEach(Array(pendingAttachments.enumerated()), id: \.element.id) { index, attachment in
                                 PendingAttachmentBar(
                                     attachment: attachment,
+                                    uploadProgress: attachment.stored.flatMap { service.uploadProgress[$0.id] },
                                     onPreview: { showingAttachmentPreview = true },
                                     onCancel: { removePendingAttachment(at: index) }
                                 )
-                                .frame(width: pendingAttachments.count == 1 ? nil : 156)
+                                .frame(width: pendingAttachments.count == 1 ? nil : 176)
                             }
                         }
                         .padding(.horizontal)
                     }
-                    if pendingAttachments.allSatisfy({ $0.contentType.hasPrefix("image/") }) {
+                    if pendingAttachments.contains(where: { $0.kind == .video && $0.sourceURL != nil }) {
+                        Button {
+                            originalQuality.toggle()
+                            reprepareVideos()
+                        } label: {
+                            originalQualityLabel
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                        .accessibilityValue(originalQuality ? "On" : "Off")
+                        .accessibilityHint("Sends videos uncompressed. They take longer to send and to download.")
+                    }
+                    if pendingAttachments.allSatisfy(\.isImage) {
                         Button {
                             viewOnce.toggle()
                         } label: {
@@ -2172,8 +2187,21 @@ struct ChatView: View {
         service.isAnnounceOnly(conversationId: conversationId) && !service.isAdmin(in: conversationId)
     }
 
+    private var originalQualityLabel: some View {
+        let tint: Color = originalQuality ? .accentColor : .secondary
+        let fill: Color = originalQuality ? Color.accentColor.opacity(0.15) : Color(.secondarySystemFill)
+        return Label("Original Quality", systemImage: originalQuality ? "4k.tv.fill" : "4k.tv")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(fill, in: .capsule)
+            .foregroundStyle(tint)
+    }
+
     private var canSend: Bool {
         !isAnnounceOnlyBlocked
+        // Uploads may still be running; preparing must have finished.
+        && pendingAttachments.allSatisfy(\.isReady)
         && (!pendingAttachments.isEmpty || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
@@ -2202,54 +2230,83 @@ struct ChatView: View {
         return lines.prefix(Self.maxDraftLines).joined(separator: "\n")
     }
 
+    /// Every pick shows a tile at once and is prepared alongside the others.
     private func loadPickedPhotos(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
-        Task {
-            var loaded: [MessagingService.PendingAttachment] = []
-            for item in items.prefix(10) {
-                if let attachment = await pendingAttachment(from: item) {
-                    loaded.append(attachment)
+        for old in pendingAttachments { old.discard(in: service) }
+        let original = originalQuality
+        pendingAttachments = items.prefix(10).map { item in
+            let attachment = ComposerAttachment(kind: ComposerAttachment.kind(of: item))
+            attachment.task = Task {
+                do {
+                    try await ComposerMedia.prepare(item, into: attachment, original: original, service: service)
+                } catch {
+                    attachmentFailed(attachment, error)
                 }
             }
-            guard !loaded.isEmpty else { return }
-            pendingAttachments = loaded
-            if !pendingAttachments.allSatisfy({ $0.contentType.hasPrefix("image/") }) {
-                viewOnce = false
-            }
+            return attachment
         }
+        if !pendingAttachments.allSatisfy(\.isImage) { viewOnce = false }
     }
 
-    private func pendingAttachment(from item: PhotosPickerItem) async -> MessagingService.PendingAttachment? {
-        let isVideo = item.supportedContentTypes.contains {
-            $0.conforms(to: .movie) || $0.conforms(to: .video) || $0.conforms(to: .audiovisualContent)
-        }
-        let isGIF = item.supportedContentTypes.contains { $0.conforms(to: .gif) }
-        guard let data = try? await item.loadTransferable(type: Data.self) else { return nil }
-        if isVideo {
-            let mime = item.supportedContentTypes.first {
-                $0.conforms(to: .movie) || $0.conforms(to: .video)
-            }?.preferredMIMEType ?? "video/mp4"
-            // Without its location metadata; not sent if that can't be done.
-            guard let clean = await MediaSanitizer.video(data, contentType: mime) else {
-                service.postRelayNotice("A video couldn't be prepared for sending, so it was left out.")
-                return nil
+    /// Stages attachments that are already in memory (drops, files).
+    private func addPrepared(_ items: [(MessagingService.PendingAttachment, ComposerAttachment.Kind)]) {
+        for old in pendingAttachments { old.discard(in: service) }
+        pendingAttachments = items.map { pending, kind in
+            let attachment = ComposerAttachment(kind: kind)
+            attachment.task = Task {
+                do {
+                    if kind == .photo || kind == .gif {
+                        try await ComposerMedia.preparePhoto(pending.data, into: attachment, service: service)
+                    } else {
+                        attachment.pending = pending
+                        if kind == .video {
+                            attachment.thumbnail = await Self.thumbnail(forVideo: pending)
+                        }
+                        attachment.stored = try await service.stageAttachment(pending)
+                        attachment.phase = .ready
+                    }
+                } catch {
+                    attachmentFailed(attachment, error)
+                }
             }
-            return MessagingService.PendingAttachment(
-                data: clean, contentType: mime, filename: mime == "video/quicktime" ? "video.mov" : "video.mp4",
-                width: 0, height: 0
-            )
+            return attachment
         }
-        // Re-encode instead of forwarding the original bytes: strips EXIF/GPS
-        // metadata and turns HEIC into the JPEG the content type promises.
-        // GIFs keep their bytes so they still animate.
-        guard let clean = MediaSanitizer.photo(data, original: Supporter.shared.hasAccountPerks) else { return nil }
-        return MessagingService.PendingAttachment(
-            data: clean.data,
-            contentType: clean.contentType,
-            filename: isGIF ? "image.gif" : nil,
-            width: clean.width,
-            height: clean.height
-        )
+        if !pendingAttachments.allSatisfy(\.isImage) { viewOnce = false }
+    }
+
+    private static func thumbnail(forVideo pending: MessagingService.PendingAttachment) async -> UIImage? {
+        guard let url = try? TempMediaFiles.write(pending.data, originalName: pending.filename, fallbackExtension: "mp4")
+        else { return nil }
+        defer { TempMediaFiles.remove(url) }
+        return await ComposerMedia.videoThumbnail(url)
+    }
+
+    private func attachmentFailed(_ attachment: ComposerAttachment, _ error: Error) {
+        guard !(error is CancellationError), !Task.isCancelled else { return }
+        attachment.discard(in: service)
+        pendingAttachments.removeAll { $0.id == attachment.id }
+        service.sendErrorMessage = (error as? LocalizedError)?.errorDescription
+            ?? (error as? MessagingError)?.errorDescription
+            ?? "This item couldn't be prepared for sending."
+    }
+
+    /// Original Quality toggled: prepare the videos again.
+    private func reprepareVideos() {
+        let original = originalQuality
+        for attachment in pendingAttachments where attachment.kind == .video && attachment.sourceURL != nil {
+            attachment.task?.cancel()
+            if let stored = attachment.stored { service.discardStagedAttachment(stored.id) }
+            attachment.stored = nil
+            attachment.pending = nil
+            attachment.task = Task {
+                do {
+                    try await ComposerMedia.prepareVideo(attachment, original: original, service: service)
+                } catch {
+                    attachmentFailed(attachment, error)
+                }
+            }
+        }
     }
 
     /// Whether this chat currently has a composer to attach to.
@@ -2263,24 +2320,22 @@ struct ChatView: View {
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard acceptsDrops, !providers.isEmpty else { return false }
         Task {
-            var media: [MessagingService.PendingAttachment] = []
+            var media: [(MessagingService.PendingAttachment, ComposerAttachment.Kind)] = []
             var file: MessagingService.PendingAttachment?
             for provider in providers.prefix(10) {
                 if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
                     if let data = await Self.loadFile(provider, type: .movie),
                        let clean = await MediaSanitizer.video(data.data, contentType: data.mime ?? "video/mp4") {
                         let mime = data.mime ?? "video/mp4"
-                        media.append(.init(data: clean, contentType: mime,
-                                           filename: mime == "video/quicktime" ? "video.mov" : "video.mp4",
-                                           width: 0, height: 0))
+                        media.append((.init(data: clean, contentType: mime,
+                                            filename: mime == "video/quicktime" ? "video.mov" : "video.mp4",
+                                            width: 0, height: 0), .video))
                     }
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                     let isGIF = provider.hasItemConformingToTypeIdentifier(UTType.gif.identifier)
-                    if let data = await Self.loadData(provider, type: .image),
-                       let clean = MediaSanitizer.photo(data, original: Supporter.shared.hasAccountPerks) {
-                        media.append(.init(data: clean.data, contentType: clean.contentType,
-                                           filename: isGIF ? "image.gif" : nil,
-                                           width: clean.width, height: clean.height))
+                    if let data = await Self.loadData(provider, type: .image) {
+                        media.append((.init(data: data, contentType: "image/*", filename: nil, width: 0, height: 0),
+                                      isGIF ? .gif : .photo))
                     }
                 } else if file == nil, let data = await Self.loadFile(provider, type: .item) {
                     file = .init(data: data.data, contentType: data.mime ?? "application/octet-stream",
@@ -2288,10 +2343,9 @@ struct ChatView: View {
                 }
             }
             if !media.isEmpty {
-                pendingAttachments = media
-                if !media.allSatisfy({ $0.contentType.hasPrefix("image/") }) { viewOnce = false }
+                addPrepared(media)
             } else if let file {
-                pendingAttachments = [file]
+                addPrepared([(file, .file)])
                 viewOnce = false
             }
         }
@@ -2328,13 +2382,13 @@ struct ChatView: View {
         guard let data = try? Data(contentsOf: url) else { return }
         let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
             ?? "application/octet-stream"
-        pendingAttachments = [MessagingService.PendingAttachment(
+        addPrepared([(MessagingService.PendingAttachment(
             data: data,
             contentType: mime,
             filename: url.lastPathComponent,
             width: 0,
             height: 0
-        )]
+        ), .file)])
         viewOnce = false
     }
 
@@ -2352,18 +2406,25 @@ struct ChatView: View {
         Task { await service.sendMessage("", in: conversationId, replyTo: nil, attachments: [clip]) }
     }
 
-    private func clearPendingAttachments() {
+    /// Empties the composer. `sent`: they went out with a message, so their
+    /// uploads carry on; otherwise they're dropped.
+    private func clearPendingAttachments(sent: Bool = false) {
+        for attachment in pendingAttachments {
+            if sent { attachment.finishSending() } else { attachment.discard(in: service) }
+        }
         pendingAttachments = []
         photoItems = []
+        originalQuality = false
     }
 
     private func removePendingAttachment(at index: Int) {
         guard pendingAttachments.indices.contains(index) else { return }
-        pendingAttachments.remove(at: index)
+        pendingAttachments.remove(at: index).discard(in: service)
         if pendingAttachments.isEmpty {
             photoItems = []
             viewOnce = false
-        } else if !pendingAttachments.allSatisfy({ $0.contentType.hasPrefix("image/") }) {
+            originalQuality = false
+        } else if !pendingAttachments.allSatisfy(\.isImage) {
             viewOnce = false
         }
     }
@@ -2372,7 +2433,7 @@ struct ChatView: View {
     /// or Communication Safety is on.
     private func send() {
         guard canSend else { return }
-        let media = pendingAttachments.filter { $0.contentType.hasPrefix("image/") || $0.contentType.hasPrefix("video/") }
+        let media = pendingAttachments.filter(\.isMedia).compactMap(\.pending)
         guard editingMessage == nil, !media.isEmpty, SensitiveContent.isEnabled else {
             sendNow()
             return
@@ -2419,7 +2480,7 @@ struct ChatView: View {
                 text: String($0.body.prefix(240))
             )
         }
-        let attachments = pendingAttachments
+        let attachments = pendingAttachments.compactMap(\.stored)
         if viewOnce && !attachments.isEmpty { text = "~once~" + text }
         let preview = draftLinkPreview.flatMap { text.contains($0.url) ? $0 : nil }
         // Sent before the link's preview was ready: give it a moment to finish.
@@ -2430,12 +2491,12 @@ struct ChatView: View {
         draft = ""
         replyingTo = nil
         viewOnce = false
-        clearPendingAttachments()
+        clearPendingAttachments(sent: true)
         let service = service
         Task {
             var preview = preview
             if let link = unbuiltLink { preview = await Self.buildPreview(for: link, service: service, timeout: .seconds(3)) }
-            await service.sendMessage(text, in: conversationId, replyTo: reply, attachments: attachments, linkPreview: preview)
+            await service.sendMessage(text, in: conversationId, replyTo: reply, staged: attachments, linkPreview: preview)
         }
     }
 
@@ -3496,6 +3557,7 @@ private struct MessageBubble: View {
                     senderName: avatarName,
                     isOutgoing: message.isOutgoing
                 )
+                .modifier(UploadProgressOverlay(fraction: service.uploadProgress[attachment.id]))
             } else if attachment.isAudio {
                 VoiceNoteBubble(
                     attachment: attachment, service: service,
@@ -3512,6 +3574,7 @@ private struct MessageBubble: View {
                     conversationId: conversationId, isOutgoing: message.isOutgoing,
                     requiresBiometric: mediaRequiresBiometric
                 )
+                .modifier(UploadProgressOverlay(fraction: service.uploadProgress[attachment.id]))
             } else {
                 FileAttachmentBubble(
                     attachment: attachment, service: service,
@@ -4463,45 +4526,78 @@ private struct AttachmentImageView: View {
 
 /// Preview of an unsent attachment above the composer.
 private struct PendingAttachmentBar: View {
-    let attachment: MessagingService.PendingAttachment
+    let attachment: ComposerAttachment
+    let uploadProgress: Double?
     let onPreview: () -> Void
     let onCancel: () -> Void
 
-    private var isImage: Bool { attachment.contentType.hasPrefix("image/") }
-    private var isVideo: Bool { attachment.contentType.hasPrefix("video/") }
+    private var title: String {
+        switch attachment.kind {
+        case .photo: "Photo"
+        case .gif: "GIF"
+        case .video: "Video"
+        case .file: attachment.pending?.filename ?? "File"
+        }
+    }
+
+    private var placeholderSymbol: String {
+        switch attachment.kind {
+        case .video: "video.fill"
+        case .file: "doc.fill"
+        case .photo, .gif: "photo"
+        }
+    }
+
+    /// What's happening, and how far along (nil: no figure yet).
+    private var status: (text: String, fraction: Double?)? {
+        switch attachment.phase {
+        case .loading: return ("Preparing…", nil)
+        case .compressing(let fraction): return ("Compressing \(Int(fraction * 100))%", fraction)
+        case .ready:
+            if let uploadProgress { return ("Uploading \(Int(uploadProgress * 100))%", uploadProgress) }
+            return nil
+        }
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            if isImage, let ui = DecodedImageCache.image(for: attachment.data) {
-                Image(uiImage: ui)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 44, height: 44)
-                    .clipShape(.rect(cornerRadius: 8))
-                Text(attachment.contentType == "image/gif" ? "GIF" : "Photo")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else if isVideo {
-                Image(systemName: "video.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                Text(attachment.filename ?? "Video")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } else {
-                Image(systemName: "doc.fill")
-                    .font(.system(size: 22))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                Text(attachment.filename ?? "File")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            ZStack {
+                if let thumbnail = attachment.thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: placeholderSymbol)
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.fill.tertiary)
+                }
+                if let status {
+                    Color.black.opacity(0.35)
+                    if let fraction = status.fraction {
+                        ProgressRing(fraction: fraction)
+                            .frame(width: 24, height: 24)
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                }
             }
+            .frame(width: 44, height: 44)
+            .clipShape(.rect(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.footnote)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let status {
+                    Text(status.text)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .foregroundStyle(.secondary)
             Spacer(minLength: 0)
             Button {
                 onCancel()
@@ -4516,13 +4612,31 @@ private struct PendingAttachmentBar: View {
         .glassCompat(in: .rect(cornerRadius: 14))
         .contentShape(.rect(cornerRadius: 12))
         .onTapGesture { onPreview() }
+        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Previews the attachment")
     }
 }
 
+/// A determinate ring for upload and compression progress.
+struct ProgressRing: View {
+    let fraction: Double
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.35), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: max(0.02, fraction))
+                .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.linear(duration: 0.2), value: fraction)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 private struct PendingAttachmentPreviewSheet: View {
-    let attachments: [MessagingService.PendingAttachment]
+    let attachments: [ComposerAttachment]
     @Binding var caption: String
     @Binding var viewOnce: Bool
     let onRemove: (Int) -> Void
@@ -4531,7 +4645,12 @@ private struct PendingAttachmentPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private var allowsViewOnce: Bool {
-        attachments.allSatisfy { $0.contentType.hasPrefix("image/") }
+        attachments.allSatisfy(\.isImage)
+    }
+
+    private var canSend: Bool {
+        guard attachments.allSatisfy(\.isReady) else { return false }
+        return !attachments.isEmpty || !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -4539,7 +4658,7 @@ private struct PendingAttachmentPreviewSheet: View {
             VStack(spacing: 12) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
-                        ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
+                        ForEach(Array(attachments.enumerated()), id: \.element.id) { index, attachment in
                             previewCard(for: attachment, index: index)
                         }
                     }
@@ -4575,7 +4694,7 @@ private struct PendingAttachmentPreviewSheet: View {
                     }
                     .accessibilityLabel("Send")
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(attachments.isEmpty && caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSend)
                 }
             }
         }
@@ -4583,17 +4702,21 @@ private struct PendingAttachmentPreviewSheet: View {
     }
 
     @ViewBuilder
-    private func previewCard(for attachment: MessagingService.PendingAttachment, index: Int) -> some View {
+    private func previewCard(for attachment: ComposerAttachment, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
-            if attachment.contentType.hasPrefix("image/"), let image = DecodedImageCache.image(for: attachment.data) {
+            if attachment.isImage, let data = attachment.pending?.data, let image = DecodedImageCache.image(for: data) {
                 Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if let thumbnail = attachment.thumbnail {
+                Image(uiImage: thumbnail)
                     .resizable()
                     .scaledToFill()
             } else {
                 VStack(spacing: 10) {
-                    Image(systemName: attachment.contentType.hasPrefix("video/") ? "video.fill" : "doc.fill")
+                    Image(systemName: attachment.kind == .video ? "video.fill" : "doc.fill")
                         .font(.system(size: 32, weight: .semibold))
-                    Text(attachment.filename ?? (attachment.contentType.hasPrefix("video/") ? "Video" : "File"))
+                    Text(attachment.pending?.filename ?? (attachment.kind == .video ? "Video" : "File"))
                         .font(.footnote)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)

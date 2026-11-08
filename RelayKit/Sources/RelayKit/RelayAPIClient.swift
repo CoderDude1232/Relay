@@ -673,7 +673,8 @@ public struct RelayAPIClient: Sendable {
         content: Data,
         accessKey: Data,
         ephemeral: Bool,
-        silent: Bool = false
+        silent: Bool = false,
+        noPush: Bool = false
     ) async throws -> Int64 {
         struct Req: Encodable {
             let mailboxId: String
@@ -682,6 +683,8 @@ public struct RelayAPIClient: Sendable {
             let accessKey: String
             let ephemeral: Bool
             let silent: Bool
+            /// Left out unless set; relays that predate it push as before.
+            let noPush: Bool?
         }
         struct Response: Decodable { let serverTimestamp: Int64 }
         var request = makeRequest("POST", "v1/messages/sealed")
@@ -692,7 +695,8 @@ public struct RelayAPIClient: Sendable {
             content: content.base64EncodedString(),
             accessKey: accessKey.base64EncodedString(),
             ephemeral: ephemeral,
-            silent: silent
+            silent: silent,
+            noPush: noPush ? true : nil
         ))
         let (data, _) = try await sendWithToken(request)
         return try JSONDecoder().decode(Response.self, from: data).serverTimestamp
@@ -1062,7 +1066,9 @@ public struct RelayAPIClient: Sendable {
     /// Reserves a blob id (authenticated), then uploads the ciphertext to it
     /// anonymously. The id is the capability and can be written once. Returns the
     /// id for the AttachmentPointer.
-    public func uploadAttachment(_ ciphertext: Data) async throws -> String {
+    /// `progress` gets the fraction of the body sent, 0 to 1.
+    public func uploadAttachment(_ ciphertext: Data,
+                                 progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         struct Response: Decodable { let id: String }
         let created: Response = try await request(
             "POST", "v1/attachments", body: nil as [String: String]?
@@ -1070,7 +1076,9 @@ public struct RelayAPIClient: Sendable {
         var request = makeRequest("PUT", "v1/attachments/\(created.id)")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         request.httpBody = ciphertext
-        _ = try await send(request, authenticated: false)
+        _ = try await UploadProgress.$handler.withValue(progress) {
+            try await send(request, authenticated: false)
+        }
         return created.id
     }
 
@@ -1320,12 +1328,12 @@ public struct RelayAPIClient: Sendable {
             if RelayFallback.simulatesBlocked(routed.url?.host()) { throw URLError(.cannotFindHost) }
             #endif
             do {
-                return try await session.data(for: routed)
+                return try await session.data(for: routed, delegate: UploadProgress.delegate())
             } catch let lost as URLError where lost.code == .networkConnectionLost {
                 // A pooled HTTP/3 connection the network dropped while idle fails
                 // its next request; a fresh connection usually works. Signed
                 // requests carry a nonce, so one that did arrive isn't applied twice.
-                return try await session.data(for: routed)
+                return try await session.data(for: routed, delegate: UploadProgress.delegate())
             }
         } catch where RelayProxy.active == nil && RelayFallback.suggestsBlock(error) {
             let failed = routed.url?.host() ?? primary
@@ -1336,7 +1344,7 @@ public struct RelayAPIClient: Sendable {
             else { throw error }
             components.host = host
             routed.url = components.url
-            return try await session.data(for: routed)
+            return try await session.data(for: routed, delegate: UploadProgress.delegate())
         }
     }
 
@@ -2010,5 +2018,26 @@ private struct BundleDTO: Decodable {
             kyberPreKey: try kyberPreKey.model(),
             oneTimePreKey: try oneTimePreKey?.model()
         )
+    }
+}
+
+/// Reports how much of a request body has been sent, for the request made
+/// while `handler` is set.
+enum UploadProgress {
+    @TaskLocal static var handler: (@Sendable (Double) -> Void)?
+
+    static func delegate() -> (any URLSessionTaskDelegate)? {
+        handler.map(Delegate.init)
+    }
+
+    private final class Delegate: NSObject, URLSessionTaskDelegate, Sendable {
+        let handler: @Sendable (Double) -> Void
+        init(_ handler: @escaping @Sendable (Double) -> Void) { self.handler = handler }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                        totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+            guard totalBytesExpectedToSend > 0 else { return }
+            handler(min(1, Double(totalBytesSent) / Double(totalBytesExpectedToSend)))
+        }
     }
 }

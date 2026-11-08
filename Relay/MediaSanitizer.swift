@@ -31,8 +31,28 @@ nonisolated enum MediaSanitizer {
         if isPNG(data), hasAlpha(image), let png = image.pngData() {
             return (png, "image/png", width, height)
         }
+        // HEIC is about half the size of a JPEG that looks the same, so it
+        // uploads and downloads in half the time.
+        if let heic = heicData(image, quality: original ? 0.95 : 0.8) {
+            return (heic, "image/heic", width, height)
+        }
         guard let jpeg = image.jpegData(compressionQuality: original ? 0.97 : 0.9) else { return nil }
         return (jpeg, "image/jpeg", width, height)
+    }
+
+    /// Encoded from pixels only, so no metadata comes along.
+    private static func heicData(_ image: UIImage, quality: Double) -> Data? {
+        guard let cgImage = image.cgImage else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.heic.identifier as CFString, 1, nil)
+        else { return nil }
+        let orientation = CGImagePropertyOrientation(image.imageOrientation)
+        CGImageDestinationAddImage(destination, cgImage, [
+            kCGImageDestinationLossyCompressionQuality: quality,
+            kCGImagePropertyOrientation: orientation.rawValue,
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 
     private static func hasAlpha(_ image: UIImage) -> Bool {
@@ -60,13 +80,17 @@ nonisolated enum MediaSanitizer {
     /// can't be read; callers don't send the original instead.
     static func video(_ data: Data, contentType: String) async -> Data? {
         let isQuickTime = contentType == "video/quicktime"
+        guard let input = try? TempMediaFiles.write(data, originalName: nil, fallbackExtension: isQuickTime ? "mov" : "mp4")
+        else { return nil }
+        defer { TempMediaFiles.remove(input) }
+        return await video(at: input, quickTime: isQuickTime)
+    }
+
+    /// The same, from a file (a picked video is never read whole first).
+    static func video(at input: URL, quickTime isQuickTime: Bool) async -> Data? {
         let ext = isQuickTime ? "mov" : "mp4"
-        guard let input = try? TempMediaFiles.write(data, originalName: nil, fallbackExtension: ext) else { return nil }
         let output = TempMediaFiles.directory.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext)
-        defer {
-            TempMediaFiles.remove(input)
-            TempMediaFiles.remove(output)
-        }
+        defer { TempMediaFiles.remove(output) }
         guard let session = AVAssetExportSession(asset: AVURLAsset(url: input), presetName: AVAssetExportPresetPassthrough)
         else { return nil }
         session.metadataItemFilter = .forSharing()
@@ -76,5 +100,21 @@ nonisolated enum MediaSanitizer {
             return nil
         }
         return try? Data(contentsOf: output)
+    }
+}
+
+private extension CGImagePropertyOrientation {
+    nonisolated init(_ orientation: UIImage.Orientation) {
+        switch orientation {
+        case .up: self = .up
+        case .down: self = .down
+        case .left: self = .left
+        case .right: self = .right
+        case .upMirrored: self = .upMirrored
+        case .downMirrored: self = .downMirrored
+        case .leftMirrored: self = .leftMirrored
+        case .rightMirrored: self = .rightMirrored
+        @unknown default: self = .up
+        }
     }
 }
