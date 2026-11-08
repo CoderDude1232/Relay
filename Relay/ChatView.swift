@@ -17,6 +17,7 @@ import RelayKit
 import SecureStorage
 import AudioToolbox
 import SwiftUI
+import Translation
 import TipKit
 import UIKit
 import UniformTypeIdentifiers
@@ -73,6 +74,18 @@ struct ChatView: View {
     @State private var pendingAttachments: [ComposerAttachment] = []
     /// Videos go compressed unless this is on.
     @State private var originalQuality = false
+    @State private var showingSendOptions = false
+    /// What the composer held, to put back if the send is undone.
+    @State private var undoBackup: UndoBackup?
+
+    private struct UndoBackup {
+        let draft: String
+        let viewOnce: Bool
+        let reply: StoredMessage?
+        let attachments: [(MessagingService.PendingAttachment, ComposerAttachment.Kind)]
+    }
+    /// The next send makes no sound on the recipient's phone.
+    @State private var sendSilently = false
     @State private var confirmSensitiveSend = false
     @State private var sensitiveSendBlocked = false
     @State private var viewOnce = false
@@ -293,7 +306,8 @@ struct ChatView: View {
                                     isSelectionMode: isSelectingMessages,
                                     isSelected: selectedMessageIds.contains(message.id),
                                     onToggleSelection: { toggleMessageSelection(message) },
-                                    onBeginSelection: { beginMessageSelection(message) }
+                                    onBeginSelection: { beginMessageSelection(message) },
+                                    onReplyPrivately: isGroup ? { replyPrivately(to: message) } : nil
                                 )
                                 .padding(.top, (position == .first || position == .single) ? 6 : 1)
                                 .id(message.id)
@@ -1045,7 +1059,9 @@ struct ChatView: View {
             draft = service.readDraft(for: conversationId)
             chatAIEnabled = UserDefaults.standard.bool(forKey: "chat.ai.\(conversationId)")
             chatNotepadEnabled = UserDefaults.standard.bool(forKey: "chat.notepad.\(conversationId)")
+            takePendingPrivateReply()
         }
+        .onChange(of: model.pendingPrivateReply?.conversationId) { takePendingPrivateReply() }
         .onChange(of: service.activeMessagesRevision) {
             refreshVerification()
             pinnedMessage = service.pinnedMessage(for: conversationId)
@@ -1329,7 +1345,15 @@ struct ChatView: View {
     }
 
     private func quoteAuthor(of message: StoredMessage) -> String {
-        message.isOutgoing ? service.credentials.accountId : (conversation?.peerAccount ?? "")
+        // In a group the conversation's peer is the group; the author is the sender.
+        message.isOutgoing ? service.credentials.accountId : (message.senderAccount ?? conversation?.peerAccount ?? "")
+    }
+
+    /// Opens the 1:1 chat with the sender, replying to this message there.
+    private func replyPrivately(to message: StoredMessage) {
+        guard let sender = message.senderAccount, let chat = service.directConversation(with: sender) else { return }
+        model.pendingPrivateReply = .init(conversationId: chat, message: message)
+        model.pendingNotificationConversationId = chat
     }
 
     private func runInChatSearch() {
@@ -1445,6 +1469,26 @@ struct ChatView: View {
         if message.id == flashedMessageId || message.id == editingMessage?.id { return true }
         guard inChatSearchActive, inChatMatches.indices.contains(inChatMatchIndex) else { return false }
         return inChatMatches[inChatMatchIndex].messageId == message.id
+    }
+
+    /// Takes back the message still in its undo window and refills the composer.
+    private func undoLastSend(_ messageId: String) {
+        guard service.undoSend(messageId) else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        guard let backup = undoBackup else { return }
+        undoBackup = nil
+        draft = backup.draft
+        replyingTo = backup.reply
+        if !backup.attachments.isEmpty { addPrepared(backup.attachments) }
+        viewOnce = backup.viewOnce
+        composerFocused = true
+    }
+
+    /// A private reply started in a group, waiting for this chat to open.
+    private func takePendingPrivateReply() {
+        guard let pending = model.pendingPrivateReply, pending.conversationId == conversationId else { return }
+        model.pendingPrivateReply = nil
+        beginReply(pending.message)
     }
 
     private func beginReply(_ message: StoredMessage) {
@@ -1605,6 +1649,11 @@ struct ChatView: View {
                 }
                 .padding(.horizontal)
             }
+            if let pending = service.undoableSend, pending.conversationId == conversationId {
+                UndoSendBar(deadline: pending.deadline) { undoLastSend(pending.messageId) }
+                    .padding(.horizontal)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let replyingTo {
                 ReplyPreviewBar(
                     message: replyingTo,
@@ -1724,7 +1773,8 @@ struct ChatView: View {
                             context: composerContext,
                             isFocused: $composerFocused,
                             incognito: incognitoKeyboard,
-                            onSubmit: { send() }
+                            onSubmit: { send() },
+                            onPasteImages: editingMessage == nil && !isNoteToSelf ? { pasteImages($0) } : nil
                         )
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(minHeight: Self.composerControlHeight)
@@ -1740,12 +1790,9 @@ struct ChatView: View {
                             .keyboardShortcut(.return, modifiers: .command)
                             .simultaneousGesture(
                                 LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-                                    // Scheduled messages are text-only; attachments would be lost.
-                                    guard canSend, editingMessage == nil, pendingAttachments.isEmpty,
-                                          !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    else { return }
-                                    scheduledDate = Date().addingTimeInterval(3600)
-                                    showingSchedulePicker = true
+                                    guard canSend, editingMessage == nil else { return }
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    showingSendOptions = true
                                 }
                             )
                             .transition(.scale(scale: 0.4).combined(with: .opacity))
@@ -1767,6 +1814,21 @@ struct ChatView: View {
                 holdDrag = .zero
                 withAnimation(.spring(duration: 0.3)) { recordingLocked = true }
             }
+        }
+        .confirmationDialog("Send Options", isPresented: $showingSendOptions) {
+            Button("Send Without Sound") {
+                sendSilently = true
+                send()
+            }
+            // Scheduled messages are text-only; attachments would be lost.
+            if pendingAttachments.isEmpty, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button("Schedule Message…") {
+                    scheduledDate = Date().addingTimeInterval(3600)
+                    showingSchedulePicker = true
+                }
+            }
+        } message: {
+            Text("Without sound, their phone shows the notification quietly.")
         }
         .onChange(of: photoItems) { _, items in loadPickedPhotos(items) }
         .photosPicker(isPresented: $showingPhotoPicker, selection: $photoItems, maxSelectionCount: 10, matching: .any(of: [.images, .videos]))
@@ -2249,10 +2311,24 @@ struct ChatView: View {
         if !pendingAttachments.allSatisfy(\.isImage) { viewOnce = false }
     }
 
-    /// Stages attachments that are already in memory (drops, files).
-    private func addPrepared(_ items: [(MessagingService.PendingAttachment, ComposerAttachment.Kind)]) {
-        for old in pendingAttachments { old.discard(in: service) }
-        pendingAttachments = items.map { pending, kind in
+    /// Pasted images join what's already in the composer (up to 10).
+    private func pasteImages(_ images: [Data]) {
+        let room = 10 - pendingAttachments.count
+        guard room > 0 else { return }
+        let items = images.prefix(room).map { data in
+            (MessagingService.PendingAttachment(data: data, contentType: "image/*", filename: nil, width: 0, height: 0),
+             MediaSanitizer.isGIF(data) ? ComposerAttachment.Kind.gif : .photo)
+        }
+        addPrepared(Array(items), replacing: false)
+    }
+
+    /// Stages attachments that are already in memory (drops, files, pastes).
+    private func addPrepared(_ items: [(MessagingService.PendingAttachment, ComposerAttachment.Kind)],
+                             replacing: Bool = true) {
+        if replacing {
+            for old in pendingAttachments { old.discard(in: service) }
+        }
+        let added: [ComposerAttachment] = items.map { pending, kind in
             let attachment = ComposerAttachment(kind: kind)
             attachment.task = Task {
                 do {
@@ -2272,6 +2348,7 @@ struct ChatView: View {
             }
             return attachment
         }
+        pendingAttachments = (replacing ? [] : pendingAttachments) + added
         if !pendingAttachments.allSatisfy(\.isImage) { viewOnce = false }
     }
 
@@ -2481,6 +2558,14 @@ struct ChatView: View {
             )
         }
         let attachments = pendingAttachments.compactMap(\.stored)
+        if MessagingService.undoSendEnabled {
+            undoBackup = UndoBackup(
+                draft: draft, viewOnce: viewOnce, reply: replyingTo,
+                attachments: pendingAttachments.compactMap { item in item.pending.map { ($0, item.kind) } }
+            )
+        }
+        let silent = sendSilently
+        sendSilently = false
         if viewOnce && !attachments.isEmpty { text = "~once~" + text }
         let preview = draftLinkPreview.flatMap { text.contains($0.url) ? $0 : nil }
         // Sent before the link's preview was ready: give it a moment to finish.
@@ -2496,7 +2581,8 @@ struct ChatView: View {
         Task {
             var preview = preview
             if let link = unbuiltLink { preview = await Self.buildPreview(for: link, service: service, timeout: .seconds(3)) }
-            await service.sendMessage(text, in: conversationId, replyTo: reply, staged: attachments, linkPreview: preview)
+            await service.sendMessage(text, in: conversationId, replyTo: reply, staged: attachments,
+                                      linkPreview: preview, silent: silent)
         }
     }
 
@@ -2920,10 +3006,15 @@ private struct MessageRow: View {
     var isSelected = false
     let onToggleSelection: () -> Void
     let onBeginSelection: () -> Void
+    /// Groups: answer the sender in your 1:1 chat with them.
+    var onReplyPrivately: (() -> Void)? = nil
 
     @Environment(ChatAppearance.self) private var appearance
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var confirmDelete = false
+    @State private var showingTranslation = false
+    @State private var choosingReminder = false
+    @State private var reminderResult: String?
     @State private var scamKind: ScamKind?
     /// Earlier versions of an edited message, oldest first, while shown
     /// above the current text. Kept here, outside the hosted bubble, so the
@@ -2943,7 +3034,7 @@ private struct MessageRow: View {
             }
             var data = service.attachmentPlaintext(photo)
             if data == nil {
-                await service.downloadAttachment(photo, in: conversationId)
+                await service.downloadAttachment(photo, in: conversationId, userInitiated: true)
                 data = service.attachmentPlaintext(photo)
             }
             guard let data else { stickerResult = "This photo isn't available."; return }
@@ -3060,6 +3151,35 @@ private struct MessageRow: View {
                     service.deleteMessage(message.id, in: conversationId)
                 }
             }
+            // On-device: the text never leaves the phone.
+            .translationPresentation(isPresented: $showingTranslation, text: message.body)
+            .confirmationDialog("Remind Me", isPresented: $choosingReminder, titleVisibility: .visible) {
+                ForEach(MessageReminders.When.allCases) { when in
+                    if let date = when.date() {
+                        Button(when.label) { scheduleReminder(at: date) }
+                    }
+                }
+            } message: {
+                Text("A notification on this device brings you back to this message.")
+            }
+            .alert(reminderResult ?? "", isPresented: Binding(
+                get: { reminderResult != nil }, set: { if !$0 { reminderResult = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            }
+    }
+
+    private func scheduleReminder(at date: Date) {
+        let name = message.isOutgoing ? "You" : (isGroup ? service.displayName(forAccount: message.senderAccount ?? "") : peerName)
+        Task {
+            let scheduled = await MessageReminders.schedule(
+                at: date, conversationId: conversationId, messageId: message.id,
+                senderName: name, text: MessagingService.bannerText(message.body)
+            )
+            reminderResult = scheduled
+                ? "You'll be reminded \(date.formatted(.relative(presentation: .named)))."
+                : "Relay can't remind you without notifications. Turn them on in Settings."
+        }
     }
 
     @ViewBuilder
@@ -3144,6 +3264,15 @@ private struct MessageRow: View {
         rowSenderAccount.flatMap { service.peerAvatarData(forAccount: $0) }
     }
 
+    /// Plain text worth translating (not a sticker, location or notepad).
+    private static func isTranslatable(_ body: String) -> Bool {
+        let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, body != MessagingService.stickerMarker,
+              MessagingService.bannerText(body) == Spoilers.redact(body)
+        else { return false }
+        return text.contains { $0.isLetter }
+    }
+
     /// Action menu contents; reactions are in the separate bar.
     private var menuActions: [MessageActionSpec] {
         var items: [MessageActionSpec] = []
@@ -3159,6 +3288,15 @@ private struct MessageRow: View {
         let isViewOnce = message.body.hasPrefix(MessagingService.viewOncePrefix)
         if !message.body.isEmpty && !isViewOnce {
             items.append(.init(label: "Copy", icon: "doc.on.doc") { SecurePasteboard.copy(message.body) })
+        }
+        if let onReplyPrivately, isGroup, !message.isOutgoing, message.senderAccount != nil {
+            items.append(.init(label: "Reply Privately", icon: "arrowshape.turn.up.left.circle") { onReplyPrivately() })
+        }
+        if !message.isOutgoing, !isViewOnce, !message.isDeleted, Self.isTranslatable(message.body) {
+            items.append(.init(label: "Translate", icon: "translate") { showingTranslation = true })
+        }
+        if !message.isDeleted {
+            items.append(.init(label: "Remind Me", icon: "bell.badge") { choosingReminder = true })
         }
         if (!message.body.isEmpty || !message.attachments.isEmpty) && !isViewOnce && !message.isDeleted {
             items.append(.init(label: "Forward", icon: "arrowshape.turn.up.right") { onForward() })
@@ -4423,9 +4561,10 @@ private struct AttachmentImageView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityElement(children: .combine)
                     } else if failed {
+                        let held = !attachment.isDownloaded && service.holdsAutomaticDownloads
                         VStack(spacing: 4) {
-                            Image(systemName: "arrow.clockwise")
-                            Text("Tap to retry").font(.caption2)
+                            Image(systemName: held ? "arrow.down.circle" : "arrow.clockwise")
+                            Text(held ? "Tap to download" : "Tap to retry").font(.caption2)
                         }
                         .foregroundStyle(.secondary)
                     } else {
@@ -4433,7 +4572,7 @@ private struct AttachmentImageView: View {
                     }
                 }
                 .contentShape(.rect)
-                .onTapGesture { if failed { Task { await load() } } }
+                .onTapGesture { if failed { Task { await load(userInitiated: true) } } }
             }
         }
         .blur(radius: coversSensitive ? 40 : 0)
@@ -4467,11 +4606,11 @@ private struct AttachmentImageView: View {
         previewFileURL = nil
     }
 
-    private func load() async {
+    private func load(userInitiated: Bool = false) async {
         failed = false
         guard !hiddenForRequest else { return }
         if !attachment.isDownloaded {
-            await service.downloadAttachment(attachment, in: conversationId)
+            await service.downloadAttachment(attachment, in: conversationId, userInitiated: userInitiated)
         }
         guard let data = service.attachmentPlaintext(attachment) else {
             failed = true
@@ -4507,7 +4646,7 @@ private struct AttachmentImageView: View {
 
     private func openPreview() async {
         if !attachment.isDownloaded {
-            await service.downloadAttachment(attachment, in: conversationId)
+            await service.downloadAttachment(attachment, in: conversationId, userInitiated: true)
         }
         guard let data = service.attachmentPlaintext(attachment) else { return }
         let ext = UTType(mimeType: attachment.contentType)?.preferredFilenameExtension ?? "jpg"
@@ -5482,7 +5621,7 @@ private struct ViewOnceOverlay: View {
     private func reveal() async {
         guard let attachment = message.attachments.first(where: { $0.isImage }) else { return }
         if !attachment.isDownloaded {
-            await service.downloadAttachment(attachment, in: conversationId)
+            await service.downloadAttachment(attachment, in: conversationId, userInitiated: true)
         }
         guard let data = service.attachmentPlaintext(attachment),
               let ui = SafeImage.image(from: data) else {
@@ -5619,6 +5758,41 @@ private struct DragOutImage: ViewModifier {
             content.onDrag { NSItemProvider(object: image) }
         } else {
             content
+        }
+    }
+}
+
+/// "Sending… Undo" for the few seconds before a message leaves the phone.
+private struct UndoSendBar: View {
+    let deadline: Date
+    let onUndo: () -> Void
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { context in
+            let remaining = max(0, deadline.timeIntervalSince(context.date))
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 2.5)
+                    Circle()
+                        .trim(from: 0, to: remaining / MessagingService.undoSendSeconds)
+                        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 18, height: 18)
+                .accessibilityHidden(true)
+                Text("Sending in \(Int(remaining.rounded(.up)))s")
+                    .font(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button("Undo", action: onUndo)
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .tint(.primary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .glassCompat(in: .capsule)
         }
     }
 }

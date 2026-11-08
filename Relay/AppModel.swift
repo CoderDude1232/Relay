@@ -81,6 +81,9 @@ final class AppModel {
     var pendingContactInviteToken: String?
     /// Set when the user taps a message notification.
     var pendingNotificationConversationId: String?
+    /// Reply Privately: the group message to quote once its sender's chat opens.
+    struct PrivateReply { let conversationId: String; let message: StoredMessage }
+    var pendingPrivateReply: PrivateReply?
     /// relay://scan (the Scan QR Code control): open the scanner.
     var pendingScanQR = false
     /// relay://compose (New Message control or shortcut): open the new-chat sheet.

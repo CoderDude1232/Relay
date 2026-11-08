@@ -118,6 +118,9 @@ message TextMessage {
   // A preview of the first link in `body`, fetched by the sender so that
   // receivers never contact the site. Unset when previews are off.
   LinkPreview preview = 5;
+  // "Send Without Sound": the recipient's notification makes no sound and
+  // doesn't light up the screen.
+  bool silent = 6;
 }
 
 // Built by the sender from the page's metadata. Everything here is shown as

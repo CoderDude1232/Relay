@@ -258,7 +258,7 @@ struct MediaGalleryView: View {
 
     private func plaintext(_ item: Item) async -> Data? {
         if let data = service.attachmentPlaintext(item.attachment) { return data }
-        await service.downloadAttachment(item.attachment, in: conversationId)
+        await service.downloadAttachment(item.attachment, in: conversationId, userInitiated: true)
         return service.attachmentPlaintext(item.attachment)
     }
 
@@ -394,7 +394,7 @@ private struct PhotoPagerView: View {
         guard images[item.id] == nil else { return }
         var data = service.attachmentPlaintext(item.attachment)
         if data == nil {
-            await service.downloadAttachment(item.attachment, in: conversationId)
+            await service.downloadAttachment(item.attachment, in: conversationId, userInitiated: true)
             data = service.attachmentPlaintext(item.attachment)
         }
         guard let data, let image = SafeImage.image(from: data) else { return }
@@ -459,7 +459,7 @@ private struct GalleryThumbnail: View {
         if data == nil {
             // Not cached (never downloaded, or cleared). downloadAttachment is
             // idempotent and honours the Wi-Fi-only setting.
-            await service.downloadAttachment(attachment, in: conversationId)
+            await service.downloadAttachment(attachment, in: conversationId, userInitiated: true)
             data = service.attachmentPlaintext(attachment)
         }
         if let data, let ui = SafeImage.image(from: data) {

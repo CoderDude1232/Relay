@@ -475,6 +475,10 @@ public nonisolated struct Relay_Content_TextMessage: Sendable {
   /// Clears the value of `preview`. Subsequent reads from it will return its default value.
   public mutating func clearPreview() {self._preview = nil}
 
+  /// "Send Without Sound": the recipient's notification makes no sound and
+  /// doesn't light up the screen.
+  public var silent: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1645,7 +1649,7 @@ nonisolated extension Relay_Content_GroupUpdate.Action: SwiftProtobuf._ProtoName
 
 nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TextMessage"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}body\0\u{1}timestamp\0\u{1}quote\0\u{1}attachments\0\u{1}preview\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}body\0\u{1}timestamp\0\u{1}quote\0\u{1}attachments\0\u{1}preview\0\u{1}silent\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1658,6 +1662,7 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
       case 3: try { try decoder.decodeSingularMessageField(value: &self._quote) }()
       case 4: try { try decoder.decodeRepeatedMessageField(value: &self.attachments) }()
       case 5: try { try decoder.decodeSingularMessageField(value: &self._preview) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self.silent) }()
       default: break
       }
     }
@@ -1683,6 +1688,9 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
     try { if let v = self._preview {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 5)
     } }()
+    if self.silent != false {
+      try visitor.visitSingularBoolField(value: self.silent, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1692,6 +1700,7 @@ nonisolated extension Relay_Content_TextMessage: SwiftProtobuf.Message, SwiftPro
     if lhs._quote != rhs._quote {return false}
     if lhs.attachments != rhs.attachments {return false}
     if lhs._preview != rhs._preview {return false}
+    if lhs.silent != rhs.silent {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

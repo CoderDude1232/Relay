@@ -245,6 +245,8 @@ final class MessagingService {
     private(set) var blockedSafetyWarningConversationId: String?
     private var pathMonitor: NWPathMonitor?
     private(set) var isOnWifi: Bool = true
+    /// iOS Low Data Mode is on for the current network.
+    private(set) var isLowDataMode = false
 
     // MARK: Sealed sender
     /// This device's cached sealed-sender delivery certificate and its expiry
@@ -646,6 +648,7 @@ final class MessagingService {
         monitor.pathUpdateHandler = { [weak self] path in
             let wifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
             let online = path.status == .satisfied
+            let constrained = path.isConstrained
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 // Back online: reconnect now, not when the back-off ends.
@@ -653,6 +656,7 @@ final class MessagingService {
                     self.backoffSleep?.cancel()
                 }
                 self.isOnWifi = wifi
+                self.isLowDataMode = constrained
                 self.hasNetwork = online
                 // A different network may not block the relay: start over.
                 self.connectingSince = nil
@@ -1247,6 +1251,15 @@ final class MessagingService {
         }
     }
 
+    /// The 1:1 chat with `account`, started if there isn't one (Reply Privately).
+    func directConversation(with account: String) -> String? {
+        guard account != credentials.accountId, !isBlocked(account) else { return nil }
+        if let id = oneToOneConversationId(withPeer: account) { return id }
+        let id = try? storage.messages.conversation(withPeer: account, username: username(forAccount: account))
+        refreshConversations()
+        return id
+    }
+
     /// The 1:1 chat with `account`, read from the database.
     func oneToOneConversationId(withPeer account: String) -> String? {
         (try? storage.database.query(
@@ -1321,7 +1334,8 @@ final class MessagingService {
         replyTo: QuotedMessage? = nil,
         attachments pending: [PendingAttachment] = [],
         staged: [StoredAttachment] = [],
-        linkPreview: MessageStore.LinkPreview? = nil
+        linkPreview: MessageStore.LinkPreview? = nil,
+        silent: Bool = false
     ) async {
         if isMessageRequest(conversationId) { acceptMessageRequest(conversationId) }
         let group = try? groupForConversation(conversationId)
@@ -1392,12 +1406,52 @@ final class MessagingService {
         refreshConversations()
         refreshActiveMessages(ifShowing: conversationId)
 
+        // Undo Send: the bubble shows at once, but nothing leaves the phone
+        // until the window has passed.
+        if Self.undoSendEnabled {
+            undoableSend = UndoableSend(messageId: localId, conversationId: conversationId,
+                                        deadline: Date().addingTimeInterval(Self.undoSendSeconds))
+            try? await Task.sleep(for: .seconds(Self.undoSendSeconds))
+            if undoableSend?.messageId == localId { undoableSend = nil }
+            if undoneSends.remove(localId) != nil { return }
+        }
         // Opt-in random send delay (cover traffic).
         await applySendJitter()
         await transmit(
             messageId: localId, conversationId: conversationId, body: text,
-            timestamp: timestamp, replyTo: replyTo, attachments: stored
+            timestamp: timestamp, replyTo: replyTo, attachments: stored, silent: silent
         )
+    }
+
+    // MARK: Undo Send
+
+    static let undoSendKey = "relay.undoSend"
+    static let undoSendSeconds = 5.0
+    static var undoSendEnabled: Bool { UserDefaults.standard.bool(forKey: undoSendKey) }
+
+    struct UndoableSend: Equatable {
+        let messageId: String
+        let conversationId: String
+        let deadline: Date
+    }
+
+    /// The message still inside its undo window, if any.
+    private(set) var undoableSend: UndoableSend?
+    private var undoneSends: Set<String> = []
+
+    /// Takes the message back before it goes out. Returns false if it
+    /// already went.
+    @discardableResult
+    func undoSend(_ messageId: String) -> Bool {
+        guard let pending = undoableSend, pending.messageId == messageId, pending.deadline > Date() else { return false }
+        undoableSend = nil
+        undoneSends.insert(messageId)
+        if let message = (try? storage.messages.messages(in: pending.conversationId, limit: 50))?
+            .first(where: { $0.id == messageId }) {
+            for attachment in message.attachments { stagedUploads.removeValue(forKey: attachment.id)?.cancel() }
+        }
+        deleteMessage(messageId, in: pending.conversationId)
+        return true
     }
 
     /// Keeps the original timestamp (receipts and quotes reference it) and skips
@@ -1547,13 +1601,15 @@ final class MessagingService {
     /// Marks the message sent, or failed for `retrySend`.
     private func transmit(
         messageId: String, conversationId: String, body: String, timestamp: Int64,
-        replyTo: QuotedMessage?, attachments: [StoredAttachment]
+        replyTo: QuotedMessage?, attachments: [StoredAttachment], silent: Bool = false
     ) async {
         markSendPending(messageId, true)
         do {
             var content = Relay_Content_Content()
             content.text.body = body
             content.text.timestamp = timestamp
+            // Send Without Sound: their notification arrives quietly.
+            if silent { content.text.silent = true }
             if let replyTo {
                 content.text.quote.targetTimestamp = replyTo.targetTimestamp
                 content.text.quote.author = replyTo.author
@@ -4022,13 +4078,16 @@ final class MessagingService {
     }
 
     /// Caches the ciphertext; decryption happens in memory at display time.
-    func downloadAttachment(_ attachment: StoredAttachment, in conversationId: String) async {
+    /// `userInitiated`: tapped to open or download. Automatic downloads (a
+    /// bubble scrolling into view) wait for Wi-Fi when Wi-Fi Only Downloads
+    /// is on, and while iOS Low Data Mode is on; a tap always downloads.
+    func downloadAttachment(_ attachment: StoredAttachment, in conversationId: String,
+                            userInitiated: Bool = false) async {
         if attachmentStore.exists(attachment.id) {
             try? storage.messages.markAttachmentDownloaded(id: attachment.id)
             return
         }
-        let wifiOnly = UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload")
-        if wifiOnly && !isOnWifi { return }
+        if !userInitiated && holdsAutomaticDownloads { return }
         // The bubble, the viewer and the gallery can all ask at once: one download.
         if let running = attachmentDownloads[attachment.id] {
             await running.value
@@ -4041,6 +4100,11 @@ final class MessagingService {
     }
 
     private var attachmentDownloads: [String: Task<Void, Never>] = [:]
+
+    /// Media waits for a tap instead of downloading by itself.
+    var holdsAutomaticDownloads: Bool {
+        isLowDataMode || (UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") && !isOnWifi)
+    }
 
     /// Tries again after a dropped connection or a relay error, not after a
     /// refusal (a 4xx: expired or missing), which won't change.

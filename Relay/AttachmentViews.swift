@@ -10,6 +10,7 @@ import OSLog
 import QuickLook
 import SecureStorage
 import SwiftUI
+import VisionKit
 import UIKit
 import UniformTypeIdentifiers
 
@@ -352,7 +353,7 @@ struct FileAttachmentBubble: View {
         busy = true
         defer { busy = false }
         if !attachment.isDownloaded {
-            await service.downloadAttachment(attachment, in: conversationId)
+            await service.downloadAttachment(attachment, in: conversationId, userInitiated: true)
         }
         guard let plaintext = service.attachmentPlaintext(attachment) else { return }
         do {
@@ -466,7 +467,7 @@ struct VideoPlayerBubble: View {
         busy = true
         defer { busy = false }
         if !attachment.isDownloaded {
-            await service.downloadAttachment(attachment, in: conversationId)
+            await service.downloadAttachment(attachment, in: conversationId, userInitiated: true)
         }
         guard let plaintext = service.attachmentPlaintext(attachment) else { failed = true; return }
         do {
@@ -729,6 +730,15 @@ struct ZoomableImageView: UIViewRepresentable {
         imageView.accessibilityTraits = .image
         scroll.addSubview(imageView)
         context.coordinator.imageView = imageView
+        // Live Text: select text, numbers and addresses in the photo. Read on
+        // this device only.
+        if ImageAnalyzer.isSupported {
+            imageView.isUserInteractionEnabled = true
+            let interaction = ImageAnalysisInteraction()
+            imageView.addInteraction(interaction)
+            context.coordinator.analysisInteraction = interaction
+            context.coordinator.analyze(image)
+        }
 
         let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTapped(_:)))
         doubleTap.numberOfTapsRequired = 2
@@ -744,6 +754,7 @@ struct ZoomableImageView: UIViewRepresentable {
         if context.coordinator.imageView?.image !== image {
             context.coordinator.imageView?.image = image
             scroll.zoomScale = 1
+            context.coordinator.analyze(image)
         }
         context.coordinator.layout(in: scroll)
     }
@@ -751,6 +762,24 @@ struct ZoomableImageView: UIViewRepresentable {
     final class Coordinator: NSObject, UIScrollViewDelegate {
         weak var imageView: UIImageView?
         var onTap: () -> Void = {}
+        var analysisInteraction: ImageAnalysisInteraction?
+        private var analysisTask: Task<Void, Never>?
+        private static let analyzer = ImageAnalyzer()
+
+        func analyze(_ image: UIImage) {
+            guard let interaction = analysisInteraction else { return }
+            interaction.analysis = nil
+            interaction.preferredInteractionTypes = []
+            analysisTask?.cancel()
+            analysisTask = Task { @MainActor in
+                let config = ImageAnalyzer.Configuration([.text, .machineReadableCode])
+                guard let analysis = try? await Self.analyzer.analyze(image, configuration: config),
+                      !Task.isCancelled
+                else { return }
+                interaction.analysis = analysis
+                interaction.preferredInteractionTypes = .automatic
+            }
+        }
         private var laidOutFor: CGSize = .zero
 
         /// Fits the image to the scroll view at zoom 1 (redone on rotation or resize).

@@ -55,6 +55,8 @@ public struct NotificationContent: Sendable {
     /// The stored message this announces, so an unsend, edit or expiry can
     /// remove just its notification. Empty when it isn't one message.
     public var messageId: String = ""
+    /// Sent with "Send Without Sound": shown quietly.
+    public var silent: Bool = false
 }
 
 public enum GroupAction: Sendable, Codable {
@@ -849,7 +851,8 @@ public struct EnvelopeProcessor: @unchecked Sendable {
                 peerAccount: attestedAccount,
                 conversationId: conversationId,
                 notification: inserted
-                    ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: preview, messageId: envelopeId)
+                    ? NotificationContent(senderAccount: attestedAccount, conversationId: conversationId, body: preview,
+                                          messageId: envelopeId, silent: text.silent)
                     : nil,
                 sideEffects: effects
             )

@@ -271,6 +271,7 @@ struct SettingsView: View {
         ("Wallpaper", "wallpaper background photo", .appearance),
         ("Bubble Colour", "bubble color colour message", .appearance),
         ("In-Chat Sounds", "sound sounds audio", .chats),
+        ("Undo Send", "undo unsend take back delay mistake", .chats),
         ("Chat Folders", "folders labels organise", .folders),
         ("Scheduled Messages", "schedule later send", .scheduled),
         ("Blocked Contacts", "block blocked unblock", .blocked),
@@ -642,6 +643,7 @@ private struct ChatsSettingsView: View {
     @State private var showDirectCallsWarning = false
     @AppStorage(CallManager.callsInRecentsKey) private var callsInRecents = false
     @AppStorage(InChatSounds.enabledKey) private var inChatSounds = true
+    @AppStorage(MessagingService.undoSendKey) private var undoSend = false
     @State private var importingWhatsApp = false
 
     var body: some View {
@@ -660,6 +662,13 @@ private struct ChatsSettingsView: View {
                 }
             } footer: {
                 Text("A short sound when a message is sent or arrives in the chat you have open. Follows your ring/silent switch.")
+            }
+
+            Section {
+                SettingsToggleRow(systemName: "arrow.uturn.backward.circle.fill", color: .blue, title: "Undo Send",
+                                  isOn: $undoSend)
+            } footer: {
+                Text("Waits 5 seconds before a message goes out, so you can take it back. Long-press Send to send without sound.")
             }
 
             Section {
@@ -782,10 +791,14 @@ private struct DataStorageSettingsView: View {
                     }
                 }
             }
-            Section("Media") {
+            Section {
                 SettingsToggleRow(systemName: "wifi", color: .blue, title: "Wi-Fi Only Downloads",
                                   isOn: Binding(get: { UserDefaults.standard.bool(forKey: "relay.wifiOnlyDownload") },
                                                 set: { UserDefaults.standard.set($0, forKey: "relay.wifiOnlyDownload") }))
+            } header: {
+                Text("Media")
+            } footer: {
+                Text("With Wi-Fi Only Downloads on, or while Low Data Mode is on, photos and videos wait for a tap instead of downloading by themselves.")
             }
 
 

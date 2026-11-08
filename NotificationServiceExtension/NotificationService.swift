@@ -48,6 +48,8 @@ class NotificationService: UNNotificationServiceExtension {
 
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttemptContent: UNMutableNotificationContent?
+    /// The message shown was sent with "Send Without Sound".
+    private var deliverQuietly = false
 
     override func didReceive(
         _ request: UNNotificationRequest,
@@ -106,11 +108,15 @@ class NotificationService: UNNotificationServiceExtension {
                 content.userInfo = info
                 content.threadIdentifier = conversationId
             }
-            // A Focus filter that leaves this chat out: delivered quietly.
-            let quiet = FocusChatFilter.load().map {
+            // A Focus filter that leaves this chat out, or a message sent
+            // without sound: delivered quietly.
+            let quiet = deliverQuietly || (FocusChatFilter.load().map {
                 $0.silencesOtherChats && !conversationId.isEmpty && !$0.allows(conversationId)
-            } ?? false
-            if quiet { content.interruptionLevel = .passive }
+            } ?? false)
+            if quiet {
+                content.interruptionLevel = .passive
+                if deliverQuietly { content.sound = nil }
+            }
             // Wrap in INSendMessageIntent so iOS shows the sender's avatar, but only
             // when the preview level allows the name. In "none" mode nothing about
             // the sender goes to the system.
@@ -123,6 +129,7 @@ class NotificationService: UNNotificationServiceExtension {
             let communication = enriched(content: content, senderName: title, conversationId: conversationId)
             if quiet, let copy = communication.mutableCopy() as? UNMutableNotificationContent {
                 copy.interruptionLevel = .passive
+                if deliverQuietly { copy.sound = nil }
                 contentHandler(copy)
             } else {
                 contentHandler(communication)
@@ -452,6 +459,7 @@ class NotificationService: UNNotificationServiceExtension {
         // Hidden by Panic Mode: no banner at all. present() checks this too, but
         // the "none" preview level below drops the conversation id first.
         if PanicHiddenChats.load().contains(notification.conversationId) { return .suppress }
+        if notification.silent { deliverQuietly = true }
         let defaults = UserDefaults(suiteName: appGroupId)
         // Like the app, an @mention of us still shows in a muted conversation.
         if RelayStore.isConversationMuted(notification.conversationId, defaults: defaults) {

@@ -8,6 +8,7 @@
 
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 // MARK: - ComposerContext
 
@@ -45,6 +46,9 @@ struct FormattingTextEditor: UIViewRepresentable {
     /// Return on a hardware keyboard sends (Shift-Return adds a line). The
     /// on-screen keyboard's return key still adds a line.
     var onSubmit: (() -> Void)? = nil
+    /// Images pasted into the composer (copied photos, screenshots), as
+    /// their original bytes. Text pastes as usual.
+    var onPasteImages: (([Data]) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -79,6 +83,7 @@ struct FormattingTextEditor: UIViewRepresentable {
     func makeUIView(context ctx: Context) -> UITextView {
         let tv = ComposerTextView()
         tv.onSubmit = onSubmit
+        tv.onPasteImages = onPasteImages
         tv.delegate = ctx.coordinator
         tv.backgroundColor = .clear
         tv.font = .preferredFont(forTextStyle: .body)
@@ -105,6 +110,7 @@ struct FormattingTextEditor: UIViewRepresentable {
 
     func updateUIView(_ tv: UITextView, context ctx: Context) {
         (tv as? ComposerTextView)?.onSubmit = onSubmit
+        (tv as? ComposerTextView)?.onPasteImages = onPasteImages
         context.textView = tv
         applyIncognito(to: tv)
         if tv.text != text { tv.text = text }
@@ -170,6 +176,35 @@ struct FormattingTextEditor: UIViewRepresentable {
 /// on-screen keyboard's return key alone.
 final class ComposerTextView: UITextView {
     var onSubmit: (() -> Void)?
+    var onPasteImages: (([Data]) -> Void)?
+
+    /// Image types taken from the pasteboard, best first (GIFs keep animating).
+    private static let pastedImageTypes: [UTType] = [.gif, .heic, .png, .jpeg, .webP, .tiff]
+
+    private var pasteboardHasImages: Bool {
+        UIPasteboard.general.hasImages && !UIPasteboard.general.hasStrings
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), onPasteImages != nil, pasteboardHasImages { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let onPasteImages, pasteboardHasImages else { return super.paste(sender) }
+        var images: [Data] = []
+        for item in UIPasteboard.general.items {
+            let data = Self.pastedImageTypes.lazy.compactMap { type -> Data? in
+                guard let value = item[type.identifier] else { return nil }
+                if let data = value as? Data { return data }
+                return (value as? UIImage)?.pngData()
+            }.first
+            if let data { images.append(data) }
+        }
+        if images.isEmpty, let png = UIPasteboard.general.image?.pngData() { images = [png] }
+        guard !images.isEmpty else { return super.paste(sender) }
+        onPasteImages(Array(images.prefix(10)))
+    }
 
     override var keyCommands: [UIKeyCommand]? {
         guard onSubmit != nil else { return super.keyCommands }

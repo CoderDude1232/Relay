@@ -859,7 +859,10 @@ type TextMessage struct {
 	Attachments []*AttachmentPointer `protobuf:"bytes,4,rep,name=attachments,proto3" json:"attachments,omitempty"`
 	// A preview of the first link in `body`, fetched by the sender so that
 	// receivers never contact the site. Unset when previews are off.
-	Preview       *LinkPreview `protobuf:"bytes,5,opt,name=preview,proto3" json:"preview,omitempty"`
+	Preview *LinkPreview `protobuf:"bytes,5,opt,name=preview,proto3" json:"preview,omitempty"`
+	// "Send Without Sound": the recipient's notification makes no sound and
+	// doesn't light up the screen.
+	Silent        bool `protobuf:"varint,6,opt,name=silent,proto3" json:"silent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -927,6 +930,13 @@ func (x *TextMessage) GetPreview() *LinkPreview {
 		return x.Preview
 	}
 	return nil
+}
+
+func (x *TextMessage) GetSilent() bool {
+	if x != nil {
+		return x.Silent
+	}
+	return false
 }
 
 // Built by the sender from the page's metadata. Everything here is shown as
@@ -2228,13 +2238,14 @@ const file_content_proto_rawDesc = "" +
 	"\fDEMOTE_ADMIN\x10\t\x12\x15\n" +
 	"\x11SET_ANNOUNCE_ONLY\x10\n" +
 	"\x12\x17\n" +
-	"\x13SET_SCREEN_SECURITY\x10\v\"\xe5\x01\n" +
+	"\x13SET_SCREEN_SECURITY\x10\v\"\xfd\x01\n" +
 	"\vTextMessage\x12\x12\n" +
 	"\x04body\x18\x01 \x01(\tR\x04body\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\x12*\n" +
 	"\x05quote\x18\x03 \x01(\v2\x14.relay.content.QuoteR\x05quote\x12B\n" +
 	"\vattachments\x18\x04 \x03(\v2 .relay.content.AttachmentPointerR\vattachments\x124\n" +
-	"\apreview\x18\x05 \x01(\v2\x1a.relay.content.LinkPreviewR\apreview\"K\n" +
+	"\apreview\x18\x05 \x01(\v2\x1a.relay.content.LinkPreviewR\apreview\x12\x16\n" +
+	"\x06silent\x18\x06 \x01(\bR\x06silent\"K\n" +
 	"\vLinkPreview\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x14\n" +
