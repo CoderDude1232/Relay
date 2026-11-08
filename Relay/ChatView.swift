@@ -59,6 +59,11 @@ struct ChatView: View {
     @State private var floatingTipHeight: CGFloat = 0
     /// How far the messages extend under the composer (and home indicator).
     @State private var underComposer: CGFloat = 0
+    /// How much of the screen's bottom the keyboard covers. The bottom inset
+    /// measured above already includes it, and the scroll view also stops
+    /// above the keyboard, so it's taken back out of the content margin.
+    @State private var keyboardOverlap: CGFloat = 0
+    private var composerRoom: CGFloat { max(0, underComposer - keyboardOverlap) }
     @State private var confirmingBulkDelete = false
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.openURL) private var openURL
@@ -338,11 +343,16 @@ struct ChatView: View {
             // Room for the floating tip under the newest message.
             // The messages run on under the composer (see `body`); leave room
             // for it, and for the floating tip, under the newest message.
-            .contentMargins(.bottom, underComposer + floatingTipHeight, for: .scrollContent)
-            .contentMargins(.bottom, underComposer, for: .scrollIndicators)
+            .contentMargins(.bottom, composerRoom + floatingTipHeight, for: .scrollContent)
+            .contentMargins(.bottom, composerRoom, for: .scrollIndicators)
             // Keep the newest message in view when that room grows.
-            .onChange(of: underComposer + floatingTipHeight) { old, new in
+            .onChange(of: composerRoom + floatingTipHeight) { old, new in
                 if new > old, isAtBottom { scrollToBottom(proxy, animated: false) }
+            }
+            // The keyboard opening shrinks the view from below: keep the
+            // newest message above the composer.
+            .onChange(of: keyboardOverlap) { old, new in
+                if new > old, isAtBottom { scrollToBottom(proxy) }
             }
             .scrollDismissesKeyboard(.interactively)
             // Lays out from the bottom on first show, so the jump there is
@@ -540,13 +550,25 @@ struct ChatView: View {
         .ignoresSafeArea(.container, edges: .bottom)
         // How far it runs under the composer: the bottom inset it now ignores.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { underComposer = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screenHeight = UIScreen.main.bounds.height
+            // Docked keyboards only; a floating one covers nothing at the bottom.
+            keyboardOverlap = frame.maxY >= screenHeight - 1 ? max(0, screenHeight - frame.minY) : 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardOverlap = 0
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.userDidTakeScreenshotNotification)) { _ in
             // Only the chat on screen reports a screenshot; ChatViews alive under
             // a sheet or in another tab stay quiet.
             guard isOnScreen, UIApplication.shared.applicationState == .active else { return }
             service.sendScreenshotAlert(conversationId: conversationId)
         }
-        .onAppear { isOnScreen = true }
+        .onAppear {
+            isOnScreen = true
+            _ = KeyboardTracker.shared
+        }
         .onDisappear { isOnScreen = false }
         .background { appearance.background.ignoresSafeArea(.all) }
         .onDrop(of: [.image, .movie, .fileURL, .item], isTargeted: $dropTargeted) { handleDrop($0) }
@@ -4091,13 +4113,15 @@ private enum MessageMenuOverlay {
             dismiss { action.action() }
         })
         menu.view.backgroundColor = .clear
-        let menuSize = menu.sizeThatFits(in: CGSize(width: 250, height: bounds.height))
+        let menuSize = menu.sizeThatFits(in: CGSize(width: MessageActionMenu.width, height: bounds.height))
 
         // Vertical layout: bar, gap, message, gap, menu. A message taller than
-        // the room left shows its top part.
+        // the room left shows its top part. An open keyboard (drawn above this
+        // window) counts as the bottom of the screen.
         let gap: CGFloat = 8
         let top = insets.top + 8
-        let bottom = bounds.height - insets.bottom - 8
+        let keyboardTop = KeyboardTracker.shared.visibleTop ?? bounds.height
+        let bottom = min(bounds.height - insets.bottom, keyboardTop) - 8
         let room = bottom - top - barSize.height - menuSize.height - gap * 2
         let bubbleHeight = min(srcFrame.height, max(80, room))
         var bubbleY = srcFrame.minY
@@ -4199,28 +4223,93 @@ private struct MessageActionMenu: View {
     let actions: [MessageActionSpec]
     let onSelect: (MessageActionSpec) -> Void
 
+    static let width: CGFloat = 236
+    /// The most used actions, as a row of tiles across the top.
+    private static let quickLabels = ["Reply", "Copy", "Edit", "Forward"]
+
+    private var quick: [MessageActionSpec] {
+        Self.quickLabels.compactMap { label in actions.first { $0.label == label } }
+    }
+
+    private var rest: [MessageActionSpec] {
+        let quickIds = Set(quick.map(\.id))
+        return actions.filter { !quickIds.contains($0.id) }
+    }
+
     var body: some View {
         VStack(spacing: 2) {
-            ForEach(actions) { action in
-                Button { onSelect(action) } label: {
-                    HStack(spacing: 12) {
-                        Text(action.label)
-                        Spacer(minLength: 16)
-                        Image(systemName: action.icon)
-                            .frame(width: 22)
+            if !quick.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(quick) { action in
+                        Button { onSelect(action) } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: action.icon)
+                                    .font(.system(size: 17, weight: .medium))
+                                    .frame(height: 20)
+                                Text(action.label)
+                                    .font(.caption2)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.8)
+                            }
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                            .contentShape(.rect)
+                        }
+                        .buttonStyle(MenuRowStyle())
+                        .accessibilityLabel(action.label)
                     }
-                    .font(.body)
+                }
+                if !rest.isEmpty {
+                    Divider().padding(.horizontal, 10).padding(.vertical, 2)
+                }
+            }
+            ForEach(rest) { action in
+                Button { onSelect(action) } label: {
+                    HStack(spacing: 10) {
+                        Text(action.label)
+                        Spacer(minLength: 12)
+                        Image(systemName: action.icon)
+                            .font(.system(size: 15))
+                            .frame(width: 20)
+                    }
+                    .font(.subheadline)
                     .foregroundStyle(action.role == .destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-                    .padding(.horizontal, 14)
-                    .frame(height: 42)
+                    .padding(.horizontal, 12)
+                    .frame(height: 36)
                     .contentShape(.rect)
                 }
                 .buttonStyle(MenuRowStyle())
             }
         }
-        .padding(6)
-        .frame(width: 250)
-        .glassCompat(in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .padding(5)
+        .frame(width: Self.width)
+        .glassCompat(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+}
+
+/// Where the keyboard's top edge is while it's on screen, for laying out
+/// overlays above it.
+final class KeyboardTracker {
+    static let shared = KeyboardTracker()
+    private(set) var visibleTop: CGFloat?
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification,
+                                            object: nil, queue: .main) { [weak self] note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            MainActor.assumeIsolated {
+                let screenHeight = UIScreen.main.bounds.height
+                // Off screen, or a floating/undocked keyboard that doesn't cover the bottom.
+                self?.visibleTop = frame.minY < screenHeight && frame.maxY >= screenHeight - 1 ? frame.minY : nil
+            }
+        })
+        observers.append(center.addObserver(forName: UIResponder.keyboardWillHideNotification,
+                                            object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.visibleTop = nil }
+        })
     }
 }
 
