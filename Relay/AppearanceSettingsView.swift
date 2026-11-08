@@ -310,13 +310,22 @@ struct AppearanceSettingsView: View {
 
 // MARK: - App icon
 
+/// The picture of the app icon in use (the default or a chosen alternate),
+/// for drawing Relay's icon inside the app.
+enum CurrentAppIcon {
+    static var previewAsset: String {
+        let name = UIApplication.shared.alternateIconName
+        return AppIconSection.icons.first { $0.name == name }?.preview ?? "IconPreviewDefault"
+    }
+}
+
 /// Alternate app icons (the .icon files next to RelayIcon.icon), for
 /// supporters. A lapsed supporter keeps the icon they chose.
 private struct AppIconSection: View {
     let locked: Bool
     let showSupporter: () -> Void
 
-    private static let icons: [(name: String?, title: String, preview: String)] = [
+    static let icons: [(name: String?, title: String, preview: String)] = [
         (nil, "Relay", "IconPreviewDefault"),
         ("RelayIconOcean", "Ocean", "IconPreviewOcean"),
         ("RelayIconMint", "Mint", "IconPreviewMint"),

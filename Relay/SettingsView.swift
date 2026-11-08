@@ -1067,12 +1067,113 @@ private struct NotificationSettingsView: View {
 
 // MARK: - Notification option cards
 
-/// The dusk wallpaper behind the little Lock Screens.
-private let lockScreenGradient = LinearGradient(
-    colors: [Color(red: 0.14, green: 0.16, blue: 0.32), Color(red: 0.38, green: 0.20, blue: 0.42)],
-    startPoint: .top, endPoint: .bottom)
+/// A small iPhone Lock Screen: wallpaper, date and time, and whatever
+/// notifications sit under them.
+private struct MiniLockScreen<Content: View>: View {
+    let isSelected: Bool
+    var height: CGFloat = 112
+    @ViewBuilder let content: Content
 
-/// A tiny Lock Screen showing what a banner looks like at one preview level.
+    var body: some View {
+        ZStack(alignment: .top) {
+            LinearGradient(
+                colors: [Color(red: 0.20, green: 0.27, blue: 0.52), Color(red: 0.47, green: 0.33, blue: 0.62),
+                         Color(red: 0.86, green: 0.55, blue: 0.62)],
+                startPoint: .top, endPoint: .bottom)
+            VStack(spacing: 0) {
+                Text("Saturday 8 November")
+                    .font(.system(size: 6.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.top, 9)
+                Text("9:41")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .padding(.bottom, 6)
+                VStack(spacing: 4) { content }
+                    .padding(.horizontal, 5)
+            }
+        }
+        .frame(height: height)
+        .clipShape(.rect(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.08),
+                              lineWidth: isSelected ? 3 : 1)
+        }
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+/// A notification banner as iOS draws it, shrunk to fit a card: frosted
+/// glass, the sender's picture with Relay's icon in the corner (or just the
+/// icon when the name is hidden), title, time and text.
+private struct MiniBanner: View {
+    let sender: String?
+    let text: String
+    var time = "now"
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 5) {
+            ZStack(alignment: .bottomTrailing) {
+                if let sender {
+                    Circle()
+                        .fill(LinearGradient(colors: [Color(white: 0.66), Color(white: 0.48)],
+                                             startPoint: .top, endPoint: .bottom))
+                        .overlay {
+                            Text(String(sender.prefix(1)))
+                                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white)
+                        }
+                        .frame(width: 17, height: 17)
+                    appIcon(size: 8, radius: 2)
+                        .offset(x: 2, y: 2)
+                } else {
+                    appIcon(size: 17, radius: 4)
+                }
+            }
+            VStack(alignment: .leading, spacing: 0.5) {
+                HStack(spacing: 2) {
+                    Text(sender ?? "Relay").font(.system(size: 7.5, weight: .semibold))
+                    Spacer(minLength: 0)
+                    Text(time).font(.system(size: 6)).foregroundStyle(.secondary)
+                }
+                Text(text).font(.system(size: 7)).lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: .rect(cornerRadius: 9, style: .continuous))
+    }
+
+    private func appIcon(size: CGFloat, radius: CGFloat) -> some View {
+        Image(CurrentAppIcon.previewAsset)
+            .resizable()
+            .scaledToFill()
+            .frame(width: size, height: size)
+            .clipShape(.rect(cornerRadius: radius, style: .continuous))
+    }
+}
+
+/// A notification that hasn't been filled in yet: what a content-free wake
+/// carries.
+private struct EmptyBanner: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(.white.opacity(0.25))
+                .frame(width: 17, height: 17)
+            VStack(alignment: .leading, spacing: 3) {
+                Capsule().fill(.white.opacity(0.25)).frame(width: 26, height: 4)
+                Capsule().fill(.white.opacity(0.18)).frame(width: 40, height: 4)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(5)
+        .background(.ultraThinMaterial.opacity(0.6), in: .rect(cornerRadius: 9, style: .continuous))
+    }
+}
+
+/// One Lock Screen Preview level, shown as the banner it produces.
 private struct LockScreenPreviewCard: View {
     let level: NotificationPreviewSetting
     let isSelected: Bool
@@ -1089,26 +1190,9 @@ private struct LockScreenPreviewCard: View {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 6) {
-                ZStack(alignment: .top) {
-                    lockScreenGradient
-                    VStack(spacing: 8) {
-                        Text("9:41")
-                            .font(.system(size: 22, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.9))
-                            .padding(.top, 12)
-                        MiniBanner(
-                            sender: level.showsSenderName ? "Alex" : "Relay",
-                            text: level.showsContent ? "See you at 6?" : "New Message",
-                            showsAvatar: level.showsSenderName
-                        )
-                    }
-                }
-                .frame(height: 100)
-                .clipShape(.rect(cornerRadius: 16))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.08),
-                                      lineWidth: isSelected ? 3 : 1)
+                MiniLockScreen(isSelected: isSelected) {
+                    MiniBanner(sender: level.showsSenderName ? "Alex" : nil,
+                               text: level.showsContent ? "See you at 6?" : "New Message")
                 }
                 Text(title)
                     .font(.caption)
@@ -1124,43 +1208,9 @@ private struct LockScreenPreviewCard: View {
     }
 }
 
-/// A notification banner, shrunk to fit a card.
-private struct MiniBanner: View {
-    let sender: String
-    let text: String
-    var showsAvatar = true
-    var time = "now"
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 4) {
-            Group {
-                if showsAvatar {
-                    Circle().fill(Color.orange.gradient)
-                        .overlay { Text(String(sender.prefix(1))).font(.system(size: 8, weight: .bold)).foregroundStyle(.white) }
-                } else {
-                    RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.gradient)
-                        .overlay { Image(systemName: "bolt.fill").font(.system(size: 7)).foregroundStyle(.white) }
-                }
-            }
-            .frame(width: 15, height: 15)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 2) {
-                    Text(sender).font(.system(size: 8, weight: .semibold))
-                    Spacer(minLength: 0)
-                    Text(time).font(.system(size: 6.5)).opacity(0.7)
-                }
-                Text(text).font(.system(size: 7.5)).lineLimit(2)
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(5)
-        .background(.white.opacity(0.22), in: .rect(cornerRadius: 8))
-        .padding(.horizontal, 6)
-    }
-}
-
-/// How a message reaches the iPhone: inside the push, or fetched after a
-/// content-free wake.
+/// How a message reaches the iPhone. Instant: the banner arrives with the
+/// push. Wake only: an empty wake comes first, then the message, a moment
+/// later, once the iPhone has fetched it.
 private struct DeliveryModeCard: View {
     let instant: Bool
     let isSelected: Bool
@@ -1169,47 +1219,18 @@ private struct DeliveryModeCard: View {
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 6) {
-                ZStack {
-                    lockScreenGradient
-                    VStack(spacing: 10) {
-                        // Apple's push servers, what they carry, and the phone.
-                        HStack(spacing: 5) {
-                            node("icloud.fill")
-                            arrow
-                            Image(systemName: instant ? "lock.fill" : "bell.fill")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 20, height: 20)
-                                .background(instant ? Color.green.opacity(0.7) : Color.white.opacity(0.25), in: .circle)
-                            arrow
-                            node("iphone")
-                        }
-                        if !instant {
-                            // The phone fetches the message from Relay itself.
-                            HStack(spacing: 5) {
-                                node("server.rack")
-                                arrow
-                                Image(systemName: "lock.fill")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 20, height: 20)
-                                    .background(Color.green.opacity(0.7), in: .circle)
-                                arrow
-                                node("iphone")
-                            }
-                        }
-                        MiniBanner(sender: "Alex", text: "See you at 6?", time: instant ? "now" : "2s")
+                MiniLockScreen(isSelected: isSelected, height: 130) {
+                    if instant {
+                        MiniBanner(sender: "Alex", text: "See you at 6?")
+                    } else {
+                        EmptyBanner()
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.6))
+                        MiniBanner(sender: "Alex", text: "See you at 6?", time: "2s")
                     }
-                    .padding(.vertical, 10)
                 }
-                .frame(height: 128)
-                .clipShape(.rect(cornerRadius: 16))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.08),
-                                      lineWidth: isSelected ? 3 : 1)
-                }
-                Label(instant ? "Instant" : "Wake Only", systemImage: instant ? "bolt.fill" : "moon.zzz.fill")
+                Text(instant ? "Instant" : "Wake Only")
                     .font(.caption)
                     .foregroundStyle(isSelected ? Color.primary : .secondary)
             }
@@ -1220,19 +1241,6 @@ private struct DeliveryModeCard: View {
             ? "Instant: the encrypted message comes inside the push"
             : "Wake only: the push carries nothing and your iPhone fetches the message")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    private func node(_ symbol: String) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 13))
-            .foregroundStyle(.white.opacity(0.9))
-            .frame(width: 20)
-    }
-
-    private var arrow: some View {
-        Image(systemName: "arrow.right")
-            .font(.system(size: 7, weight: .bold))
-            .foregroundStyle(.white.opacity(0.5))
     }
 }
 
