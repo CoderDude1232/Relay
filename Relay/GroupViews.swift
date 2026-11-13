@@ -62,7 +62,8 @@ struct NewGroupView: View {
                         .settingsBareRow()
                 }
                 Section("Group name") {
-                    TextField("Name", text: $name).incognitoKeyboard()
+                    TextField("e.g. Family, Book Club", text: $name).incognitoKeyboard()
+                        .accessibilityLabel("Group name")
                 }
                 let candidates = chatCandidates
                 if !candidates.isEmpty {
@@ -121,16 +122,22 @@ struct NewGroupView: View {
                     }
                     .tint(.primary)
                 } header: {
-                    Text("Find by Username")
+                    Text("Add by Username")
                 } footer: {
-                    Text("Someone not on Relay yet? Once the group is made, Group Info → Add Members has a link to send them.")
+                    Text("Someone not on Relay yet? After you create the group, open Add Members to send them a link.")
                 }
                 Section {
                     SettingsPrimaryButton(title: "Create Group", color: .orange, working: creating) { create() }
                         .disabled(!canCreate)
                         .settingsBareRow()
                 } footer: {
-                    if let error { Text(error).foregroundStyle(.red) }
+                    if let error {
+                        Text(error).foregroundStyle(.red)
+                    } else if !canCreate {
+                        Text(name.trimmingCharacters(in: .whitespaces).isEmpty
+                             ? "Give the group a name to continue."
+                             : "Add at least one person to continue.")
+                    }
                 }
             }
             .modifier(ThemedPageBackground())
@@ -148,8 +155,9 @@ struct NewGroupView: View {
     }
 
     private var typedUsernames: [String] {
+        // The field shows "@username", so people often type the @ too.
         members
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "@")) }
             .filter { !$0.isEmpty }
     }
 
@@ -176,7 +184,7 @@ struct NewGroupView: View {
                 } catch RelayAPIError.http(status: 404, _) {
                     missing.append(username)
                 } catch {
-                    self.error = "Couldn't create the group: \(error.localizedDescription)"
+                    self.error = "Couldn't create the group: \(FriendlyError.message(for: error))"
                     return
                 }
             }
@@ -197,7 +205,7 @@ struct NewGroupView: View {
                 dismiss()
                 onCreated(conversationId)
             } catch {
-                self.error = "Couldn't create the group: \(error.localizedDescription)"
+                self.error = "Couldn't create the group: \(FriendlyError.message(for: error))"
             }
         }
     }
@@ -436,6 +444,7 @@ struct GroupInfoView: View {
                                             Image(systemName: "crown.fill")
                                                 .font(.caption)
                                                 .foregroundStyle(.yellow)
+                                                .accessibilityLabel("Admin")
                                         }
                                     }
                                     if let username = member == ownAccountId ? service.username : service.username(forAccount: member) {
@@ -513,7 +522,7 @@ struct GroupInfoView: View {
                         .tint(.red)
                         .foregroundStyle(.red)
                     } footer: {
-                        Text("Long-press a member to report them. Reports go to the Relay team; messages are included only if you choose.")
+                        Text("Touch and hold a member to report them. Reports go to the Relay team; messages are included only if you choose.")
                     }
 
                     if let errorMessage {
@@ -524,7 +533,7 @@ struct GroupInfoView: View {
                         }
                     }
                 } else {
-                    Text("Group not available.")
+                    Text("This group isn't available anymore.")
                 }
             }
             .navigationTitle("Group Info")
@@ -594,7 +603,7 @@ struct GroupInfoView: View {
             do {
                 try await action()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = FriendlyError.message(for: error)
             }
             working = false
             // On failure, stay open so the error is visible.
@@ -661,7 +670,7 @@ struct AddGroupMembersView: View {
         Form {
             Section {
                 SettingsHero(systemName: "person.badge.plus", color: .green, title: "Add Members",
-                             message: "Pick people you already chat with, or find someone by username. Not on Relay yet? Send them a link.")
+                             message: "Pick people you chat with, or add someone by username. Not on Relay yet? Send them a link.")
                     .settingsBareRow()
             }
 
@@ -673,7 +682,7 @@ struct AddGroupMembersView: View {
                     .tint(.primary)
                     .disabled(working)
                 } footer: {
-                    Text("Anyone with the link can join, including people who don't have Relay yet: they install it, sign up and land in the group.")
+                    Text("Anyone with the link can join, even if they don't have Relay yet.")
                 }
             }
 
@@ -717,7 +726,7 @@ struct AddGroupMembersView: View {
                         .onSubmit { add() }
                 }
             } header: {
-                Text("Find by Username")
+                Text("Add by Username")
             } footer: {
                 if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
             }
@@ -814,7 +823,7 @@ private struct GroupAvatarPickerSheet: View {
                 matching: .images,
                 photoLibrary: .shared()
             ) {
-                ContentUnavailableView("Pick a photo", systemImage: "photo.on.rectangle")
+                ContentUnavailableView("Choose a Photo", systemImage: "photo.on.rectangle")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .navigationTitle("Group Photo")

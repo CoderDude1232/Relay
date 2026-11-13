@@ -152,10 +152,10 @@ struct SignInOptionsView: View {
         ScrollView {
             VStack(spacing: 16) {
                 OnboardingBackButton(action: onBack)
-                OnboardingHeader(title: "Sign in", subtitle: "Signing in here signs your other devices out.")
+                OnboardingHeader(title: "Sign in", subtitle: "Welcome back. Signing in here signs you out everywhere else.")
 
                 VStack(spacing: 0) {
-                    ChoiceButton(title: "Passkey", subtitle: "Face ID or Touch ID, no code needed", icon: "person.badge.key",
+                    ChoiceButton(title: "Face ID or Touch ID", subtitle: "If you saved a passkey, no code needed", icon: "faceid",
                                  working: working) { passkey() }
                     Divider().background(.white.opacity(0.12))
                     ChoiceButton(title: "Phone number", subtitle: "We'll text you a code", icon: "phone", action: onPhone)
@@ -337,10 +337,19 @@ struct PhoneSignInView: View {
 
             OnboardingPrimaryButton(title: "Continue", enabled: code.count == Self.codeLength, working: working) { verify() }
 
-            Button("Resend code") { sendCode(resending: true) }
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white.opacity(0.8))
-                .disabled(working)
+            HStack(spacing: 24) {
+                Button("Resend code") { sendCode(resending: true) }
+                Button("Change number") {
+                    pendingNumber = nil
+                    code = ""
+                    errorMessage = nil
+                    resendNote = nil
+                }
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.8))
+            .frame(minHeight: 44)
+            .disabled(working)
             if let resendNote {
                 Text(resendNote).font(.footnote).foregroundStyle(.white.opacity(0.6))
             }
@@ -410,7 +419,7 @@ extension TwoStepRequired.Method {
     static func useInsteadTitle(_ method: Self) -> String {
         switch method {
         case .authenticator: "Use your authenticator app instead"
-        case .passkey: "Use a passkey instead"
+        case .passkey: "Use Face ID or Touch ID instead"
         case .pin: "Use your PIN instead"
         case .recovery: "Use your recovery key instead"
         }
@@ -443,7 +452,7 @@ struct TwoStepView: View {
     private var subtitle: String {
         switch method {
         case .authenticator: "Enter the code from your authenticator app to finish signing in and restore your messages."
-        case .passkey: "Use your passkey to finish signing in and restore your messages."
+        case .passkey: "Confirm it's you with Face ID or Touch ID to finish signing in and restore your messages."
         case .pin: "Enter your PIN to finish signing in and restore your messages."
         case .recovery, nil: "Enter your recovery key to finish signing in and restore your messages."
         }
@@ -505,7 +514,7 @@ struct TwoStepView: View {
                     .disabled(working)
                 case .passkey:
                     errorBanner
-                    OnboardingPrimaryButton(title: "Use Passkey", working: working) { submit(.passkey) }
+                    OnboardingPrimaryButton(title: "Use Face ID or Touch ID", working: working) { submit(.passkey) }
                 case .recovery, nil:
                     errorBanner
                     OnboardingPrimaryButton(title: "Enter Recovery Key") { showingRecoveryKey = true }

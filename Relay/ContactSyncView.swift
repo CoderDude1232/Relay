@@ -24,6 +24,7 @@ struct ContactSyncView: View {
     @State private var startingAccountId: String?
     @State private var messageError: String?
     @State private var showingConsent = false
+    @State private var showingInvite = false
 
     enum SyncStatus: Equatable { case idle, loading, done, failed(String) }
 
@@ -40,14 +41,14 @@ struct ContactSyncView: View {
                 }
                 .settingsBareRow()
             } footer: {
-                Text(ContactDiscoveryConsent.explanation)
+                Text(ContactDiscoveryConsent.summary)
                     .frame(maxWidth: .infinity)
                     .multilineTextAlignment(.center)
             }
 
             if denied {
                 Section {
-                    Label("Contacts access denied. Allow it in Settings → Relay.", systemImage: "person.slash")
+                    Label("Relay can't see your contacts. Turn on Contacts for Relay in Settings.", systemImage: "person.slash")
                         .foregroundStyle(.secondary)
                         .font(.subheadline)
                     Button("Open Settings") { openAppSettings() }.tint(.primary)
@@ -61,7 +62,7 @@ struct ContactSyncView: View {
                     } description: {
                         Text(message)
                     } actions: {
-                        Button("Retry") { Task { await sync() } }
+                        Button("Try Again") { Task { await sync() } }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -70,11 +71,14 @@ struct ContactSyncView: View {
 
             if status == .done && matches.isEmpty && !denied {
                 Section {
-                    ContentUnavailableView(
-                        "No Matches Found",
-                        systemImage: "person.2",
-                        description: Text("None of your contacts are on Relay yet.")
-                    )
+                    ContentUnavailableView {
+                        Label("No Contacts on Relay Yet", systemImage: "person.2")
+                    } description: {
+                        Text("Invite the people you talk to, and they'll show up here.")
+                    } actions: {
+                        Button("Invite Friends") { showingInvite = true }
+                            .buttonStyle(.bordered)
+                    }
                 }
                 .listRowBackground(Color.clear)
             }
@@ -91,6 +95,7 @@ struct ContactSyncView: View {
                             Spacer()
                             if match.hasConversation {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                    .accessibilityLabel("Chat started")
                             } else {
                                 if startingAccountId == match.id {
                                     ProgressView().controlSize(.small)
@@ -116,7 +121,11 @@ struct ContactSyncView: View {
             }
             Button("Not Now", role: .cancel) {}
         } message: {
-            Text(ContactDiscoveryConsent.explanation)
+            Text(ContactDiscoveryConsent.summary)
+        }
+        .sheet(isPresented: $showingInvite) {
+            InviteShareSheet(username: service.username)
+                .ignoresSafeArea()
         }
         .alert("Couldn't Start Chat", isPresented: Binding(
             get: { messageError != nil },
@@ -175,6 +184,11 @@ struct ContactSyncView: View {
             status = .done
         }
     }
+}
+
+extension ContactDiscoveryConsent {
+    /// The consent prompt in plain words; `explanation` has the technical detail.
+    static let summary = "Relay checks which of your contacts use Relay. Their numbers and emails are scrambled on your phone first, and your contacts are never kept on our servers. This only happens when you tap Find Contacts."
 }
 
 /// A contact from the address book who is on Relay.

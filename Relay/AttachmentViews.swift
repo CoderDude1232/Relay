@@ -50,6 +50,7 @@ struct VoiceNoteBubble<Trailing: View>: View {
     private var progress: Double { isCurrent ? center.progress : 0 }
     @State private var data: Data?
     @State private var failed = false
+    private var loadFailed: Bool { failed && data == nil }
     @State private var isUnlocked = false
     @State private var transcript: String?
     @State private var isTranscribing = false
@@ -73,7 +74,7 @@ struct VoiceNoteBubble<Trailing: View>: View {
                 Button {
                     Task { await unlockAndTogglePlayback() }
                 } label: {
-                    Image(systemName: locked ? "lock.fill" : isPlaying ? "pause.fill" : "play.fill")
+                    Image(systemName: locked ? "lock.fill" : loadFailed ? "arrow.clockwise" : isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(isOutgoing ? appearance.bubbleTint : .white)
                         .frame(width: 38, height: 38)
@@ -81,7 +82,8 @@ struct VoiceNoteBubble<Trailing: View>: View {
                         .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(locked ? "Unlock voice message" : isPlaying ? "Pause" : "Play voice message")
+                .accessibilityLabel(locked ? "Unlock voice message" : loadFailed ? "Couldn't load voice message. Try again"
+                                    : isPlaying ? "Pause" : "Play voice message")
                 .disabled(data == nil && !failed)
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -136,7 +138,7 @@ struct VoiceNoteBubble<Trailing: View>: View {
     /// status passed in. At accessibility text sizes the time gets its own line.
     @ViewBuilder
     private var durationLine: some View {
-        let status = Text(heldForRequest ? "Accept to play" : locked ? "Tap to unlock" : failed ? "Couldn't load" : label)
+        let status = Text(heldForRequest ? "Accept to play" : locked ? "Tap to unlock" : loadFailed ? "Couldn't load · Tap to retry" : label)
             .font(.caption2.monospacedDigit())
             .foregroundStyle(tint.opacity(0.75))
         if dynamicTypeSize.isAccessibilitySize {
@@ -208,7 +210,13 @@ struct VoiceNoteBubble<Trailing: View>: View {
     }
 
     private func unlockAndTogglePlayback() async {
-        guard let data else { return }
+        guard let data else {
+            if loadFailed && !heldForRequest {
+                failed = false
+                await load()
+            }
+            return
+        }
         if requiresBiometric && !isUnlocked {
             guard await BiometricGate.authenticate(reason: "Unlock this voice note in Relay.") else { return }
             isUnlocked = true
@@ -417,7 +425,8 @@ struct VideoPlayerBubble: View {
                 } else if failed {
                     VStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill").font(.title2).foregroundStyle(.orange)
-                        Text("Failed").font(.caption).foregroundStyle(tint.opacity(0.7))
+                        Text("Couldn't load · Tap to retry").font(.caption).foregroundStyle(tint.opacity(0.7))
+                            .multilineTextAlignment(.center)
                     }
                 } else {
                     VStack(spacing: 8) {
@@ -441,7 +450,7 @@ struct VideoPlayerBubble: View {
         }
         .buttonStyle(.plain)
         .alert("This video may be sensitive", isPresented: $confirmSensitive) {
-            Button("View") { showingPlayer = true }
+            Button("View Anyway") { showingPlayer = true }
             Button("Cancel", role: .cancel) { cleanUpPlayerFile() }
         } message: {
             Text("Relay checked it on this iPhone and it may contain nudity.")
@@ -465,6 +474,7 @@ struct VideoPlayerBubble: View {
             return
         }
         busy = true
+        failed = false
         defer { busy = false }
         if !attachment.isDownloaded {
             await service.downloadAttachment(attachment, in: conversationId, userInitiated: true)

@@ -35,13 +35,13 @@ private struct NoEmailTradeoffs: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             TradeoffRow(symbol: "checkmark.shield.fill", tint: .green,
-                        text: "Nothing that identifies you is stored: no email, and no sign-in provider ever sees you.")
+                        text: "The most private way in. Relay never learns your email or phone number.")
             TradeoffRow(symbol: "person.badge.key.fill", tint: .green,
-                        text: "You sign in with a passkey, which syncs to your other Apple devices through iCloud Keychain.")
+                        text: "You sign in with Face ID or Touch ID, on this device and your other Apple devices.")
             TradeoffRow(symbol: "key.horizontal.fill", tint: .orange,
-                        text: "Your recovery key is the only backup. Keep it somewhere safe, like a password manager or on paper.")
+                        text: "You'll get a recovery key. Write it down or save it in Passwords. It's your only backup.")
             TradeoffRow(symbol: "exclamationmark.triangle.fill", tint: .red,
-                        text: "There's no \"forgot password\" by email. If you lose your passkey and your recovery key, the account can't be recovered by anyone, including us.")
+                        text: "There's no reset by email. Lose your devices and your recovery key, and nobody can get the account back, not even us.")
         }
     }
 }
@@ -69,9 +69,9 @@ struct PasskeySignupIntroView: View {
                 .padding(.top, 16)
 
                 VStack(spacing: 6) {
-                    Text("No email")
+                    Text("Just a username")
                         .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                    Text("Just a username and a passkey.")
+                    Text("No email or phone number needed.")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -90,7 +90,7 @@ struct PasskeySignupIntroView: View {
                         .background(.white, in: .rect(cornerRadius: 16, style: .continuous))
                 }
 
-                Text("You'll pick a username, then create a passkey with Face ID. We'll show you your recovery key straight after.")
+                Text("Next you'll pick a username and confirm with Face ID or Touch ID. Your recovery key comes straight after.")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.5))
                     .multilineTextAlignment(.center)

@@ -55,7 +55,6 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
-            BackgroundGradient()
             if isAutoRestoring {
                 ProgressView()
                     .tint(.white)
@@ -159,6 +158,10 @@ struct OnboardingView: View {
             }
             } // end else isAutoRestoring
         }
+        // One readable column on iPad; phones are narrower than this anyway.
+        .frame(maxWidth: 520)
+        .frame(maxWidth: .infinity)
+        .background { BackgroundGradient() }
         .animation(.spring(duration: 0.5), value: step)
         // White text over .ultraThinMaterial on near-black; force dark so the
         // material stays dark in Light Mode.
@@ -742,12 +745,12 @@ private struct EmailCodeView: View {
                 .padding(.top, 16)
 
                 VStack(spacing: 6) {
-                    Text(codeSent ? "Check your email" : "Sign in with a code")
+                    Text(codeSent ? "Check your email" : "What's your email?")
                         .font(.system(.largeTitle, design: .rounded, weight: .bold))
                         .foregroundStyle(.white)
                     Text(codeSent
                          ? "Enter the code we sent to \(normalizedEmail)."
-                         : "We'll email you a one-time code. New here? This creates your account.")
+                         : "We'll send you a code to confirm it's you. No password needed.")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.6))
                         .multilineTextAlignment(.center)
@@ -1035,7 +1038,7 @@ private struct SetupView: View {
                             .font(.system(size: 15, weight: .medium))
                             .foregroundStyle(.white.opacity(0.5))
                             .frame(width: 24)
-                        TextField("Display name", text: $displayName)
+                        TextField("Your name", text: $displayName)
                             .focused($focused, equals: .displayName)
                             .textContentType(.name)
                             .textInputAutocapitalization(.words)
@@ -1044,6 +1047,9 @@ private struct SetupView: View {
                             .tint(.white)
                             .submitLabel(.next)
                             .onSubmit { focused = .username }
+                            .onChange(of: focused) { old, new in
+                                if old == .displayName, new == .username { suggestUsername() }
+                            }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 16)
@@ -1152,8 +1158,8 @@ private struct SetupView: View {
     private var usernameStatusLabel: some View {
         switch usernameStatus {
         case .idle:
-            Text(UsernameRules.hint)
-                .font(.caption).foregroundStyle(.white.opacity(0.4)).multilineTextAlignment(.center)
+            Text("Friends find you by your username. Letters, numbers and _ only.")
+                .font(.caption).foregroundStyle(.white.opacity(0.5)).multilineTextAlignment(.center)
         case .checking:
             Text("Checking availability…")
                 .font(.caption).foregroundStyle(.white.opacity(0.5))
@@ -1172,8 +1178,20 @@ private struct SetupView: View {
         }
     }
 
+    /// A starting username from the name typed above, when none is set yet:
+    /// "Ethan Daly" becomes "ethan_daly".
+    private func suggestUsername() {
+        guard username.isEmpty else { return }
+        let words = displayName.lowercased()
+            .folding(options: .diacriticInsensitive, locale: nil)
+            .split(whereSeparator: { !($0.isASCII && ($0.isLetter || $0.isNumber)) })
+        let suggestion = String(words.joined(separator: "_").prefix(20))
+        if suggestion.count >= 3 { username = suggestion }
+    }
+
     private func scheduleCheck(_ raw: String) {
-        let lower = raw.lowercased()
+        // Typed capitals and spaces become what usernames allow.
+        let lower = raw.lowercased().replacingOccurrences(of: " ", with: "_")
         if lower != raw { username = lower; return }
 
         checkTask?.cancel()

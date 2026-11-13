@@ -116,7 +116,7 @@ struct ConversationListView: View {
                 }
             }
             .navigationTitle("Chats")
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search messages").incognitoKeyboard()
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search").incognitoKeyboard()
             .searchFocused($searchFocused)
             .background { keyboardShortcuts }
             .onAppear {
@@ -187,7 +187,7 @@ struct ConversationListView: View {
                 Button("Try Again") { service.retryConnection() }
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("You're online, but Relay isn't answering. This network may be blocking it. Relay keeps trying, and messages send as soon as it gets through. A proxy or another network (like mobile data) may get around the block.")
+                Text("This network may be blocking Relay. Your messages will send once it gets through. Mobile data or a proxy may help.")
             }
             .confirmationDialog("Mute notifications for…", isPresented: Binding(
                 get: { mutingConversationId != nil },
@@ -1027,8 +1027,8 @@ struct ConversationListView: View {
                                         actionTitle: "Show All Chats") { activeLabel = nil }
                     case nil:
                         RelayEmptyState(systemImage: "bubble.left.and.bubble.right", title: "No Chats Yet",
-                                        message: "Start a conversation with someone on Relay.",
-                                        actionTitle: "New Chat") { showingNewChatSheet = true }
+                                        message: firstChatMessage,
+                                        actionTitle: "Start a Chat") { showingNewChatSheet = true }
                     }
                 }
                 .listRowSeparator(.hidden)
@@ -1045,6 +1045,18 @@ struct ConversationListView: View {
             ForEach(others) { conversation in
                 conversationRow(conversation)
             } // end ForEach
+
+            // Note to Self and Relay's notices keep the list from ever being
+            // empty, so a new user would otherwise get no hint where to start.
+            if activeLabel == nil, !isEditing, service.hasLoadedConversations,
+               !visibleConversations.isEmpty, peopleChatCount == 0 {
+                RelayEmptyState(systemImage: "bubble.left.and.bubble.right", title: "Start Your First Chat",
+                                message: firstChatMessage,
+                                actionTitle: "Start a Chat") { showingNewChatSheet = true }
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .selectionDisabled()
+            }
 
             if !isEditing && !archivedConversations.isEmpty {
                 NavigationLink(destination: ArchivedChatsView(service: service, selectedConversationId: $selectedConversationId)) {
@@ -1111,6 +1123,8 @@ struct ConversationListView: View {
             Button("Cancel", role: .cancel) {}
         }
     }
+
+    private let firstChatMessage = "Find a friend by their username or QR code, or invite them to Relay."
 
     private enum SearchScope: String, CaseIterable {
         case all = "All", chats = "Chats", messages = "Messages", links = "Links"
@@ -1315,10 +1329,7 @@ private struct NewChatSheet: View {
                                 actionLabel("New Group", icon: "person.2.fill", color: .orange)
                             }
                             NavigationLink {
-                                UsernameSearchSheet(embedded: true, service: service) { convId in
-                                    dismiss()
-                                    DispatchQueue.main.async { onConversationStarted(convId) }
-                                } onDismiss: {}
+                                usernameSearch()
                             } label: {
                                 actionLabel("Find by Username", icon: "at", color: .blue)
                             }
@@ -1355,7 +1366,7 @@ private struct NewChatSheet: View {
                             }
                         } footer: {
                             if !service.isDemoAccount && !discoveryStarted {
-                                Text("Find Contacts checks which of your contacts use Relay. Their emails and phone numbers are blinded on your iPhone first.")
+                                Text("Find Contacts shows which of your contacts use Relay. Their details are scrambled on your iPhone first.")
                             }
                         }
 
@@ -1376,9 +1387,10 @@ private struct NewChatSheet: View {
                         }
                         Section {
                             if matches.isEmpty {
-                                Text("No chats match \"\(searchText)\". To start a new one, use Find by Username.")
+                                Text("No chats match “\(searchText)”.")
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
+                                usernameLookupRow
                             } else {
                                 ForEach(matches) { conversation in personRow(conversation) }
                             }
@@ -1407,8 +1419,9 @@ private struct NewChatSheet: View {
                         if let discoveryError { discoveryErrorSection(discoveryError) }
                         if filtered.isEmpty {
                             Section {
-                                Text("No results for \"\(searchText)\".")
+                                Text("No contacts match “\(searchText)”.")
                                     .foregroundStyle(.secondary).font(.subheadline)
+                                usernameLookupRow
                             }
                         } else {
                             Section {
@@ -1437,7 +1450,7 @@ private struct NewChatSheet: View {
                     }
                 }
             }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search contacts").incognitoKeyboard()
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search by name").incognitoKeyboard()
             .navigationTitle("New Chat")
             .navigationBarTitleDisplayMode(.inline)
             // A scanned invite code opens its own screen; get out of the way.
@@ -1503,6 +1516,27 @@ private struct NewChatSheet: View {
                     .controlSize(.small)
             }
             .padding(.vertical, 4)
+        }
+    }
+
+    private func usernameSearch(initialQuery: String = "") -> some View {
+        UsernameSearchSheet(embedded: true, initialQuery: initialQuery, service: service) { convId in
+            dismiss()
+            DispatchQueue.main.async { onConversationStarted(convId) }
+        } onDismiss: {}
+    }
+
+    /// Offered when a search finds nobody, so the next step is one tap away.
+    @ViewBuilder
+    private var usernameLookupRow: some View {
+        let typed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        if !typed.isEmpty, !typed.contains(where: \.isWhitespace) {
+            NavigationLink {
+                usernameSearch(initialQuery: typed)
+            } label: {
+                Label("Look up @\(typed.lowercased())", systemImage: "at")
+            }
         }
     }
 
@@ -1714,16 +1748,18 @@ private struct ContactRow: View {
                 if busy {
                     ProgressView().controlSize(.mini)
                 } else {
-                    Text("Add").fontWeight(.semibold)
+                    Text("Message").fontWeight(.semibold)
                 }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.mini)
             .disabled(busy)
+            .accessibilityLabel("Message \(entry.name)")
         case .notOnRelay:
             Button { onInvite(entry) } label: {
                 Text("Invite")
             }
+            .accessibilityLabel("Invite \(entry.name) to Relay")
             .buttonStyle(.bordered)
             .controlSize(.mini)
             .tint(.secondary)
@@ -1792,6 +1828,7 @@ private struct MessageComposeView: UIViewControllerRepresentable {
 private struct UsernameSearchSheet: View {
     /// Pushed inside another navigation stack (no stack or Cancel of its own).
     var embedded = false
+    var initialQuery = ""
     let service: MessagingService
     let onConversationStarted: (String) -> Void
     let onDismiss: () -> Void
@@ -1804,6 +1841,15 @@ private struct UsernameSearchSheet: View {
     @State private var lookupState: LookupState = .idle
     @State private var lookupTask: Task<Void, Never>?
     @State private var isStarting = false
+    @State private var showingInvite = false
+    @FocusState private var fieldFocused: Bool
+
+    /// What was typed, as the lookup sees it: people often include the @.
+    private var normalizedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            .lowercased()
+    }
 
     var body: some View {
         OptionalNavigationStack(enabled: !embedded) {
@@ -1813,13 +1859,16 @@ private struct UsernameSearchSheet: View {
                         Text("@")
                             .foregroundStyle(.secondary)
                             .font(.body.weight(.semibold))
+                            .accessibilityHidden(true)
                         TextField("username", text: $query)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .focused($fieldFocused)
+                            .accessibilityLabel("Username")
                             .onChange(of: query) { _, new in scheduleSearch(new) }
                     }
                 } footer: {
-                    Text("Search for someone by their @username.")
+                    Text("Ask your friend for their username, then type it here.")
                         .font(.footnote)
                 }
 
@@ -1847,9 +1896,16 @@ private struct UsernameSearchSheet: View {
                     }
                 case .notFound:
                     Section {
-                        Text("No user found for @\(query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).")
+                        Text("No one on Relay has the username @\(normalizedQuery). Check the spelling, or invite them.")
                             .foregroundStyle(.secondary)
                             .font(.subheadline)
+                        if !service.isDemoAccount {
+                            Button {
+                                showingInvite = true
+                            } label: {
+                                Label("Invite to Relay", systemImage: "person.badge.plus")
+                            }
+                        }
                     }
                 case .error(let msg):
                     Section {
@@ -1866,11 +1922,24 @@ private struct UsernameSearchSheet: View {
                     }
                 }
             }
+            .sheet(isPresented: $showingInvite) {
+                InviteShareSheet(username: service.username)
+                    .ignoresSafeArea()
+            }
+            .onAppear {
+                if query.isEmpty && !initialQuery.isEmpty {
+                    query = initialQuery
+                } else if query.isEmpty {
+                    fieldFocused = true
+                }
+            }
         }
     }
 
     private func scheduleSearch(_ raw: String) {
-        let q = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let q = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            .lowercased()
         lookupTask?.cancel()
         guard q.count >= 2 else { lookupState = .idle; return }
         lookupState = .searching
@@ -1900,7 +1969,7 @@ private struct UsernameSearchSheet: View {
                 onConversationStarted(convId)
             } catch {
                 isStarting = false
-                lookupState = .error("Couldn't start conversation: \(FriendlyError.message(for: error))")
+                lookupState = .error("Couldn't start the chat: \(FriendlyError.message(for: error))")
             }
         }
     }

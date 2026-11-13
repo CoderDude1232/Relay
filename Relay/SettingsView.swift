@@ -190,8 +190,8 @@ struct SettingsView: View {
                         }
                     } message: {
                         Text(service.keepsChatListWithAccount && MessagingService.isHistoryBackupEnabled
-                             ? "Your account stays active, so you can sign back in anytime. Chats are removed from this device and come back from your encrypted backup when you sign back in."
-                             : "Your account stays active, so you can sign back in anytime. Chats are removed from this device and can't be brought back, because message history backup is off. Turn it on in Data & Storage first to keep them.")
+                             ? "You can sign back in anytime. Your chats are removed from this iPhone and come back from your backup when you do."
+                             : "You can sign back in anytime, but your chats are erased from this iPhone and won't come back, because Message Backup is off. To keep them, turn it on in Data & Storage first.")
                     }
                 } footer: {
                     Text("Relay \(appVersion)")
@@ -281,7 +281,7 @@ struct SettingsView: View {
         ("Incognito Keyboard", "keyboard autocorrect learning", .privacy),
         ("Notification Previews", "notifications lock screen preview banner", .notifications),
         ("Notification Delivery", "faster alerts push instant wake notifications", .notifications),
-        ("Relay-Only Calls", "calls ip address relay turn direct", .chats),
+        ("Protect IP Address in Calls", "calls ip address relay-only relay only turn direct location", .chats),
         ("Show Calls in Recents", "calls recents phone app", .chats),
         ("Wi-Fi Only Downloads", "wifi media download cellular", .data),
         ("Scam Warnings", "scam fraud warning", .privacy),
@@ -292,7 +292,7 @@ struct SettingsView: View {
         ("Acknowledgements", "open source licenses", .about),
         ("Screen Lock", "lock face id touch id passcode", .security),
         ("Panic Mode", "panic hide chats pin", .security),
-        ("Message History Backup", "backup history restore", .data),
+        ("Message Backup", "backup history restore new phone", .data),
         ("Storage", "storage space cache media", .storage),
         ("Contact Syncing", "contacts sync address book", .contactSync),
     ]
@@ -587,7 +587,7 @@ private struct AccountSettingsView: View {
                 model.signOut(removeFromServer: false) // the account is already gone
             }
         }
-        .confirmationDialog("Wipe ALL devices?", isPresented: $confirmingNuke, titleVisibility: .visible) {
+        .confirmationDialog("Erase Relay on all your devices?", isPresented: $confirmingNuke, titleVisibility: .visible) {
             Button("Wipe All Devices", role: .destructive) {
                 // Wiping every device must prove the owner is present, so
                 // refuse when no passcode is set.
@@ -615,12 +615,12 @@ private struct AccountSettingsView: View {
                 }
             }
         } message: {
-            Text("Every device signed in to your account verifies a signed command, then deletes its messages and keys. This can't be undone.")
+            Text("Every device signed in to your account erases its messages and encryption keys. A device that's switched off or offline may be missed. This can't be undone.")
         }
         .alert("Emergency Wipe Sent", isPresented: $nukeSucceeded) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("The wipe command was delivered. All devices will delete their messages and keys.")
+            Text("Your devices that are online now are erasing their messages and keys.")
         }
         .alert("Emergency Wipe Failed", isPresented: Binding(
             get: { nukeError != nil },
@@ -686,7 +686,7 @@ private struct ChatsSettingsView: View {
             }
 
             Section {
-                SettingsToggleRow(systemName: "phone.fill", color: .green, title: "Relay-Only Calls",
+                SettingsToggleRow(systemName: "phone.fill", color: .green, title: "Protect IP Address in Calls",
                                   isOn: Binding(get: { privateCallMode }, set: { newValue in
                                       if newValue {
                                           privateCallMode = true
@@ -702,22 +702,22 @@ private struct ChatsSettingsView: View {
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
                     if privateCallMode {
-                        Text("Relay-Only Calls go through Relay's server, so the other person never sees your IP address.")
+                        Text("Calls pass through a server, so the people you call can't see your IP address, which can show roughly where you are.")
                     } else {
-                        Text("Direct calls are on: the people you call can see your IP address, which can reveal your approximate location.")
+                        Text("Off: the people you call can see your IP address, which can show roughly where you are.")
                             .foregroundStyle(.red)
                     }
-                    Text("Show Calls in Recents adds Relay calls to the Phone app, which can sync them to your other Apple devices through iCloud.")
+                    Text("Show Calls in Recents lists Relay calls in the Phone app, which can sync them to your other Apple devices through iCloud.")
                 }
             }
-            .confirmationDialog("Allow direct calls?", isPresented: $showDirectCallsWarning, titleVisibility: .visible) {
-                Button("Allow Direct Calls", role: .destructive) {
+            .confirmationDialog("Stop protecting your IP address?", isPresented: $showDirectCallsWarning, titleVisibility: .visible) {
+                Button("Turn Off", role: .destructive) {
                     privateCallMode = false
                     callManager.privateCallMode = false
                 }
-                Button("Keep Relay-Only", role: .cancel) {}
+                Button("Keep On", role: .cancel) {}
             } message: {
-                Text("Direct calls can connect faster, but they reveal your IP address — and with it your approximate location and network — to the person you're calling.")
+                Text("Calls may connect a little faster, but the people you call will see your IP address, which can show roughly where you are.")
             }
 
             Section {
@@ -761,7 +761,7 @@ private struct DataStorageSettingsView: View {
                     EmptyView()
                 } else if service.keepsChatListWithAccount {
                     SettingsToggleRow(systemName: "clock.arrow.circlepath", color: .blue, title: "Message Backup",
-                                      info: "Keeps an encrypted copy of your messages (and, for Relay Supporters, photos and files) with your account, so they come back when you sign in on a new phone. Only your account password, passkeys or recovery key can unlock it; Relay can't read it. Disappearing and view-once messages, message requests and hidden chats are never included. Turning this off deletes the copy and stops backups on all your devices.",
+                                      info: "Keeps an encrypted copy of your messages with your account, so they come back on a new phone. Only your password, passkey or recovery key can unlock it. Relay can't read it. Relay Supporters also back up photos and files. Disappearing and view-once messages, message requests and hidden chats are left out. Turning this off deletes the copy and stops backups on all your devices.",
                                       isOn: Binding(get: { historyBackup }, set: { enabled in
                                           historyBackup = enabled
                                           Task { await service.setHistoryBackupEnabled(enabled) }
@@ -809,8 +809,8 @@ private struct DataStorageSettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Some messages couldn't be shown").foregroundStyle(.primary)
                             Text(service.preKeyDesyncDropCount == 1
-                                 ? "1 message couldn't be decrypted. Your encryption keys were refreshed automatically — ask the sender to resend it if it was important."
-                                 : "\(service.preKeyDesyncDropCount) messages couldn't be decrypted. Your encryption keys were refreshed automatically — ask the sender to resend them if they were important.")
+                                 ? "1 message couldn't be opened. Relay has fixed this for new messages. If it was important, ask the sender to send it again."
+                                 : "\(service.preKeyDesyncDropCount) messages couldn't be opened. Relay has fixed this for new messages. If they were important, ask the sender to send them again.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -919,7 +919,7 @@ struct PrivacySettingsView: View {
                 } header: {
                     Text("Find Me By")
                 } footer: {
-                    Text(discoverabilityError ?? "Who can start a chat with you: anyone with your username, and, if you turn them on, anyone who already has your email or number. Relay checks these without learning who's looking.")
+                    Text(discoverabilityError ?? "Anyone with your username can message you. Turn these on so people who already have your email or number can find you too.")
                         .foregroundStyle(discoverabilityError == nil ? Color.secondary : Color.red)
                 }
                 .task {
@@ -952,16 +952,16 @@ struct PrivacySettingsView: View {
 
             Section("Messaging") {
                 SettingsToggleRow(systemName: "timer", color: .orange, title: "Send Delay",
-                                  info: "Adds a small random delay before each message sends, making it harder to correlate your activity by timing.",
+                                  info: "Waits a moment, a random amount, before each message goes out, so it's harder for someone watching internet traffic to tell when you're chatting.",
                                   isOn: Binding(get: { service.sendJitterEnabled }, set: { service.sendJitterEnabled = $0 }))
                 SettingsToggleRow(systemName: "keyboard", color: .indigo, title: "Incognito Keyboard",
-                                  info: "Asks the system keyboard not to learn from or store what you type in Relay — in messages, search and group names.",
+                                  info: "Asks your keyboard not to learn or remember what you type in Relay.",
                                   isOn: Binding(get: { incognitoKeyboard }, set: { incognitoKeyboard = $0 }))
                 SettingsToggleRow(systemName: "exclamationmark.shield", color: .red, title: "Scam Warnings",
                                   info: "Relay checks incoming messages with links, money or code requests on your iPhone (with Apple Intelligence where available) and warns you if one looks like a scam. Nothing is sent anywhere, and nobody is reported unless you choose to.",
                                   isOn: $scamWarnings)
                 SettingsToggleRow(systemName: "link", color: .teal, title: "Generate Link Previews",
-                                  info: "When on, your iPhone fetches a preview for links you type, straight from that website (or YouTube for videos). The site sees your IP address and the link, even if you don't send it. Relay's servers never see the link. Previews are never fetched for links you receive, or while a proxy or backup connection is on.",
+                                  info: "Shows a preview of links you type. To make it, your iPhone visits the website (or YouTube for videos), which sees your IP address, even if you don't send the link. Relay never sees the link. Links you receive never load a preview, and previews are off while a proxy or backup connection is in use.",
                                   isOn: $linkPreviews)
             }
 
@@ -1367,7 +1367,7 @@ private struct DataRetentionView: View {
                 RetentionRow(
                     icon: "network", color: .secondary,
                     title: "Network Metadata",
-                    detail: "IP addresses, connection timing, and envelope sizes are visible to the relay server and any network between you and it. TLS encrypts data in transit; Relay-Only Calls hides your IP from the people you call."
+                    detail: "IP addresses, connection timing, and envelope sizes are visible to the relay server and any network between you and it. TLS encrypts data in transit; Protect IP Address in Calls hides your IP from the people you call."
                 )
             } header: {
                 Text("Metadata Limits")
@@ -1434,12 +1434,11 @@ private struct StorageSettingsView: View {
             } header: {
                 Text("Media Cache")
             } footer: {
-                Text("Removes downloaded copies of received photos, videos and files. They'll download again when you open them, as long as they're still available on the server.")
+                Text("Frees up space by removing photos, videos and files you've received. They download again when you open them, for about 2 weeks after they were sent.")
             }
 
-            Section("Database") {
-                LabeledContent("Encryption", value: "SQLCipher AES-256")
-                LabeledContent("Location", value: "App Group Container")
+            Section("On This iPhone") {
+                LabeledContent("Messages", value: "Encrypted")
             }
         }
         .modifier(ThemedPageBackground())
@@ -1450,7 +1449,7 @@ private struct StorageSettingsView: View {
             Button("Clear Cached Media", role: .destructive) { clearCache() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Downloaded media will be removed from this device and re-downloaded when you view it. Media that's no longer on the server can't be recovered.")
+            Text("Photos, videos and files you've received are removed from this iPhone. They download again when you open them, but ones older than about 2 weeks are gone for good.")
         }
         .alert("Couldn't Clear Media", isPresented: Binding(
             get: { clearError != nil },
@@ -1587,7 +1586,7 @@ private struct SecuritySettingsView: View {
             } header: {
                 Text("Encryption")
             } footer: {
-                Text("Messages and calls use the Signal Protocol with post-quantum key agreement (PQXDH). Relay stores them on this device in an AES-256 encrypted database whose key is protected by the Secure Enclave.")
+                Text("Only you and the people you talk to can read your messages and hear your calls. Not even Relay can. On this iPhone, messages are stored encrypted, with the key guarded by the iPhone's built-in security chip (the Secure Enclave).")
             }
         }
         .modifier(ThemedPageBackground())
@@ -2069,7 +2068,7 @@ struct PanicSetupSheet: View {
                 SecureField("Confirm PIN", text: $confirm)
                     .keyboardType(.numberPad)
             } footer: {
-                Text(error ?? "Relay keeps only a one-way hash of the PIN. If you forget it, turn Panic Mode off here and set a new one.")
+                Text(error ?? "Relay doesn't keep the PIN itself, so it can't show it to you. If you forget it, turn Panic Mode off here and set a new one.")
                     .foregroundStyle(error == nil ? Color.secondary : Color.red)
             }
             Section {
@@ -2411,6 +2410,7 @@ private struct DeleteAccountSheet: View {
                         Text("• All your linked devices are signed out and removed.")
                         Text("• Undelivered messages, keys and your profile are deleted from the server.")
                         Text("• All messages and media on this iPhone are erased.")
+                        Text("• Messages you've already sent stay on the other person's phone.")
                     }
                     .font(.callout)
                     .foregroundStyle(.secondary)

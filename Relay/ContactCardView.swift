@@ -164,7 +164,7 @@ struct ContactCardView: View {
                         SettingsNavRow(systemName: "star.fill", color: .yellow, title: "Starred Messages")
                     }
                     NavigationLink(destination: VerificationView(service: service, conversationId: conversationId, peerName: displayName)) {
-                        SettingsNavRow(systemName: "checkmark.shield.fill", color: .green, title: "Safety Number")
+                        SettingsNavRow(systemName: "checkmark.shield.fill", color: .green, title: "Verify Safety Number")
                     }
                     if let conv = service.conversations.first(where: { $0.id == conversationId }) {
                         NavigationLink(destination: ChatPrivacySettingsView(service: service, conversation: conv)) {

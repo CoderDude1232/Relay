@@ -189,7 +189,7 @@ struct PhoneNumberView: View {
 
     private var heroMessage: String {
         switch step {
-        case .loading, .enterNumber: "Optional. Sign in with a texted code, and let friends who have your number find you."
+        case .loading, .enterNumber: "Optional. Use it to sign in, and so friends who have your number can find you."
         case .unavailable: "Adding a phone number isn't available yet."
         case .enterCode: "Enter the code we texted to \(PhoneNumbers.display(pendingNumber ?? ""))."
         case .added: "Your number is added and verified."
@@ -226,6 +226,8 @@ struct PhoneNumberView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 40)
+                .frame(maxWidth: 480)
+                .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
         }
@@ -345,14 +347,14 @@ struct PhoneNumberView: View {
 
     private var discoverableRow: some View {
         row("magnifyingglass") {
-            Toggle("Find me by number", isOn: discoverableBinding)
+            Toggle("Let people with my number find me", isOn: discoverableBinding)
             .foregroundStyle(.white)
             .tint(.accentColor)
         }
     }
 
     private var footnote: some View {
-        Text("Never shown to anyone.")
+        Text("Your number is never shown to anyone.")
             .font(.footnote)
             .foregroundStyle(.white.opacity(0.45))
             .multilineTextAlignment(.center)
@@ -376,7 +378,7 @@ struct PhoneNumberView: View {
     private var enterNumberStep: some View {
         VStack(spacing: 16) {
             header(savedNumber == nil ? "Phone number" : "New number",
-                   "Optional. Sign in with a texted code, and let friends with your number find you.")
+                   "Optional. Use it to sign in, and so friends who have your number can find you.")
 
             card {
                 if countries.count > 1 {
@@ -460,8 +462,8 @@ struct PhoneNumberView: View {
 
     private var addedStep: some View {
         VStack(spacing: 16) {
-            header(context == .onboarding ? "You're all set" : "Phone number",
-                   "You can sign in with a code texted to it.")
+            header(context == .onboarding ? "Number added" : "Phone number",
+                   "Next time, you can sign in with a code texted to this number.")
 
             card {
                 row("phone") {

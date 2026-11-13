@@ -18,6 +18,7 @@ struct CallsView: View {
     @Environment(CallManager.self) private var callManager
     @State private var showingClearConfirm = false
     @State private var showingCallLinks = false
+    @State private var showingNewCall = false
     @AppStorage(CallsView.missedCallsSeenAtKey) private var missedCallsSeenAt: Double = 0
     @State private var missedOnly = false
 
@@ -62,11 +63,15 @@ struct CallsView: View {
     }
 
     private func callBack(_ call: StoredCall, kind: CallKind) {
+        startCall(peer: call.peerAccount, kind: kind)
+    }
+
+    private func startCall(peer: String, kind: CallKind) {
         guard case .idle = callManager.state else { return }
         Task {
             await callManager.startCall(
-                peerAccount: call.peerAccount,
-                peerName: service.displayName(forAccount: call.peerAccount),
+                peerAccount: peer,
+                peerName: service.displayName(forAccount: peer),
                 kind: kind
             )
         }
@@ -98,13 +103,16 @@ struct CallsView: View {
                     ContentUnavailableView {
                         Label("No Calls Yet", systemImage: "phone.badge.waveform.fill")
                     } description: {
-                        Text("Your voice and video calls will appear here. Start one from any chat, or share a call link to start a group call.")
+                        Text("Your voice and video calls will show here. Start one below, or from any chat.")
                     } actions: {
+                        SettingsPrimaryButton(title: "Start a Call", systemName: "phone.fill", color: .green) {
+                            showingNewCall = true
+                        }
+                        .frame(maxWidth: 320)
                         if !service.isDemoAccount {
-                            SettingsPrimaryButton(title: "Create a Call Link", systemName: "link", color: .green) {
-                                showingCallLinks = true
-                            }
-                            .frame(maxWidth: 320)
+                            Button("Create a Call Link") { showingCallLinks = true }
+                                .font(.headline)
+                                .tint(.green)
                         }
                     }
                 } else {
@@ -166,14 +174,19 @@ struct CallsView: View {
             }
             .navigationTitle("Calls")
             .sheet(isPresented: $showingCallLinks) { CallLinksView(service: service) }
+            .sheet(isPresented: $showingNewCall) {
+                NewCallSheet(service: service) { peer, kind in
+                    showingNewCall = false
+                    startCall(peer: peer, kind: kind)
+                }
+            }
             .onAppear {
                 service.refreshCallHistory()
                 markMissedCallsSeen()
             }
             .toolbar {
-                // Top right, like the compose button on Chats.
                 if !service.callHistory.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .topBarLeading) {
                         Button("Clear") { showingClearConfirm = true }
                             .foregroundStyle(.red)
                     }
@@ -185,13 +198,21 @@ struct CallsView: View {
                         }
                     }
                 }
+                // Top right, like the compose button on Chats.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingNewCall = true } label: {
+                        Label("New Call", systemImage: "phone.badge.plus")
+                    }
+                }
             }
             .confirmationDialog("Clear call history?", isPresented: $showingClearConfirm, titleVisibility: .visible) {
-                Button("Clear All", role: .destructive) {
+                Button("Clear All Calls", role: .destructive) {
                     UINotificationFeedbackGenerator().notificationOccurred(.warning)
                     service.clearCallHistory()
                 }
                 Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your list of calls is removed from this iPhone. Your chats aren't affected.")
             }
         } placeholder: {
             CallsPlaceholder(service: service)
@@ -322,6 +343,92 @@ private struct CallHistoryRow: View {
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
+}
+
+/// Pick someone you already chat with and call them.
+private struct NewCallSheet: View {
+    let service: MessagingService
+    let onCall: (_ peer: String, _ kind: CallKind) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    /// One row per person with an accepted 1:1 chat, by name.
+    private var contacts: [(account: String, name: String)] {
+        let panic = PanicModeManager.shared
+        var seen = Set<String>()
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return service.conversations
+            .filter {
+                !$0.isGroup && !$0.isRequest && !panic.isHidden($0.id)
+                    && $0.peerAccount != service.noteToSelfAccount
+                    && $0.peerAccount != service.relayOfficialAccount
+                    && !service.isBlocked($0.peerAccount)
+            }
+            .compactMap { conv -> (account: String, name: String)? in
+                guard seen.insert(conv.peerAccount).inserted else { return nil }
+                return (conv.peerAccount, service.displayName(forAccount: conv.peerAccount))
+            }
+            .filter { q.isEmpty || $0.name.localizedCaseInsensitiveContains(q) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if contacts.isEmpty && query.isEmpty {
+                    ContentUnavailableView(
+                        "No One to Call Yet",
+                        systemImage: "person.crop.circle.badge.plus",
+                        description: Text("Start a chat with someone first. Then you can call them from here or from the chat.")
+                    )
+                } else {
+                    List {
+                        if contacts.isEmpty {
+                            ContentUnavailableView.search(text: query)
+                                .listRowBackground(Color.clear)
+                        }
+                        ForEach(contacts, id: \.account) { contact in
+                            HStack(spacing: 12) {
+                                AvatarView(name: contact.name, size: 40,
+                                           imageData: service.peerAvatarData(forAccount: contact.account))
+                                Text(contact.name)
+                                    .font(.body)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                callButton("phone.fill", label: "Audio call \(contact.name)") {
+                                    onCall(contact.account, .audio)
+                                }
+                                callButton("video.fill", label: "Video call \(contact.name)") {
+                                    onCall(contact.account, .video)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                            .hiddenInAppSwitcher()
+                        }
+                    }
+                    .searchable(text: $query, prompt: "Search")
+                }
+            }
+            .navigationTitle("New Call")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func callButton(_ systemName: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 34, height: 34)
+                .glassCompat(in: .circle)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(label)
+    }
 }
 
 /// Beside the call list on iPad.

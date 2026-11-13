@@ -54,9 +54,9 @@ struct VerificationView: View {
                 content(for: verification)
             } else {
                 ContentUnavailableView(
-                    "No Secure Session Yet",
+                    "Nothing to Check Yet",
                     systemImage: "lock.slash",
-                    description: Text("Send a message to \(peerName) first, then come back to verify your safety number.")
+                    description: Text("Send \(peerName) a message first, then come back here to compare safety numbers.")
                 )
             }
         }
@@ -89,7 +89,7 @@ struct VerificationView: View {
             case .mismatched:
                 return Alert(
                     title: Text("Codes Don’t Match"),
-                    message: Text("This code does not match your safety number with \(peerName). Do not trust this conversation until the numbers match."),
+                    message: Text("This isn't \(peerName)'s code for your chat. Don't share anything private until the numbers match."),
                     primaryButton: .default(Text("Scan Again")) { showingScanner = true },
                     secondaryButton: .cancel(Text("OK"))
                 )
@@ -173,7 +173,7 @@ struct VerificationView: View {
             switch verification.state {
             case .changed:
                 return ("exclamationmark.shield.fill", .orange, "Safety number changed",
-                        "This usually means \(peerName) reinstalled Relay or got a new phone. Compare the numbers to be sure.")
+                        "This usually means \(peerName) reinstalled Relay or got a new phone. To be sure, compare the numbers again in person or on a video call.")
             case .verified:
                 return ("checkmark.shield.fill", .green, "Verified", "You verified your safety number with \(peerName).")
             case .unverified:
@@ -181,7 +181,7 @@ struct VerificationView: View {
                     return ("checkmark.shield.fill", .green, "Verified", "Your safety number with \(peerName) was verified automatically.")
                 }
                 return ("shield", .secondary, "Not verified",
-                        "To verify, compare these numbers with \(peerName) or scan their code.")
+                        "Check these numbers match the ones on \(peerName)'s phone, in person or on a video call, or scan their code. If they match, no one is secretly in the middle of your chat.")
             }
         }()
         return VStack(spacing: 6) {
@@ -211,7 +211,7 @@ struct VerificationView: View {
     @ViewBuilder
     private func actionButtons(_ verification: MessagingService.PeerVerification) -> some View {
         if verification.hasConflictingKeys {
-            Text("\(peerName) has a device with a different key, so this number can't be verified. Ask them to check their linked devices and remove any they don't recognise.")
+            Text("One of \(peerName)'s devices doesn't match, so this number can't be checked yet. Ask them to open Linked Devices and remove any they don't recognise.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -221,7 +221,7 @@ struct VerificationView: View {
                 Button {
                     showingScanner = true
                 } label: {
-                    Label("Scan Code", systemImage: "qrcode.viewfinder")
+                    Label("Scan Their Code", systemImage: "qrcode.viewfinder")
                         .frame(maxWidth: .infinity)
                 }
                 .glassProminentCompat()
@@ -307,9 +307,8 @@ struct VerificationView: View {
     }
 }
 
-// MARK: - Safety-number grid
+// MARK: - Group safety numbers
 
-/// The 60 digits laid out as 12 groups of 5, three per row.
 /// Lists the group members whose safety number changed. Sends to the group
 /// fail until each is reviewed, so this says who is holding them up.
 struct GroupSafetyNumbersView: View {
@@ -334,7 +333,7 @@ struct GroupSafetyNumbersView: View {
             } footer: {
                 Text(members.isEmpty
                      ? "Every member’s safety number is up to date. Messages to this group can be sent again."
-                     : "Messages to this group won’t send until you review each changed safety number. Compare it with the person in another way, then mark it as verified.")
+                     : "These people's safety numbers changed, usually because of a new phone. Messages to this group won’t send until you check each one: tap a name, compare the numbers with them, then tap Mark as Verified.")
             }
         }
         .navigationTitle("Safety Numbers Changed")
@@ -350,6 +349,9 @@ struct GroupSafetyNumbersView: View {
     }
 }
 
+// MARK: - Safety-number grid
+
+/// The 60 digits laid out as 12 groups of 5, three per row.
 private struct SafetyNumberGrid: View {
     let numeric: String
 
@@ -414,16 +416,41 @@ private struct ScannerSheet: View {
     let onScan: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
+    private var cameraDenied: Bool {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        return status == .denied || status == .restricted
+    }
+
     var body: some View {
         NavigationStack {
             QRScannerView(onScan: onScan)
                 .ignoresSafeArea()
                 .overlay(alignment: .bottom) {
-                    Text("Point the camera at your contact’s safety-number code.")
-                        .font(.footnote)
+                    if cameraDenied {
+                        VStack(spacing: 12) {
+                            Text("Relay needs your camera to scan the code.")
+                                .font(.footnote)
+                                .multilineTextAlignment(.center)
+                            Button("Open Settings") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                            }
+                            .font(.footnote.weight(.semibold))
+                        }
                         .padding()
-                        .background(.ultraThinMaterial, in: .capsule)
+                        .background(.ultraThinMaterial, in: .rect(cornerRadius: 20))
+                        .padding(.horizontal)
                         .padding(.bottom, 40)
+                    } else {
+                        Text("Point the camera at the code on your contact’s screen.")
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                            .background(.ultraThinMaterial, in: .rect(cornerRadius: 20))
+                            .padding(.horizontal)
+                            .padding(.bottom, 40)
+                    }
                 }
                 .navigationTitle("Scan Code")
                 .navigationBarTitleDisplayMode(.inline)

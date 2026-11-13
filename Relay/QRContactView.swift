@@ -206,7 +206,7 @@ struct MyQRCodeView: View {
                             .overlay(Circle().strokeBorder(.white, lineWidth: usesPhoto ? 3 : 1)
                                 .opacity(usesPhoto ? 1 : 0.5))
                     }
-                    .accessibilityLabel("Profile photo")
+                    .accessibilityLabel("Profile photo background")
                     .accessibilityAddTraits(usesPhoto ? .isSelected : [])
                 }
                 ForEach(QRPreset.all) { option in
@@ -220,7 +220,7 @@ struct MyQRCodeView: View {
                             .overlay(Circle().strokeBorder(.white, lineWidth: option.id == selectedId ? 3 : 1)
                                 .opacity(option.id == selectedId ? 1 : 0.5))
                     }
-                    .accessibilityLabel(option.id.capitalized)
+                    .accessibilityLabel("\(option.id.capitalized) background")
                     .accessibilityAddTraits(option.id == selectedId ? .isSelected : [])
                 }
             }
@@ -245,7 +245,7 @@ struct MyQRCodeView: View {
                             inviteLink = try await createInviteLink()
                             showingInviteShare = true
                         } catch {
-                            inviteError = "Could not create a one-time link. Try again."
+                            inviteError = "Couldn't create a link. Check your connection and try again."
                         }
                     }
                 } label: {
@@ -582,7 +582,7 @@ struct ContactQRScanner: View {
                     ContentUnavailableView {
                         Label("Camera Access Needed", systemImage: "camera.fill")
                     } description: {
-                        Text("Allow Relay to use the camera in Settings to scan QR codes.")
+                        Text("To scan a QR code, turn on Camera for Relay in Settings.")
                     } actions: {
                         Button("Open Settings") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
@@ -593,7 +593,7 @@ struct ContactQRScanner: View {
                     ContentUnavailableView(
                         "Scanner Unavailable",
                         systemImage: "qrcode.viewfinder",
-                        description: Text("This device does not support the QR scanner.")
+                        description: Text("This device can't scan QR codes. Ask your friend for their username instead.")
                     )
                 } else if cameraStatus == .notDetermined {
                     ProgressView()

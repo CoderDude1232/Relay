@@ -460,8 +460,27 @@ struct ChatView: View {
         }
     }
 
-    @ViewBuilder
+    /// Scrolls instead of clipping when large text or the keyboard leaves too
+    /// little room.
     private var chatEmptyState: some View {
+        ViewThatFits(in: .vertical) {
+            chatEmptyStateContent
+            ScrollView {
+                chatEmptyStateContent
+                    .padding(.vertical)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var privacyNote: String {
+        isGroup ? "Messages and calls are private. Only people in this group can read them."
+            : "Messages and calls are private. Only you and \(peerName) can read them."
+    }
+
+    @ViewBuilder
+    private var chatEmptyStateContent: some View {
         VStack(spacing: 16) {
             AvatarView(
                 name: peerName,
@@ -476,16 +495,15 @@ struct ChatView: View {
                     .foregroundStyle(.secondary)
             }
             if !isNoteToSelf {
-                HStack(spacing: 5) {
-                    Image(systemName: "lock.fill")
-                        .font(.caption2.weight(.semibold))
-                    Text("End-to-end encrypted")
-                        .font(.caption)
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background(.ultraThinMaterial, in: Capsule())
+                Text("\(Image(systemName: "lock.fill")) \(privacyNote)")
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .frame(maxWidth: 300)
             }
             if acceptsDrops {
                 // One-tap openers, so a new chat doesn't start blank.
@@ -501,7 +519,8 @@ struct ChatView: View {
                 .padding(.top, 4)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity)
     }
 
     private func starter(_ text: String, label: String, action: @escaping () -> Void) -> some View {
@@ -628,6 +647,7 @@ struct ChatView: View {
                                 Label(disappearingLabel(secs), systemImage: "timer")
                                     .font(.caption2)
                                     .foregroundStyle(.orange)
+                                    .accessibilityLabel("Disappearing messages on, \(Duration.seconds(secs).formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide, maximumUnitCount: 1)))")
                             }
                         }
                     }
@@ -727,7 +747,7 @@ struct ChatView: View {
                 if inChatSearchActive {
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        TextField("Search in conversation…", text: $inChatQuery)
+                        TextField("Search this chat", text: $inChatQuery)
                             .autocorrectionDisabled()
                             .submitLabel(.search)
                             .onSubmit { stepInChatMatch(by: -1) }
@@ -1240,7 +1260,7 @@ struct ChatView: View {
         Button {
             showingVerification = true
         } label: {
-            Label("\(peerName)’s safety number changed — tap to verify", systemImage: "exclamationmark.shield.fill")
+            Label("\(peerName)’s safety number changed, usually because of a new phone. Tap to check it’s really them.", systemImage: "exclamationmark.shield.fill")
                 .font(.footnote.weight(.medium))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
@@ -1268,9 +1288,9 @@ struct ChatView: View {
 
     private var groupSafetyNumberChangedText: String {
         if changedGroupMembers.count == 1, let member = changedGroupMembers.first {
-            return "\(service.displayName(forAccount: member))’s safety number changed — tap to verify"
+            return "\(service.displayName(forAccount: member))’s safety number changed, usually because of a new phone. Tap to check it’s really them."
         }
-        return "\(changedGroupMembers.count) members’ safety numbers changed — tap to review"
+        return "\(changedGroupMembers.count) members’ safety numbers changed, usually because of new phones. Tap to check."
     }
 
     private func refreshVerification() {
@@ -1751,24 +1771,25 @@ struct ChatView: View {
                     HStack(alignment: .bottom, spacing: 6) {
                         Menu {
                             if !isNoteToSelf {
-                                Button("Photo / Video", systemImage: "photo") { showingPhotoPicker = true }
+                                Button("Photos & Videos", systemImage: "photo") { showingPhotoPicker = true }
                                 if cameraAvailable {
                                     Button("Camera", systemImage: "camera") { showingCamera = true }
                                 }
-                                Button("File", systemImage: "doc") { showingFileImporter = true }
+                                Button("Document", systemImage: "doc") { showingFileImporter = true }
                                 Button("Location", systemImage: "location.fill") { showingLocationPicker = true }
                                 Button("Poll", systemImage: "chart.bar.xaxis") { showingPollComposer = true }
                                 Button("Sticker", systemImage: "face.dashed") { showingStickers = true }
                             }
                             Button("Emoji", systemImage: "face.smiling") { showingComposerEmoji = true }
-                            Button(showFormattingBar ? "Hide Formatting" : "Format", systemImage: "textformat") {
+                            Button(showFormattingBar ? "Hide Text Formatting" : "Format Text", systemImage: "textformat") {
                                 withAnimation(.spring(duration: 0.2)) { showFormattingBar.toggle() }
                             }
                         } label: {
                             composerAccessoryIcon("plus")
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("More message options")
+                        .accessibilityLabel("Attach")
+                        .accessibilityHint("Photos, documents, location, emoji and more")
 
                         if showRecordButton {
                             // Hold to record (release sends, slide left cancels,
@@ -1870,9 +1891,12 @@ struct ChatView: View {
             Text("This photo or video may show private body parts. Talk to a parent or another adult you trust if someone asked you to send it.")
         }
         .alert("Microphone Access Needed", isPresented: $recordDenied) {
-            Button("OK", role: .cancel) {}
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+            }
+            Button("Not Now", role: .cancel) {}
         } message: {
-            Text("Enable microphone access in Settings to record voice messages.")
+            Text("To record voice messages, allow Relay to use the microphone in Settings.")
         }
         .fullScreenCover(isPresented: $showingCamera) {
             CameraPicker { image in sendCameraPhoto(image) }
@@ -3169,9 +3193,11 @@ private struct MessageRow: View {
                 }
             }
             .confirmationDialog("Delete this message?", isPresented: $confirmDelete, titleVisibility: .visible) {
-                Button("Delete", role: .destructive) {
+                Button("Delete for Me", role: .destructive) {
                     service.deleteMessage(message.id, in: conversationId)
                 }
+            } message: {
+                Text("It’s removed from this device only.")
             }
             // On-device: the text never leaves the phone.
             .translationPresentation(isPresented: $showingTranslation, text: message.body)
@@ -3923,7 +3949,7 @@ private struct MessageBubble: View {
             .contentShape(.rect)
             .onTapGesture { Task { await service.retrySend(message) } }
             .accessibilityAddTraits(.isButton)
-            .accessibilityLabel("Not delivered. Retry")
+            .accessibilityLabel("Not delivered. Try again")
         case .received:
             EmptyView()
         }

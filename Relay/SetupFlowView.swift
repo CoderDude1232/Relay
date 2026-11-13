@@ -86,12 +86,13 @@ struct SetupFlowView: View {
             Button("Skip") { onFinish() }
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.7))
-                .frame(width: 40, height: 40)
+                .frame(minWidth: 40, minHeight: 40)
                 .opacity(page == .done ? 0 : 1)
                 .disabled(page == .done)
         }
         .padding(.horizontal, 24)
         .padding(.top, 12)
+        .frame(maxWidth: 480)
     }
 
     private func go(_ step: Int) {
@@ -109,7 +110,7 @@ private struct SetupLookPage: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            OnboardingHeader(title: "Make It Yours", subtitle: "Pick a theme for your chats. You can change it any time in Settings → Appearance, or give a chat its own.")
+            OnboardingHeader(title: "Make It Yours", subtitle: "Pick the colours for your chats. You can change them any time in Settings.")
 
             VStack(alignment: .leading, spacing: 10) {
                 label("Chat Theme")
@@ -150,7 +151,7 @@ private struct SetupNotificationsPage: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            OnboardingHeader(title: "Notifications", subtitle: "Know when someone messages or calls you, and choose what the lock screen shows.")
+            OnboardingHeader(title: "Notifications", subtitle: "So you know when someone messages or calls you.")
 
             if permission.isOff {
                 OnboardingPrimaryButton(title: permission.status == .denied ? "Turn On in Settings" : "Turn On Notifications") {
@@ -166,7 +167,7 @@ private struct SetupNotificationsPage: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                label("Show in Notifications")
+                label("What Notifications Show")
                 VStack(spacing: 0) {
                     choice("Name and Message", detail: "Who it's from and what they said.", value: .full)
                     divider
@@ -219,7 +220,7 @@ private struct SetupPrivacyPage: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            OnboardingHeader(title: "Privacy", subtitle: "Messages are always end-to-end encrypted. These choose what else others can see.")
+            OnboardingHeader(title: "Privacy", subtitle: "Only you and the people you talk to can read your messages. Choose what else they see.")
 
             VStack(spacing: 0) {
                 toggle("Read Receipts", detail: "Let people see when you've read their messages.", icon: "checkmark.circle", isOn: Binding(
@@ -228,7 +229,7 @@ private struct SetupPrivacyPage: View {
                 divider
                 toggle("Typing Indicators", detail: "Let people see when you're typing.", icon: "ellipsis.bubble", isOn: $sendTyping)
                 divider
-                toggle("Link Previews", detail: "Your iPhone fetches a preview of links you send from the website, which sees your IP address. Relay never sees the link.", icon: "link", isOn: $linkPreviews)
+                toggle("Link Previews", detail: "Show a preview of links you send. It comes straight from the website, which can see your IP address.", icon: "link", isOn: $linkPreviews)
             }
             .onboardingCard()
 
@@ -236,7 +237,7 @@ private struct SetupPrivacyPage: View {
                 .onboardingCard()
 
             VStack(alignment: .leading, spacing: 10) {
-                label("Hide in the App Switcher")
+                label("Hide When Switching Apps")
                 VStack(spacing: 0) {
                     ForEach(Array(AppSwitcherPrivacy.Mode.allCases.enumerated()), id: \.element) { index, mode in
                         if index > 0 { divider }
@@ -295,11 +296,11 @@ private struct SetupPeoplePage: View {
             contactsCard
 
             VStack(spacing: 0) {
-                action("Import WhatsApp Chats", detail: "Keep your history: export a chat from WhatsApp to Relay.", icon: "square.and.arrow.down.on.square") {
+                action("Import WhatsApp Chats", detail: "Bring your old chats over from WhatsApp.", icon: "square.and.arrow.down.on.square") {
                     showingImport = true
                 }
                 divider
-                action("Invite Friends", detail: "Send your link to people you talk to.", icon: "person.badge.plus") {
+                action("Invite Friends", detail: "Send a link so friends can join you on Relay.", icon: "person.badge.plus") {
                     showingInvite = true
                 }
             }
@@ -312,7 +313,7 @@ private struct SetupPeoplePage: View {
             }
             Button("Not Now", role: .cancel) {}
         } message: {
-            Text(ContactDiscoveryConsent.explanation)
+            Text(ContactDiscoveryConsent.summary)
         }
         .sheet(isPresented: $showingImport) {
             WhatsAppImportView(service: service)
@@ -337,7 +338,7 @@ private struct SetupPeoplePage: View {
     @ViewBuilder private var contactsCard: some View {
         switch contacts {
         case .idle:
-            action("Find Contacts on Relay", detail: "Check which of your contacts use Relay. They're blinded on your iPhone first.", icon: "person.crop.circle.badge.checkmark") {
+            action("Find Contacts on Relay", detail: "See which of your contacts already use Relay.", icon: "person.crop.circle.badge.checkmark") {
                 ContactDiscoveryConsent.isGranted ? check() : (showingConsent = true)
             }
             .onboardingCard()
@@ -350,7 +351,7 @@ private struct SetupPeoplePage: View {
             .padding(16)
             .onboardingCard()
         case .denied:
-            action("Allow Contacts in Settings", detail: "Relay needs access to your contacts to see who's here.", icon: "gear") {
+            action("Allow Contacts in Settings", detail: "Turn on Contacts for Relay to see who's here.", icon: "gear") {
                 if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
             }
             .onboardingCard()
@@ -458,7 +459,7 @@ private struct SetupDonePage: View {
                 .symbolRenderingMode(.hierarchical)
                 .padding(.top, 48)
                 .accessibilityHidden(true)
-            OnboardingHeader(title: "You're All Set", subtitle: "Everything you send is end-to-end encrypted. Change any of this later in Settings.")
+            OnboardingHeader(title: "You're All Set", subtitle: "Only you and the people you talk to can read your messages. You can change any of this in Settings.")
             OnboardingPrimaryButton(title: "Start Using Relay", action: onFinish)
         }
     }

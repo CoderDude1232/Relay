@@ -101,7 +101,7 @@ struct ProxySettingsView: View {
             }
             Section {
                 Label {
-                    Text("**Only use a proxy run by someone you trust.** Whoever runs it can see your IP address and when you use Relay, and could keep a record of it. They can't read your messages or see who you talk to.")
+                    Text("**Only use a proxy run by someone you trust.** They can see your IP address and when you use Relay, and could keep a record. They can't read your messages or see who you talk to.")
                         .font(.footnote)
                 } icon: {
                     Image(systemName: "exclamationmark.shield.fill").foregroundStyle(.orange)
@@ -137,10 +137,10 @@ struct ProxySettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private static let aboutText = "A Cloudflare Workers address (….workers.dev), like Relay's own backup addresses, works here too. While a proxy is on, Relay never connects directly, keeps checking the proxy in the background, and doesn't fetch link previews. Calls still connect directly."
+    private static let aboutText = "While a proxy is on, Relay connects only through it and doesn't load link previews. Calls don't go through the proxy. Cloudflare Workers addresses (….workers.dev) work too."
 
     private func backupText(_ host: String) -> String {
-        "This network seems to block Relay, so Relay is connecting through one of its own backup addresses on Cloudflare. It works like a proxy: Cloudflare sees your IP address, as it does for Relay's main address, and link previews are off until the main address works again. Your messages stay end-to-end encrypted."
+        "This network seems to block Relay, so Relay is connecting another way, through one of its own backup addresses. Your messages stay end-to-end encrypted. Link previews are off until the normal connection works again."
     }
 
     private func checkAgain() async {
@@ -211,7 +211,7 @@ struct ProxySettingsView: View {
                         Image(systemName: "exclamationmark.shield.fill")
                             .foregroundStyle(.orange)
                             .font(.system(size: 17))
-                        Text("**Only use a proxy run by someone you trust.** Whoever runs it can see your IP address and when you use Relay, and could keep a record of it. They can't read your messages or see who you talk to.")
+                        Text("**Only use a proxy run by someone you trust.** They can see your IP address and when you use Relay, and could keep a record. They can't read your messages or see who you talk to.")
                             .font(.footnote)
                             .foregroundStyle(.white.opacity(0.8))
                     }
