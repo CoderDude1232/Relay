@@ -53,52 +53,101 @@ struct PasskeySignupIntroView: View {
     let onBack: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                HStack {
-                    Button(action: onBack) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: onBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(.ultraThinMaterial, in: .circle)
+                }
+                .accessibilityLabel("Back")
+                Spacer()
+            }
+            .padding(.top, 16)
+
+            ScrollView {
+                VStack(spacing: 36) {
+                    VStack(spacing: 14) {
+                        Image(systemName: "person.badge.key.fill")
+                            .font(.system(size: 54))
+                            .symbolRenderingMode(.hierarchical)
                             .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.ultraThinMaterial, in: .circle)
+                            .accessibilityHidden(true)
+                        Text("Just a Username")
+                            .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                        Text("No email or phone number needed.")
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.6))
                     }
-                    .accessibilityLabel("Back")
-                    Spacer()
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 20)
+
+                    VStack(alignment: .leading, spacing: 26) {
+                        IntroPoint(symbol: "faceid", tint: .pink,
+                                   title: "Sign in with Face ID",
+                                   detail: "Works on this device and your other Apple devices. No password to remember.")
+                        IntroPoint(symbol: "eye.slash.fill", tint: .green,
+                                   title: "Nothing to identify you",
+                                   detail: "Relay never learns your email or phone number.")
+                        IntroPoint(symbol: "key.fill", tint: .orange,
+                                   title: "Keep your recovery key",
+                                   detail: "You'll get one next. It's the only way back in if you lose your devices.")
+                    }
+                    .padding(.horizontal, 8)
                 }
-                .padding(.top, 16)
+                .padding(.bottom, 24)
+            }
+            .scrollBounceBehavior(.basedOnSize)
 
-                VStack(spacing: 6) {
-                    Text("Just a username")
-                        .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                    Text("No email or phone number needed.")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-
-                NoEmailTradeoffs()
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(20)
-                    .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
-
+            VStack(spacing: 14) {
+                Text("Without your devices or your recovery key, no one can get the account back, not even us.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
                 Button(action: onContinue) {
-                    Text("I Understand, Continue")
+                    Text("Continue")
                         .font(.headline)
                         .foregroundStyle(Color(red: 0.06, green: 0.02, blue: 0.22))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
                         .background(.white, in: .rect(cornerRadius: 16, style: .continuous))
                 }
-
-                Text("Next you'll pick a username and confirm with Face ID or Touch ID. Your recovery key comes straight after.")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.5))
-                    .multilineTextAlignment(.center)
-                Spacer().frame(height: 30)
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
         }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 24)
+    }
+}
+
+/// A large symbol beside a bold line and a short explanation, as on Apple's
+/// welcome screens.
+private struct IntroPoint: View {
+    let symbol: String
+    let tint: Color
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 18) {
+            Image(systemName: symbol)
+                .font(.system(size: 30))
+                .foregroundStyle(tint)
+                .frame(width: 40)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.65))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
