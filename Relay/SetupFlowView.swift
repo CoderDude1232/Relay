@@ -308,7 +308,9 @@ private struct SetupNotificationsPage: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            OnboardingHeader(title: "Notifications", subtitle: "Choose what your Lock Screen shows when a message arrives.")
+            SettingsHero(systemName: "bell.badge.fill", color: .red, title: "Notifications",
+                         message: "Choose what your Lock Screen shows when a message arrives.")
+                .padding(.top, 12)
 
             HStack(spacing: 10) {
                 ForEach(NotificationPreviewSetting.allCases, id: \.self) { level in
@@ -412,10 +414,12 @@ private struct WelcomeRow<Accessory: View>: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
+            // A coloured tile, like the icons in Settings.
             Image(systemName: symbol)
-                .font(.system(size: 26))
-                .foregroundStyle(tint)
-                .frame(width: 36)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .background(tint.gradient, in: .rect(cornerRadius: 10, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.headline).foregroundStyle(.white)
