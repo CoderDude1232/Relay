@@ -355,62 +355,147 @@ private struct SetupPrivacyPage: View {
     @AppStorage(AppSwitcherPrivacy.modeKey) private var appSwitcherMode = AppSwitcherPrivacy.Mode.content.rawValue
     @AppStorage("relay.screenLockEnabled") private var appLock = false
     @State private var readReceipts = true
+    @Environment(ChatAppearance.self) private var environmentAppearance
+    private var app: ChatAppearance { ChatAppearance.app ?? environmentAppearance }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 18) {
             OnboardingHeader(title: "Privacy", subtitle: "Only you and the people you talk to can read your messages. Choose what else they see.")
 
-            VStack(spacing: 0) {
-                toggle("Read Receipts", detail: "Let people see when you've read their messages.", icon: "checkmark.circle", isOn: Binding(
-                    get: { readReceipts },
-                    set: { readReceipts = $0; service.sendReadReceipts = $0 }))
-                divider
-                toggle("Typing Indicators", detail: "Let people see when you're typing.", icon: "ellipsis.bubble", isOn: $sendTyping)
-                divider
-                toggle("Link Previews", detail: "Show a preview of links you send. It comes straight from the website, which can see your IP address.", icon: "link", isOn: $linkPreviews)
+            preview
+
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    PrivacyTile(title: "Read Receipts", symbol: "checkmark.message.fill", tint: app.bubbleTint,
+                                isOn: Binding(get: { readReceipts },
+                                              set: { readReceipts = $0; service.sendReadReceipts = $0 }))
+                    PrivacyTile(title: "Typing", symbol: "ellipsis.message.fill", tint: app.bubbleTint, isOn: $sendTyping)
+                }
+                HStack(spacing: 10) {
+                    PrivacyTile(title: "Link Previews", symbol: "link", tint: app.bubbleTint, isOn: $linkPreviews)
+                    PrivacyTile(title: "App Lock", symbol: "faceid", tint: app.bubbleTint, isOn: $appLock)
+                }
             }
-            .onboardingCard()
 
-            toggle("App Lock", detail: "Ask for Face ID or your passcode to open Relay.", icon: "faceid", isOn: $appLock)
-                .onboardingCard()
-
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 label("Hide When Switching Apps")
-                VStack(spacing: 0) {
-                    ForEach(Array(AppSwitcherPrivacy.Mode.allCases.enumerated()), id: \.element) { index, mode in
-                        if index > 0 { divider }
-                        Button { appSwitcherMode = mode.rawValue } label: {
-                            HStack {
-                                Text(mode.title).foregroundStyle(.white)
-                                Spacer()
-                                if appSwitcherMode == mode.rawValue {
-                                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.white)
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 14)
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(appSwitcherMode == mode.rawValue ? .isSelected : [])
+                Picker("Hide When Switching Apps", selection: $appSwitcherMode) {
+                    ForEach(AppSwitcherPrivacy.Mode.allCases, id: \.self) { mode in
+                        Text(mode == .content ? "Chats" : mode.title).tag(mode.rawValue)
                     }
                 }
-                .onboardingCard()
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
         }
         .onAppear { readReceipts = service.sendReadReceipts }
     }
 
-    private func toggle(_ title: String, detail: String, icon: String, isOn: Binding<Bool>) -> some View {
-        OnboardingRow(icon: icon) {
-            Toggle(isOn: isOn) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).foregroundStyle(.white)
-                    Text(detail).font(.caption).foregroundStyle(.white.opacity(0.55))
+    /// What the people you talk to see, changing as the tiles do.
+    private var preview: some View {
+        ZStack {
+            if let gradient = app.wallpaper.gradient { gradient } else { Color(white: 0.08) }
+            VStack(alignment: .trailing, spacing: 6) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if linkPreviews {
+                        HStack(spacing: 8) {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(.white.opacity(0.25))
+                                .frame(width: 34, height: 34)
+                                .overlay { Image(systemName: "photo").font(.caption).foregroundStyle(.white.opacity(0.8)) }
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Weekend plans").font(.caption.weight(.semibold))
+                                Text("example.com").font(.caption2).opacity(0.7)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(8)
+                        .background(.black.opacity(0.15))
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                    Text("Have a look at this 👀")
+                        .font(.subheadline)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                 }
+                .foregroundStyle(.white)
+                .frame(width: 200, alignment: .leading)
+                .background(app.bubbleTint, in: .rect(cornerRadius: 17, style: .continuous))
+                .clipShape(.rect(cornerRadius: 17, style: .continuous))
+
+                Text(readReceipts ? "Read 9:41" : "Delivered")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .contentTransition(.opacity)
+
+                HStack {
+                    if sendTyping {
+                        HStack(spacing: 4) {
+                            ForEach(0..<3) { _ in Circle().fill(.white.opacity(0.7)).frame(width: 6, height: 6) }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 11)
+                        .background(Color(white: 0.2), in: .capsule)
+                        .transition(.scale(scale: 0.6, anchor: .leading).combined(with: .opacity))
+                    }
+                    Spacer()
+                }
+                .frame(height: 30)
             }
-            .tint(Color(red: 0.965, green: 0.231, blue: 1.0))
+            .padding(16)
         }
+        .clipShape(.rect(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.white.opacity(0.12), lineWidth: 1)
+        }
+        .animation(.spring(duration: 0.35), value: linkPreviews)
+        .animation(.spring(duration: 0.35), value: sendTyping)
+        .animation(.spring(duration: 0.35), value: readReceipts)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A square on/off tile: tap anywhere on it.
+private struct PrivacyTile: View {
+    let title: String
+    let symbol: String
+    let tint: Color
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: symbol)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(isOn ? .white : .white.opacity(0.6))
+                        .frame(width: 34, height: 34)
+                        .background(isOn ? tint : .white.opacity(0.1), in: .circle)
+                    Spacer()
+                    Text(isOn ? "On" : "Off")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isOn ? .white : .white.opacity(0.5))
+                }
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(isOn ? tint.opacity(0.8) : .white.opacity(0.08), lineWidth: isOn ? 1.5 : 1)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(.isToggle)
+        .animation(.spring(duration: 0.25), value: isOn)
     }
 }
 
@@ -427,22 +512,23 @@ private struct SetupPeoplePage: View {
     @State private var showingImport = false
     @State private var showingInvite = false
 
+    @Environment(ChatAppearance.self) private var environmentAppearance
+    private var tint: Color { (ChatAppearance.app ?? environmentAppearance).bubbleTint }
+
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 18) {
+            hero
             OnboardingHeader(title: "Find Your People", subtitle: subtitle)
 
             contactsCard
 
-            VStack(spacing: 0) {
-                action("Import WhatsApp Chats", detail: "Bring your old chats over from WhatsApp.", icon: "square.and.arrow.down.on.square") {
-                    showingImport = true
-                }
-                divider
-                action("Invite Friends", detail: "Send a link so friends can join you on Relay.", icon: "person.badge.plus") {
-                    showingInvite = true
-                }
+            // Same height side by side, whichever title wraps.
+            HStack(spacing: 10) {
+                tile("Import from WhatsApp", symbol: "square.and.arrow.down.on.square.fill",
+                     colour: Color(red: 0.15, green: 0.75, blue: 0.4)) { showingImport = true }
+                tile("Invite Friends", symbol: "paperplane.fill", colour: tint) { showingInvite = true }
             }
-            .onboardingCard()
+            .fixedSize(horizontal: false, vertical: true)
         }
         .alert("Find Contacts on Relay?", isPresented: $showingConsent) {
             Button("Find Contacts") {
@@ -561,14 +647,62 @@ private struct SetupPeoplePage: View {
         }
     }
 
+    /// A few faces around a chat bubble: the people this page is about.
+    private var hero: some View {
+        ZStack {
+            ForEach(Array(Self.faces.enumerated()), id: \.offset) { i, face in
+                Circle()
+                    .fill(face.colour.gradient)
+                    .frame(width: face.size, height: face.size)
+                    .overlay { Text(face.letter).font(.system(size: face.size * 0.42, weight: .semibold, design: .rounded)).foregroundStyle(.white) }
+                    .overlay { Circle().strokeBorder(.black.opacity(0.25), lineWidth: 2) }
+                    .offset(x: face.x, y: face.y)
+            }
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 64, height: 64)
+                .background(tint, in: .circle)
+                .shadow(color: tint.opacity(0.5), radius: 16)
+        }
+        .frame(height: 110)
+        .accessibilityHidden(true)
+    }
+
+    private static let faces: [(letter: String, colour: Color, size: CGFloat, x: CGFloat, y: CGFloat)] = [
+        ("A", .orange, 40, -78, -14), ("M", .blue, 34, 74, -22), ("J", .teal, 30, -46, 36), ("S", .purple, 36, 58, 30),
+    ]
+
+    private func tile(_ title: String, symbol: String, colour: Color, perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            VStack(alignment: .leading, spacing: 14) {
+                Image(systemName: symbol)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(colour, in: .rect(cornerRadius: 11, style: .continuous))
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func action(_ title: String, detail: String, icon: String, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
             HStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
-                    .background(.white.opacity(0.12), in: .circle)
+                    .frame(width: 38, height: 38)
+                    .background(tint, in: .rect(cornerRadius: 11, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.body.weight(.semibold)).foregroundStyle(.white)
                     Text(detail).font(.caption).foregroundStyle(.white.opacity(0.55))
@@ -588,17 +722,59 @@ private struct SetupPeoplePage: View {
 
 private struct SetupDonePage: View {
     let onFinish: () -> Void
+    @Environment(ChatAppearance.self) private var environmentAppearance
+    private var tint: Color { (ChatAppearance.app ?? environmentAppearance).bubbleTint }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
 
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(.white)
-                .symbolRenderingMode(.hierarchical)
-                .padding(.top, 48)
-                .accessibilityHidden(true)
-            OnboardingHeader(title: "You're All Set", subtitle: "Only you and the people you talk to can read your messages. You can change any of this in Settings.")
+        VStack(spacing: 22) {
+            ZStack {
+                Circle().fill(tint.opacity(0.18)).frame(width: 150, height: 150)
+                    .scaleEffect(appeared ? 1 : 0.6)
+                Circle().fill(tint.opacity(0.3)).frame(width: 112, height: 112)
+                    .scaleEffect(appeared ? 1 : 0.6)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 44, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 80, height: 80)
+                    .background(tint, in: .circle)
+                    .shadow(color: tint.opacity(0.6), radius: 20)
+                    .scaleEffect(appeared ? 1 : 0.4)
+            }
+            .padding(.top, 36)
+            .accessibilityHidden(true)
+
+            OnboardingHeader(title: "You're All Set", subtitle: "Say hi to someone. Only the two of you will ever read it.")
+
+            VStack(alignment: .leading, spacing: 14) {
+                point("lock.fill", "Private by default", "Messages and calls are end-to-end encrypted.")
+                point("slider.horizontal.3", "Change anything later", "Everything you just picked is in Settings.")
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onboardingCard()
+
             OnboardingPrimaryButton(title: "Start Using Relay", action: onFinish)
+                .padding(.top, 6)
+        }
+        .onAppear {
+            if reduceMotion { appeared = true } else {
+                withAnimation(.spring(duration: 0.6, bounce: 0.45)) { appeared = true }
+            }
+        }
+    }
+
+    private func point(_ symbol: String, _ title: String, _ detail: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: symbol)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                Text(detail).font(.caption).foregroundStyle(.white.opacity(0.6))
+            }
         }
     }
 }

@@ -1073,14 +1073,20 @@ struct MiniLockScreen<Content: View>: View {
     var height: CGFloat = 112
     @ViewBuilder let content: Content
 
+    @Environment(ChatAppearance.self) private var environmentAppearance
+    /// The chat theme's colour, so the little Lock Screens match the theme
+    /// around them.
+    private var tint: Color { (ChatAppearance.app ?? environmentAppearance).bubbleTint }
+    private var night: Color { Color(red: 0.05, green: 0.05, blue: 0.12) }
+
     var body: some View {
         ZStack(alignment: .top) {
             LinearGradient(
-                colors: [Color(red: 0.20, green: 0.27, blue: 0.52), Color(red: 0.47, green: 0.33, blue: 0.62),
-                         Color(red: 0.86, green: 0.55, blue: 0.62)],
+                colors: [tint.mix(with: night, by: 0.7), tint.mix(with: night, by: 0.35),
+                         tint.mix(with: .white, by: 0.12)],
                 startPoint: .top, endPoint: .bottom)
             VStack(spacing: 0) {
-                Text("Saturday 8 November")
+                Text(Date.now.formatted(.dateTime.weekday(.wide).day().month(.wide)))
                     .font(.system(size: 6.5, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.85))
                     .padding(.top, 9)
@@ -1096,9 +1102,10 @@ struct MiniLockScreen<Content: View>: View {
         .clipShape(.rect(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.08),
+                .strokeBorder(isSelected ? Color.white : Color.white.opacity(0.1),
                               lineWidth: isSelected ? 3 : 1)
         }
+        .shadow(color: isSelected ? tint.opacity(0.5) : .clear, radius: 10)
         .environment(\.colorScheme, .dark)
     }
 }
