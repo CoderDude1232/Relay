@@ -69,20 +69,9 @@ struct PasskeySignupIntroView: View {
 
             ScrollView {
                 VStack(spacing: 36) {
-                    VStack(spacing: 14) {
-                        Image(systemName: "person.badge.key.fill")
-                            .font(.system(size: 54))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.white)
-                            .accessibilityHidden(true)
-                        Text("Just a Username")
-                            .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                        Text("No email or phone number needed.")
-                            .font(.body)
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 20)
+                    SettingsHero(systemName: "person.badge.key.fill", color: .teal, title: "Just a Username",
+                                 message: "No email or phone number needed.")
+                        .padding(.top, 20)
 
                     VStack(alignment: .leading, spacing: 26) {
                         IntroPoint(symbol: "faceid", tint: .pink,

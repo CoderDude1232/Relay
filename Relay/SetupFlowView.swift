@@ -360,8 +360,9 @@ private struct SetupPrivacyPage: View {
 
     var body: some View {
         VStack(spacing: 32) {
-            WelcomeHeader(symbol: "hand.raised.fill", title: "Privacy",
-                          subtitle: "Only you and the people you talk to can read your messages. Choose what else they see.")
+            SettingsHero(systemName: "hand.raised.fill", color: .indigo, title: "Privacy",
+                         message: "Only you and the people you talk to can read your messages. Choose what else they see.")
+                .padding(.top, 12)
 
             VStack(alignment: .leading, spacing: 24) {
                 WelcomeRow(symbol: "checkmark.message.fill", tint: .blue, title: "Read Receipts",
@@ -397,31 +398,6 @@ private struct SetupPrivacyPage: View {
             .labelsHidden()
         }
         .onAppear { readReceipts = service.sendReadReceipts }
-    }
-}
-
-/// A large symbol, title and short line, as on Apple's welcome screens.
-private struct WelcomeHeader: View {
-    let symbol: String
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: symbol)
-                .font(.system(size: 54))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.white)
-                .accessibilityHidden(true)
-            Text(title)
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
-                .foregroundStyle(.white)
-            Text(subtitle)
-                .font(.body)
-                .foregroundStyle(.white.opacity(0.6))
-        }
-        .multilineTextAlignment(.center)
-        .padding(.top, 12)
     }
 }
 
@@ -470,7 +446,8 @@ private struct SetupPeoplePage: View {
 
     var body: some View {
         VStack(spacing: 32) {
-            WelcomeHeader(symbol: "person.2.fill", title: "Find Your People", subtitle: subtitle)
+            SettingsHero(systemName: "person.2.fill", color: .teal, title: "Find Your People", message: subtitle)
+                .padding(.top, 12)
 
             VStack(alignment: .leading, spacing: 24) {
                 contactsRow
