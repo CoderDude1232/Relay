@@ -903,9 +903,12 @@ struct ConversationListView: View {
                 notificationsOffRow
             }
 
+            // Hidden over an empty list, whose own empty state already offers Start a Chat.
             if !inviteCardDismissed, !service.isDemoAccount, service.hasLoadedConversations,
-               peopleChatCount < 3, activeLabel == nil, !isEditing {
-                InviteFriendsCard {
+               peopleChatCount < 3, activeLabel == nil, !isEditing, !visibleConversations.isEmpty {
+                StartChattingCard {
+                    showingNewChatSheet = true
+                } onInvite: {
                     showingInviteSheet = true
                 } onDismiss: {
                     withAnimation(.snappy) { inviteCardDismissed = true }
@@ -1045,18 +1048,6 @@ struct ConversationListView: View {
             ForEach(others) { conversation in
                 conversationRow(conversation)
             } // end ForEach
-
-            // Note to Self and Relay's notices keep the list from ever being
-            // empty, so a new user would otherwise get no hint where to start.
-            if activeLabel == nil, !isEditing, service.hasLoadedConversations,
-               !visibleConversations.isEmpty, peopleChatCount == 0 {
-                RelayEmptyState(systemImage: "bubble.left.and.bubble.right", title: "Start Your First Chat",
-                                message: firstChatMessage,
-                                actionTitle: "Start a Chat") { showingNewChatSheet = true }
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                    .selectionDisabled()
-            }
 
             if !isEditing && !archivedConversations.isEmpty {
                 NavigationLink(destination: ArchivedChatsView(service: service, selectedConversationId: $selectedConversationId)) {
@@ -2452,5 +2443,57 @@ private struct ChatPeekView: View {
         if first.isVideo { return "Video" }
         if first.isImage { return "Photo" }
         return first.filename ?? "File"
+    }
+}
+
+/// The chat list's first-run prompt: start a chat or invite friends, in the invite card's style.
+private struct StartChattingCard: View {
+    let onStartChat: () -> Void
+    let onInvite: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 34)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Start chatting on Relay").font(.subheadline.weight(.semibold))
+                Text("Find a friend by username or QR code, or send your link to the people you talk to most.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                // Side by side when they fit; stacked at large text sizes.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { actions }
+                    VStack(alignment: .leading, spacing: 8) { actions }
+                }
+                .font(.subheadline.weight(.semibold))
+                .buttonBorderShape(.capsule)
+                .padding(.top, 4)
+            }
+            Spacer(minLength: 0)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Color(.tertiarySystemFill), in: .circle)
+                    .contentShape(.circle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(14)
+        .background(Color.accentColor.opacity(0.10), in: .rect(cornerRadius: 16, style: .continuous))
+    }
+
+    @ViewBuilder private var actions: some View {
+        Button("Start a Chat", action: onStartChat)
+            .buttonStyle(.borderedProminent)
+        Button("Invite Friends", action: onInvite)
+            .buttonStyle(.bordered)
     }
 }

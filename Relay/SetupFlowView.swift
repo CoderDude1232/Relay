@@ -15,19 +15,41 @@ struct SetupFlowView: View {
     let service: MessagingService
     let onFinish: () -> Void
 
-    private enum Page: Int, CaseIterable { case look, notifications, privacy, people, done }
+    @Environment(AppModel.self) private var model
+    @Environment(ChatAppearance.self) private var environmentAppearance
+    private var app: ChatAppearance { ChatAppearance.app ?? environmentAppearance }
 
-    @State private var page = Page.look
+    private enum Page: Hashable { case recovery, look, notifications, privacy, people, done }
+
+    /// Decided once: a new account with a recovery key starts on it.
+    @State private var showsRecovery: Bool?
+    @State private var index = 0
     @State private var forward = true
+    @State private var keySaved = false
+
+    private var pages: [Page] {
+        let withKey = showsRecovery ?? (model.recoveryKeyPending || model.newRecoveryKey != nil)
+        return (withKey ? [.recovery] : []) + [.look, .notifications, .privacy, .people, .done]
+    }
+    private var page: Page { pages[min(index, pages.count - 1)] }
+
+    /// Continue waits on the key page until the key has been saved, or
+    /// couldn't be made (Settings can make one later).
+    private var canContinue: Bool {
+        guard page == .recovery else { return true }
+        if model.recoveryKeyPending { return false }
+        return model.newRecoveryKey == nil || keySaved
+    }
 
     var body: some View {
         ZStack {
-            BackgroundGradient()
+            background
             VStack(spacing: 0) {
                 topBar
                 ScrollView {
                     Group {
                         switch page {
+                        case .recovery: SetupRecoveryKeyPage(saved: $keySaved)
                         case .look: SetupLookPage()
                         case .notifications: SetupNotificationsPage()
                         case .privacy: SetupPrivacyPage(service: service)
@@ -46,21 +68,42 @@ struct SetupFlowView: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 if page != .done {
-                    OnboardingPrimaryButton(title: "Continue") { go(+1) }
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 16)
-                        .frame(maxWidth: 480)
+                    OnboardingPrimaryButton(title: "Continue", enabled: canContinue) {
+                        if page == .recovery { model.newRecoveryKey = nil }
+                        go(+1)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 16)
+                    .frame(maxWidth: 480)
                 }
             }
         }
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
-        .animation(.spring(duration: 0.45), value: page)
+        .animation(.spring(duration: 0.45), value: index)
+        .onAppear {
+            if showsRecovery == nil { showsRecovery = model.recoveryKeyPending || model.newRecoveryKey != nil }
+        }
+    }
+
+    /// The chosen chat wallpaper behind every page once there is one, dimmed
+    /// so the white text stays readable; Relay's glow until then.
+    @ViewBuilder private var background: some View {
+        ZStack {
+            BackgroundGradient()
+            if let gradient = app.wallpaper.gradient {
+                gradient
+                    .overlay(Color.black.opacity(0.25))
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.4), value: app.wallpaper)
     }
 
     private var topBar: some View {
         HStack {
-            if page != .look {
+            if index > 0 {
                 Button { go(-1) } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 17, weight: .semibold))
@@ -74,21 +117,22 @@ struct SetupFlowView: View {
             }
             Spacer()
             HStack(spacing: 6) {
-                ForEach(Page.allCases, id: \.self) { p in
+                ForEach(Array(pages.enumerated()), id: \.offset) { i, _ in
                     Capsule()
-                        .fill(.white.opacity(p == page ? 0.9 : 0.25))
-                        .frame(width: p == page ? 18 : 6, height: 6)
+                        .fill(.white.opacity(i == index ? 0.9 : 0.25))
+                        .frame(width: i == index ? 18 : 6, height: 6)
                 }
             }
             .accessibilityElement()
-            .accessibilityLabel("Step \(page.rawValue + 1) of \(Page.allCases.count)")
+            .accessibilityLabel("Step \(index + 1) of \(pages.count)")
             Spacer()
+            // The key page can't be skipped: it's shown only once.
             Button("Skip") { onFinish() }
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.7))
                 .frame(minWidth: 40, minHeight: 40)
-                .opacity(page == .done ? 0 : 1)
-                .disabled(page == .done)
+                .opacity(page == .done || page == .recovery ? 0 : 1)
+                .disabled(page == .done || page == .recovery)
         }
         .padding(.horizontal, 24)
         .padding(.top, 12)
@@ -96,9 +140,91 @@ struct SetupFlowView: View {
     }
 
     private func go(_ step: Int) {
-        guard let next = Page(rawValue: page.rawValue + step) else { return }
+        let next = index + step
+        guard pages.indices.contains(next) else { return }
+        // No way back to the key once it's been put away.
+        if step < 0, pages[next] == .recovery { return }
         forward = step > 0
-        page = next
+        index = next
+    }
+}
+
+// MARK: - Recovery key
+
+private struct SetupRecoveryKeyPage: View {
+    @Binding var saved: Bool
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 22) {
+            VStack(spacing: 14) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 76, height: 76)
+                    .background(
+                        LinearGradient(colors: [.orange, Color(red: 0.95, green: 0.35, blue: 0.2)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: .rect(cornerRadius: 20, style: .continuous))
+                    .shadow(color: .orange.opacity(0.35), radius: 18, y: 6)
+                    .accessibilityHidden(true)
+                Text("Your Recovery Key")
+                    .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                    .foregroundStyle(.white)
+                Text("If you ever lose your devices, this gets you back in. Keep it somewhere safe.")
+                    .font(.body)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.top, 8)
+
+            if let key = model.newRecoveryKey {
+                VStack(spacing: 14) {
+                    Text(RecoveryKeyCard.lines(key))
+                        .font(.title3.monospaced().weight(.semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 22)
+                        .background(.ultraThinMaterial, in: .rect(cornerRadius: 18, style: .continuous))
+                        .accessibilityLabel(RecoveryKey.format(key).map { String($0) }.joined(separator: " "))
+                    RecoveryKeyCopyButton(key: key)
+                }
+
+                Button { saved.toggle() } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: saved ? "checkmark.circle.fill" : "circle")
+                            .font(.title2)
+                            .foregroundStyle(saved ? .green : .white.opacity(0.5))
+                        Text("I've saved it somewhere safe")
+                            .font(.body.weight(.medium))
+                            .foregroundStyle(.white)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(16)
+                    .contentShape(.rect)
+                    .onboardingCard()
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(saved ? .isSelected : [])
+
+                Text("You can see it again in Settings → Account.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.45))
+            } else if model.recoveryKeyPending {
+                ProgressView()
+                    .tint(.white)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                Text("Couldn't make your recovery key just now. You can make one in Settings → Account.")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                    .padding(16)
+                    .onboardingCard()
+            }
+        }
     }
 }
 
@@ -109,26 +235,57 @@ private struct SetupLookPage: View {
     private var app: ChatAppearance { ChatAppearance.app ?? environmentAppearance }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 18) {
             OnboardingHeader(title: "Make It Yours", subtitle: "Pick the colours for your chats. You can change them any time in Settings.")
 
-            VStack(alignment: .leading, spacing: 10) {
-                label("Chat Theme")
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ThemeCard(theme: Self.relayTheme, isSelected: isSelected(Self.relayTheme)) {
-                            apply(Self.relayTheme)
-                        }
-                        ForEach(ChatAppearance.themes) { theme in
-                            ThemeCard(theme: theme, isSelected: isSelected(theme)) { apply(theme) }
-                        }
+            preview
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ThemeCard(theme: Self.relayTheme, isSelected: isSelected(Self.relayTheme)) {
+                        apply(Self.relayTheme)
                     }
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 1)
+                    ForEach(ChatAppearance.themes) { theme in
+                        ThemeCard(theme: theme, isSelected: isSelected(theme)) { apply(theme) }
+                    }
                 }
-                .scrollClipDisabled()
+                .padding(.vertical, 4)
+                .padding(.horizontal, 1)
             }
+            .scrollClipDisabled()
         }
+    }
+
+    /// A few messages in the chosen theme, so a tap shows what it does.
+    private var preview: some View {
+        ZStack {
+            if let gradient = app.wallpaper.gradient { gradient } else { Color(white: 0.08) }
+            VStack(spacing: 8) {
+                bubble("Hey! Are you on Relay now? 👋", outgoing: false)
+                bubble("Just joined. Picking my colours 🎨", outgoing: true)
+                bubble("Love it", outgoing: false)
+            }
+            .padding(16)
+        }
+        .frame(height: 176)
+        .clipShape(.rect(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+        }
+        .animation(.spring(duration: 0.35), value: app.wallpaper)
+        .animation(.spring(duration: 0.35), value: app.bubbleTintHex)
+        .accessibilityHidden(true)
+    }
+
+    private func bubble(_ text: String, outgoing: Bool) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(outgoing ? app.bubbleTint : Color(white: 0.2), in: .rect(cornerRadius: 17, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: outgoing ? .trailing : .leading)
     }
 
     /// No wallpaper, Relay's own colour.
@@ -150,61 +307,42 @@ private struct SetupNotificationsPage: View {
     @State private var preview = NotificationPreviewSetting.current
 
     var body: some View {
-        VStack(spacing: 16) {
-            OnboardingHeader(title: "Notifications", subtitle: "So you know when someone messages or calls you.")
+        VStack(spacing: 22) {
+            OnboardingHeader(title: "Notifications", subtitle: "Choose what your Lock Screen shows when a message arrives.")
+
+            HStack(spacing: 10) {
+                ForEach(NotificationPreviewSetting.allCases, id: \.self) { level in
+                    LockScreenPreviewCard(level: level, isSelected: preview == level) {
+                        preview = level
+                        NotificationPreviewSetting.set(level)
+                    }
+                }
+            }
 
             if permission.isOff {
-                OnboardingPrimaryButton(title: permission.status == .denied ? "Turn On in Settings" : "Turn On Notifications") {
+                Button {
                     NotificationPermission.shared.turnOn(using: AppDelegate.current)
+                } label: {
+                    Label(permission.status == .denied ? "Turn On in Settings" : "Allow Notifications",
+                          systemImage: "bell.badge.fill")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(.white.opacity(0.14), in: .capsule)
+                        .overlay { Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1) }
                 }
+                .buttonStyle(.plain)
             } else {
                 Label("Notifications are on", systemImage: "checkmark.circle.fill")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.green)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .onboardingCard()
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                label("What Notifications Show")
-                VStack(spacing: 0) {
-                    choice("Name and Message", detail: "Who it's from and what they said.", value: .full)
-                    divider
-                    choice("Name Only", detail: "Who it's from, not what they said.", value: .nameOnly)
-                    divider
-                    choice("Nothing", detail: "Just \"New message\".", value: .none)
-                }
-                .onboardingCard()
             }
         }
         .onAppear { permission.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             permission.refresh()
         }
-    }
-
-    private func choice(_ title: String, detail: String, value: NotificationPreviewSetting) -> some View {
-        Button {
-            preview = value
-            NotificationPreviewSetting.set(value)
-        } label: {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.body).foregroundStyle(.white)
-                    Text(detail).font(.caption).foregroundStyle(.white.opacity(0.55))
-                }
-                Spacer(minLength: 8)
-                if preview == value {
-                    Image(systemName: "checkmark").font(.body.weight(.semibold)).foregroundStyle(.white)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(preview == value ? .isSelected : [])
     }
 }
 

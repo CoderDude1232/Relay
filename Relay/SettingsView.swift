@@ -1068,7 +1068,7 @@ private struct NotificationSettingsView: View {
 
 /// A small iPhone Lock Screen: wallpaper, date and time, and whatever
 /// notifications sit under them.
-private struct MiniLockScreen<Content: View>: View {
+struct MiniLockScreen<Content: View>: View {
     let isSelected: Bool
     var height: CGFloat = 112
     @ViewBuilder let content: Content
@@ -1106,7 +1106,7 @@ private struct MiniLockScreen<Content: View>: View {
 /// A notification banner as iOS draws it, shrunk to fit a card: frosted
 /// glass, the sender's picture with Relay's icon in the corner (or just the
 /// icon when the name is hidden), title, time and text.
-private struct MiniBanner: View {
+struct MiniBanner: View {
     let sender: String?
     let text: String
     var time = "now"
@@ -1173,7 +1173,7 @@ private struct EmptyBanner: View {
 }
 
 /// One Lock Screen Preview level, shown as the banner it produces.
-private struct LockScreenPreviewCard: View {
+struct LockScreenPreviewCard: View {
     let level: NotificationPreviewSetting
     let isSelected: Bool
     let onTap: () -> Void

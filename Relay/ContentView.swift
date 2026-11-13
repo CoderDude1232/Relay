@@ -97,8 +97,10 @@ struct ContentView: View {
                     .sheet(isPresented: $showingBackupUnlock, onDismiss: { backupUnlockDismissed = true }) {
                         BackupUnlockSheet(service: service)
                     }
+                    // A new account sees its key as the first setup page instead.
                     .sheet(isPresented: Binding(
-                        get: { model.newRecoveryKey != nil }, set: { if !$0 { model.newRecoveryKey = nil } }
+                        get: { model.newRecoveryKey != nil && !model.showSetup && !model.showPhoneOnboarding },
+                        set: { if !$0 { model.newRecoveryKey = nil } }
                     )) {
                         if let key = model.newRecoveryKey {
                             NewRecoveryKeySheet(key: key) { model.newRecoveryKey = nil }

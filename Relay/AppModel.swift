@@ -70,6 +70,9 @@ final class AppModel {
     var linkConfirmation: LinkConfirmation?
     /// A recovery key made at sign-up, shown once so it can be saved.
     var newRecoveryKey: String?
+    /// A new account's recovery key is being made; the setup pages show it
+    /// on their first page once it's ready.
+    var recoveryKeyPending = false
     @ObservationIgnored private let passkeys = PasskeyAuthenticator()
     /// relay://add/<username>
     var pendingDeepLinkUsername: String?
@@ -677,8 +680,9 @@ final class AppModel {
         service.start()
         phase = .ready(service)
         service.noteAccountCreated(username: signedUp.username)
+        // The username-only sign-up skips the phone page: no number is the point.
         showSetup = true
-        showPhoneOnboarding = true
+        recoveryKeyPending = true
         uploadPushTokenIfReady()
         publishDeviceAuthorizationKeyIfReady()
         publishAccessKeyIfReady()
@@ -894,10 +898,12 @@ final class AppModel {
     /// Every new account gets a recovery key, shown once: the way back in if
     /// the phone, email and passkeys are all gone.
     private func offerRecoveryKey(_ service: MessagingService) {
+        recoveryKeyPending = true
         Task { await showNewRecoveryKey(service) }
     }
 
     private func showNewRecoveryKey(_ service: MessagingService) async {
+        defer { recoveryKeyPending = false }
         if let key = try? await service.createRecoveryKey() { newRecoveryKey = key }
     }
 
