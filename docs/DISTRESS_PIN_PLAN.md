@@ -2,7 +2,9 @@
 
 Status: agreed with Ethan 2026-11-14. **Stage 1 (server) done and deployed 2026-11-14**
 (`internal/pinguard`, `store/pin_guard.go`, `api/pin_guard.go`, README "PIN guard";
-all tests passed on a throwaway DB on the API box). Next: Stage 2 (client crypto). Build in stages and check in
+all tests passed on a throwaway DB on the API box). **Stage 2 (client crypto) written
+2026-11-14**: `SecureStorage/Sources/SecureStorage/PinLock.swift` + tests, `RelayKit`
+PIN guard calls. Waiting for Ethan's review before Stage 3. Build in stages and check in
 after each one; Stage 1 (server) and Stage 2 (crypto) need his review before
 anything is wired into the app. The server deploy happens with him present.
 
@@ -41,8 +43,16 @@ behind the existing Panic Mode PIN stays as it is.
      The relay never sees the PIN. Reuse the existing `server/internal/oprf` /
      `voprf` code style and domain-separated tags (new tags, e.g.
      "Relay-PINGuard-v1-…").
-- KEK = HKDF(OPRF output ‖ device secret). Store only the wrapped DB key; on
-  lock, delete the unwrapped/plain key items and drop it from memory.
+- The PIN is stretched with PBKDF2-HMAC-SHA256 (600k rounds, 16-byte salt)
+  before it's blinded. Not libsodium Argon2id: it crashed inside
+  `argon2_initialize` (bad write to its own hash state) depending on the
+  calling thread's stack, in the SecureStorage tests.
+- KEK = HKDF(OPRF output ‖ device secret, salt, "Relay-PINGuard-v1-kek");
+  verifier = HKDF(same, "Relay-PINGuard-v1-verify"). The master key is sealed
+  with AES-256-GCM and kept as `pin-lock.sealed-db-key` (version ‖ salt ‖ box).
+  On lock the app deletes the master key items; the right PIN restores them,
+  so `databaseKey()` needs no change. The device secret is SE-wrapped,
+  `WhenUnlockedThisDeviceOnly`.
 - The relay keeps an **attempt counter per device, limit 10**. It increments
   before answering an evaluate; a correct PIN resets it via a verifier tag the
   client derived at enrolment from the OPRF output **and the device-only

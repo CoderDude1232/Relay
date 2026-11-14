@@ -17,6 +17,8 @@ let package = Package(
         .package(name: "CryptoCore", path: "../CryptoCore"),
         .package(name: "LibSignalClient", path: "../third_party/libsignal/swift"),
         .package(url: "https://github.com/skiptools/swift-sqlcipher", from: "1.11.0"),
+        // The PIN lock's OPRF (ristretto255) and Argon2id; the app already uses it.
+        .package(url: "https://github.com/jedisct1/swift-sodium", from: "0.11.0"),
     ],
     targets: [
         .target(
@@ -25,11 +27,12 @@ let package = Package(
                 .product(name: "CryptoCore", package: "CryptoCore"),
                 .product(name: "LibSignalClient", package: "LibSignalClient"),
                 .product(name: "SQLCipher", package: "swift-sqlcipher"),
+                .product(name: "Clibsodium", package: "swift-sodium"),
             ]
         ),
         .testTarget(
             name: "SecureStorageTests",
-            dependencies: ["SecureStorage"],
+            dependencies: ["SecureStorage", .product(name: "Clibsodium", package: "swift-sodium")],
             linkerSettings: [
                 .unsafeFlags(["-L\(packageDir)/../third_party/libsignal-ffi/ios-simulator"])
             ]

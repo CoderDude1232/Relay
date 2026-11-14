@@ -2041,3 +2041,70 @@ enum UploadProgress {
         }
     }
 }
+
+// MARK: - PIN guard (Relay PIN lock)
+
+/// The relay's half of the Relay PIN lock (server README "PIN guard"). Every
+/// call acts on this device's own key. Blinded and evaluated elements are
+/// 32-byte ristretto255 points; the verifier is 32 bytes.
+public enum PinGuardResult: Sendable, Equatable {
+    case evaluated(Data, attemptsLeft: Int)
+    /// No key: never set up, turned off, or replaced.
+    case noKey
+    /// Too many wrong PINs: the relay has just deleted the key for good.
+    case exhausted
+}
+
+extension RelayAPIClient {
+    /// Starts enrolment with a fresh key (replacing any earlier one). Repeating
+    /// it before `setPinGuardVerifier` answers with the same pending key.
+    public func enrolPinGuard(blinded: Data) async throws -> Data {
+        struct Response: Decodable { let evaluated: String }
+        let r: Response = try await request("POST", "v1/devices/me/pin-guard",
+                                            body: ["blinded": blinded.base64EncodedString()])
+        guard let evaluated = Data(base64Encoded: r.evaluated), evaluated.count == 32 else {
+            throw RelayAPIError.malformedResponse
+        }
+        return evaluated
+    }
+
+    /// Finishes enrolment. `409` (already finished) surfaces as `.http`.
+    public func setPinGuardVerifier(_ verifier: Data) async throws {
+        try await requestExpectingNoContent("PUT", "v1/devices/me/pin-guard/verifier",
+                                            body: ["verifier": verifier.base64EncodedString()])
+    }
+
+    /// One PIN attempt; the relay counts it before answering.
+    public func evaluatePinGuard(blinded: Data) async throws -> PinGuardResult {
+        struct Response: Decodable { let evaluated: String; let attemptsLeft: Int }
+        do {
+            let r: Response = try await request("POST", "v1/devices/me/pin-guard/evaluate",
+                                                body: ["blinded": blinded.base64EncodedString()])
+            guard let evaluated = Data(base64Encoded: r.evaluated), evaluated.count == 32 else {
+                throw RelayAPIError.malformedResponse
+            }
+            return .evaluated(evaluated, attemptsLeft: r.attemptsLeft)
+        } catch RelayAPIError.http(status: 404, _) {
+            return .noKey
+        } catch RelayAPIError.http(status: 410, _) {
+            return .exhausted
+        }
+    }
+
+    /// Proves the PIN was right, resetting the count. False if the verifier
+    /// didn't match (the attempt stays counted).
+    public func confirmPinGuard(verifier: Data) async throws -> Bool {
+        do {
+            try await requestExpectingNoContent("POST", "v1/devices/me/pin-guard/confirm",
+                                                body: ["verifier": verifier.base64EncodedString()])
+            return true
+        } catch RelayAPIError.http(status: 403, _) {
+            return false
+        }
+    }
+
+    /// Deletes this device's key (lock turned off, or the distress PIN).
+    public func deletePinGuard() async throws {
+        try await requestExpectingNoContent("DELETE", "v1/devices/me/pin-guard", body: nil as String?)
+    }
+}

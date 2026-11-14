@@ -32,7 +32,7 @@ public struct KeychainConfiguration: Sendable {
 }
 
 public final class KeychainSecureStore {
-    private enum Item {
+    enum Item {
         static let wrappedDatabaseKey = "db-master-key.wrapped"
         static let plainDatabaseKey = "db-master-key.plain"
         static let identityKeyPair = "identity-key-pair"
@@ -71,6 +71,13 @@ public final class KeychainSecureStore {
         }
 
         let key = DatabaseKey.random()
+        try storeDatabaseKey(key)
+        return key
+    }
+
+    /// Writes the master key under the Secure Enclave (Keychain-only in the
+    /// Simulator).
+    func storeDatabaseKey(_ key: DatabaseKey) throws {
         #if targetEnvironment(simulator)
         // No Secure Enclave in the Simulator: Keychain protection only.
         if let enclaveKey = try? enclaveWrappingKey() {
@@ -83,14 +90,13 @@ public final class KeychainSecureStore {
         // not a reason to store the master key unwrapped.
         try write(Item.wrappedDatabaseKey, data: try wrap(key.bytes, with: try enclaveWrappingKey()))
         #endif
-        return key
     }
 
     // MARK: - Secure Enclave wrapping
 
     private static let wrapAlgorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
 
-    private func enclaveWrappingKey() throws -> SecKey {
+    func enclaveWrappingKey() throws -> SecKey {
         let tag = Data(Item.enclaveKeyTag.utf8)
 
         var query: [CFString: Any] = [
@@ -324,7 +330,7 @@ public final class KeychainSecureStore {
         return query
     }
 
-    private func wrap(_ plaintext: Data, with key: SecKey) throws -> Data {
+    func wrap(_ plaintext: Data, with key: SecKey) throws -> Data {
         guard let publicKey = SecKeyCopyPublicKey(key) else {
             throw StorageError.secureEnclave("no public key")
         }
@@ -337,7 +343,7 @@ public final class KeychainSecureStore {
         return wrapped as Data
     }
 
-    private func unwrap(_ wrapped: Data) throws -> Data {
+    func unwrap(_ wrapped: Data) throws -> Data {
         let key = try enclaveWrappingKey()
         var error: Unmanaged<CFError>?
         guard
@@ -391,10 +397,11 @@ public final class KeychainSecureStore {
         }
     }
 
-    func write(_ account: String, data: Data) throws {
+    func write(_ account: String, data: Data,
+               accessible: CFString = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly) throws {
         var attributes = baseQuery(account)
         attributes[kSecValueData] = data
-        attributes[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        attributes[kSecAttrAccessible] = accessible
         let status = SecItemAdd(attributes as CFDictionary, nil)
         if status == errSecDuplicateItem {
             let update: [CFString: Any] = [kSecValueData: data]
