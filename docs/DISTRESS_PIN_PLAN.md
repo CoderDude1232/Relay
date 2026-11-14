@@ -4,7 +4,10 @@ Status: agreed with Ethan 2026-11-14. **Stage 1 (server) done and deployed 2026-
 (`internal/pinguard`, `store/pin_guard.go`, `api/pin_guard.go`, README "PIN guard";
 all tests passed on a throwaway DB on the API box). **Stage 2 (client crypto) written
 2026-11-14**: `SecureStorage/Sources/SecureStorage/PinLock.swift` + tests, `RelayKit`
-PIN guard calls. Waiting for Ethan's review before Stage 3. Build in stages and check in
+PIN guard calls. Reviewed. **Stage 3 (app) written 2026-11-14** (`Relay/PinLockManager.swift`,
+`PinLockView.swift`, `PinLockSettingsView.swift`; Settings → Security → Relay PIN Lock).
+Not yet tested end to end: the simulator kept crashing (Mac out of RAM/disk), so
+testing moves to devices (Stage 4). Build in stages and check in
 after each one; Stage 1 (server) and Stage 2 (crypto) need his review before
 anything is wired into the app. The server deploy happens with him present.
 
@@ -72,6 +75,13 @@ behind the existing Panic Mode PIN stays as it is.
   wipe (`AppModel.signOut` path + `wipeLocalFiles`, Panic Mode `wipe()`), land
   on the sign-up screen. Offline: wipe locally now, queue the relay calls.
 - Both PINs must differ; refuse a distress PIN equal to the Relay PIN.
+
+### When it locks
+
+iOS doesn't tell a suspended app that the phone locked, so both modes lock
+whenever Relay goes to the background (not during a call). Forget mode keeps a
+background task until the stopped service's database work finishes, or iOS
+kills the app for holding the database lock while suspended.
 
 ### What must be cleared on lock (strong mode)
 
