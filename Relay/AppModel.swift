@@ -30,6 +30,8 @@ final class AppModel {
         case loading
         case onboarding
         case ready(MessagingService)
+        /// The Relay PIN lock forgot the database key; only the PIN brings it back.
+        case pinLocked
         case failed(String)
     }
 
@@ -192,6 +194,11 @@ final class AppModel {
                 return
             }
             let saved = try JSONDecoder().decode(SavedAccount.self, from: data)
+            if (try? keychain.isDatabaseKeyForgotten()) == true {
+                PinLockManager.shared.showLock()
+                phase = .pinLocked
+                return
+            }
             let service = try await makeService(
                 credentials: RelayCredentials(
                     accountId: saved.accountId,
@@ -1405,6 +1412,78 @@ final class AppModel {
         wipeLocalFiles()
         ShareBridge.clearAll()
         phase = .onboarding
+    }
+
+    // MARK: - Relay PIN lock
+
+    var keychainStore: KeychainSecureStore { keychain }
+
+    /// The relay client while no service runs (the database is locked): the
+    /// saved account's credentials, signed with the device key, over the tunnel.
+    func lockedAPIClient() -> RelayAPIClient? {
+        guard let data = try? keychain.loadSecret(for: Self.accountSecretName),
+              let saved = try? JSONDecoder().decode(SavedAccount.self, from: data) else { return nil }
+        return RelayAPIClient(baseURL: saved.serverURL, credentials: savedCredentials(saved), session: session,
+                              signer: DeviceAuthSigner(keychain: keychain))
+    }
+
+    var lockedCredentials: RelayCredentials? {
+        guard let data = try? keychain.loadSecret(for: Self.accountSecretName),
+              let saved = try? JSONDecoder().decode(SavedAccount.self, from: data) else { return nil }
+        return savedCredentials(saved)
+    }
+
+    private func savedCredentials(_ saved: SavedAccount) -> RelayCredentials {
+        RelayCredentials(accountId: saved.accountId, deviceId: saved.deviceId, password: saved.password)
+    }
+
+    /// "Forget messages on lock": stops the service, deletes the database key
+    /// (the sealed copy stays) and every plaintext copy outside the database.
+    func lockForPin() throws {
+        // Checked first: never stop the app over a key it can't forget safely.
+        guard try keychain.hasSealedDatabaseKey() else { throw PinLockError.notSealed }
+        if case .ready(let service) = phase {
+            service.shutDown()
+            // enterBackground only waits on a ready service, and this one no
+            // longer is: keep running until its database work is done, or iOS
+            // suspends the app holding the database lock and kills it.
+            let task = UIApplication.shared.beginBackgroundTask(withName: "relay-pin-lock")
+            Task {
+                await service.waitForInFlightProcessing()
+                if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+            }
+        }
+        VoicePlaybackCenter.shared.stop()
+        phase = .pinLocked
+        try keychain.forgetDatabaseKey()
+        clearPlaintextCopies()
+    }
+
+    /// The right PIN put the key back: open the database as at launch.
+    func unlockedByPin() async {
+        phase = .loading
+        await boot()
+    }
+
+    /// The distress PIN (or a key the relay deleted): erase this device and
+    /// land on the sign-up screen. Nothing is asked of the relay here.
+    func wipeForDistress() {
+        removedFromAccount = false
+        finishSignOut()
+    }
+
+    /// Message text kept outside the encrypted database: previews for Siri and
+    /// notifications, the Watch, the share sheet and widgets, Spotlight and
+    /// Siri suggestions, delivered notifications and temporary media. The
+    /// service writes them again once it runs.
+    private func clearPlaintextCopies() {
+        SiriPreviewCache.wipe()
+        WatchBridge.shared.clear()
+        ShareBridge.clearAll()
+        INInteraction.deleteAll(completion: nil)
+        SpotlightIndexer.deindexAll()
+        TempMediaFiles.sweep()
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
     }
 
     /// Removes everything the previous account left on disk: the database,

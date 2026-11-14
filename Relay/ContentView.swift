@@ -113,6 +113,9 @@ struct ContentView: View {
                     } message: {
                         Text(passkeyError ?? "")
                     }
+            case .pinLocked:
+                // Nothing behind the PIN screen while the messages are locked.
+                Color.black.ignoresSafeArea()
             case .failed(let message):
                 StorageUnavailableView(message: message)
             }
@@ -121,7 +124,13 @@ struct ContentView: View {
         // The privacy blur and the lock screen live in their own window above
         // everything (see PrivacyShield): a sheet or full-screen photo is
         // presented above any overlay in this hierarchy.
-        .onAppear { updateShield() }
+        .onAppear {
+            updateShield()
+            PinLockShield.shared.update(locked: PinLockManager.shared.isLocked, model: model)
+        }
+        .onChange(of: PinLockManager.shared.isLocked) { _, locked in
+            PinLockShield.shared.update(locked: locked, model: model)
+        }
         .onChange(of: isObscured) { updateShield() }
         .onChange(of: isLocked) { updateShield() }
         .onChange(of: isAuthenticating) { updateShield() }

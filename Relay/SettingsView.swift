@@ -292,6 +292,7 @@ struct SettingsView: View {
         ("Acknowledgements", "open source licenses", .about),
         ("Screen Lock", "lock face id touch id passcode", .security),
         ("Panic Mode", "panic hide chats pin", .security),
+        ("Relay PIN Lock", "pin lock distress duress erase wipe forget", .security),
         ("Message Backup", "backup history restore new phone", .data),
         ("Storage", "storage space cache media", .storage),
         ("Contact Syncing", "contacts sync address book", .contactSync),
@@ -1575,6 +1576,17 @@ private struct SecuritySettingsView: View {
                 }
             } footer: {
                 Text("Hides selected chats behind a PIN. Long-press a conversation in the list to mark it hidden.")
+            }
+
+            Section {
+                NavigationLink(destination: PinLockSettingsView()) {
+                    HStack(spacing: 14) {
+                        SettingsIcon(systemName: "lock.shield.fill", color: .indigo)
+                        LabeledContent("Relay PIN Lock", value: PinLockManager.shared.mode == .off ? "Off" : "On")
+                    }
+                }
+            } footer: {
+                Text("A PIN every time you come back to Relay, and a distress PIN that erases it.")
             }
 
             Section {

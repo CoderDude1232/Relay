@@ -70,6 +70,9 @@ public final class KeychainSecureStore {
             return DatabaseKey(bytes: plain)
         }
 
+        // The PIN lock forgot the key on purpose: making a new one would leave
+        // the database unopenable and the sealed copy pointing at nothing.
+        if try hasSealedDatabaseKey() { throw PinLockError.keyForgotten }
         let key = DatabaseKey.random()
         try storeDatabaseKey(key)
         return key

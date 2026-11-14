@@ -181,6 +181,8 @@ struct RelayApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .background:
+                        PinLockManager.shared.didEnterBackground(
+                            model: model, inCall: appDelegate.callManager.needsSignalingConnection)
                         if !appDelegate.callManager.needsSignalingConnection {
                             model.enterBackground()
                             appDelegate.scheduleBackgroundRefresh()

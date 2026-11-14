@@ -3093,6 +3093,13 @@ final class MessagingService {
 
     /// Every device on the account wipes itself on receipt.
     func sendNukeCommand() async throws {
+        try await Self.sendNukeCommand(api: api, keychain: keychain, credentials: credentials)
+    }
+
+    /// The same without a running service: the distress PIN sends it while the
+    /// database is locked. Needs only the Keychain (identity and device keys).
+    static func sendNukeCommand(api: RelayAPIClient, keychain: KeychainSecureStore,
+                                credentials: RelayCredentials) async throws {
         let creationTimeMs = Int64(Date().timeIntervalSince1970 * 1000)
         let initiatingDeviceId = credentials.deviceId
         // The device auth key is registered through the relay, so it proves
@@ -3100,10 +3107,11 @@ final class MessagingService {
         // key's signature, carried in the command id ("<uuid>.<base64url sig>"),
         // which the relay passes through verbatim.
         let nonce = UUID().uuidString
-        let identitySignature = try engine.signWithIdentity(Data(nukeIdentityPayload(
+        let identityPayload = Data(nukeIdentityPayload(
             accountId: credentials.accountId, nonce: nonce,
             creationTimeMs: creationTimeMs, initiatingDeviceId: initiatingDeviceId
-        ).utf8))
+        ).utf8)
+        let identitySignature = Data(try keychain.identityKeyPair().privateKey.generateSignature(message: identityPayload))
         let commandId = "\(nonce).\(identitySignature.base64URLEncodedString())"
         let payload = nukeCanonicalPayload(
             accountId: credentials.accountId,
@@ -3138,7 +3146,7 @@ final class MessagingService {
         let parts = nuke.commandId.split(separator: ".", maxSplits: 1).map(String.init)
         guard parts.count == 2,
               let signature = Data(base64URLEncoded: parts[1]),
-              engine.verifyOwnIdentitySignature(signature, message: Data(nukeIdentityPayload(
+              engine.verifyOwnIdentitySignature(signature, message: Data(Self.nukeIdentityPayload(
                   accountId: nuke.accountId, nonce: parts[0],
                   creationTimeMs: nuke.creationTimeMs, initiatingDeviceId: nuke.initiatingDeviceId
               ).utf8))
@@ -3156,11 +3164,11 @@ final class MessagingService {
         resetSession(withPeer: credentials.accountId)
     }
 
-    private func nukeIdentityPayload(accountId: String, nonce: String, creationTimeMs: Int64, initiatingDeviceId: UInt32) -> String {
+    private static func nukeIdentityPayload(accountId: String, nonce: String, creationTimeMs: Int64, initiatingDeviceId: UInt32) -> String {
         ["relay-nuke-identity-v1", accountId, nonce, String(creationTimeMs), String(initiatingDeviceId)].joined(separator: "\n")
     }
 
-    private func nukeCanonicalPayload(accountId: String, commandId: String, creationTimeMs: Int64, initiatingDeviceId: UInt32) -> String {
+    private static func nukeCanonicalPayload(accountId: String, commandId: String, creationTimeMs: Int64, initiatingDeviceId: UInt32) -> String {
         ["relay-nuke-v1", accountId, commandId, String(creationTimeMs), String(initiatingDeviceId)].joined(separator: "\n")
     }
 

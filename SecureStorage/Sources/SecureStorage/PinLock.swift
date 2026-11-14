@@ -225,6 +225,12 @@ extension KeychainSecureStore {
         return (Data(blob[(start + 1)..<(start + headerCount)]), Data(blob[(start + headerCount)...]))
     }
 
+    /// Whether a sealed copy of the master key exists (the PIN lock is set up
+    /// in "forget on lock" mode).
+    public func hasSealedDatabaseKey() throws -> Bool {
+        try read(PinItem.sealedDatabaseKey) != nil
+    }
+
     /// True while the master key is gone from the Keychain and only the sealed
     /// copy is left.
     public func isDatabaseKeyForgotten() throws -> Bool {
