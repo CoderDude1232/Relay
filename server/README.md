@@ -740,6 +740,37 @@ letters are dropped, not case-folded). Hash = SHA-256 of the UTF-8 bytes of
 The key is deleted with the account row. The lookup is a unique-index match on
 the hash; with ≥20 random characters there is nothing practical to enumerate.
 
+## PIN guard (`internal/pinguard`)
+
+The relay's half of the Relay PIN lock (design: `docs/DISTRESS_PIN_PLAN.md`).
+Each device may hold one secret ristretto255 scalar `k_d` (`pin_guard` table,
+foreign key to `devices` with `ON DELETE CASCADE`, so it goes with its device
+on removal, recovery-key/passkey replacement and account deletion). The device
+blinds H(PIN) as `B = r·H(PIN)`; the relay answers `E = k_d·B` and never sees
+the PIN. The device unblinds `k_d·H(PIN)` and mixes it with a secret that never
+leaves the iPhone (Secure Enclave–wrapped) to unwrap its database key, so
+neither a copy of the device nor the relay's database alone can test PINs.
+
+The relay counts every evaluation. After **10** (`pinguard.MaxAttempts`) with
+no correct PIN confirmed in between, the next one deletes `k_d` and answers
+`410`: whatever it protected is gone for good. The device proves a correct PIN
+with a 32-byte verifier it fixed at enrolment; it derives the verifier from
+the OPRF output **and** its device-only secret, so the relay (or a copy of its
+database) can't brute-force PINs against it offline. Blinded elements are
+32-byte encoded points; the identity is refused. `k_d` is stored unencrypted:
+it only matters together with the device's own secret.
+
+| Method & path | Auth | Request → Response |
+|---|---|---|
+| `POST /v1/devices/me/pin-guard` | sig | `{blinded}` → `200 {evaluated, maxAttempts}`. Starts enrolment with a fresh key, replacing any finished one (whatever that protected becomes unrecoverable). Repeating it before the verifier is set answers with the same pending key and isn't counted. `400` bad element. |
+| `PUT /v1/devices/me/pin-guard/verifier` | sig | `{verifier}` (32 bytes) → `204`. Finishes enrolment and zeroes the count. `404` no enrolment; `409` already finished (enrol again to replace). |
+| `POST /v1/devices/me/pin-guard/evaluate` | sig | `{blinded}` → `200 {evaluated, attemptsLeft}`. Counts one attempt **before** answering (a dropped connection still costs it; so does a malformed element). `404` no finished enrolment; `410` too many attempts, key deleted now. |
+| `POST /v1/devices/me/pin-guard/confirm` | sig | `{verifier}` → `204` and the count goes back to 0, or `403` no match (the attempt stays counted). `404` no finished enrolment. |
+| `DELETE /v1/devices/me/pin-guard` | sig | → `204`. Deletes the key (lock turned off, or the distress PIN). Idempotent. |
+
+Enrolment and evaluation share a limit of 60 requests per device per hour on
+top of the attempt count.
+
 ## Proxy (`cmd/relayproxy`)
 
 For people in places that block Relay. Anyone can run `relayproxy` on a VPS with

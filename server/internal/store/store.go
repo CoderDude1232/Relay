@@ -579,6 +579,18 @@ CREATE TABLE IF NOT EXISTS group_invites (
     time       BIGINT NOT NULL,
     sig        BYTEA  NOT NULL
 )`,
+		// PIN guard (store/pin_guard.go, docs/DISTRESS_PIN_PLAN.md): goes
+		// with its device on every path that deletes one.
+		`CREATE TABLE IF NOT EXISTS pin_guard (
+    account_id TEXT    NOT NULL,
+    device_id  INTEGER NOT NULL,
+    scalar     BYTEA   NOT NULL,
+    verifier   BYTEA,
+    attempts   INT     NOT NULL DEFAULT 0,
+    created_at BIGINT  NOT NULL,
+    PRIMARY KEY (account_id, device_id),
+    FOREIGN KEY (account_id, device_id) REFERENCES devices (account_id, device_id) ON DELETE CASCADE
+)`,
 		// Demo accounts (App Review) were made from the owner's email
 		// accounts; they keep no email, so nothing can show or use it.
 		`DELETE FROM directory WHERE kind = 1 AND account_id IN (SELECT id FROM accounts WHERE is_demo)`,

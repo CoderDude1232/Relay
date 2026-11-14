@@ -421,6 +421,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/devices/fcm", s.auth(s.handleSetFCMToken))
 	mux.HandleFunc("PUT /v1/devices/voip", s.auth(s.handleSetVoIPToken))
 	mux.HandleFunc("PUT /v1/devices/me/push-content", s.auth(s.handleSetPushContent))
+	// Relay PIN lock (pin_guard.go): the device's own key only.
+	mux.HandleFunc("POST /v1/devices/me/pin-guard", s.auth(s.handleEnrolPinGuard))
+	mux.HandleFunc("PUT /v1/devices/me/pin-guard/verifier", s.auth(s.handleSetPinGuardVerifier))
+	mux.HandleFunc("POST /v1/devices/me/pin-guard/evaluate", s.auth(s.handleEvaluatePinGuard))
+	mux.HandleFunc("POST /v1/devices/me/pin-guard/confirm", s.auth(s.handleConfirmPinGuard))
+	mux.HandleFunc("DELETE /v1/devices/me/pin-guard", s.auth(s.handleDeletePinGuard))
 	mux.HandleFunc("POST /v1/calls/ring", s.handleCallRing) // unauthenticated by design (access-key capability)
 	mux.HandleFunc("PUT /v1/keys", s.auth(s.handleSetKeys))
 	mux.HandleFunc("GET /v1/keys/count", s.auth(s.handleKeyCount))

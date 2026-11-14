@@ -1,6 +1,7 @@
 # Relay PIN lock and Distress PIN — plan
 
-Status: agreed with Ethan 2026-11-14, not started. Build in stages and check in
+Status: agreed with Ethan 2026-11-14. Stage 1 (server) code written 2026-11-15
+(`internal/pinguard`, `store/pin_guard.go`, `api/pin_guard.go`, README "PIN guard"). Build in stages and check in
 after each one; Stage 1 (server) and Stage 2 (crypto) need his review before
 anything is wired into the app. The server deploy happens with him present.
 
@@ -43,8 +44,11 @@ behind the existing Panic Mode PIN stays as it is.
   lock, delete the unwrapped/plain key items and drop it from memory.
 - The relay keeps an **attempt counter per device, limit 10**. It increments
   before answering an evaluate; a correct PIN resets it via a verifier tag the
-  client derived at enrolment (tag = HKDF(OPRF output, "verify")). At 10 wrong
-  attempts the relay deletes k_d permanently → data unrecoverable.
+  client derived at enrolment from the OPRF output **and the device-only
+  secret** (tag = HKDF(OPRF output ‖ device secret, "verify")). Without the
+  device secret, a relay DB leak (k_d + tag) would let anyone test all 10^6
+  PINs offline and learn the PIN. At 10 wrong attempts the relay deletes k_d
+  permanently → data unrecoverable.
 - Threat summary: needs this iPhone (Secure Enclave) **and** the relay's guess
   limit. A storage dump can't be attacked elsewhere; a relay compromise alone
   can't decrypt anything.
