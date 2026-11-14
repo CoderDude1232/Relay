@@ -151,10 +151,13 @@ func (s *Store) ConfirmPinGuard(accountID string, deviceID uint32, verifier []by
 	}
 	// Only while the verifier is still the one compared: an enrolment that
 	// replaced it in between doesn't get its count reset.
-	_, err = s.db.Exec(ctx,
+	tag, err := s.db.Exec(ctx,
 		`UPDATE pin_guard SET attempts = 0 WHERE account_id = $1 AND device_id = $2 AND verifier = $3`,
 		accountID, deviceID, stored)
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // DeletePinGuard removes the device's key (turning the lock off, or the

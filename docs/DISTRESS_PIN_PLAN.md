@@ -1,7 +1,8 @@
 # Relay PIN lock and Distress PIN — plan
 
-Status: agreed with Ethan 2026-11-14. Stage 1 (server) code written 2026-11-15
-(`internal/pinguard`, `store/pin_guard.go`, `api/pin_guard.go`, README "PIN guard"). Build in stages and check in
+Status: agreed with Ethan 2026-11-14. **Stage 1 (server) done and deployed 2026-11-14**
+(`internal/pinguard`, `store/pin_guard.go`, `api/pin_guard.go`, README "PIN guard";
+all tests passed on a throwaway DB on the API box). Next: Stage 2 (client crypto). Build in stages and check in
 after each one; Stage 1 (server) and Stage 2 (crypto) need his review before
 anything is wired into the app. The server deploy happens with him present.
 
