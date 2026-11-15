@@ -211,13 +211,38 @@ struct VerificationView: View {
     @ViewBuilder
     private func actionButtons(_ verification: MessagingService.PeerVerification) -> some View {
         if verification.hasConflictingKeys {
-            Text("One of \(peerName)'s devices doesn't match, so this number can't be checked yet. Ask them to open Linked Devices and remove any they don't recognise.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
+            VStack(spacing: 12) {
+                Text("One of \(peerName)'s devices doesn't match, so this number can't be checked yet. Ask them to open Linked Devices and remove any they don't recognise.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                // Usually a device they removed: fetching their devices again drops it.
+                Button {
+                    Task {
+                        if let peer {
+                            await service.refreshPeerIdentitiesIfConflicting(peer: peer)
+                            await service.refreshTransparency(peer: peer)
+                        }
+                        reload()
+                    }
+                } label: {
+                    Text("Check Again").frame(maxWidth: .infinity)
+                }
+                .glassStyleCompat()
+            }
+            .controlSize(.large)
         } else {
             VStack(spacing: 12) {
+                if verification.state == .changed {
+                    Button {
+                        if let peer { service.acceptSafetyNumberChange(peer: peer) }
+                        reload()
+                    } label: {
+                        Text("Accept New Safety Number").frame(maxWidth: .infinity)
+                    }
+                    .glassProminentCompat()
+                }
                 Button {
                     showingScanner = true
                 } label: {

@@ -4538,6 +4538,11 @@ final class MessagingService {
         // incoming message planted for a fake device).
         let firstContact = try account != credentials.accountId
             && acknowledgedIdentities(forPeer: account) == nil
+        // A device with a changed key doesn't stop the rest: the removed
+        // devices' keys must still be pruned below, or a peer who moved to a
+        // new device keeps two keys here (a "conflict" that blocks sending and
+        // automatic verification) until they happen to message us.
+        var keyChange: Error?
         for bundle in bundles {
             // Our own account's bundles include this device, and processing a
             // session to self throws, which would abort the whole refresh.
@@ -4553,17 +4558,27 @@ final class MessagingService {
                     continue
                 }
             } else {
-                try guardIdentityReplacement(bundle.identityKey, peer: account, address: address)
+                do {
+                    try guardIdentityReplacement(bundle.identityKey, peer: account, address: address)
+                } catch let change as SafetyNumberChangedError {
+                    keyChange = change
+                    continue
+                }
             }
             // Always re-process, so a reinstalled peer or corrupt session gets a
             // fresh session even when one exists.
             try engine.processPeerBundle(bundle, from: address)
             devices.append(PeerDevice(id: bundle.deviceId, mailboxId: bundle.mailboxId, registrationId: bundle.registrationId))
         }
-        try storeKnownDevices(devices, ofPeer: account)
-        if account != credentials.accountId, !devices.isEmpty {
-            try storage.signalStore.pruneIdentities(address: account, keepingDeviceIds: Set(devices.map(\.id)))
+        if account != credentials.accountId, !bundles.isEmpty {
+            // The relay's current device list, changed keys included. A key
+            // left after pruning is still unacknowledged, so sending stays
+            // blocked until the directory confirms it or the user accepts it.
+            try storage.signalStore.pruneIdentities(address: account,
+                                                    keepingDeviceIds: Set(bundles.map(\.deviceId)))
         }
+        if let keyChange { throw keyChange }
+        try storeKnownDevices(devices, ofPeer: account)
         if firstContact {
             // Trusting a key for the first time waits for the key directory, so
             // a fake key the relay hands out is refused before anything is
@@ -5441,6 +5456,22 @@ final class MessagingService {
             refreshConversations()
         } catch {
             log.error("setVerified failed: \(PrivacyRedactor.error(error))")
+        }
+    }
+
+    /// "Accept New Safety Number": the user saw the change and carries on.
+    /// Not a verification: a contact verified in person drops back to
+    /// unverified, and no badge is shown. Refused while their devices disagree.
+    func acceptSafetyNumberChange(peer: String) {
+        guard !hasConflictingIdentityKeys(peer) else { return }
+        do {
+            if try storage.signalStore.verificationState(address: peer) != .unverified {
+                try storage.signalStore.setVerified(false, address: peer)
+            }
+            try acknowledgeCurrentIdentity(forPeer: peer)
+            refreshConversations()
+        } catch {
+            log.error("accept safety number failed: \(PrivacyRedactor.error(error))")
         }
     }
 
