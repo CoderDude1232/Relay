@@ -13,7 +13,6 @@ import UserNotifications
 import CoreSpotlight
 import Intents
 import Observation
-import OSLog
 import RelayCore
 import RelayKit
 import UIKit
@@ -215,8 +214,8 @@ final class AppModel {
             publishDeviceAuthorizationKeyIfReady()
             publishAccessKeyIfReady()
         } catch {
-            Logger(subsystem: "app.relaymsg", category: "account")
-                .error("boot failed: \(PrivacyRedactor.error(error))")
+            RelayLog("account")
+                .error("boot failed: \(error)")
             phase = .failed("Relay couldn't open the encrypted storage on this device. This can happen right after a restart, before the device has been unlocked — unlock it and try again.")
         }
     }
@@ -228,7 +227,7 @@ final class AppModel {
     private func keepRegisteredDeviceAuthKey(_ service: MessagingService) async {
         let keychain = self.keychain
         guard let candidates = try? keychain.deviceAuthorizationPublicKeyCandidates(), candidates.count > 1 else { return }
-        let log = Logger(subsystem: "app.relaymsg", category: "account")
+        let log = RelayLog("account")
         for publicKey in candidates {
             let probe = RelayAPIClient(
                 baseURL: service.serverURL, credentials: service.credentials,
@@ -467,8 +466,8 @@ final class AppModel {
                     publishedAccessKey = true
                     return
                 } catch {
-                    Logger(subsystem: "app.relaymsg", category: "account")
-                        .error("access key upload failed (attempt \(attempt)): \(PrivacyRedactor.error(error))")
+                    RelayLog("account")
+                        .error("access key upload failed (attempt \(attempt)): \(error)")
                     try? await Task.sleep(for: .seconds(2 * attempt))
                 }
             }

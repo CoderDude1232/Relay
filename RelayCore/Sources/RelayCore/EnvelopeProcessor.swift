@@ -12,7 +12,6 @@
 import CryptoCore
 import Foundation
 import LibSignalClient
-import OSLog
 import RelayKit
 import SecureStorage
 import SwiftProtobuf
@@ -363,7 +362,7 @@ public struct EnvelopeProcessor: @unchecked Sendable {
     /// Must match `MessagingService.relayOfficialAccount`.
     public static let relayOfficialAccount = "relay.official"
 
-    private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "envelope")
+    private let log = RelayLog("envelope")
 
     /// Body prefix of a live-location update (the app's `locationPrefix`).
     /// Updates collapse into one moving bubble per sharer.

@@ -33,7 +33,7 @@ enum DeviceModel {
         return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
     }
 
-    private static var hardwareIdentifier: String {
+    static var hardwareIdentifier: String {
         if let sim = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] { return sim }
         var info = utsname()
         uname(&info)

@@ -14,6 +14,7 @@ public final class SecureStore {
     public let database: Database
     public let signalStore: SQLCipherSignalStore
     public let messages: MessageStore
+    public let debugLog: DebugLogStore
 
     /// Opens or creates the encrypted database at `path`.
     ///
@@ -28,6 +29,7 @@ public final class SecureStore {
         try Schema.migrate(database)
         self.signalStore = SQLCipherSignalStore(database: database, credentials: credentials)
         self.messages = MessageStore(database: database)
+        self.debugLog = DebugLogStore(database: database)
     }
 
     /// Production initializer, keyed entirely from the Keychain store.

@@ -10,7 +10,6 @@ import AudioToolbox
 import AVFoundation
 @preconcurrency import CallKit
 import Foundation
-import OSLog
 import ReplayKit
 import RelayCore
 import RelayKit
@@ -323,7 +322,7 @@ final class CallManager: NSObject {
 
     nonisolated private static let broadcastAppGroupId = "group.app.relaymsg"
     nonisolated private static let broadcastFrameFilename = "RelayBroadcastFrame.jpg"
-    private let log = Logger(subsystem: "app.relaymsg", category: "CallManager")
+    private let log = RelayLog("CallManager")
 
     var needsSignalingConnection: Bool {
         if isInGroupCall { return true }
@@ -408,7 +407,7 @@ final class CallManager: NSObject {
             update.hasVideo = kind == .video
             provider.reportCall(with: uuid, updated: update)
         } catch {
-            log.error("startCall: CXStartCallAction rejected: \(PrivacyRedactor.error(error))")
+            log.error("startCall: CXStartCallAction rejected: \(error)")
         }
 
         // Each await below can outlive the call (CallKit or the user may end it);
@@ -548,7 +547,7 @@ final class CallManager: NSObject {
         provider.configuration = makeProviderConfiguration()
         provider.reportNewIncomingCall(with: uuid, update: update) { [log] error in
             if let error {
-                log.error("report incoming push call failed: \(PrivacyRedactor.error(error))")
+                log.error("report incoming push call failed: \(error)")
             }
             pushCompletion()
         }
@@ -732,7 +731,7 @@ final class CallManager: NSObject {
         provider.configuration = makeProviderConfiguration()
         provider.reportNewIncomingCall(with: uuid, update: update) { [log] error in
             if let error {
-                log.error("report incoming call failed: \(PrivacyRedactor.error(error))")
+                log.error("report incoming call failed: \(error)")
             }
         }
     }
@@ -748,7 +747,7 @@ final class CallManager: NSObject {
         provider.configuration = makeProviderConfiguration()
         provider.reportNewIncomingCall(with: uuid, update: update) { [provider, log] error in
             if let error {
-                log.error("report rejected incoming call failed: \(PrivacyRedactor.error(error))")
+                log.error("report rejected incoming call failed: \(error)")
             }
             provider.reportCall(with: uuid, endedAt: Date(), reason: .failed)
             completion()
@@ -971,7 +970,7 @@ final class CallManager: NSObject {
                     state = .connecting
                 }
             } catch {
-                log.error("failed to apply call ANSWER: \(PrivacyRedactor.error(error))")
+                log.error("failed to apply call ANSWER: \(error)")
                 failCall("Couldn’t connect this call.", notifyPeer: true)
             }
 
@@ -1134,7 +1133,7 @@ final class CallManager: NSObject {
 
     private func scheduleIceFailure(reason: String, delay: Duration) {
         guard iceRecoveryTask == nil else { return }
-        log.warning("ICE reported trouble; waiting before ending call: \(PrivacyRedactor.redactedString(reason))")
+        log.warning("ICE reported trouble; waiting before ending call: \(reason)")
         iceRecoveryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
             guard let self, !Task.isCancelled else { return }
@@ -1163,7 +1162,7 @@ final class CallManager: NSObject {
                 return
             }
         } catch {
-            log.error("failed to apply call OFFER: \(PrivacyRedactor.error(error))")
+            log.error("failed to apply call OFFER: \(error)")
             failCall("Couldn’t answer this call.", notifyPeer: true)
         }
     }
@@ -1220,7 +1219,7 @@ final class CallManager: NSObject {
         stopRingtone()
         offerWaitTask?.cancel()
         offerWaitTask = nil
-        log.error("call failed: \(PrivacyRedactor.redactedString(reason))")
+        log.error("call failed: \(reason)")
         callTimeoutTask?.cancel()
         callTimeoutTask = nil
         iceRecoveryTask?.cancel()
@@ -1522,7 +1521,7 @@ final class CallManager: NSObject {
                 try AVAudioSession.sharedInstance().overrideOutputAudioPort(enableSpeaker ? .speaker : .none)
             }
         } catch {
-            log.error("audio session configuration failed: \(PrivacyRedactor.error(error))")
+            log.error("audio session configuration failed: \(error)")
         }
     }
 
@@ -1574,7 +1573,7 @@ final class CallManager: NSObject {
                     return iceServers(from: creds)
                 }
             } catch {
-                log.warning("TURN credential fetch failed: \(PrivacyRedactor.error(error))")
+                log.warning("TURN credential fetch failed: \(error)")
             }
         }
         if let cached = cachedTurnCredentials, cached.expiresAt > Date().addingTimeInterval(60) {
@@ -1716,7 +1715,7 @@ final class CallManager: NSObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let error {
-                    self.log.error("screen share capture failed: \(PrivacyRedactor.error(error))")
+                    self.log.error("screen share capture failed: \(error)")
                     self.screenVideoCapturer = nil
                     if let capturer = self.localVideoCapturer, self.isVideoEnabled {
                         self.startVideoCapture(capturer)
@@ -1781,7 +1780,7 @@ final class CallManager: NSObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let error {
-                    self.log.error("screen share stop failed: \(PrivacyRedactor.error(error))")
+                    self.log.error("screen share stop failed: \(error)")
                 }
                 self.screenVideoCapturer = nil
                 self.isScreenSharing = false
@@ -2236,7 +2235,7 @@ final class CallManager: NSObject {
             // Group calls have no ringing phase on our side.
             provider.reportOutgoingCall(with: uuid, connectedAt: Date())
         } catch {
-            log.error("group call: CXStartCallAction rejected: \(PrivacyRedactor.error(error))")
+            log.error("group call: CXStartCallAction rejected: \(error)")
             groupCallUUID = nil
             activateAudioWithoutCallKit()
         }
@@ -2269,7 +2268,7 @@ final class CallManager: NSObject {
         provider.reportNewIncomingCall(with: uuid, update: update) { [weak self, log] error in
             guard let error else { return }
             // Do Not Disturb, or another call: CallKit refused, so drop the ring.
-            log.error("report group ring failed: \(PrivacyRedactor.error(error))")
+            log.error("report group ring failed: \(error)")
             Task { @MainActor [weak self] in
                 guard let self, self.groupCallUUID == uuid else { return }
                 self.groupCallUUID = nil
@@ -2460,7 +2459,7 @@ final class CallManager: NSObject {
             reply.targetAccount = account
             _ = await onSendCallMessage?(reply, account)
         } catch {
-            log.error("group offer failed: \(PrivacyRedactor.error(error))")
+            log.error("group offer failed: \(error)")
             groupPeers.removeValue(forKey: account)
             groupPeerDelegates.removeValue(forKey: account)
         }
@@ -2475,7 +2474,7 @@ final class CallManager: NSObject {
             groupPeers[account]?.pendingCandidates.removeAll()
             for c in queued { try? await pc.add(c) }
         } catch {
-            log.error("group answer failed: \(PrivacyRedactor.error(error))")
+            log.error("group answer failed: \(error)")
         }
     }
 

@@ -14,7 +14,7 @@
 
 import CallKit
 import Foundation
-import OSLog
+import SecureStorage
 import PushKit
 import RelayKit
 
@@ -26,7 +26,7 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
     private var pendingCallId: String?
     // Cached so we can upload the token even if apiClient arrives after PushKit fires.
     private var cachedVoIPToken: String?
-    private let log = Logger(subsystem: "app.relaymsg", category: "PushKit")
+    private let log = RelayLog("PushKit")
 
     override init() {
         super.init()
@@ -51,7 +51,7 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
                     try await apiClient.setVoIPToken(token)
                     log.info("cached voip token uploaded")
                 } catch {
-                    log.warning("cached voip token upload failed: \(PrivacyRedactor.error(error))")
+                    log.warning("cached voip token upload failed: \(error)")
                 }
             }
         }
@@ -70,7 +70,7 @@ final class PushKitDelegate: NSObject, PKPushRegistryDelegate {
                     try await client.setVoIPToken(token)
                     log.info("voip token uploaded")
                 } catch {
-                    log.warning("voip token upload failed: \(PrivacyRedactor.error(error))")
+                    log.warning("voip token upload failed: \(error)")
                 }
             }
             // Otherwise wire() uploads it once the service is ready.

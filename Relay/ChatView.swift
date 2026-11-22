@@ -10,7 +10,6 @@
 import CoreLocation
 import Foundation
 import MapKit
-import OSLog
 import PhotosUI
 import RelayCore
 import RelayKit
@@ -4772,8 +4771,8 @@ private struct AttachmentImageView: View {
             previewFileURL = url
             preview = PreviewItem(url: url)
         } catch {
-            Logger(subsystem: "app.relaymsg", category: "chat")
-                .error("openPreview: temp write failed: \(PrivacyRedactor.error(error))")
+            RelayLog("chat")
+                .error("openPreview: temp write failed: \(error)")
         }
     }
 }

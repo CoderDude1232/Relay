@@ -26,11 +26,10 @@
 
 import CryptoKit
 import Foundation
-import OSLog
 import RelayKit
 import SecureStorage
 
-private let historyLog = Logger(subsystem: "app.relaymsg", category: "history")
+private let historyLog = RelayLog("history")
 
 extension MessagingService {
     static let historyBackupEnabledKey = "relay.historyBackup"
@@ -247,7 +246,7 @@ extension MessagingService {
                 adoptHistoryBackupOff() // turned off on another device mid-upload
                 return
             }
-            historyLog.warning("history backup upload failed: \(PrivacyRedactor.error(error))")
+            historyLog.warning("history backup upload failed: \(error)")
             historyBackupError = Self.backupErrorMessage(error)
         }
     }
@@ -356,7 +355,7 @@ extension MessagingService {
             setHistoryKV(Self.historyRestoredKV, Data([1]))
             postRelayNotice("Your earlier message backup couldn't be opened: it was locked with sign-in details that have since changed. New messages will be backed up from now on.")
         } catch {
-            historyLog.warning("history restore failed: \(PrivacyRedactor.error(error))")
+            historyLog.warning("history restore failed: \(error)")
         }
     }
 
@@ -401,7 +400,7 @@ extension MessagingService {
                     }
                 } catch {
                     full = true // over quota or offline: the text still goes up
-                    historyLog.warning("attachment backup stopped: \(PrivacyRedactor.error(error))")
+                    historyLog.warning("attachment backup stopped: \(error)")
                 }
             }
             guard let p = placed else { continue }
@@ -496,7 +495,7 @@ extension MessagingService {
                 break
             }
         } catch {
-            historyLog.warning("history backup setting not synced; retried on reconnect: \(PrivacyRedactor.error(error))")
+            historyLog.warning("history backup setting not synced; retried on reconnect: \(error)")
         }
     }
 

@@ -17,13 +17,12 @@
 
 import CryptoKit
 import Foundation
-import OSLog
 import RelayKit
 import SecureStorage
 import SwiftProtobuf
 import UIKit
 
-private let profileLog = Logger(subsystem: "app.relaymsg", category: "profiles")
+private let profileLog = RelayLog("profiles")
 
 extension MessagingService {
     static let myProfileKeyKV = "me:profileKey"
@@ -138,7 +137,7 @@ extension MessagingService {
             setProfileKV(Self.myProfileUploadedKV, marker)
             writeKVInt(Self.myProfileUploadedAtKV, Int64(Date().timeIntervalSince1970))
         } catch {
-            profileLog.error("profile upload failed: \(PrivacyRedactor.error(error), privacy: .public)")
+            profileLog.error("profile upload failed: \(error)")
         }
     }
 
@@ -176,7 +175,7 @@ extension MessagingService {
                     return
                 }
                 await applyFetchedProfile(profile, account: account)
-                profileLog.info("fetched a contact's profile (photo: \(!profile.avatarJpeg.isEmpty, privacy: .public))")
+                profileLog.info("fetched a contact's profile (photo: \(!profile.avatarJpeg.isEmpty))")
                 setProfileKV(Self.peerProfileETagKV(account), newETag.map { Data($0.utf8) })
             }
         } catch {

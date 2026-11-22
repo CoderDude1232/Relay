@@ -6,7 +6,6 @@
 import AVFoundation
 import AVKit
 import ImageIO
-import OSLog
 import QuickLook
 import SecureStorage
 import SwiftUI
@@ -387,8 +386,8 @@ struct FileAttachmentBubble: View {
             }
             preview = item
         } catch {
-            Logger(subsystem: "app.relaymsg", category: "attachments")
-                .error("openPreview: temp write failed: \(PrivacyRedactor.error(error))")
+            RelayLog("attachments")
+                .error("openPreview: temp write failed: \(error)")
         }
     }
 }

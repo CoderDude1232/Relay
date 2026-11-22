@@ -1282,6 +1282,13 @@ private struct AboutSettingsView: View {
                     SettingsNavRow(systemName: "heart.text.square.fill", color: .gray, title: "Acknowledgements")
                 }
             }
+            Section {
+                NavigationLink(destination: DebugLogView(appVersion: appVersion)) {
+                    SettingsNavRow(systemName: "ladybug.fill", color: .gray, title: "Debug Log")
+                }
+            } footer: {
+                Text("Share a log of recent problems with Relay's developers. It stays on this iPhone unless you share it.")
+            }
         }
         .modifier(ThemedPageBackground())
         .navigationTitle("About")
@@ -1361,6 +1368,11 @@ private struct DataRetentionView: View {
                     icon: "iphone.and.arrow.forward", color: .indigo,
                     title: "On-Device Storage",
                     detail: "Messages and media are kept indefinitely on your device in an AES-256-encrypted SQLCipher database until you delete them or sign out."
+                )
+                RetentionRow(
+                    icon: "ladybug.fill", color: .gray,
+                    title: "Debug Log",
+                    detail: "A log of errors and safety-number checks from the last 7 days, kept in the same encrypted database. It holds no messages, names, usernames or account IDs, and leaves your device only if you share it from About → Debug Log."
                 )
                 RetentionRow(
                     icon: "clock.arrow.2.circlepath", color: .red,
