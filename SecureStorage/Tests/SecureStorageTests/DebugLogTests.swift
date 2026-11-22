@@ -98,6 +98,27 @@ struct DebugLogSinkTests {
         #expect(sink.entries().isEmpty)
     }
 
+    @Test func linesBetweenAccountsReachNeitherLog() throws {
+        let sink = DebugLog()
+        let first = try makeStore().debugLog
+        sink.attach(first)
+        sink.record(entry("first account"))
+        sink.detach()
+        sink.record(entry("after sign-out"))
+        let second = try makeStore().debugLog
+        sink.attach(second)
+        sink.record(entry("second account"))
+        #expect(sink.entries().map(\.message) == ["second account"])
+        #expect(try first.entries().map(\.message) == ["first account"])
+    }
+
+    @Test func literalsAreMarkedSoOnlyTheyArePublicInTheUnifiedLog() {
+        let literal: RelayLogMessage = "starting call"
+        let interpolated: RelayLogMessage = "attempt \(2)"
+        #expect(literal.isLiteral)
+        #expect(!interpolated.isLiteral)
+    }
+
     @Test func tagsAreStablePerSaltAndShort() throws {
         let sink = DebugLog()
         #expect(sink.tag(peer: "a") == "c-?")

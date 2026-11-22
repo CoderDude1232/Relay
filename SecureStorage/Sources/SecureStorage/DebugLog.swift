@@ -131,8 +131,10 @@ public final class DebugLogStore: @unchecked Sendable {
 // MARK: - Sink
 
 /// Where `RelayLog` lines go. Lines are written in batches: right away for
-/// errors and faults, otherwise within `flushDelay`. Lines logged before a
-/// database is attached (or while it's locked) wait in memory.
+/// errors and faults, otherwise within `flushDelay`. Lines logged at launch,
+/// before the first database is attached, wait in memory. Once one has been
+/// detached (lock, sign-out, wipe), lines are dropped until the next attach,
+/// so nothing from one account's session lands in another account's log.
 public final class DebugLog: @unchecked Sendable {
     public static let shared = DebugLog()
     static let pendingLimit = 300
@@ -143,6 +145,7 @@ public final class DebugLog: @unchecked Sendable {
     private var store: DebugLogStore?
     private var pending: [DebugLogEntry] = []
     private var flushScheduled = false
+    private var buffersUntilAttach = true
 
     // Read synchronously by `tag`, so behind a lock instead.
     private let tagLock = NSLock()
@@ -153,6 +156,7 @@ public final class DebugLog: @unchecked Sendable {
     public func attach(_ store: DebugLogStore) {
         queue.sync {
             self.store = store
+            buffersUntilAttach = false
             setTagKey(salt: try? store.tagSalt())
             flush()
         }
@@ -165,12 +169,14 @@ public final class DebugLog: @unchecked Sendable {
             flush()
             store = nil
             pending = []
+            buffersUntilAttach = false
             setTagKey(salt: nil)
         }
     }
 
     public func record(_ entry: DebugLogEntry) {
         queue.async { [self] in
+            guard store != nil || buffersUntilAttach else { return }
             pending.append(entry)
             guard store != nil else {
                 if pending.count > Self.pendingLimit { pending.removeFirst(pending.count - Self.pendingLimit) }
@@ -260,8 +266,10 @@ public final class DebugLog: @unchecked Sendable {
 // MARK: - Logger
 
 /// A drop-in for `os.Logger` that also keeps the line in the debug log.
-/// `debug` goes only to the unified log. Each line is redacted once and is
-/// then public in both, so what Console shows is what a shared log holds.
+/// `debug` goes only to the unified log. There, a plain literal is public and
+/// a line with interpolated values stays private (as `os.Logger` would keep
+/// it): the redacted text is meant to leave the device only when the user
+/// shares the debug log, not in a sysdiagnose.
 public struct RelayLog: Sendable {
     public static let subsystem = "app.relaymsg"
 
@@ -274,7 +282,7 @@ public struct RelayLog: Sendable {
     }
 
     public func debug(_ message: RelayLogMessage) {
-        logger.debug("\(message.text, privacy: .public)")
+        unified(.debug, message)
     }
 
     public func info(_ message: RelayLogMessage) { emit(.info, message) }
@@ -284,8 +292,18 @@ public struct RelayLog: Sendable {
     public func fault(_ message: RelayLogMessage) { emit(.fault, message) }
 
     private func emit(_ level: DebugLogEntry.Level, _ message: RelayLogMessage) {
-        logger.log(level: level.osLogType, "\(message.text, privacy: .public)")
+        unified(level.osLogType, message)
         DebugLog.shared.record(DebugLogEntry(date: Date(), level: level, category: category, message: message.text))
+    }
+}
+
+extension RelayLog {
+    fileprivate func unified(_ type: OSLogType, _ message: RelayLogMessage) {
+        if message.isLiteral {
+            logger.log(level: type, "\(message.text, privacy: .public)")
+        } else {
+            logger.log(level: type, "\(message.text, privacy: .private)")
+        }
     }
 }
 
@@ -319,9 +337,16 @@ public struct RelayLogMessage: ExpressibleByStringInterpolation, Sendable {
     }
 
     public let text: String
+    /// Written as a plain literal, with no interpolated values.
+    let isLiteral: Bool
 
-    public init(stringLiteral value: String) { text = value }
+    public init(stringLiteral value: String) {
+        text = value
+        isLiteral = true
+    }
+
     public init(stringInterpolation: StringInterpolation) {
         text = PrivacyRedactor.redactedString(stringInterpolation.text)
+        isLiteral = false
     }
 }
