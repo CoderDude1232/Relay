@@ -51,7 +51,7 @@ public actor RelayWebSocket {
     private var pendingSends: [UInt64: CheckedContinuation<Relay_V1_SendResponse, any Error>] = [:]
 
     private var eventContinuation: AsyncStream<RelayEvent>.Continuation?
-    private let log = Logger(subsystem: "com.relaytextingapp.RelayKit", category: "websocket")
+    private let log = Logger(subsystem: "app.relaymsg", category: "websocket")
 
     /// - Parameter signer: the device auth key, used to sign the upgrade with
     ///   Relay-Sig v2. The relay refuses HTTP Basic once a device has an auth key,

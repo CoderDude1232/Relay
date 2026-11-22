@@ -47,11 +47,17 @@ extension MessagingService {
         else { return .unavailable }
         var status = await lookUp(peer: peer, key: key)
         if status == .mismatch {
+            safetyLog.info("directory mismatch for \(logTags(peer, key)); checking again in 75 s")
             try? await Task.sleep(for: .seconds(75))
             if currentIdentityKey(of: peer) == key { status = await lookUp(peer: peer, key: key) }
         }
         record(status, peer: peer, key: key)
         return status
+    }
+
+    /// "c-… k-…": the contact and key tags for a debug-log line.
+    private func logTags(_ peer: String, _ key: Data) -> String {
+        "\(DebugLog.shared.tag(peer: peer)) \(DebugLog.shared.tag(key: key))"
     }
 
     private func lookUp(peer: String, key: Data) async -> TransparencyStatus {
@@ -72,7 +78,10 @@ extension MessagingService {
             } else {
                 lookup = try await apiClient.keyTransparencyLookup(account: peer, since: since)
             }
-            guard await acceptHead(lookup.head) else { return .mismatch }
+            guard await acceptHead(lookup.head) else {
+                safetyLog.warning("directory head rejected (lookup for \(DebugLog.shared.tag(peer: peer)))")
+                return .mismatch
+            }
             try KeyTransparency.verify(lookup, account: peer, key: key, signPublicKeys: trustedSignKeys())
             // Their history must have grown from what we accepted before, so a
             // key shown once and later swapped back doesn't go unnoticed.
@@ -82,9 +91,11 @@ extension MessagingService {
             storeSeenState(Self.peerStateKey(peer), version: lookup.version, chain: KeyTransparency.latestChain(lookup))
             keyTransparencyCheckedAt[peer] = Date()
             return .verified
-        } catch is KeyTransparency.Failure {
+        } catch let failure as KeyTransparency.Failure {
+            safetyLog.warning("directory check failed for \(logTags(peer, key)): \(String(describing: failure))")
             return .mismatch
         } catch {
+            safetyLog.info("directory check unavailable for \(DebugLog.shared.tag(peer: peer)): \(error)")
             return .unavailable
         }
     }
@@ -98,6 +109,7 @@ extension MessagingService {
         else { return true }
         var status = await lookUp(peer: peer, key: key)
         if status == .mismatch {
+            safetyLog.info("first contact: directory mismatch for \(logTags(peer, key)); checking again in 75 s")
             // A key made in the last minute may not be published yet.
             try? await Task.sleep(for: .seconds(75))
             status = currentIdentityKey(of: peer) == key ? await lookUp(peer: peer, key: key) : .unavailable
@@ -111,6 +123,10 @@ extension MessagingService {
     /// whose key everyone is shown the same).
     private func record(_ status: TransparencyStatus, peer: String, key: Data) {
         var changed = keyTransparencyStatus[peer] != status
+        if changed {
+            let before = keyTransparencyStatus[peer].map { String(describing: $0) } ?? "unchecked"
+            safetyLog.info("directory status \(logTags(peer, key)): \(before) -> \(String(describing: status))")
+        }
         keyTransparencyStatus[peer] = status
         if status == .verified, currentIdentityKey(of: peer) == key,
            acknowledgeIdentityConfirmedByDirectory(peer: peer, key: key) {

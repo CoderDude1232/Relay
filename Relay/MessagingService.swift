@@ -23,7 +23,6 @@ import SwiftUI
 import UIKit
 import WidgetKit
 import UserNotifications
-import os
 
 /// A labelled profile link, sent end-to-end encrypted in ProfileUpdate. `id`
 /// is not encoded. `nonisolated` keeps Codable synthesis off the MainActor.
@@ -226,7 +225,9 @@ final class MessagingService {
     private var socketLive = false
     private var expireTask: Task<Void, Never>?
     private var typingResetTasks: [String: Task<Void, Never>] = [:]
-    private let log = Logger(subsystem: "com.relaytextingapp.Relay", category: "messaging")
+    private let log = RelayLog("messaging")
+    /// Every safety-number decision, with the reason, for the debug log.
+    let safetyLog = RelayLog("safety")
 
     // Caches to keep DB queries out of SwiftUI render passes.
     private var nameCache: [String: String] = [:]
@@ -283,6 +284,8 @@ final class MessagingService {
         Task { [api] in await sendTokens.configure(api) }
         self.allocator = KVPreKeyIdAllocator(database: storage.database)
         StepUpCoordinator.shared.api = api
+        // The debug log lives in this service's database, so it goes with it.
+        DebugLog.shared.attach(storage.debugLog)
         loadMuteExpiries()
         loadBlockedAccounts()
         refreshConversations()
@@ -351,7 +354,7 @@ final class MessagingService {
             try await api.setAPNSToken(token)
             return true
         } catch {
-            log.warning("apns token upload failed: \(PrivacyRedactor.error(error))")
+            log.warning("apns token upload failed: \(error)")
             return false
         }
     }
@@ -387,7 +390,7 @@ final class MessagingService {
             log.info("call signal sent type=\(String(describing: msg.type))")
             return true
         } catch {
-            log.warning("call message send failed type=\(String(describing: msg.type)): \(PrivacyRedactor.error(error))")
+            log.warning("call message send failed type=\(String(describing: msg.type)): \(error)")
             return false
         }
     }
@@ -418,11 +421,11 @@ final class MessagingService {
                 do {
                     try await api.ringCall(destinationMailbox: mailbox, accessKey: accessKey, callId: callId)
                 } catch {
-                    log.warning("call ring failed: \(PrivacyRedactor.error(error))")
+                    log.warning("call ring failed: \(error)")
                 }
             }
         } catch {
-            log.warning("call ring setup failed: \(PrivacyRedactor.error(error))")
+            log.warning("call ring setup failed: \(error)")
         }
     }
 
@@ -518,6 +521,8 @@ final class MessagingService {
 
     func shutDown() {
         isShutDown = true
+        // Before the database key is forgotten or the file deleted.
+        DebugLog.shared.detach()
         LocationShareManager.shared.stopAll()
         siriPreviewTask?.cancel()
         siriPreviewTask = nil
@@ -765,7 +770,7 @@ final class MessagingService {
                 connectionTask = nil
                 return
             } catch {
-                log.warning("relay auth/connectivity preflight failed: \(PrivacyRedactor.localizedError(error))")
+                log.warning("relay auth/connectivity preflight failed: \(error.localizedDescription)")
                 connectionState = .connecting
                 noteConnectAttemptFailed()
             }
@@ -805,13 +810,13 @@ final class MessagingService {
                             try await maintainer.republishSignedPreKey(api: api, engine: engine, allocator: allocator)
                             try? storage.signalStore.pruneReplacedPreKeys()
                         } catch {
-                            log.warning("signed prekey republish failed: \(PrivacyRedactor.error(error))")
+                            log.warning("signed prekey republish failed: \(error)")
                         }
                     }
                     do {
                         try await maintainer.replenishIfNeeded(api: api, engine: engine, allocator: allocator)
                     } catch {
-                        log.warning("prekey replenishment failed: \(PrivacyRedactor.error(error))")
+                        log.warning("prekey replenishment failed: \(error)")
                     }
                     await ensureNoteToSelf()
                     ensureRelayAccount()
@@ -953,14 +958,14 @@ final class MessagingService {
                 // Rolled back, nothing lost: try again shortly, then leave it
                 // queued for the next connection rather than dropping it.
                 attempt += 1
-                log.warning("envelope storage failed, attempt \(attempt): \(PrivacyRedactor.error(error))")
+                log.warning("envelope storage failed, attempt \(attempt): \(error)")
                 guard attempt < 3, !isStopped else { scheduleQueueRefetch(); return }
                 try? await Task.sleep(for: .seconds(attempt))
                 continue
             } catch {
                 // Acked anyway, or an undecryptable envelope would redeliver forever.
                 Task { await self.ackEnvelope(envelope.id) }
-                log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
+                log.error("failed to process encrypted envelope: \(error)")
                 handlePossiblePreKeyDesync(error)
             }
             return
@@ -1071,7 +1076,7 @@ final class MessagingService {
                 Task { await self.handleOwnDeviceLabels() }
             }
         } catch {
-            log.error("failed to process encrypted envelope: \(PrivacyRedactor.error(error))")
+            log.error("failed to process encrypted envelope: \(error)")
             handlePossiblePreKeyDesync(error)
         }
     }
@@ -1088,7 +1093,7 @@ final class MessagingService {
               what.contains("prekey") else { return }
         // Counted for diagnostics even if we've already healed this launch.
         incrementPreKeyDesyncCount()
-        log.error("prekey pool desync detected (\(what, privacy: .public)); scheduling replace-publish")
+        log.error("prekey pool desync detected (\(what)); scheduling replace-publish")
         guard !didHealPreKeyPoolThisLaunch else { return }
         didHealPreKeyPoolThisLaunch = true
         Task { [weak self] in
@@ -1099,7 +1104,7 @@ final class MessagingService {
             } catch {
                 // Let a later desync retry (next launch) if this attempt failed.
                 self.didHealPreKeyPoolThisLaunch = false
-                log.error("prekey pool replace-publish failed: \(PrivacyRedactor.error(error))")
+                log.error("prekey pool replace-publish failed: \(error)")
             }
         }
     }
@@ -1324,7 +1329,7 @@ final class MessagingService {
                 try await sendContent(try content.serializedData(), toPeer: peer, clientTimestamp: timestamp, wake: wake)
             }
         } catch {
-            log.warning("live location send failed: \(PrivacyRedactor.error(error))")
+            log.warning("live location send failed: \(error)")
         }
     }
 
@@ -1398,7 +1403,7 @@ final class MessagingService {
                 try? storage.messages.saveLinkPreview(linkPreview, messageId: localId)
             }
         } catch {
-            log.error("send: could not store outgoing message: \(PrivacyRedactor.error(error))")
+            log.error("send: could not store outgoing message: \(error)")
             sendErrorMessage = (error as? MessagingError)?.errorDescription
                 ?? "This message couldn't be prepared. Please try again."
             return
@@ -1645,7 +1650,7 @@ final class MessagingService {
                 await sendSyncToOwnDevices(content: content, peer: peer, timestamp: timestamp)
             }
         } catch {
-            log.error("send failed: \(PrivacyRedactor.error(error))")
+            log.error("send failed: \(error)")
             try? storage.messages.updateStatus(messageId: messageId, status: .failed)
             if Self.isTransientSendError(error) {
                 // Resent by itself once the connection is back; Retry still works.
@@ -1659,7 +1664,9 @@ final class MessagingService {
             if group(for: conversationId) != nil {
                 // A group send stops at a member whose key changed; the group
                 // thread names them (groupMembersWithChangedSafetyNumbers).
-                if !groupMembersWithChangedSafetyNumbers(conversationId).isEmpty {
+                let changed = groupMembersWithChangedSafetyNumbers(conversationId)
+                if !changed.isEmpty {
+                    safetyLog.notice("showing group safety number warning for \(changed.map { DebugLog.shared.tag(peer: $0) }.joined(separator: ","))")
                     blockedSafetyWarningConversationId = conversationId
                 }
             } else if let safetyError = error as? SafetyNumberChangedError {
@@ -1843,7 +1850,7 @@ final class MessagingService {
             devices = knownDevices(ofPeer: credentials.accountId)
                 .filter { $0.id != credentials.deviceId && !($0.mailboxId ?? "").isEmpty }
         } catch {
-            log.warning("self-sync: resolve own devices failed: \(PrivacyRedactor.error(error))")
+            log.warning("self-sync: resolve own devices failed: \(error)")
             return
         }
         guard !devices.isEmpty else {
@@ -1866,7 +1873,7 @@ final class MessagingService {
             let outcome = try await sendMailboxPayloads(payloads, clientTimestamp: timestamp, noPush: true)
             log.debug("self-sync: sent to \(devices.count) own device(s), outcome \(String(describing: outcome))")
         } catch {
-            log.warning("self-sync: send failed: \(PrivacyRedactor.error(error))")
+            log.warning("self-sync: send failed: \(error)")
         }
     }
 
@@ -2103,7 +2110,7 @@ final class MessagingService {
             if let accessKey { writeKVInt("pfak:\(account)", Self.accessKeyTag(accessKey)) }
             writeKVInt("pfpk:\(account)", Self.accessKeyTag(profileKey))
         } catch {
-            log.error("profile send failed: \(PrivacyRedactor.error(error))")
+            log.error("profile send failed: \(error)")
         }
     }
 
@@ -2230,7 +2237,7 @@ final class MessagingService {
                 linksJSON: linksJSON.isEmpty ? nil : linksJSON
             )
         } catch {
-            log.error("applyPeerProfile: upsertProfile failed: \(PrivacyRedactor.error(error))")
+            log.error("applyPeerProfile: upsertProfile failed: \(error)")
         }
         nameCache[profile.account] = nil
         avatarCache[profile.account] = nil
@@ -2275,7 +2282,7 @@ final class MessagingService {
                 linksJSON: linksJSON.isEmpty ? nil : linksJSON
             )
         } catch {
-            log.error("applyFetchedProfile: upsertProfile failed: \(PrivacyRedactor.error(error))")
+            log.error("applyFetchedProfile: upsertProfile failed: \(error)")
             return
         }
         nameCache[account] = nil
@@ -2314,7 +2321,7 @@ final class MessagingService {
         do {
             callHistory = try storage.messages.calls()
         } catch {
-            log.error("refresh call history failed: \(PrivacyRedactor.error(error))")
+            log.error("refresh call history failed: \(error)")
         }
     }
 
@@ -2323,7 +2330,7 @@ final class MessagingService {
             try storage.messages.clearCalls()
             callHistory = []
         } catch {
-            log.error("clear call history failed: \(PrivacyRedactor.error(error))")
+            log.error("clear call history failed: \(error)")
         }
     }
 
@@ -2333,7 +2340,7 @@ final class MessagingService {
             refreshCallHistory()
             insertCallSystemMessage(call)
         } catch {
-            log.error("record call failed: \(PrivacyRedactor.error(error))")
+            log.error("record call failed: \(error)")
         }
     }
 
@@ -2841,7 +2848,7 @@ final class MessagingService {
             let authorization = try await deviceMutationAuthorization(action: "remove", targetDeviceId: deviceId, password: "")
             try await api.removeDevice(deviceId: deviceId, authorization: authorization)
         } catch {
-            log.warning("link: removing the unprovisioned device failed: \(PrivacyRedactor.error(error))")
+            log.warning("link: removing the unprovisioned device failed: \(error)")
         }
     }
 
@@ -3567,7 +3574,7 @@ final class MessagingService {
                                       wake: false)
                 sent.insert(deviceKey(member))
             } catch {
-                log.warning("SKDM send failed: \(PrivacyRedactor.error(error))")
+                log.warning("SKDM send failed: \(error)")
             }
         }
         saveStringArray(key, Array(sent))
@@ -3740,7 +3747,7 @@ final class MessagingService {
                 )
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
-            } catch { log.warning("group remove(self) failed: \(PrivacyRedactor.error(error))") }
+            } catch { log.warning("group remove(self) failed: \(error)") }
             return
         }
 
@@ -3751,7 +3758,7 @@ final class MessagingService {
                 try storage.messages.setGroupDescription(id: info.groupId, description: info.description)
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
-            } catch { log.warning("group description update failed: \(PrivacyRedactor.error(error))") }
+            } catch { log.warning("group description update failed: \(error)") }
             return
         case .avatar where !info.avatarId.isEmpty:
             Task {
@@ -3762,7 +3769,7 @@ final class MessagingService {
                     if SensitiveContent.isRestricted, await SensitiveContent.isSensitive(imageData: data) { return }
                     try storage.messages.setGroupAvatar(id: info.groupId, avatarData: data)
                     refreshConversations()
-                } catch { log.warning("group avatar download failed: \(PrivacyRedactor.error(error))") }
+                } catch { log.warning("group avatar download failed: \(error)") }
             }
             return
         case .promoteAdmin, .demoteAdmin:
@@ -3776,21 +3783,21 @@ final class MessagingService {
                 try storage.messages.setGroupAdmins(id: info.groupId, admins: info.admins)
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
-            } catch { log.warning("group admin update failed: \(PrivacyRedactor.error(error))") }
+            } catch { log.warning("group admin update failed: \(error)") }
             return
         case .setAnnounceOnly:
             do {
                 try storage.messages.setGroupAnnounceOnly(id: info.groupId, isAnnounceOnly: info.announceOnly)
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
-            } catch { log.warning("group announce-only update failed: \(PrivacyRedactor.error(error))") }
+            } catch { log.warning("group announce-only update failed: \(error)") }
             return
         case .setScreenSecurity:
             do {
                 try storage.messages.setGroupScreenSecurity(id: info.groupId, enabled: info.screenSecurity)
                 refreshConversations()
                 if let line = systemLine(for: info) { insertSystemLine(line, inGroup: info.groupId) }
-            } catch { log.warning("group screen-security update failed: \(PrivacyRedactor.error(error))") }
+            } catch { log.warning("group screen-security update failed: \(error)") }
             return
         default:
             break
@@ -3890,7 +3897,7 @@ final class MessagingService {
                 try? await distributeSenderKeyIfNeeded(group: stored)
             }
         } catch {
-            log.warning("group update failed: \(PrivacyRedactor.error(error))")
+            log.warning("group update failed: \(error)")
         }
     }
 
@@ -4003,7 +4010,7 @@ final class MessagingService {
             }
             try? storage.messages.updateStatus(messageId: localId, status: .sent)
         } catch {
-            log.warning("poll send failed: \(PrivacyRedactor.error(error))")
+            log.warning("poll send failed: \(error)")
             try? storage.messages.updateStatus(messageId: localId, status: .failed)
         }
     }
@@ -4129,7 +4136,7 @@ final class MessagingService {
                 refreshActiveMessages(ifShowing: conversationId)
                 return
             } catch {
-                log.error("attachment download failed (attempt \(attempt)): \(PrivacyRedactor.error(error))")
+                log.error("attachment download failed (attempt \(attempt)): \(error)")
                 if case RelayAPIError.http(let status, _) = error, (400..<500).contains(status), status != 408, status != 429 {
                     return
                 }
@@ -4272,7 +4279,7 @@ final class MessagingService {
                     silent: true
                 )
             } catch {
-                self.log.warning("receipt send failed: \(PrivacyRedactor.error(error))")
+                self.log.warning("receipt send failed: \(error)")
             }
         }
     }
@@ -4584,7 +4591,7 @@ final class MessagingService {
             // a fake key the relay hands out is refused before anything is
             // encrypted to it. No answer (offline) still trusts on first use.
             guard await confirmFirstContactKey(peer: account) else {
-                throw SafetyNumberChangedError(peer: account)
+                throw safetyBlock(.firstContactRefused, peer: account)
             }
             try acknowledgeCurrentIdentity(forPeer: account)
         }
@@ -4825,7 +4832,7 @@ final class MessagingService {
             try storage.messages.markConversationRead(conversationId)
             refreshConversations()
         } catch {
-            log.error("mark conversation read failed: \(PrivacyRedactor.error(error))")
+            log.error("mark conversation read failed: \(error)")
         }
     }
 
@@ -4834,7 +4841,7 @@ final class MessagingService {
             try storage.messages.markConversationUnread(conversationId)
             refreshConversations()
         } catch {
-            log.error("mark conversation unread failed: \(PrivacyRedactor.error(error))")
+            log.error("mark conversation unread failed: \(error)")
         }
     }
 
@@ -4843,7 +4850,7 @@ final class MessagingService {
             try storage.messages.setConversationPinned(conversationId, pinned: pinned)
             refreshConversations()
         } catch {
-            log.error("set pinned failed: \(PrivacyRedactor.error(error))")
+            log.error("set pinned failed: \(error)")
         }
     }
 
@@ -4970,7 +4977,7 @@ final class MessagingService {
             try storage.messages.setMessageStarred(id: messageId, starred: starred)
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
-            log.error("star message failed: \(PrivacyRedactor.error(error))")
+            log.error("star message failed: \(error)")
         }
     }
 
@@ -4989,7 +4996,7 @@ final class MessagingService {
             sweepAttachmentFiles()
             refreshConversations()
         } catch {
-            log.error("delete conversation failed: \(PrivacyRedactor.error(error))")
+            log.error("delete conversation failed: \(error)")
         }
     }
 
@@ -5006,7 +5013,7 @@ final class MessagingService {
             }
             refreshConversations()
         } catch {
-            log.error("set disappearing messages failed: \(PrivacyRedactor.error(error))")
+            log.error("set disappearing messages failed: \(error)")
         }
     }
 
@@ -5033,7 +5040,7 @@ final class MessagingService {
             )
             refreshConversations()
         } catch {
-            log.error("set conversation privacy failed: \(PrivacyRedactor.error(error))")
+            log.error("set conversation privacy failed: \(error)")
         }
     }
 
@@ -5138,7 +5145,7 @@ final class MessagingService {
             try storage.messages.setConversationArchived(conversationId, archived: archived)
             refreshConversations()
         } catch {
-            log.error("set archived failed: \(PrivacyRedactor.error(error))")
+            log.error("set archived failed: \(error)")
         }
     }
 
@@ -5151,7 +5158,7 @@ final class MessagingService {
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
-            log.error("pin message failed: \(PrivacyRedactor.error(error))")
+            log.error("pin message failed: \(error)")
         }
     }
 
@@ -5362,8 +5369,41 @@ final class MessagingService {
 
     // MARK: - Safety-number verification
 
-    struct SafetyNumberChangedError: Error {
+    struct SafetyNumberChangedError: Error, CustomStringConvertible {
+        /// Why sending stopped. Logged, so the debug log says which check fired.
+        enum Reason: String {
+            /// A device presented an identity this account never used.
+            case newIdentity = "new identity on a device"
+            /// An identity changed since the user last accepted or verified one.
+            case notAccepted = "change not accepted yet"
+            /// The key directory lists a different identity, and they weren't
+            /// verified in person.
+            case directoryMismatch = "directory mismatch"
+            /// First contact: the directory still contradicted their identity
+            /// after the publishing delay.
+            case firstContactRefused = "first contact refused by directory"
+        }
+
         let peer: String
+        let reason: Reason
+
+        var description: String {
+            "SafetyNumberChangedError(\(reason.rawValue), \(DebugLog.shared.tag(peer: peer)))"
+        }
+    }
+
+    /// One line describing what the safety-number checks see for `peer`: each
+    /// device's identity tag, which tags are accepted, the verification state
+    /// and the directory result. Tags only, for the debug log.
+    func safetyNumberSummary(peer: String) -> String {
+        let identities = (try? storage.signalStore.identitiesByDevice(address: peer)) ?? []
+        let devices = identities.map { "\($0.deviceId):\(DebugLog.shared.tag(key: $0.key))" }
+        let accepted = ((try? acknowledgedIdentities(forPeer: peer)) ?? nil)
+            .map { $0.map { DebugLog.shared.tag(key: $0) }.sorted().joined(separator: ",") } ?? "none"
+        let state = (try? storage.signalStore.verificationState(address: peer)).map { String(describing: $0) } ?? "unknown"
+        let directory = keyTransparencyStatus[peer].map { String(describing: $0) } ?? "unchecked"
+        let distinct = Set(identities.map(\.key)).count
+        return "\(DebugLog.shared.tag(peer: peer)) devices [\(devices.joined(separator: " "))] distinct \(distinct); accepted [\(accepted)]; state \(state); directory \(directory)"
     }
 
     struct PeerVerification {
@@ -5380,6 +5420,22 @@ final class MessagingService {
         var isVerifiedAutomatically: Bool { state == .unverified && transparency == .verified }
         /// Verified either way.
         var isVerified: Bool { state == .verified || isVerifiedAutomatically }
+    }
+
+    /// Logs why sending to `peer` stopped, with what the checks see, and
+    /// returns the error to throw.
+    private func safetyBlock(_ reason: SafetyNumberChangedError.Reason, peer: String,
+                             detail: String = "") -> SafetyNumberChangedError {
+        safetyLog.warning("blocked (\(reason.rawValue))\(detail): \(safetyNumberSummary(peer: peer))")
+        return SafetyNumberChangedError(peer: peer, reason: reason)
+    }
+
+    /// True, and logged, when `action` has to wait because `peer`'s devices
+    /// present different identities.
+    private func refusedWhileDevicesDisagree(_ action: String, peer: String) -> Bool {
+        guard hasConflictingIdentityKeys(peer) else { return false }
+        safetyLog.warning("\(action) refused, devices disagree: \(safetyNumberSummary(peer: peer))")
+        return true
     }
 
     private func hasConflictingIdentityKeys(_ peer: String) -> Bool {
@@ -5434,7 +5490,7 @@ final class MessagingService {
             return PeerVerification(safetyNumber: safetyNumber, state: state, hasConflictingKeys: conflicting,
                                     transparency: transparency)
         } catch {
-            log.error("safety number failed: \(PrivacyRedactor.error(error))")
+            log.error("safety number failed: \(error)")
             return nil
         }
     }
@@ -5447,15 +5503,16 @@ final class MessagingService {
 
     func setVerified(_ verified: Bool, peer: String) {
         // Would also approve devices the safety number doesn't cover.
-        if verified, hasConflictingIdentityKeys(peer) { return }
+        if verified, refusedWhileDevicesDisagree("mark verified", peer: peer) { return }
         do {
             try storage.signalStore.setVerified(verified, address: peer)
             if verified {
                 try acknowledgeCurrentIdentity(forPeer: peer)
             }
+            safetyLog.notice("user marked \(verified ? "verified" : "not verified"): \(safetyNumberSummary(peer: peer))")
             refreshConversations()
         } catch {
-            log.error("setVerified failed: \(PrivacyRedactor.error(error))")
+            log.error("setVerified failed: \(error)")
         }
     }
 
@@ -5463,15 +5520,16 @@ final class MessagingService {
     /// Not a verification: a contact verified in person drops back to
     /// unverified, and no badge is shown. Refused while their devices disagree.
     func acceptSafetyNumberChange(peer: String) {
-        guard !hasConflictingIdentityKeys(peer) else { return }
+        guard !refusedWhileDevicesDisagree("accept", peer: peer) else { return }
         do {
             if try storage.signalStore.verificationState(address: peer) != .unverified {
                 try storage.signalStore.setVerified(false, address: peer)
             }
             try acknowledgeCurrentIdentity(forPeer: peer)
+            safetyLog.notice("user accepted new safety number: \(safetyNumberSummary(peer: peer))")
             refreshConversations()
         } catch {
-            log.error("accept safety number failed: \(PrivacyRedactor.error(error))")
+            log.error("accept safety number failed: \(error)")
         }
     }
 
@@ -5480,16 +5538,23 @@ final class MessagingService {
     /// stale keys are dropped.
     func refreshPeerIdentitiesIfConflicting(peer: String) async {
         guard hasConflictingIdentityKeys(peer) else { return }
-        try? await refreshSessions(withPeer: peer)
+        safetyLog.notice("check again: before \(safetyNumberSummary(peer: peer))")
+        do {
+            try await refreshSessions(withPeer: peer)
+        } catch {
+            safetyLog.warning("check again: refresh failed: \(error)")
+        }
+        safetyLog.notice("check again: after \(safetyNumberSummary(peer: peer))")
         refreshConversations()
     }
 
     /// Marks the peer verified if the scanned encoding matches.
     func verifyScanned(_ encoding: Data, peer: String) -> Bool {
-        guard !hasConflictingIdentityKeys(peer) else { return false }
+        guard !refusedWhileDevicesDisagree("scan", peer: peer) else { return false }
         do {
             guard let deviceId = try storage.signalStore.newestIdentityDeviceId(address: peer) else { return false }
             let matches = try engine.verifyScannedSafetyNumber(encoding, withPeer: peer, deviceId: deviceId)
+            safetyLog.notice("scanned code \(matches ? "matches" : "does not match") (device \(deviceId)): \(safetyNumberSummary(peer: peer))")
             if matches {
                 try storage.signalStore.setVerified(true, address: peer)
                 try acknowledgeCurrentIdentity(forPeer: peer)
@@ -5497,7 +5562,7 @@ final class MessagingService {
             }
             return matches
         } catch {
-            log.error("verifyScanned failed: \(PrivacyRedactor.error(error))")
+            log.error("verifyScanned failed: \(error)")
             return false
         }
     }
@@ -5526,18 +5591,18 @@ final class MessagingService {
 
         _ = try storage.signalStore.saveIdentity(incomingIdentity, for: address, context: NullContext())
         refreshConversations()
-        throw SafetyNumberChangedError(peer: peer)
+        throw safetyBlock(.newIdentity, peer: peer, detail: " on device \(address.deviceId)")
     }
 
     private func requireAcknowledgedIdentity(forPeer peer: String) throws {
         if try isIdentityChangeAwaitingAcknowledgement(forPeer: peer) {
-            throw SafetyNumberChangedError(peer: peer)
+            throw safetyBlock(.notAccepted, peer: peer)
         }
         // The key directory contradicts the key we'd encrypt to: refuse unless
         // the safety number was compared in person.
         if keyTransparencyStatus[peer] == .mismatch,
            (try? storage.signalStore.verificationState(address: peer)) != .verified {
-            throw SafetyNumberChangedError(peer: peer)
+            throw safetyBlock(.directoryMismatch, peer: peer)
         }
     }
 
@@ -5549,6 +5614,7 @@ final class MessagingService {
         guard let acknowledged = try acknowledgedIdentities(forPeer: peer) else {
             // TOFU on first contact.
             try acknowledgeIdentities(current, forPeer: peer)
+            safetyLog.info("accepted on first contact: \(safetyNumberSummary(peer: peer))")
             return false
         }
         return !current.isSubset(of: acknowledged)
@@ -5575,9 +5641,10 @@ final class MessagingService {
                   try isIdentityChangeAwaitingAcknowledgement(forPeer: peer)
             else { return false }
             try acknowledgeIdentities(current, forPeer: peer)
+            safetyLog.notice("change accepted automatically, directory confirmed it: \(safetyNumberSummary(peer: peer))")
             return true
         } catch {
-            log.error("directory acknowledgement failed: \(PrivacyRedactor.error(error))")
+            log.error("directory acknowledgement failed: \(error)")
             return false
         }
     }
@@ -5596,6 +5663,7 @@ final class MessagingService {
     }
 
     private func noteBlockedSafetyWarning(peer: String) {
+        safetyLog.notice("showing safety number warning for \(DebugLog.shared.tag(peer: peer))")
         guard let conversationId = try? storage.messages.conversation(withPeer: peer, username: nil) else { return }
         blockedSafetyWarningConversationId = conversationId
         refreshConversations()
@@ -5629,7 +5697,7 @@ final class MessagingService {
             do {
                 try await sendContent(data, toPeer: recipient, clientTimestamp: timestamp, ephemeral: ephemeral)
             } catch {
-                log.debug("control send skipped: \(PrivacyRedactor.error(error))")
+                log.debug("control send skipped: \(error)")
             }
         }
         if !ephemeral {
@@ -5655,7 +5723,7 @@ final class MessagingService {
             )
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
-            log.error("store reaction failed: \(PrivacyRedactor.error(error))")
+            log.error("store reaction failed: \(error)")
         }
 
         Task {
@@ -5679,7 +5747,7 @@ final class MessagingService {
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
-            log.error("delete message failed: \(PrivacyRedactor.error(error))")
+            log.error("delete message failed: \(error)")
         }
     }
 
@@ -5722,7 +5790,7 @@ final class MessagingService {
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
-            log.error("local unsend failed: \(PrivacyRedactor.error(error))")
+            log.error("local unsend failed: \(error)")
         }
         Task {
             var content = Relay_Content_Content()
@@ -5741,7 +5809,7 @@ final class MessagingService {
             refreshConversations()
             refreshActiveMessages(ifShowing: conversationId)
         } catch {
-            log.error("local message edit failed: \(PrivacyRedactor.error(error))")
+            log.error("local message edit failed: \(error)")
             return
         }
         Task {

@@ -432,5 +432,18 @@ enum Schema {
             try db.run("ALTER TABLE messages ADD COLUMN read_at INTEGER;")
             try db.run("PRAGMA user_version = 27;")
         }
+        try step(db, to: 28) {
+            // The shareable debug log (DebugLog.swift): redacted lines only.
+            try db.run("""
+                CREATE TABLE IF NOT EXISTS debug_log (
+                    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    at       INTEGER NOT NULL,   -- ms since 1970
+                    level    TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    message  TEXT NOT NULL
+                );
+                """)
+            try db.run("PRAGMA user_version = 28;")
+        }
     }
 }

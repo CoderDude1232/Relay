@@ -11,7 +11,7 @@
 //
 
 import Foundation
-import OSLog
+import SecureStorage
 import RelayKit
 
 actor SendTokenPool {
@@ -20,7 +20,7 @@ actor SendTokenPool {
     /// and recognise whose tokens it gets back.
     nonisolated static let publicKey = Data(base64Encoded: "Xn2m+m1iwE55cxI986TdcadOxPbeuVjk4c8q2v9u+l4=")!
 
-    private static let log = Logger(subsystem: "app.relaymsg", category: "send-tokens")
+    private static let log = RelayLog("send-tokens")
     private static let batch = 100
     private static let lowWater = 40
 
@@ -96,7 +96,7 @@ actor SendTokenPool {
                 batch.append((day, String(day) + "." + Self.base64URL(token.nonce + token.point)))
             }
             tokens += batch
-            Self.log.info("send tokens: got \(batch.count, privacy: .public)")
+            Self.log.info("send tokens: got \(batch.count)")
             return
         }
     }

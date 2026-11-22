@@ -8,7 +8,6 @@
 import BackgroundTasks
 import CoreSpotlight
 import Intents
-import OSLog
 import RelayCore
 import RelayKit
 import SecureStorage
@@ -296,7 +295,7 @@ struct RelayApp: App {
 /// exist before any view renders or a VoIP push arrives on a killed-app launch.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     static let bgRefreshTaskId = "app.relaymsg.bg-refresh"
-    private static let log = Logger(subsystem: "app.relaymsg", category: "AppDelegate")
+    private static let log = RelayLog("AppDelegate")
 
     let callManager = CallManager()
     let pushKitDelegate = PushKitDelegate()
@@ -516,6 +515,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: any Error
     ) {
-        Self.log.error("remote notification registration failed: \(PrivacyRedactor.error(error))")
+        Self.log.error("remote notification registration failed: \(error)")
     }
 }

@@ -41,7 +41,16 @@ public final class SQLCipherSignalStore {
     }
 
     private func now() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+
+    /// How identity events name an account in the debug log.
+    func logTag(_ name: String) -> String {
+        name == localAccountName ? "self" : DebugLog.shared.tag(peer: name)
+    }
 }
+
+private let identityLog = RelayLog("identity")
+
+private func keyTag(_ key: Data) -> String { DebugLog.shared.tag(key: key) }
 
 // MARK: - IdentityKeyStore
 
@@ -65,13 +74,14 @@ extension SQLCipherSignalStore: IdentityKeyStore {
                 return .newOrUnchanged
             }
             let serialized = identity.serialize()
-            if existing != nil {
+            if let existing {
                 // A changed key resets verification for this device. verified_key is kept
                 // so the state reads as `.changed`.
                 try db.run(
                     "UPDATE remote_identities SET identity_key = ?, verified = 0 WHERE address = ? AND device_id = ?",
                     [.blob(serialized), .text(address.name), .integer(Int64(address.deviceId))]
                 )
+                identityLog.notice("identity changed: \(self.logTag(address.name)) device \(address.deviceId) \(keyTag(existing.serialize())) -> \(keyTag(serialized))")
                 return .replacedExisting
             }
 
@@ -84,6 +94,7 @@ extension SQLCipherSignalStore: IdentityKeyStore {
             if siblings.isEmpty {
                 // Unknown account: trust on first use.
                 try insertIdentity(serialized, for: address, verified: false, verifiedKey: nil)
+                identityLog.info("first identity (trust on first use): \(self.logTag(address.name)) device \(address.deviceId) \(keyTag(serialized))")
                 return .newOrUnchanged
             }
             let matchesKnownKey = siblings.contains { $0[0].data == serialized }
@@ -101,11 +112,14 @@ extension SQLCipherSignalStore: IdentityKeyStore {
                     verified: inheritsVerification,
                     verifiedKey: inheritsVerification ? serialized : nil
                 )
+                identityLog.info("new device, known identity: \(self.logTag(address.name)) device \(address.deviceId) \(keyTag(serialized))\(inheritsVerification ? " (keeps verification)" : "")")
                 return .newOrUnchanged
             }
             // A key the account never had: treat as a key change. If the account
             // was verified, record the old verified key so the state is `.changed`.
             try insertIdentity(serialized, for: address, verified: false, verifiedKey: priorVerifiedKey)
+            let knownKeys = Set(siblings.compactMap { $0[0].data }).map(keyTag).sorted().joined(separator: ",")
+            identityLog.notice("new device, new identity: \(self.logTag(address.name)) device \(address.deviceId) \(keyTag(serialized)); known identities \(knownKeys)\(priorVerifiedKey != nil ? "; was verified" : "")")
             return .replacedExisting
         }
     }
@@ -186,8 +200,25 @@ extension SQLCipherSignalStore: IdentityKeyStore {
     /// change already recorded on a remaining device is kept.
     public func pruneIdentities(address name: String, keepingDeviceIds deviceIds: Set<UInt32>) throws {
         guard !deviceIds.isEmpty else { return }
-        let keep = deviceIds.map { String($0) }.joined(separator: ",")
+        let keep = deviceIds.sorted().map(String.init).joined(separator: ",")
+        let removed = try db.query(
+            "SELECT device_id FROM remote_identities WHERE address = ? AND device_id NOT IN (\(keep))", [.text(name)]
+        ).compactMap { $0.first?.int64 }
+        guard !removed.isEmpty else { return }
         try db.run("DELETE FROM remote_identities WHERE address = ? AND device_id NOT IN (\(keep))", [.text(name)])
+        identityLog.info("dropped identities of removed devices: \(logTag(name)) devices \(removed.map(String.init).joined(separator: ",")); current devices \(keep)")
+    }
+
+    /// Each stored device of account `name` with its identity key, lowest
+    /// device id first.
+    public func identitiesByDevice(address name: String) throws -> [(deviceId: UInt32, key: Data)] {
+        try db.query(
+            "SELECT device_id, identity_key FROM remote_identities WHERE address = ? ORDER BY device_id",
+            [.text(name)]
+        ).compactMap { row in
+            guard let id = row.first?.int64, let key = row.last?.data else { return nil }
+            return (UInt32(id), key)
+        }
     }
 
     /// Distinct identity keys stored for any device of account `name`, lowest
